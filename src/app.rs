@@ -7,7 +7,8 @@
 
 use crate::ui::root::Deck;
 use gpui::{
-    App, AppContext as _, Bounds, Focusable as _, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
+    App, AppContext as _, Bounds, Focusable as _, WindowBackgroundAppearance, WindowBounds, WindowHandle,
+    WindowOptions, px, size,
 };
 use gpui_platform::application;
 use std::path::PathBuf;
@@ -27,10 +28,27 @@ pub fn run(argv: Vec<String>, cwd: PathBuf) {
             deck.focus_handle(cx).focus(window, cx);
             deck
         });
-        if let Err(e) = opened {
-            eprintln!("deck: could not open a window: {e:#}");
-            cx.quit();
+        match opened {
+            Ok(window) => control(window, cx),
+            Err(e) => {
+                eprintln!("deck: could not open a window: {e:#}");
+                cx.quit();
+            }
         }
         cx.activate(true);
     });
 }
+
+/// Start the control socket when `DECK_CONTROL` names a path.
+#[cfg(unix)]
+fn control(window: WindowHandle<Deck>, cx: &mut App) {
+    let Some(path) = std::env::var_os(crate::control::ENV) else { return };
+    let path = PathBuf::from(path);
+    match crate::control::serve(&path, window, cx) {
+        Ok(()) => eprintln!("deck: control socket at {}", path.display()),
+        Err(e) => eprintln!("deck: no control socket: {e:#}"),
+    }
+}
+
+#[cfg(not(unix))]
+fn control(_: WindowHandle<Deck>, _: &mut App) {}

@@ -19,6 +19,22 @@ use gpui::{
 /// Space the root reserves on the left for the closed rail.
 pub const RAIL_SLOT: f32 = COLLAPSED;
 
+/// The rail's inner padding (sides, ends), the wordmark's height, and the gap
+/// between the wordmark and the items; together they place each item.
+const PAD_X: f32 = 6.;
+const PAD_Y: f32 = 10.;
+const MARK_H: f32 = 36.;
+const MARK_GAP: f32 = 18.;
+
+/// The centre of the closed rail's item `index`, in window coordinates, for a
+/// rail inset `inset` from the window edges.
+pub fn rail_item_center(index: usize, inset: f32) -> (f32, f32) {
+    // The 1px border sits inside the inset, before the padding.
+    let x = inset + 1. + PAD_X + (COLLAPSED - 12.) / 2.;
+    let y = inset + 1. + PAD_Y + MARK_H + MARK_GAP + (index as f32 + 0.5) * ITEM_H;
+    (x, y)
+}
+
 pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement {
     let r = &deck.rail;
     let open = r.openness().clamp(0., 1.2);
@@ -82,9 +98,9 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
                 .size_full()
                 .flex()
                 .flex_col()
-                .px(px(6.))
-                .py(px(10.))
-                .gap(px(18.))
+                .px(px(PAD_X))
+                .py(px(PAD_Y))
+                .gap(px(MARK_GAP))
                 .child(mark(label_a))
                 .child(div().relative().flex().flex_col().child(marker).children(items))
                 .child(div().flex_1())
@@ -101,7 +117,7 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
 /// The wordmark: a small glass tile, and the name once the rail has room.
 fn mark(label_a: f32) -> impl IntoElement {
     div()
-        .h(px(36.))
+        .h(px(MARK_H))
         .flex()
         .items_center()
         .child(
