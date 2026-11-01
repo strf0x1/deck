@@ -34,10 +34,11 @@ construct's AGENTS.md, `scripts/mock.sh`), then
 ## Checks
 
 ```sh
-cargo fmt --check && cargo clippy --all-targets && cargo test
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-All three must be clean. A UI behaviour change gets a `tests/view.rs` case
+All three must be clean; CI (`.github/workflows/ci.yml`) runs the same on
+Linux, and a non-blocking macOS job reports whether the Mac build passes. A UI behaviour change gets a `tests/view.rs` case
 (simulate the input, assert on view state); a protocol change gets a
 `conn.rs` unit test and, if it crosses the process, a `tests/acp.rs` step.
 
