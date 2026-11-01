@@ -43,6 +43,12 @@ allow_attributes_without_reason = "warn"
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies (GPUI above all) are optimized even in dev: an unoptimized
+# GPUI spends most of a frame budget on layout and text, and drags stutter
+# at high refresh rates. deck's own code stays a fast debug build.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 opt-level = 3
 lto = "fat"

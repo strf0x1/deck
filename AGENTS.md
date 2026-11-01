@@ -12,10 +12,10 @@ calls and permission questions in a dark-glass window. This is the UI spike;
 | `src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
 | `src/app.rs` | Opens the window (blurred background, `app_id = "deck"`). |
 | `src/acp/` | The ACP client. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `process.rs` the subprocess and reader thread. The UI only sees `Inbound`. |
-| `src/ui/root.rs` | The one view entity: owns `Board`, `Session`, the client; routes keys and mouse; steps animation. |
-| `src/ui/panels.rs` | Render helpers for header, lanes, session panel. No state. |
-| `src/ui/session.rs`, `board.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, spring physics. |
-| `src/ui/shape.rs`, `theme.rs` | Angled panels (canvas paths) and colour tokens. Colours come only from `theme.rs`. |
+| `src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client; routes keys and mouse; steps animation. |
+| `src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
+| `src/ui/session.rs`, `board.rs`, `rail.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, spring physics. |
+| `src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
 | `src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. |
 | `tests/acp.rs` | Client against the fake agent as a real subprocess. |
 | `tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |
@@ -61,5 +61,9 @@ Same as construct's (see `../construct/AGENTS.md`), in short:
 - Read GPUI's own examples at the pinned tag for API questions; docs.rs lags.
 - Window blur is the compositor's call. On Hyprland, blur must be enabled
   (`decoration:blur:enabled`) or set per window for class `deck`.
-- GPUI has no per-element backdrop blur and its shadows are rounded
-  rectangles, so angled panels get edges and accent ticks, not glow.
+- GPUI has no per-element backdrop blur, so the only real blur is the
+  window's. Panes are translucent white layers over a near-black base;
+  anything that floats over other content (the open rail) is opaque.
+- Look: dark neutral glass, rounded panes, colour only where the eye should
+  land (state dots, the rail marker, the selected session, send). Motion
+  is springs everywhere, with one tuning (`spring.rs`).
