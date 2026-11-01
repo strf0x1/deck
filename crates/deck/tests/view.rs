@@ -3,10 +3,10 @@
 //! without looking at the screen.
 #![expect(clippy::unwrap_used, reason = "setup helpers outside #[test] fns; a failure is a test failure")]
 
-use deck::acp::{Inbound, PermissionOption};
 use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
 use deck::ui::session::{Entry, Status};
+use deck_acp::{Inbound, PermissionOption};
 use gpui::{AppContext as _, Focusable as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use serde_json::json;
 

@@ -1,0 +1,23 @@
+[package]
+name = "deck"
+description = "The deck window: GPUI views over an ACP agent session."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+default-run = "deck"
+
+[dependencies]
+anyhow.workspace = true
+deck-acp.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

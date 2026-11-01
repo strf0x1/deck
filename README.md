@@ -9,5 +9,5 @@ drag, angled glass panels. The other lanes are placeholders until the host
 runtime exists. See `PLAN.md` for direction and `AGENTS.md` to work on it.
 
 ```sh
-cargo run --bin deck -- target/debug/deck-fake-agent   # try it without a model
+cargo build && cargo run --bin deck -- target/debug/deck-fake-agent   # try it without a model
 ```

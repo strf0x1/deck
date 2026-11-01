@@ -8,10 +8,10 @@
 #![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "setup helpers outside #[test] fns; a failure is a test failure")]
 
-use deck::acp::{Inbound, PermissionOption};
 use deck::control::{self, Request, protocol};
 use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
+use deck_acp::{Inbound, PermissionOption};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
 use serde_json::{Value, json};

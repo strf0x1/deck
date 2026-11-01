@@ -5,7 +5,7 @@
 //! GPUI types, so a whole turn is testable as a list of events in and
 //! entries out.
 
-use crate::acp::{Inbound, PermissionOption, ToolStatus};
+use deck_acp::{Inbound, PermissionOption, ToolStatus};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]

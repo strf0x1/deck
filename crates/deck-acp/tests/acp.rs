@@ -1,7 +1,7 @@
 //! The ACP client against a real subprocess (the scripted fake agent):
 //! handshake, a streamed turn, and a permission answer that reaches the agent.
 
-use deck::acp::{Client, Inbound, ToolStatus};
+use deck_acp::{Client, Inbound, ToolStatus};
 use futures::StreamExt as _;
 use futures::executor::block_on;
 use std::time::Duration;
