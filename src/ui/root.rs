@@ -192,6 +192,18 @@ impl Deck {
         }
     }
 
+    /// Whether a drag is in progress or any spring is still moving.
+    pub fn animating(&self) -> bool {
+        let board = self.board.cards().iter().any(|c| !c.y.at_rest() || !c.lift.at_rest());
+        let rail = !self.rail.width.at_rest() || !self.rail.marker.at_rest();
+        self.board.dragging().is_some() || board || rail
+    }
+
+    /// The centre of rail item `index` while the rail is closed, in window coordinates.
+    pub fn rail_item_center(index: usize) -> (f32, f32) {
+        chrome::rail_item_center(index, GUTTER)
+    }
+
     pub(super) fn grab(&mut self, id: usize, y: f32, cx: &mut Context<Self>) {
         self.board.grab(id, y);
         cx.notify();

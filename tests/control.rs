@@ -1,0 +1,96 @@
+//! The control channel under GPUI's headless test platform: command lines
+//! are parsed as the socket would, `control::pump` dispatches them on a test
+//! window, and the JSON replies are asserted on. The test scheduler forbids
+//! wakeups from other threads, so lines are fed from the test thread; the
+//! socket threads have their own unit test in `control::socket`. CI has no
+//! compositor, so this stands in for driving the real window; AGENTS.md has
+//! the live recipe.
+#![cfg(unix)]
+#![expect(clippy::unwrap_used, reason = "setup helpers outside #[test] fns; a failure is a test failure")]
+
+use deck::acp::{Inbound, PermissionOption};
+use deck::control::{self, Request, protocol};
+use deck::ui::board::PITCH;
+use deck::ui::root::Deck;
+use futures::channel::mpsc::{UnboundedSender, unbounded};
+use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
+use serde_json::{Value, json};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// Open a Deck window with the control pump running, and its request sender.
+fn open(cx: &mut TestAppContext) -> (gpui::Entity<Deck>, VisualTestContext, UnboundedSender<Request>) {
+    let window = cx.update(|cx| cx.open_window(Default::default(), |_, cx| cx.new(Deck::detached)).unwrap());
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let (tx, rx) = unbounded();
+    vcx.update(|_, cx| control::pump(rx, window, cx));
+    vcx.run_until_parked();
+    (deck, vcx, tx)
+}
+
+/// Send one command line and run the window (advancing its clock) until it answers.
+fn send(cx: &mut VisualTestContext, tx: &UnboundedSender<Request>, cmd: Value) -> Value {
+    let (reply, answer) = mpsc::channel();
+    let parsed = protocol::parse(&cmd.to_string()).unwrap();
+    tx.unbounded_send(Request { cmd: parsed, reply }).unwrap();
+    for _ in 0..2000 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        cx.run_until_parked();
+        if let Ok(v) = answer.try_recv() {
+            assert_eq!(v["ok"], json!(true), "{cmd} failed: {v}");
+            return v;
+        }
+    }
+    panic!("no reply to {cmd}");
+}
+
+#[gpui::test]
+fn typing_and_answering_through_the_control_channel(cx: &mut TestAppContext) {
+    let (deck, mut cx, d) = open(cx);
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::Ready { agent: "fake".into(), session_id: "s".into() }, cx));
+
+    send(&mut cx, &d, json!({ "cmd": "type", "text": "Hi there" }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["draft"], json!("Hi there"));
+    send(&mut cx, &d, json!({ "cmd": "key", "key": "enter" }));
+    let s = send(&mut cx, &d, json!({ "cmd": "state" }));
+    assert_eq!(s["draft"], json!(""));
+    assert_eq!(s["session"]["status"], json!("working"));
+    assert_eq!(s["session"]["entries"], json!([{ "you": "Hi there" }]));
+
+    let options = ["allow", "reject"]
+        .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
+        .to_vec();
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell ls".into(), options }, cx)
+    });
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["session"]["ask"]["title"], json!("shell ls"));
+    send(&mut cx, &d, json!({ "cmd": "key", "key": "1" }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["session"]["ask"], Value::Null);
+}
+
+#[gpui::test]
+fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
+    let (_deck, mut cx, d) = open(cx);
+
+    let to = 150. + PITCH * 2.2;
+    send(
+        &mut cx,
+        &d,
+        json!({ "cmd": "drag", "from": { "x": 200, "y": 150 }, "to": { "x": 200, "y": to }, "steps": 10 }),
+    );
+    let s = send(&mut cx, &d, json!({ "cmd": "state" }));
+    assert_eq!(s["board"]["order"], json!([1, 2, 0, 3]));
+    assert_eq!(s["board"]["dragging"], Value::Null);
+
+    send(&mut cx, &d, json!({ "cmd": "hover_rail" }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(true));
+    send(&mut cx, &d, json!({ "cmd": "select_rail", "index": 3 }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["active"], json!(3));
+    send(&mut cx, &d, json!({ "cmd": "move", "x": 700, "y": 300 }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(false));
+
+    let g = send(&mut cx, &d, json!({ "cmd": "geometry" }));
+    assert!(g["viewport"]["w"].as_f64().unwrap() > 0.);
+}
