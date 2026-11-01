@@ -1,5 +1,5 @@
-//! The Deck window's root view: owns the lane board, the live session and the
-//! agent client, routes input, and drives animation frames.
+//! The Deck window's root view: owns the lane board, the navigation rail, the
+//! live session and the agent client, routes input, and drives animation frames.
 //!
 //! The design choice: one view entity holding plain state structs (`Board`,
 //! `Session`); render helpers in `panels` read them. Animation is pull-based:
@@ -7,9 +7,10 @@
 //! frame only while something still moves, so an idle window draws nothing.
 
 use super::board::{Board, Lane, LaneState};
-use super::panels;
+use super::rail::Rail;
 use super::session::Session;
-use super::theme::{FONT, Tokens};
+use super::theme::{SANS, Tokens};
+use super::{chrome, conversation, panels};
 use crate::acp::{Client, Inbound};
 use futures::StreamExt as _;
 use gpui::{
@@ -24,9 +25,13 @@ use std::time::Instant;
 /// the host runtime exists.
 pub const LIVE: usize = 0;
 
+/// Space around and between the window's regions.
+const GUTTER: f32 = 12.;
+
 pub struct Deck {
     pub(super) focus: FocusHandle,
     pub(super) board: Board,
+    pub(super) rail: Rail,
     pub(super) session: Session,
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
@@ -39,9 +44,9 @@ fn lanes() -> Vec<Lane> {
     let lane = |id, title: &str, detail: &str, state| Lane { id, title: title.into(), detail: detail.into(), state };
     vec![
         lane(LIVE, "agent", "connecting…", LaneState::Idle),
-        lane(1, "vm · flaky test", "placeholder lane", LaneState::Working),
-        lane(2, "vm · auth refactor", "placeholder lane", LaneState::Review),
-        lane(3, "scratch", "placeholder lane", LaneState::Idle),
+        lane(1, "flaky test hunt", "vm · placeholder", LaneState::Working),
+        lane(2, "auth refactor", "vm · placeholder", LaneState::Review),
+        lane(3, "scratch", "placeholder", LaneState::Idle),
     ]
 }
 
@@ -51,6 +56,7 @@ impl Deck {
         Deck {
             focus: cx.focus_handle(),
             board: Board::new(lanes()),
+            rail: Rail::new(),
             session: Session::new(),
             draft: String::new(),
             scroll: ScrollHandle::new(),
@@ -87,6 +93,10 @@ impl Deck {
 
     pub fn board(&self) -> &Board {
         &self.board
+    }
+
+    pub fn rail(&self) -> &Rail {
+        &self.rail
     }
 
     pub fn draft(&self) -> &str {
@@ -190,7 +200,9 @@ impl Deck {
     fn tick(&mut self, window: &mut Window) {
         let now = Instant::now();
         let dt = self.last_frame.map_or(0., |t| now.duration_since(t).as_secs_f32());
-        if self.board.step(dt) {
+        let board = self.board.step(dt);
+        let rail = self.rail.step(dt);
+        if board || rail {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {
@@ -225,24 +237,28 @@ impl Render for Deck {
                     cx.notify();
                 }),
             )
+            .relative()
             .size_full()
             .flex()
-            .flex_col()
-            .gap(px(12.))
-            .p(px(14.))
+            .gap(px(GUTTER))
+            .p(px(GUTTER))
             .bg(Tokens::base())
-            .font_family(FONT)
-            .text_size(px(13.))
+            .font_family(SANS)
+            .text_size(px(13.5))
             .text_color(Tokens::text())
-            .child(panels::header(self))
+            .child(div().flex_none().w(px(chrome::RAIL_SLOT)))
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .gap(px(14.))
-                    .child(panels::lanes(self, cx))
-                    .child(panels::main(self, cx)),
+                div().flex_1().min_w_0().flex().flex_col().gap(px(GUTTER)).child(chrome::header(self)).child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .gap(px(GUTTER))
+                        .child(panels::lanes(self, cx))
+                        .child(conversation::main(self, cx)),
+                ),
             )
+            // Last, so the open rail floats over the sessions column.
+            .child(chrome::rail(self, GUTTER, cx))
     }
 }

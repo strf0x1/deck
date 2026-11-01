@@ -10,8 +10,8 @@
 
 use super::spring::Spring;
 
-pub const CARD_H: f32 = 74.;
-pub const GAP: f32 = 10.;
+pub const CARD_H: f32 = 64.;
+pub const GAP: f32 = 8.;
 pub const PITCH: f32 = CARD_H + GAP;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

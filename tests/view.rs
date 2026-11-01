@@ -53,8 +53,8 @@ fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     let before = deck.read_with(&cx, |d, _| d.board().order());
     assert_eq!(before, vec![0, 1, 2, 3]);
 
-    // The first card sits under the LANES label in the left panel.
-    let start = point(px(150.), px(110.));
+    // The first card sits under the Sessions heading, right of the closed rail.
+    let start = point(px(200.), px(150.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
     assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), Some(0), "mouse down on the first card grabs it");
     for step in 1..=10 {
@@ -66,4 +66,21 @@ fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
         assert_eq!(d.board().order(), vec![1, 2, 0, 3]);
         assert_eq!(d.board().dragging(), None);
     });
+}
+
+#[gpui::test]
+fn the_rail_opens_under_the_pointer_and_selects_by_click(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    cx.run_until_parked();
+    assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()));
+
+    // The fourth icon (Files), inside the closed rail.
+    let files = point(px(36.), px(217.));
+    cx.simulate_mouse_move(files, None, Modifiers::none());
+    assert!(deck.read_with(&cx, |d, _| d.rail().expanded()), "hovering the rail opens it");
+    cx.simulate_click(files, Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), 3);
+
+    cx.simulate_mouse_move(point(px(700.), px(300.)), None, Modifiers::none());
+    assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()), "leaving the rail closes it");
 }
