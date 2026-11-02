@@ -1,9 +1,9 @@
-//! The ACP client against the scripted fake agent: over stdio as a process
-//! deck launched, and over a Unix socket as one it did not. Both run the same
+//! The ACP client against the scripted fake agent: over a child's stdio, and
+//! over a Unix socket to an agent it did not start. Both run the same
 //! turn: handshake, a streamed prompt, a permission answer that reaches the
 //! agent, and a tool that reports failed because the answer was reject.
 
-use deck_acp::{Agent, Client, Inbound, ToolStatus};
+use deck_acp::{Client, Inbound, ToolStatus};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::executor::block_on;
@@ -62,13 +62,21 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
 
 #[test]
 fn a_turn_with_a_permission_answer() {
+    use std::process::{Command, Stdio};
     hang_guard();
-    let argv = vec![env!("CARGO_BIN_EXE_deck-fake-agent").to_string()];
-    let (agent, client, mut rx) = Agent::launch(&argv, std::env::temp_dir()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+        .env("DECK_FAKE_DELAY_MS", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let (client, mut rx) = Client::over(std::env::temp_dir(), stdout, stdin).unwrap();
     turn(&client, &mut rx);
-    // The launcher owns the child: dropping it kills the agent.
+    // Closing the connection is the agent's end of file; it exits by itself.
     drop(client);
-    drop(agent);
+    assert!(child.wait().unwrap().success());
 }
 
 #[cfg(unix)]

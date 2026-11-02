@@ -22,12 +22,14 @@ jobs:
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      # The protocol crate never depends on GPUI (or any UI crate), so
-      # protocol work builds without it. A new edge to gpui fails here.
-      - name: deck-acp has no gpui
+      # The protocol and runtime crates never depend on GPUI (or any UI
+      # crate), so that work builds without it. A new edge to gpui fails here.
+      - name: deck-acp and deck-runtime have no gpui
         run: |
-          tree=$(cargo tree -p deck-acp)
-          if grep -i gpui <<<"$tree"; then echo "deck-acp must not depend on gpui"; exit 1; fi
+          for crate in deck-acp deck-runtime; do
+            tree=$(cargo tree -p "$crate")
+            if grep -i gpui <<<"$tree"; then echo "$crate must not depend on gpui"; exit 1; fi
+          done
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
   # macOS is a primary development machine, so this blocks like Linux. The

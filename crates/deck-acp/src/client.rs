@@ -7,7 +7,7 @@
 //! go through a shared lock so the reader (handshake replies, answers to
 //! agent-initiated requests) and the UI (prompts, permission answers) never
 //! interleave a line. Who launched the agent is not this module's business;
-//! [`crate::process`] wraps it for a local subprocess.
+//! `deck_runtime` runs agents and hands their streams here.
 
 use super::conn::{Conn, Inbound};
 use anyhow::{Result, anyhow};
@@ -29,6 +29,13 @@ pub trait Writer: Write + Send + 'static {
 
 impl Writer for std::process::ChildStdin {
     fn close(&mut self) {}
+}
+
+/// What a runtime hands out, when it does not say which stream it is.
+impl Writer for Box<dyn Writer> {
+    fn close(&mut self) {
+        (**self).close();
+    }
 }
 
 #[cfg(unix)]

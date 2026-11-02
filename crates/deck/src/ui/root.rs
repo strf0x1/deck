@@ -11,7 +11,8 @@ use super::rail::Rail;
 use super::session::Session;
 use super::theme::{SANS, Tokens};
 use super::{chrome, conversation, panels};
-use deck_acp::{Agent, Client, Inbound};
+use crate::task::WindowTask;
+use deck_acp::{Client, Inbound};
 use futures::StreamExt as _;
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
@@ -36,9 +37,9 @@ pub struct Deck {
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
-    /// The child deck launched, if it launched one: sockets have no process.
-    /// Held only so the view owns it and dropping the view kills it.
-    agent: Option<Agent>,
+    /// The task this window runs, if it runs one. Held so that dropping the
+    /// view stops it.
+    task: Option<WindowTask>,
     client: Option<Arc<Client>>,
     last_frame: Option<Instant>,
 }
@@ -64,7 +65,7 @@ impl Deck {
             draft: String::new(),
             scroll: ScrollHandle::new(),
             agent_cmd: String::new(),
-            agent: None,
+            task: None,
             client: None,
             last_frame: None,
         }
@@ -74,9 +75,9 @@ impl Deck {
     pub fn launch(argv: Vec<String>, cwd: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut deck = Deck::detached(cx);
         deck.agent_cmd = argv.join(" ");
-        match Agent::launch(&argv, cwd) {
-            Ok((agent, client, mut rx)) => {
-                deck.agent = Some(agent);
+        match WindowTask::run(argv, cwd) {
+            Ok((task, client, mut rx)) => {
+                deck.task = Some(task);
                 deck.client = Some(Arc::new(client));
                 cx.spawn(async move |this, cx| {
                     while let Some(ev) = rx.next().await {
