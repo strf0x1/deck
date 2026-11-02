@@ -30,9 +30,11 @@ LIBCLANG_PATH="$(brew --prefix llvm)/lib" DYLD_LIBRARY_PATH="$(brew --prefix llv
   make -j8 BLK=1 NET=1
 ```
 
-Build the guest image (Docker is a build tool only). The measurement used
-Construct at `883e7fd` (0.3.0) and `rust:1.91-bookworm`; `vm-image.sh` takes
-the construct checkout as its first argument so the commit is the caller's
+Build the guest image (Docker is a build tool only). The original
+measurements used Construct at `883e7fd` (0.3.0) and `rust:1.91-bookworm`;
+the final durability and stdout re-runs used `bc94e9d`, the merged tree of
+construct #163 and #164 (`main` at `ff26f88`). `vm-image.sh` takes the
+construct checkout as its first argument so the commit is the caller's
 choice:
 
 ```sh
