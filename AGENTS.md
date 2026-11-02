@@ -14,18 +14,25 @@ so protocol work builds and tests without compiling GPUI. `deck` depends on
 
 | Path | What |
 |---|---|
-| `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `process.rs` the subprocess and reader thread. The UI only sees `Inbound`. |
-| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. |
-| `crates/deck-acp/tests/acp.rs` | Client against the fake agent as a real subprocess. |
+| `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `client.rs` the connection over any reader/writer pair and its reader thread, `process.rs` the local subprocess launcher. The UI only sees `Inbound`. |
+| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. |
+| `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch. |
 | `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
 | `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`). |
-| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client; routes keys and mouse; steps animation. |
+| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the agent process it launched; routes keys and mouse; steps animation. |
 | `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
 | `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, spring physics. |
 | `crates/deck/src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
 | `crates/deck/src/control/` | Dev-only control socket (`DECK_CONTROL`). `protocol.rs` the pure line grammar, `socket.rs` the listener threads, `drive.rs` dispatches commands as GPUI input on the window and reads `state`. |
 | `crates/deck/tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |
 | `crates/deck/tests/control.rs` | Control commands run against a headless window (no compositor in CI). |
+
+A connection and the process behind it are separate things. `Client` speaks
+ACP over any reader/writer pair — a child's stdio, or a socket a VM-hosted
+agent listens on — and dropping it closes that stream. Only `Agent`, the
+handle a local launch returns, kills the child. Deck kills an agent it
+launched when it exits; an agent reached over a socket outlives it. A future
+transport implements `deck_acp::Writer` to say how closing works for it.
 
 Shared versions, lints and profiles live in the root `Cargo.toml`
 (`[workspace.*]`, taken with `.workspace = true`); `[patch]` and
