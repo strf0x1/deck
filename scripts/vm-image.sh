@@ -78,7 +78,10 @@ if [ "${DECK_SYNC:-0}" = "1" ]; then
   ( while :; do sleep 1; sync; done ) &
 fi
 cd /workspace || cd /
-/usr/bin/socat "VSOCK-LISTEN:${port},fork,reuseaddr" "SYSTEM:${DECK_AGENT} ${DECK_ARGS},stderr" &
+# Do not add socat's `stderr` option: it merges the agent's diagnostics into
+# the ACP socket. They inherit the guest console instead, so the relay only
+# ever carries protocol frames.
+/usr/bin/socat "VSOCK-LISTEN:${port},fork,reuseaddr" "SYSTEM:${DECK_AGENT} ${DECK_ARGS}" &
 soc=$!
 sleep 0.3
 echo "deck-guest: ready"

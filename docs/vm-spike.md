@@ -126,10 +126,20 @@ Two experiments, both ending in `kill -9` of the VMM:
 The second result is a Construct-side gap, not a libkrun one: a hard VMM
 death can lose journal commits that are still in guest memory. A normal
 runtime stop sends ACP `session/close` first, which closes the journal, but
-the backend cannot prove the guest unmounted or checkpointed. Options are
-recorded in ADR 0003; the smallest construct-side fix is to fsync the WAL at
-commit (`synchronous=FULL`) or checkpoint on `session/close`. Tracked in
+the backend cannot prove the guest unmounted or checkpointed. Tracked in
 construct#161.
+
+That issue's first fix (construct PR #163, `synchronous=FULL`) was re-tested
+in the same VM and is **not sufficient on a fresh journal**: with no guest
+sync, a completed turn followed by `kill -9` still left the journal image
+empty. The missing layer is the directory entry. A guest probe that created
+a file and called `dd conv=fsync` (no `sync`) also lost the file, while a
+guest-wide `sync` kept it; SQLite fsyncs the WAL file, not the parent
+directories, and this guest disk does not persist a new directory entry on a
+file fsync alone. A directory fsync when the journal is created (or a guest
+sync before the VMM dies) is still needed. The PR's SIGKILL test cannot see
+this: killing the construct process leaves the host page cache intact, so it
+would pass with `NORMAL` too.
 
 The host reboot part of the original measurement was **not performed**.
 Killing the VMM is the conservative writer-death test; a host reboot would
@@ -168,9 +178,11 @@ rebuild.
 - A data root is served by one backend. With `DECK_VM_IMAGE` set every new
   task is `vm`; records from the previous `local` run are left untouched and
   the VM runtime refuses to destroy them.
-- Construct currently writes secretspec notes and a keyring warning to stdout
-  during an ACP session (construct#162). Deck ignores non-JSON lines, so the
-  window works, but the raw stream is not pure JSON-RPC until that is fixed.
+- The first guest image merged the agent's stderr into the ACP socket (socat's
+  `stderr` address option), so secretspec's note and keyring warning appeared
+  inline. Construct's stdout was already clean; construct#164 makes the
+  separation structural, and this image now leaves stderr on the guest console
+  instead of merging it. Deck still ignores non-JSON lines defensively.
 - Linux/KVM, x86_64 guests, snapshots and the QEMU comparison (#12) were not
   tried.
 - `DECK_SYNC=1` is a measurement aid in the guest image; normal runs leave it
