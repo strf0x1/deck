@@ -85,8 +85,9 @@ States: `created`, `running`, `stopped { clean }`, `failed { reason }`,
 
 - `failed` means the user must act; an ordinary crash is an unclean stop,
   because the disk is intact and resume is the normal next step.
-- **Stop is confirmed, not assumed.** SIGTERM the agent through its holder,
-  wait a grace period, SIGKILL, then check the pid is gone before the state
+- **Stop is confirmed, not assumed.** Send ACP `session/close` where the
+  agent advertises it, then SIGTERM the agent through its holder, wait a
+  grace period, SIGKILL, then check the pid is gone before the state
   changes. A disk whose writer is not confirmed dead is never reused
   (substrate `gondolin.ts` `close()`).
 - **No automatic restart.** An agent that exits leaves an unclean stop on
@@ -124,7 +125,10 @@ agent-to-client request still unanswered, and a bounded window of updates
 since the last client left; it replays them on attach. `deck-acp` gains an
 attach-to-existing mode that takes the session id from the record instead
 of sending the handshake. Once `session/load` exists, the holder becomes a
-plain byte relay and reattach replays from Construct's journal.
+plain byte relay. A client with no transcript (Deck restarted) uses
+`session/load`, which replays it from Construct's journal. A client that
+kept one (Deck stayed open while the agent restarted) uses `session/resume`,
+which skips the replay (construct#153).
 
 ### 6. Recovery runs from records, and is visible
 
