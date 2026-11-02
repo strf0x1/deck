@@ -151,6 +151,11 @@ the binary beside `CONSTRUCT_BIN`; `CONSTRUCT_DEV_BIN` can override it. Without
 `CONSTRUCT_BIN`, the real-agent cases print a skip message. They must be run before
 merging attach changes, per ADR 0002.
 
-Verified on macOS against Construct `8c6cd57`: streaming, permission waits,
-completion while detached, raw stale permission replies, and old prompt response
-suppression. The fake-agent and headless UI cases run in both CI jobs.
+Verified on macOS against the Construct 0.3.0 release binary (`afa8d240…`,
+identical to the published aarch64 artifact), launched through Deck's normal
+`construct acp` path: recovering mid-stream, while a permission waits, after the
+turn completed detached, and after a `deckd` SIGKILL. Each restored the same
+agent process with one prompt and one model call. The suite's own real-agent
+cases, raw stale permission replies and old prompt response suppression
+included, pass with `CONSTRUCT_BIN` set to that binary. The fake-agent and
+headless UI cases run in both CI jobs.
