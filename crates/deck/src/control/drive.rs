@@ -170,6 +170,7 @@ pub fn state(d: &Deck) -> Value {
         Status::Connecting => json!("connecting"),
         Status::Ready => json!("ready"),
         Status::Working => json!("working"),
+        Status::Detached => json!("detached"),
         Status::Down(e) => json!({ "down": e }),
     };
     let entries: Vec<Value> = s

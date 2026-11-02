@@ -11,12 +11,21 @@
 //! dependency, and must never gain one.
 
 pub mod backend;
+pub mod child;
+pub mod daemon;
+pub mod daemon_client;
 pub mod lifecycle;
 pub mod local;
+pub mod local_guard;
+pub mod paths;
+mod reconcile;
 pub mod record;
+pub mod relay;
 pub mod runtime;
+mod wire;
 
 pub use backend::{Backend, Exited, Instance, Stream};
+pub use daemon_client::{DaemonClient, RunResult};
 pub use lifecycle::{Event, Failure, Spec, State, Task};
 pub use local::Local;
 pub use runtime::{GRACE, Notice, Runtime};

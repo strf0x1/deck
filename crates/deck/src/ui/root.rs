@@ -8,17 +8,15 @@
 
 use super::board::{Board, Lane, LaneState};
 use super::rail::Rail;
-use super::session::Session;
+use super::session::{Session, Status};
 use super::theme::{SANS, Tokens};
 use super::{chrome, conversation, panels};
 use crate::task::WindowTask;
 use deck_acp::{Client, Inbound};
-use futures::StreamExt as _;
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
     ParentElement as _, Render, ScrollHandle, Styled as _, Subscription, Window, div, px,
 };
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -37,11 +35,11 @@ pub struct Deck {
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
-    /// The task this window runs, if it runs one. Dropping it stops it: on
-    /// app quit (`_quit`), or with the view.
-    task: Option<WindowTask>,
-    _quit: Option<Subscription>,
-    client: Option<Arc<Client>>,
+    /// A connection to the daemon-owned task. Window shutdown detaches it.
+    pub(super) task: Option<WindowTask>,
+    pub(super) _quit: Option<Subscription>,
+    pub(super) client: Option<Arc<Client>>,
+    pub(super) attachment: u64,
     last_frame: Option<Instant>,
 }
 
@@ -69,48 +67,9 @@ impl Deck {
             task: None,
             _quit: None,
             client: None,
+            attachment: 0,
             last_frame: None,
         }
-    }
-
-    /// A Deck driving the agent `argv` in `cwd`, with task records at the
-    /// default data root.
-    pub fn launch(argv: Vec<String>, cwd: PathBuf, cx: &mut Context<Self>) -> Self {
-        match deck_runtime::data_root() {
-            Ok(data) => Deck::launch_in(&data, argv, cwd, cx),
-            Err(e) => {
-                let mut deck = Deck::detached(cx);
-                deck.session.apply(Inbound::Failed(format!("{e:#}")));
-                deck
-            }
-        }
-    }
-
-    /// A Deck driving the agent `argv` in `cwd`, with task records under `data`.
-    pub fn launch_in(data: &Path, argv: Vec<String>, cwd: PathBuf, cx: &mut Context<Self>) -> Self {
-        let mut deck = Deck::detached(cx);
-        deck.agent_cmd = argv.join(" ");
-        match WindowTask::run(data, argv, cwd) {
-            Ok((task, client, mut rx)) => {
-                deck.task = Some(task);
-                // Quitting may not drop the view first; stop the task ourselves.
-                deck._quit = Some(cx.on_app_quit(|deck, _| {
-                    deck.task = None;
-                    async {}
-                }));
-                deck.client = Some(Arc::new(client));
-                cx.spawn(async move |this, cx| {
-                    while let Some(ev) = rx.next().await {
-                        if this.update(cx, |deck, cx| deck.on_inbound(ev, cx)).is_err() {
-                            break;
-                        }
-                    }
-                })
-                .detach();
-            }
-            Err(e) => deck.session.apply(Inbound::Failed(format!("{e:#}"))),
-        }
-        deck
     }
 
     /// The id of the task this window runs, while it runs one.
@@ -135,19 +94,25 @@ impl Deck {
     }
 
     pub fn on_inbound(&mut self, ev: Inbound, cx: &mut Context<Self>) {
+        if let Inbound::Ready { session_id, .. } = &ev
+            && let Some(task) = &self.task
+            && let Err(e) = task.record_session(session_id)
+        {
+            self.session.apply(Inbound::Failed(format!("recording session: {e:#}")));
+        }
         self.session.apply(ev);
         self.sync_live_lane();
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
-    fn sync_live_lane(&mut self) {
-        use super::session::Status;
+    pub(super) fn sync_live_lane(&mut self) {
         let (state, detail) = match (&self.session.status, &self.session.ask) {
             (_, Some(ask)) => (LaneState::Waiting, format!("asks: {}", ask.title)),
             (Status::Connecting, _) => (LaneState::Idle, "connecting…".into()),
             (Status::Ready, _) => (LaneState::Idle, "ready".into()),
             (Status::Working, _) => (LaneState::Working, "working".into()),
+            (Status::Detached, _) => (LaneState::Working, "running · detached".into()),
             (Status::Down(e), _) => (LaneState::Idle, e.clone()),
         };
         let agent = self.session.agent.clone();
@@ -200,6 +165,9 @@ impl Deck {
                 }
                 _ => {}
             }
+            return;
+        }
+        if self.can_restart() {
             return;
         }
         match k.key.as_str() {
@@ -266,6 +234,7 @@ impl Render for Deck {
         div()
             .id("deck")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &crate::app::RestartTask, _, cx| this.restart(cx)))
             .on_key_down(cx.listener(|this, ev, _, cx| this.key(ev, cx)))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 if this.board.dragging().is_some() {

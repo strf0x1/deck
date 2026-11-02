@@ -22,6 +22,8 @@ pub enum Status {
     Connecting,
     Ready,
     Working,
+    /// The task is running in deckd, but this window has no ACP connection.
+    Detached,
     Down(String),
 }
 
@@ -65,6 +67,10 @@ impl Session {
                 self.agent = agent;
                 self.status = Status::Ready;
             }
+            Inbound::UserMessage(t) => match self.entries.last_mut() {
+                Some(Entry::You(s)) => s.push_str(&t),
+                _ => self.entries.push(Entry::You(t)),
+            },
             Inbound::Message(t) => match self.entries.last_mut() {
                 Some(Entry::Agent(s)) => s.push_str(&t),
                 _ => self.entries.push(Entry::Agent(t)),
@@ -93,7 +99,7 @@ impl Session {
             }
             Inbound::Failed(e) => {
                 self.entries.push(Entry::Note(e.clone()));
-                if self.status == Status::Connecting || e.contains("exited") {
+                if self.status == Status::Connecting || e.contains("exited") || e == "the connection closed" {
                     self.status = Status::Down(e);
                 }
             }
@@ -138,6 +144,27 @@ mod tests {
             ]
         );
         assert!(s.can_prompt());
+    }
+
+    #[test]
+    fn loading_history_rebuilds_both_sides_before_ready() {
+        let mut s = Session::new();
+        s.apply(Inbound::UserMessage("what ".into()));
+        s.apply(Inbound::UserMessage("changed?".into()));
+        s.apply(Inbound::Message("the daemon owns the task".into()));
+        s.apply(Inbound::Ready { agent: "fake".into(), session_id: "saved".into() });
+        assert_eq!(
+            s.entries,
+            vec![Entry::You("what changed?".into()), Entry::Agent("the daemon owns the task".into())]
+        );
+        assert_eq!(s.status, Status::Ready);
+    }
+
+    #[test]
+    fn a_detached_running_task_does_not_accept_prompts() {
+        let mut s = Session::new();
+        s.status = Status::Detached;
+        assert!(!s.can_prompt());
     }
 
     #[test]

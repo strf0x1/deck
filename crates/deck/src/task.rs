@@ -1,47 +1,56 @@
-//! The window's task: its agent, run through `deck_runtime` with the local
-//! backend, and the ACP client over the stream the runtime hands back.
-//!
-//! The design choice: for now the window owns its task, so closing the window
-//! stops it, as before the runtime existed. The record survives either way,
-//! and the next window for the same command and directory resumes it rather
-//! than creating another (ADR 0001; `deckd` lifts the ownership later).
+//! The window's connection to a task owned by `deckd`. Dropping this handle
+//! disconnects the window; only an explicit restart stops the agent.
 
 use anyhow::Result;
 use deck_acp::{Client, Inbound};
-use deck_runtime::{Local, Runtime, Spec};
+use deck_runtime::{DaemonClient, Spec, State};
 use futures::channel::mpsc;
 use std::path::{Path, PathBuf};
 
+pub type Connection = (Client, mpsc::UnboundedReceiver<Inbound>);
+
+#[derive(Clone)]
 pub struct WindowTask {
-    runtime: Runtime,
+    daemon: DaemonClient,
     id: String,
+    cwd: PathBuf,
 }
 
 impl WindowTask {
-    /// Run `argv` in `cwd` under the runtime whose records are in `data`, and
-    /// connect to it.
-    pub fn run(
-        data: &Path,
-        argv: Vec<String>,
-        cwd: PathBuf,
-    ) -> Result<(WindowTask, Client, mpsc::UnboundedReceiver<Inbound>)> {
-        let runtime = Runtime::open(data, Local)?;
-        let (id, stream) = runtime.run(Spec { argv, cwd: cwd.clone() })?;
-        // From here a failure stops the task on its way out.
-        let task = WindowTask { runtime, id };
-        let (client, rx) = Client::over(cwd, stream.reader, stream.writer)?;
-        Ok((task, client, rx))
+    /// Find or start the task. An already running agent remains detached
+    /// until the user chooses restart, because B1 has no live attach.
+    pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
+        let daemon = DaemonClient::connect_or_start(data)?;
+        let run = daemon.run(Spec { argv, cwd: cwd.clone() })?;
+        let task = WindowTask { daemon, id: run.task.id, cwd };
+        let connection = if run.started { Some(task.connect(run.task.session_id)?) } else { None };
+        Ok((task, connection))
     }
 
     pub fn id(&self) -> &str {
         &self.id
     }
-}
 
-impl Drop for WindowTask {
-    fn drop(&mut self) {
-        if let Err(e) = self.runtime.stop(&self.id) {
-            eprintln!("deck: stopping task {}: {e:#}", self.id);
+    /// Persist a pointer to the conversation in the agent's own journal.
+    pub fn record_session(&self, session_id: &str) -> Result<()> {
+        self.daemon.session(&self.id, session_id)
+    }
+
+    /// Stop and start the agent, then rebuild its conversation by loading
+    /// the recorded session. It never asks an existing process to reattach.
+    pub fn restart(&self) -> Result<Connection> {
+        if self.daemon.task(&self.id)?.state == State::Running {
+            self.daemon.stop(&self.id)?;
+        }
+        let task = self.daemon.resume(&self.id)?;
+        self.connect(task.session_id)
+    }
+
+    fn connect(&self, session_id: Option<String>) -> Result<Connection> {
+        let stream = self.daemon.attach(&self.id)?;
+        match session_id {
+            Some(id) => Client::load(self.cwd.clone(), stream.reader, stream.writer, id),
+            None => Client::over(self.cwd.clone(), stream.reader, stream.writer),
         }
     }
 }

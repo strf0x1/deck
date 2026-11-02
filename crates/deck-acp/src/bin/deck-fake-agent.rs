@@ -11,17 +11,22 @@
 //!
 //! Sessions outlive the process the way construct's do, so the runtime's
 //! restart paths have something to restart: with `DECK_FAKE_STATE` naming a
-//! directory, each finished turn is appended to `<dir>/<session>.jsonl`, and
+//! directory, each update is appended before delivery to `<dir>/<session>.jsonl`, and
 //! `session/load` replays it before answering while `session/resume` does
 //! not. Like construct, it refuses to load a session already loaded on this
 //! connection, and `session/close` forgets one. Without the variable a
-//! session is always `fake-1` and nothing persists.
+//! session is always `fake-1` and nothing persists. Loading a cut-off turn
+//! records it as interrupted, without repeating it.
 
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 use std::time::Duration;
+
+#[path = "fake/journal.rs"]
+mod journal;
+
+use journal::Journal;
 
 /// JSON-RPC codes construct answers with.
 const INVALID_PARAMS: i64 = -32602;
@@ -34,13 +39,12 @@ struct Agent<W: Write> {
     session: String,
     /// Sessions loaded on this connection.
     loaded: HashSet<String>,
-    state: Option<PathBuf>,
+    journal: Journal,
 }
 
 impl<W: Write> Agent<W> {
     fn new(out: W) -> Self {
-        let state = std::env::var_os("DECK_FAKE_STATE").filter(|v| !v.is_empty()).map(PathBuf::from);
-        Agent { out, turn: 0, session: String::new(), loaded: HashSet::new(), state }
+        Agent { out, turn: 0, session: String::new(), loaded: HashSet::new(), journal: Journal::new() }
     }
 
     fn send(&mut self, v: Value) {
@@ -49,6 +53,11 @@ impl<W: Write> Agent<W> {
     }
 
     fn update(&mut self, u: Value) {
+        self.journal.update(&self.session, &u);
+        self.send_update(u);
+    }
+
+    fn send_update(&mut self, u: Value) {
         let params = json!({ "sessionId": self.session, "update": u });
         self.send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": params }));
     }
@@ -73,10 +82,12 @@ impl<W: Write> Agent<W> {
                     "authMethods": [],
                 }})),
                 Some("session/new") => {
-                    let sid = match &self.state {
-                        Some(_) => format!("fake-{:x}", now_nanos()),
-                        None => "fake-1".to_string(),
+                    let sid = if self.journal.persistent() {
+                        format!("fake-{:x}", now_nanos())
+                    } else {
+                        "fake-1".to_string()
                     };
+                    self.journal.create(&sid);
                     self.session = sid.clone();
                     self.loaded.insert(sid.clone());
                     self.send(json!({ "jsonrpc": "2.0", "id": id, "result": { "sessionId": sid } }))
@@ -118,38 +129,21 @@ impl<W: Write> Agent<W> {
         });
     }
 
-    fn log(&self, sid: &str) -> Option<PathBuf> {
-        self.state.as_ref().map(|d| d.join(format!("{sid}.jsonl")))
-    }
-
     /// `session/load` (replaying) or `session/resume` of a recorded session.
     fn load(&mut self, sid: &str, replay: bool) -> Result<Value, (i64, String)> {
         if self.loaded.contains(sid) {
             return Err((INVALID_PARAMS, format!("session {sid} is already loaded on this connection")));
         }
-        let text = self.log(sid).and_then(|p| std::fs::read_to_string(p).ok());
-        let Some(text) = text else { return Err((NOT_FOUND, format!("no session {sid}"))) };
+        let (updates, turns) = self.journal.load(sid).map_err(|_| (NOT_FOUND, format!("no session {sid}")))?;
         self.session = sid.to_string();
+        self.turn = turns;
         self.loaded.insert(sid.to_string());
         if replay {
-            for entry in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
-                let (kind, said) =
-                    (entry["kind"].as_str().unwrap_or_default(), entry["text"].as_str().unwrap_or_default());
-                self.chunk(kind, said);
+            for update in updates {
+                self.send_update(update);
             }
         }
         Ok(json!({}))
-    }
-
-    /// Append a finished turn to the session's record, when there is one.
-    fn record(&self, asked: &str, answered: &str) {
-        let Some(path) = self.log(&self.session) else { return };
-        let lines = [("user_message_chunk", asked), ("agent_message_chunk", answered)]
-            .map(|(kind, text)| json!({ "kind": kind, "text": text }).to_string() + "\n")
-            .concat();
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = f.write_all(lines.as_bytes());
-        }
     }
 
     /// One turn. `None` means the input ended while waiting for the answer.
@@ -160,6 +154,7 @@ impl<W: Write> Agent<W> {
         delay: Duration,
         lines: &mut impl Iterator<Item = std::io::Result<String>>,
     ) -> Option<()> {
+        self.journal.begin(&self.session, &asked);
         self.turn += 1;
         let tool = format!("t{}", self.turn);
         self.chunk("agent_thought_chunk", "planning a small change");
@@ -197,7 +192,7 @@ impl<W: Write> Agent<W> {
         self.update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": tool, "status": status }));
         let last = format!("\npermission: {outcome}");
         self.chunk("agent_message_chunk", &last);
-        self.record(&asked, &(said + &last));
+        self.journal.end(&self.session);
         self.send(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } }));
         Some(())
     }

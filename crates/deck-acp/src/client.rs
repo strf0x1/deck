@@ -61,7 +61,24 @@ impl Client {
         input: impl BufRead + Send + 'static,
         output: impl Writer,
     ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
-        let (conn, init) = Conn::start(cwd);
+        Self::connect(Conn::start(cwd), input, output)
+    }
+
+    /// Initialize and load an existing session, replaying its history before Ready.
+    pub fn load(
+        cwd: PathBuf,
+        input: impl BufRead + Send + 'static,
+        output: impl Writer,
+        session_id: String,
+    ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
+        Self::connect(Conn::load(cwd, session_id), input, output)
+    }
+
+    fn connect(
+        (conn, init): (Conn, String),
+        input: impl BufRead + Send + 'static,
+        output: impl Writer,
+    ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
         let conn = Arc::new(Mutex::new(conn));
         let out: Out = Arc::new(Mutex::new(Some(Box::new(output))));
         write(&out, &init)?;

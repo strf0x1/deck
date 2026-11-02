@@ -5,7 +5,7 @@
 //! treat it (on Hyprland, a window rule for blur and opacity); GPUI asks for
 //! blur but the compositor decides. Deck is one window: quitting (cmd-q on
 //! macOS, ctrl-q elsewhere) and closing the last window both end the app,
-//! and the window's task is stopped on the way out.
+//! and the window detaches from its daemon-owned task on the way out.
 
 use crate::ui::root::Deck;
 use gpui::{
@@ -15,15 +15,19 @@ use gpui::{
 use gpui_platform::application;
 use std::path::PathBuf;
 
-actions!(deck, [Quit]);
+actions!(deck, [Quit, RestartTask]);
 
 /// The app-wide quit key.
 pub const QUIT_KEY: &str = if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl-q" };
 
+/// Restart a detached task with its recorded conversation.
+pub const RESTART_KEY: &str = if cfg!(target_os = "macos") { "cmd-r" } else { "ctrl-r" };
+pub const RESTART_HINT: &str = if cfg!(target_os = "macos") { "⌘R" } else { "ctrl R" };
+
 /// App-level actions and keys: quit, and quit once the last window closes.
 pub fn bind(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.bind_keys([KeyBinding::new(QUIT_KEY, Quit, None)]);
+    cx.bind_keys([KeyBinding::new(QUIT_KEY, Quit, None), KeyBinding::new(RESTART_KEY, RestartTask, None)]);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
             cx.quit();

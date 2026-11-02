@@ -3,7 +3,7 @@
 //! [`Inbound`] events the UI should see.
 //!
 //! The design choice: one agent process, one session. `initialize` is sent
-//! at start, `session/new` as soon as it is answered, and prompts queue
+//! at start, then a session is created or loaded, and prompts queue
 //! nowhere: the UI only offers a prompt while no turn is running.
 
 use super::VERSION;
@@ -17,6 +17,8 @@ use std::path::PathBuf;
 pub enum Inbound {
     /// The handshake finished; prompts can be sent.
     Ready { agent: String, session_id: String },
+    /// A user prompt replayed while loading history.
+    UserMessage(String),
     /// Streamed reply text.
     Message(String),
     /// Streamed reasoning text.
@@ -55,10 +57,11 @@ impl PermissionOption {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     Initialize,
     NewSession,
+    LoadSession(String),
     Prompt,
 }
 
@@ -75,12 +78,22 @@ pub struct Conn {
     pending: HashMap<u64, Pending>,
     agent: String,
     session: Option<String>,
+    load: Option<String>,
 }
 
 impl Conn {
     /// A connection and the `initialize` line that opens it.
     pub fn start(cwd: PathBuf) -> (Self, String) {
-        let mut c = Conn { cwd, next_id: 0, pending: HashMap::new(), agent: String::new(), session: None };
+        Self::begin(cwd, None)
+    }
+
+    /// Initialize, then rebuild the recorded session through `session/load`.
+    pub fn load(cwd: PathBuf, session_id: String) -> (Self, String) {
+        Self::begin(cwd, Some(session_id))
+    }
+
+    fn begin(cwd: PathBuf, load: Option<String>) -> (Self, String) {
+        let mut c = Conn { cwd, next_id: 0, pending: HashMap::new(), agent: String::new(), session: None, load };
         let caps = json!({ "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false });
         let line = c.request(
             Pending::Initialize,
@@ -148,14 +161,26 @@ impl Conn {
         let Some(kind) = id.as_u64().and_then(|n| self.pending.remove(&n)) else { return Step::default() };
         let value = match result {
             Ok(v) => v,
-            Err(e) => return Step { lines: vec![], events: vec![Inbound::Failed(format!("{}: {e}", name(kind)))] },
+            Err(e) => return Step { lines: vec![], events: vec![Inbound::Failed(format!("{}: {e}", name(&kind)))] },
         };
         match kind {
             Pending::Initialize => {
                 let info = &value["agentInfo"];
                 self.agent = info["title"].as_str().or(info["name"].as_str()).unwrap_or("agent").to_string();
-                let params = json!({ "cwd": self.cwd.display().to_string(), "mcpServers": [] });
-                Step { lines: vec![self.request(Pending::NewSession, "session/new", params)], events: vec![] }
+                let mut params = json!({ "cwd": self.cwd.display().to_string(), "mcpServers": [] });
+                let (kind, method) = if let Some(sid) = self.load.take() {
+                    if value["agentCapabilities"]["loadSession"] != true {
+                        return Step {
+                            lines: vec![],
+                            events: vec![Inbound::Failed("the agent does not support session/load".into())],
+                        };
+                    }
+                    params["sessionId"] = json!(&sid);
+                    (Pending::LoadSession(sid), "session/load")
+                } else {
+                    (Pending::NewSession, "session/new")
+                };
+                Step { lines: vec![self.request(kind, method, params)], events: vec![] }
             }
             Pending::NewSession => match value["sessionId"].as_str() {
                 Some(sid) => {
@@ -165,6 +190,11 @@ impl Conn {
                 }
                 None => Step { lines: vec![], events: vec![Inbound::Failed("session/new named no session".into())] },
             },
+            Pending::LoadSession(sid) => {
+                self.session = Some(sid.clone());
+                let ready = Inbound::Ready { agent: self.agent.clone(), session_id: sid };
+                Step { lines: vec![], events: vec![ready] }
+            }
             Pending::Prompt => {
                 let stop = value["stopReason"].as_str().unwrap_or("end_turn").to_string();
                 Step { lines: vec![], events: vec![Inbound::TurnEnded(stop)] }
@@ -173,10 +203,11 @@ impl Conn {
     }
 }
 
-fn name(kind: Pending) -> &'static str {
+fn name(kind: &Pending) -> &'static str {
     match kind {
         Pending::Initialize => "initialize",
         Pending::NewSession => "session/new",
+        Pending::LoadSession(_) => "session/load",
         Pending::Prompt => "session/prompt",
     }
 }
@@ -186,6 +217,7 @@ fn update(u: &Value) -> Option<Inbound> {
     let text = || u["content"]["text"].as_str().map(str::to_string);
     let id = || u["toolCallId"].as_str().unwrap_or_default().to_string();
     match u["sessionUpdate"].as_str()? {
+        "user_message_chunk" => Some(Inbound::UserMessage(text()?)),
         "agent_message_chunk" => Some(Inbound::Message(text()?)),
         "agent_thought_chunk" => Some(Inbound::Thought(text()?)),
         "tool_call" => Some(Inbound::Tool { id: id(), title: u["title"].as_str().unwrap_or("tool").to_string() }),
@@ -233,6 +265,66 @@ mod tests {
         let s = c.read(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#);
         assert_eq!(s.events, vec![Inbound::Ready { agent: "construct".into(), session_id: "s1".into() }]);
         c
+    }
+
+    #[test]
+    fn load_replays_before_ready_and_keeps_the_requested_session_id() {
+        let (mut c, init) = Conn::load(PathBuf::from("/w"), "saved".into());
+        assert_eq!(
+            rpc::parse(&init),
+            Some(Incoming::Request {
+                id: json!(1),
+                method: "initialize".into(),
+                params: json!({
+                    "protocolVersion": VERSION,
+                    "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
+                    "clientInfo": { "name": "deck", "version": env!("CARGO_PKG_VERSION") },
+                }),
+            })
+        );
+        assert_eq!(c.prompt("too soon"), None);
+        let step =
+            c.read(r#"{"id":1,"result":{"agentInfo":{"name":"fake"},"agentCapabilities":{"loadSession":true}}}"#);
+        assert_eq!(step.events, vec![]);
+        assert_eq!(
+            rpc::parse(&step.lines[0]),
+            Some(Incoming::Request {
+                id: json!(2),
+                method: "session/load".into(),
+                params: json!({ "cwd": "/w", "mcpServers": [], "sessionId": "saved" }),
+            })
+        );
+        let replay = r#"{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"go"}}}}"#;
+        assert_eq!(c.read(replay).events, vec![Inbound::UserMessage("go".into())]);
+        assert_eq!(c.prompt("still too soon"), None);
+        assert_eq!(
+            c.read(r#"{"id":2,"result":{}}"#).events,
+            vec![Inbound::Ready { agent: "fake".into(), session_id: "saved".into() }]
+        );
+        let prompt = c.prompt("continue").unwrap();
+        assert_eq!(
+            rpc::parse(&prompt),
+            Some(Incoming::Request {
+                id: json!(3),
+                method: "session/prompt".into(),
+                params: json!({ "sessionId": "saved", "prompt": [{ "type": "text", "text": "continue" }] }),
+            })
+        );
+    }
+
+    #[test]
+    fn loading_requires_agent_support_and_reports_load_errors() {
+        let (mut unsupported, _) = Conn::load(PathBuf::from("/w"), "saved".into());
+        let step = unsupported.read(r#"{"id":1,"result":{"agentCapabilities":{"loadSession":false}}}"#);
+        assert_eq!(step.lines, Vec::<String>::new());
+        assert_eq!(step.events, vec![Inbound::Failed("the agent does not support session/load".into())]);
+        assert_eq!(unsupported.prompt("no"), None);
+
+        let (mut missing, _) = Conn::load(PathBuf::from("/w"), "missing".into());
+        missing.read(r#"{"id":1,"result":{"agentCapabilities":{"loadSession":true}}}"#);
+        let step = missing.read(r#"{"id":2,"error":{"code":-32002,"message":"no session missing"}}"#);
+        assert_eq!(step.events, vec![Inbound::Failed("session/load: no session missing (-32002)".into())]);
+        assert_eq!(missing.prompt("no"), None);
     }
 
     #[test]

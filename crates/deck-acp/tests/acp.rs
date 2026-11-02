@@ -216,15 +216,14 @@ fn a_session_outlives_the_fake_agents_process() {
     assert_eq!(loaded["result"], json!({}));
     let said: Vec<(&str, &str)> = replayed
         .iter()
-        .map(|v| {
+        .filter_map(|v| {
             let u = &v["params"]["update"];
-            (u["sessionUpdate"].as_str().unwrap(), u["content"]["text"].as_str().unwrap())
+            Some((u["sessionUpdate"].as_str()?, u["content"]["text"].as_str()?))
         })
         .collect();
-    assert_eq!(said.len(), 2, "{said:?}");
     assert_eq!(said[0], ("user_message_chunk", "ship it"));
-    assert_eq!(said[1].0, "agent_message_chunk");
-    assert!(said[1].1.ends_with("permission: allow"), "{}", said[1].1);
+    let reply: String = said.iter().filter(|(kind, _)| *kind == "agent_message_chunk").map(|(_, text)| *text).collect();
+    assert_eq!(reply, "You said \"ship it\". Checking the workspace first.\npermission: allow");
 
     let (_, again) = second.call("session/load", json!({ "sessionId": sid, "cwd": "/", "mcpServers": [] }));
     assert_eq!(again["error"]["code"], json!(-32602), "already loaded on this connection");
@@ -240,4 +239,118 @@ fn a_session_outlives_the_fake_agents_process() {
     drop(second.input);
     assert!(second.child.wait().unwrap().success());
     let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn client_load_restores_a_cut_off_first_turn_without_repeating_it() {
+    use std::io::BufReader;
+    use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+    fn spawn(state: &std::path::Path) -> (Child, BufReader<ChildStdout>, ChildStdin) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+            .env("DECK_FAKE_DELAY_MS", "0")
+            .env("DECK_FAKE_STATE", state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = BufReader::new(child.stdout.take().unwrap());
+        let output = child.stdin.take().unwrap();
+        (child, input, output)
+    }
+
+    fn replay(rx: &mut UnboundedReceiver<Inbound>, sid: &str) -> Vec<Inbound> {
+        let mut events = Vec::new();
+        loop {
+            match next(rx) {
+                Inbound::Ready { agent, session_id } => {
+                    assert_eq!((agent.as_str(), session_id.as_str()), ("fake agent", sid));
+                    return events;
+                }
+                Inbound::Failed(error) => panic!("{error}"),
+                event => events.push(event),
+            }
+        }
+    }
+
+    hang_guard();
+    let state = std::env::temp_dir().join(format!("deck-fake-interrupted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let cwd = std::env::temp_dir();
+    let (mut first, input, output) = spawn(&state);
+    let (client, mut rx) = Client::over(cwd.clone(), input, output).unwrap();
+    let Inbound::Ready { session_id, .. } = next(&mut rx) else { panic!("expected Ready") };
+    client.prompt("first unfinished turn").unwrap();
+    loop {
+        match next(&mut rx) {
+            Inbound::Permission { .. } => break,
+            Inbound::Failed(error) => panic!("{error}"),
+            _ => {}
+        }
+    }
+    first.kill().unwrap();
+    first.wait().unwrap();
+    drop(client);
+
+    let (mut second, input, output) = spawn(&state);
+    let (client, mut rx) = Client::load(cwd.clone(), input, output, session_id.clone()).unwrap();
+    let events = replay(&mut rx, &session_id);
+    assert_eq!(events.first(), Some(&Inbound::UserMessage("first unfinished turn".into())));
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            Inbound::Message(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text,
+        "You said \"first unfinished turn\". Checking the workspace first.\nTurn interrupted when the agent stopped. Nothing was retried."
+    );
+    assert_eq!(events.iter().filter(|event| matches!(event, Inbound::Tool { .. })).count(), 1);
+    assert!(events.contains(&Inbound::ToolStatus { id: "t1".into(), status: ToolStatus::Failed }));
+    assert!(!events.iter().any(|event| matches!(event, Inbound::Permission { .. } | Inbound::TurnEnded(_))));
+    drop(client);
+    assert!(second.wait().unwrap().success());
+
+    let (mut third, input, output) = spawn(&state);
+    let (client, mut rx) = Client::load(cwd, input, output, session_id.clone()).unwrap();
+    assert_eq!(replay(&mut rx, &session_id), events, "loading again does not repeat recovery or the turn");
+    drop(client);
+    assert!(third.wait().unwrap().success());
+    std::fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+fn a_new_session_can_be_loaded_before_any_prompt() {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+
+    hang_guard();
+    let state = std::env::temp_dir().join(format!("deck-fake-empty-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let mut sid: Option<String> = None;
+    for _ in 0..2 {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+            .env("DECK_FAKE_STATE", &state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = BufReader::new(child.stdout.take().unwrap());
+        let output = child.stdin.take().unwrap();
+        let (client, mut rx) = match &sid {
+            Some(id) => Client::load(std::env::temp_dir(), input, output, id.clone()),
+            None => Client::over(std::env::temp_dir(), input, output),
+        }
+        .unwrap();
+        let Inbound::Ready { session_id, .. } = next(&mut rx) else { panic!("expected Ready") };
+        if let Some(id) = &sid {
+            assert_eq!(id, &session_id);
+        }
+        sid = Some(session_id);
+        drop(client);
+        assert!(child.wait().unwrap().success());
+    }
+    std::fs::remove_dir_all(state).unwrap();
 }

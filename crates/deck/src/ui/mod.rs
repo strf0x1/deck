@@ -3,6 +3,7 @@
 //! `session` and `spring` are pure state with their own tests; `theme` is
 //! the visual vocabulary.
 
+mod attachment;
 pub mod board;
 mod chrome;
 mod conversation;
