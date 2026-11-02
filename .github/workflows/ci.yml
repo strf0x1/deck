@@ -30,12 +30,10 @@ jobs:
           if grep -i gpui <<<"$tree"; then echo "deck-acp must not depend on gpui"; exit 1; fi
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-  # Deck has only been run on Linux. This job reports whether the macOS build
-  # and tests pass without blocking merges; drop continue-on-error once it is
-  # green and the window has been checked on a Mac.
+  # macOS is a primary development machine, so this blocks like Linux. The
+  # window has been checked there; see AGENTS.md for the Mac driving recipe.
   check-macos:
     runs-on: macos-15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
