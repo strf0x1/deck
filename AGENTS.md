@@ -20,8 +20,8 @@ settle.
 | `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `client.rs` the connection over any reader/writer pair and its reader thread. The UI only sees `Inbound`. |
 | `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. |
 | `crates/deck-runtime/tests/lifecycle.rs` | The contract against real processes: stop with SIGTERM then SIGKILL, unclean exits, the agent's children, reconciliation after a holder dies, reuse, destroy. |
-| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. |
-| `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch. |
+| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. Supports `session/load`, `resume` and `close` like construct; `DECK_FAKE_STATE=<dir>` persists sessions across processes. Keep it in step with what Deck relies on from construct (ADR 0002). |
+| `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch; the fake's sessions across two processes. |
 | `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
 | `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`); app keys: `cmd-q` (macOS) / `ctrl-q` quits, and closing the last window quits. |
 | `crates/deck/src/task.rs` | The window's task: runs the agent through `deck-runtime` and stops it when the window goes. |
