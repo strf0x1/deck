@@ -2,14 +2,12 @@
 //! operations over the existing Runtime; ACP relays never take that lock or
 //! interpret JSON. The kernel data lock is held for the daemon's whole life.
 
-use crate::local_guard::GuardedLocal;
+use crate::detached::Detached;
 use crate::paths::Paths;
-use crate::relay::Relay;
 use crate::wire::{self, Reply, Request, RunResult};
 use crate::{Runtime, Spec, State, Task};
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read as _};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -31,8 +29,6 @@ pub struct Options {
 
 struct Service {
     runtime: Runtime,
-    paths: Paths,
-    relays: HashMap<String, Relay>,
 }
 
 /// Run until there are no running tasks and no control clients for `idle`.
@@ -49,10 +45,10 @@ pub fn serve(options: Options) -> Result<()> {
     let listener = UnixListener::bind(&path)?;
     let _socket = SocketPath(path);
     listener.set_nonblocking(true)?;
-    let backend = GuardedLocal { executable: std::env::current_exe()? };
-    crate::reconcile::wait_for_children(&options.data)?;
+    let backend =
+        Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
     let runtime = Runtime::open(&options.data, backend)?;
-    let service = Arc::new(Mutex::new(Service { runtime, paths: options.paths, relays: HashMap::new() }));
+    let service = Arc::new(Mutex::new(Service { runtime }));
     let clients = Arc::new(AtomicUsize::new(0));
     let mut idle_since = Instant::now();
     loop {
@@ -72,10 +68,8 @@ pub fn serve(options: Options) -> Result<()> {
             Err(e) => return Err(e).context("accepting daemon client"),
         }
         let running = {
-            let mut service = service.lock().unwrap_or_else(|e| e.into_inner());
-            let tasks = service.runtime.tasks()?;
-            service.relays.retain(|id, _| tasks.iter().any(|t| t.id == *id && t.state == State::Running));
-            tasks.iter().any(|t| t.state == State::Running)
+            let service = service.lock().unwrap_or_else(|e| e.into_inner());
+            service.runtime.has_live_tasks()
         };
         if running || clients.load(Ordering::Acquire) != 0 {
             idle_since = Instant::now();
@@ -145,12 +139,10 @@ impl Service {
             }
             Request::Stop { id } => {
                 self.runtime.stop(&id)?;
-                self.relays.remove(&id);
                 Ok(json!(null))
             }
             Request::Destroy { id } => {
                 self.runtime.destroy(&id)?;
-                self.relays.remove(&id);
                 Ok(json!(null))
             }
             Request::Task { id } => Ok(serde_json::to_value(self.runtime.task(&id)?)?),
@@ -185,24 +177,7 @@ impl Service {
         } else {
             self.runtime.start(id)?;
         }
-        self.relays.remove(id);
-        let path = self.paths.task(id);
-        let result = (|| {
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-            Relay::serve(&path, self.runtime.attach(id)?)
-        })();
-        match result {
-            Ok(relay) => {
-                self.relays.insert(id.to_string(), relay);
-                Ok(())
-            }
-            Err(e) => {
-                let _ = self.runtime.stop(id);
-                Err(e).context("starting task holder")
-            }
-        }
+        Ok(())
     }
 }
 

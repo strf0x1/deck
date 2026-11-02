@@ -5,9 +5,8 @@
 #![cfg(unix)]
 
 use deck_runtime::{DaemonClient, Failure, Spec, State, paths::Paths};
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{
@@ -291,62 +290,66 @@ fn a_missing_agent_is_a_failed_start_without_a_started_event() {
 }
 
 #[test]
-fn startup_refuses_to_reuse_a_previous_group_that_has_not_stopped() {
-    struct StoppedGroup {
-        group: u32,
-        member: Child,
-    }
-    impl Drop for StoppedGroup {
-        fn drop(&mut self) {
-            // SAFETY: this fixture still owns a member of this group.
-            unsafe { libc::kill(-(self.group as i32), libc::SIGKILL) };
-            let _ = self.member.wait();
-        }
-    }
-
-    let (mut daemon, client) = Daemon::new("stalled-crash");
-    let run = client.run(daemon.spec(&["cat"])).unwrap();
-    let helper = run.task.pid.unwrap();
-    // A stopped orphan group receives SIGHUP and SIGCONT from the kernel.
-    // Keep a test-owned member with a living parent outside this group so
-    // the freeze remains in force after deckd dies.
-    let member = Command::new("sleep").arg("60").process_group(helper as i32).spawn().unwrap();
-    let group = StoppedGroup { group: helper, member };
-    // SAFETY: this test owns the helper and its entire process group.
-    assert_eq!(unsafe { libc::kill(-(helper as i32), libc::SIGSTOP) }, 0);
+fn killing_a_holder_ends_its_agent_and_tools_and_reconciles_without_restart() {
+    let (mut daemon, client) = Daemon::new("holder-crash");
+    let run = client.run(daemon.spec(&["sh", "-c", "sleep 60 & echo $! > tool; wait"])).unwrap();
+    let holder = run.task.holder.clone().unwrap();
+    let mut tool = 0;
     eventually(|| {
-        let state = Command::new("ps").args(["-o", "stat=", "-p", &helper.to_string()]).output().unwrap();
-        String::from_utf8(state.stdout).unwrap().trim().starts_with('T')
+        tool = std::fs::read_to_string(daemon.data.join("tool")).unwrap_or_default().trim().parse().unwrap_or(0);
+        tool != 0
     });
-    daemon.child.kill().unwrap();
-    assert!(!daemon.wait_exit().success());
-    drop(client);
-    daemon.child = Command::new(env!("CARGO_BIN_EXE_deckd"))
-        .arg("--data")
-        .arg(&daemon.data)
-        .arg("--idle-ms")
-        .arg("150")
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let started = Instant::now();
-    assert!(!daemon.wait_exit().success(), "startup must refuse to reuse a live old writer");
-    assert!(started.elapsed() >= Duration::from_secs(2), "startup waits for group teardown before refusing");
-    let mut error = String::new();
-    daemon.child.stderr.take().unwrap().read_to_string(&mut error).unwrap();
-    assert!(error.contains("has not stopped; refusing to reuse it"), "{error}");
+    // SAFETY: this fixture owns this task's still-running holder.
+    assert_eq!(unsafe { libc::kill(holder.pid as i32, libc::SIGKILL) }, 0);
+    eventually(|| matches!(client.task(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }));
+    assert!(!running(tool));
+    assert!(!running(run.task.pid.unwrap()));
+    assert!(!running(holder.pid));
+    assert!(!holder.socket.exists());
+    assert!(!holder.socket.with_extension("holder").exists());
     let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
-    assert_eq!(store.load(&run.task.id).unwrap().state, State::Running, "no reusable stop is recorded prematurely");
-    drop(group);
-    eventually(|| !running(helper));
-    let client = daemon.restart();
+    assert!(store.lock(&run.task.id).unwrap().is_some());
+    std::thread::sleep(IDLE * 2);
     assert!(matches!(client.task(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }));
+    client.destroy(&run.task.id).unwrap();
     drop(client);
     assert!(daemon.wait_exit().success());
 }
 
 #[test]
-fn killing_deckd_ends_agents_and_tools_then_reconciles_without_restarting() {
+fn adoption_does_not_attach_or_interrupt_an_existing_acp_stream() {
+    let (mut daemon, client) = Daemon::new("live-stream");
+    let run = client.run(daemon.spec(&["cat"])).unwrap();
+    let mut stream = client.attach(&run.task.id).unwrap();
+    stream.writer.write_all(b"before crash\n").unwrap();
+    let mut line = String::new();
+    stream.reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "before crash\n");
+    daemon.child.kill().unwrap();
+    daemon.wait_exit();
+    drop(client);
+    stream.writer.write_all(b"during downtime\n").unwrap();
+    line.clear();
+    stream.reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "during downtime\n");
+    let client = daemon.restart();
+    stream.writer.write_all(b"after adoption\n").unwrap();
+    line.clear();
+    stream.reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "after adoption\n");
+    let holder = run.task.holder.unwrap();
+    client.destroy(&run.task.id).unwrap();
+    assert!(!running(holder.pid));
+    assert!(!holder.socket.exists());
+    assert!(!holder.socket.with_extension("holder").exists());
+    assert!(deck_runtime::record::Store::open(&daemon.data).unwrap().lock(&run.task.id).unwrap().is_some());
+    drop(stream);
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn killing_deckd_preserves_agents_and_tools_then_adopts_without_restarting() {
     let (mut daemon, client) = Daemon::new("crash");
     let spec = daemon.spec(&["sh", "-c", "trap '' TERM; sleep 60 & printf '%s %s\\n' \"$$\" \"$!\" > pids; wait"]);
     let run = client.run(spec.clone()).unwrap();
@@ -366,23 +369,34 @@ fn killing_deckd_ends_agents_and_tools_then_reconciles_without_restarting() {
     daemon.child.kill().unwrap();
     assert!(!daemon.wait_exit().success());
     drop(client);
-    eventually(|| !running(helper) && pids.iter().all(|&pid| !running(pid)));
+    let holder = run.task.holder.clone().unwrap();
+    assert!(running(holder.pid));
+    assert!(running(helper));
+    assert!(pids.iter().all(|&pid| running(pid)));
+    assert!(deck_runtime::record::Store::open(&daemon.data).unwrap().lock(&run.task.id).unwrap().is_none());
     let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
     assert_eq!(store.load(&run.task.id).unwrap().state, State::Running, "the crash cannot append a clean stop");
     let client = daemon.restart();
-    let stopped = client.task(&run.task.id).unwrap();
-    assert!(matches!(stopped.state, State::Stopped { clean: false, .. }));
-    assert_eq!(stopped.pid, None);
-    assert_eq!(stopped.session_id.as_deref(), Some("crash-session"));
-    std::thread::sleep(IDLE * 2);
-    assert!(matches!(client.task(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }));
+    let adopted = client.task(&run.task.id).unwrap();
+    assert_eq!(adopted.state, State::Running);
+    assert_eq!(adopted.pid, Some(helper));
+    assert_eq!(adopted.holder, Some(holder.clone()));
+    assert_eq!(adopted.session_id.as_deref(), Some("crash-session"));
     let again = client.run(spec).unwrap();
-    assert!(again.started);
+    assert!(!again.started);
     assert_eq!(again.task.id, run.task.id);
-    assert_eq!(again.task.session_id.as_deref(), Some("crash-session"));
-    assert_ne!(again.task.pid, Some(helper));
+    assert_eq!(again.task.pid, Some(helper));
     assert_eq!(client.tasks().unwrap().len(), 1);
+    let log = std::fs::read_to_string(daemon.data.join("tasks").join(&run.task.id).join("events.jsonl")).unwrap();
+    assert_eq!(log.lines().filter(|line| line.contains("\"event\":\"adopted\"")).count(), 1);
     client.stop(&run.task.id).unwrap();
+    assert!(!running(holder.pid));
+    assert!(!running(helper));
+    assert!(pids.iter().all(|&pid| !running(pid)));
+    assert!(matches!(client.task(&run.task.id).unwrap().state, State::Stopped { clean: true, .. }));
+    assert!(!holder.socket.exists());
+    assert!(!holder.socket.with_extension("holder").exists());
+
     drop(client);
     assert!(daemon.wait_exit().success());
 }
@@ -408,6 +422,41 @@ fn malformed_control_lines_and_traversal_ids_are_refused_without_stopping_deckd(
     drop(input);
     drop(socket);
     assert!(client.tasks().unwrap().is_empty());
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn an_unrecorded_startup_group_must_stop_before_a_retry_can_launch() {
+    use std::os::unix::process::CommandExt as _;
+    let (mut daemon, client) = Daemon::new("pending-launch");
+    let task = client.create(daemon.spec(&["sh", "-c", "echo launched > launched; exec cat"])).unwrap();
+    let mut previous = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+    let path = daemon.data.join("tasks").join(&task.id).join("holder.json");
+    // This is the durable identity left by a holder that died before its
+    // startup reply reached deckd. The group still has an executing member.
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "holder": { "pid": previous.id(), "socket": daemon.paths.task(&task.id) },
+            "agent": previous.id(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let result = client.start(&task.id);
+    let alive = running(previous.id());
+    previous.kill().unwrap();
+    previous.wait().unwrap();
+    assert!(result.is_err());
+    assert!(alive, "reconciliation never signals an unverified group");
+    assert!(!daemon.data.join("launched").exists(), "no second writer was launched");
+    assert!(path.exists(), "failed cleanup keeps the ownership record for the next retry");
+    let resumed = client.resume(&task.id).unwrap();
+    assert_eq!(resumed.state, State::Running);
+    eventually(|| daemon.data.join("launched").exists());
+    client.destroy(&task.id).unwrap();
+    assert!(!path.exists());
     drop(client);
     assert!(daemon.wait_exit().success());
 }

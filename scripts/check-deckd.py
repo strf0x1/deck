@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive B1 through its real control and ACP sockets using only Python stdlib.
+"""Drive detached tasks through real control and ACP sockets using only Python stdlib.
 
 Build first: cargo build --bin deckd --bin deck-fake-agent
 Run: python3 scripts/check-deckd.py
@@ -101,7 +101,7 @@ def prompt(acp, sid, text, finish):
         message = acp.read()
         if message.get("method") == "session/request_permission":
             if not finish:
-                return
+                return request_id, message
             acp.send({"jsonrpc": "2.0", "id": message["id"], "result": {"outcome": {"outcome": "selected", "optionId": "reject"}}})
         if "method" not in message and message.get("id") == request_id:
             assert finish and message["result"]["stopReason"] == "end_turn", message
@@ -116,7 +116,7 @@ def load(acp, sid, cwd):
 
 
 def check(deckd, fake):
-    with tempfile.TemporaryDirectory(prefix="db1-", dir="/tmp") as scratch:
+    with tempfile.TemporaryDirectory(prefix="deckd-", dir="/tmp") as scratch:
         root = Path(scratch)
         data, state = root / "data", root / "state"
         data.mkdir()
@@ -124,6 +124,7 @@ def check(deckd, fake):
         daemon = subprocess.Popen([str(deckd), "--data", str(data), "--idle-ms", "200"], env=environment)
         control_path, task_paths = paths(data, root)
         control = acp = None
+        task_id = None
         try:
             control = connect_when_ready(control_path, daemon)
             spec = {"argv": ["env", f"DECK_FAKE_STATE={state}", "DECK_FAKE_DELAY_MS=0", str(fake)], "cwd": str(root)}
@@ -152,12 +153,31 @@ def check(deckd, fake):
             assert existing["started"] is False and existing["task"]["id"] == task_id, existing
             assert existing["task"]["session_id"] == sid, existing
             control.control("stop", id=task_id)
-            control.control("resume", id=task_id)
+            active = control.control("resume", id=task_id)
             acp = Lines(task_paths / f"{task_id}.sock")
             replay = load(acp, sid, root)
             assert texts(replay, "user_message_chunk") == "completed turn", replay
             assert texts(replay, "agent_message_chunk").endswith("permission: reject"), replay
             print("PASS: closing clients leaves the task running; reopen offers the same task; restart loads history")
+
+            request, question = prompt(acp, sid, "survives daemon crash", finish=False)
+            daemon.kill()
+            daemon.wait(timeout=5)
+            control.close()
+            control = None
+            os.kill(active["pid"], 0)
+            os.kill(active["holder"]["pid"], 0)
+            acp.send({"jsonrpc": "2.0", "id": question["id"], "result": {"outcome": {"outcome": "selected", "optionId": "reject"}}})
+            _, finished = acp.response(request)
+            assert finished["stopReason"] == "end_turn", finished
+            daemon = subprocess.Popen([str(deckd), "--data", str(data), "--idle-ms", "200"], env=environment)
+            control = connect_when_ready(control_path, daemon)
+            adopted = control.control("run", spec=spec)
+            assert adopted["started"] is False, adopted
+            assert adopted["task"]["pid"] == active["pid"], adopted
+            assert adopted["task"]["holder"] == active["holder"], adopted
+            assert adopted["task"]["session_id"] == sid, adopted
+            print("PASS: killing deckd preserves a waiting turn and ACP stream; restart adopts the same holder")
 
             prompt(acp, sid, "interrupted turn", finish=False)
             acp.close()
@@ -166,7 +186,7 @@ def check(deckd, fake):
             control.control("resume", id=task_id)
             acp = Lines(task_paths / f"{task_id}.sock")
             replay = load(acp, sid, root)
-            assert texts(replay, "user_message_chunk") == "completed turninterrupted turn", replay
+            assert texts(replay, "user_message_chunk") == "completed turnsurvives daemon crashinterrupted turn", replay
             assert "Turn interrupted when the agent stopped. Nothing was retried." in texts(replay, "agent_message_chunk"), replay
             assert not any(message.get("method") == "session/request_permission" for message in replay), replay
             print("PASS: restarting a cut-off turn loads its history and reports interruption without retry")
@@ -176,7 +196,7 @@ def check(deckd, fake):
             control.control("stop", id=task_id)
             events = [json.loads(line) for line in (data / "tasks" / task_id / "events.jsonl").read_text().splitlines()]
             names = [event["event"] for event in events]
-            assert names == ["created", "started", "session", "stopped", "started", "stopped", "started", "stopped"], events
+            assert names == ["created", "started", "session", "stopped", "started", "adopted", "stopped", "started", "stopped"], events
             assert all(event["clean"] is True for event in events if event["event"] == "stopped"), events
             print("PASS: durable lifecycle records the session id, all stops and both resumes")
             control.close()
@@ -187,6 +207,17 @@ def check(deckd, fake):
             for connection in (acp, control):
                 if connection:
                     connection.close()
+            if task_id is not None:
+                try:
+                    if daemon.poll() is not None:
+                        daemon = subprocess.Popen([str(deckd), "--data", str(data), "--idle-ms", "200"], env=environment)
+                    cleanup = connect_when_ready(control_path, daemon)
+                    try:
+                        cleanup.control("destroy", id=task_id)
+                    finally:
+                        cleanup.close()
+                except (OSError, AssertionError):
+                    pass
             if daemon.poll() is None:
                 daemon.kill()
                 daemon.wait(timeout=5)

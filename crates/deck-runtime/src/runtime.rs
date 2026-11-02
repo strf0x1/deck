@@ -10,7 +10,7 @@
 
 use crate::backend::{Backend, Instance, Stream};
 use crate::lifecycle::{Event, Failure, Spec, State, Task};
-use crate::record::{RecordLock, Store};
+use crate::record::Store;
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::channel::mpsc;
 use std::collections::HashMap;
@@ -44,8 +44,7 @@ struct Inner {
 
 struct Live {
     instance: Box<dyn Instance>,
-    /// Held for as long as the task runs here.
-    _lock: RecordLock,
+    generation: Arc<()>,
 }
 
 impl Runtime {
@@ -53,24 +52,53 @@ impl Runtime {
     /// running with no live holder is stopped, uncleanly.
     pub fn open(data: &Path, backend: impl Backend + 'static) -> Result<Runtime> {
         let store = Store::open(data)?;
-        for mut task in store.list()? {
-            if task.state == State::Running
-                && let Some(lock) = store.lock(&task.id)?
-            {
-                let reason = "it was not running when the runtime opened".to_string();
-                store.append(&mut task, Event::Stopped { clean: false, reason })?;
-                drop(lock);
+        let runtime = Runtime {
+            inner: Arc::new(Mutex::new(Inner {
+                store,
+                backend: Box::new(backend),
+                live: HashMap::new(),
+                subscribers: vec![],
+                grace: GRACE,
+            })),
+        };
+        {
+            let mut inner = runtime.lock();
+            for mut task in inner.store.list()? {
+                let running = task.state == State::Running;
+                let unconfirmed = matches!(task.state, State::Failed { failure: Failure::ShutdownUnconfirmed(_) });
+                if !running && !unconfirmed {
+                    continue;
+                }
+                if let Some(lock) = inner.store.lock(&task.id)? {
+                    inner.backend.reconcile(&task)?;
+                    if running {
+                        let reason = "it was not running when the runtime opened".to_string();
+                        inner.record(&mut task, Event::Stopped { clean: false, reason })?;
+                    }
+                    drop(lock);
+                } else if task.backend == inner.backend.name() {
+                    let generation = Arc::new(());
+                    let exited = exit_notice(task.id.clone(), Arc::downgrade(&runtime.inner), generation.clone());
+                    if let Some(instance) = inner.backend.adopt(&task, exited)? {
+                        if running {
+                            inner.record(&mut task, Event::Adopted)?;
+                        }
+                        inner.live.insert(task.id.clone(), Live { instance, generation });
+                    }
+                }
             }
         }
-        let inner =
-            Inner { store, backend: Box::new(backend), live: HashMap::new(), subscribers: vec![], grace: GRACE };
-        Ok(Runtime { inner: Arc::new(Mutex::new(inner)) })
+        Ok(runtime)
     }
 
     /// Use `grace` instead of [`GRACE`] for stops.
     pub fn with_grace(self, grace: Duration) -> Runtime {
         self.lock().grace = grace;
         self
+    }
+
+    pub(crate) fn has_live_tasks(&self) -> bool {
+        !self.lock().live.is_empty()
     }
 
     /// State changes from now on, each after it is recorded.
@@ -146,6 +174,9 @@ impl Runtime {
     pub fn stop(&self, id: &str) -> Result<()> {
         let (mut live, grace) = {
             let mut inner = self.lock();
+            if inner.store.load(id)?.state != State::Running {
+                bail!("task {id} is not running; destroy it to retry an unconfirmed shutdown");
+            }
             let live = inner.live.remove(id).ok_or_else(|| anyhow!("task {id} is not running here"))?;
             (live, inner.grace)
         };
@@ -157,6 +188,7 @@ impl Runtime {
             Ok(reason) => inner.record(&mut task, Event::Stopped { clean: true, reason }),
             Err(e) => {
                 let failure = Failure::ShutdownUnconfirmed(format!("{e:#}"));
+                inner.live.insert(id.into(), live);
                 inner.record(&mut task, Event::Failed { failure })?;
                 Err(e)
             }
@@ -167,7 +199,18 @@ impl Runtime {
     /// destroyed. Destroying a destroyed task does nothing.
     pub fn destroy(&self, id: &str) -> Result<()> {
         if self.lock().live.contains_key(id) {
-            self.stop(id)?;
+            if self.task(id)?.state == State::Running {
+                self.stop(id)?;
+            } else {
+                let (mut live, grace) = {
+                    let mut inner = self.lock();
+                    (inner.live.remove(id).context("missing failed task holder")?, inner.grace)
+                };
+                if let Err(error) = live.instance.stop(grace) {
+                    self.lock().live.insert(id.into(), live);
+                    return Err(error);
+                }
+            }
         }
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
@@ -177,6 +220,7 @@ impl Runtime {
             _ => {}
         }
         let Some(_lock) = inner.store.lock(id)? else { bail!("task {id} is held by another process") };
+        inner.backend.reconcile(&task)?;
         inner.backend.destroy(&task.spec)?;
         inner.record(&mut task, Event::Destroyed)
     }
@@ -223,21 +267,12 @@ impl Inner {
         }
         let lock =
             self.store.lock(&task.id)?.with_context(|| format!("task {} is held by another process", task.id))?;
-        let id = task.id.clone();
-        let exited = Box::new(move |reason: String| {
-            let Some(inner) = me.upgrade() else { return };
-            let mut inner = inner.lock().unwrap_or_else(|e| e.into_inner());
-            // A task stop already removed is reported by the stop.
-            if inner.live.remove(&id).is_some()
-                && let Ok(mut task) = inner.store.load(&id)
-            {
-                let _ = inner.record(&mut task, Event::Stopped { clean: false, reason });
-            }
-        });
-        match self.backend.start(&task.spec, exited) {
+        let generation = Arc::new(());
+        let exited = exit_notice(task.id.clone(), me, generation.clone());
+        match self.backend.start(&task, lock, exited) {
             Ok(instance) => {
-                self.record(&mut task, Event::Started { pid: instance.pid() })?;
-                self.live.insert(task.id.clone(), Live { instance, _lock: lock });
+                self.record(&mut task, Event::Started { pid: instance.pid(), holder: instance.holder() })?;
+                self.live.insert(task.id.clone(), Live { instance, generation });
                 Ok(())
             }
             Err(e) => {
@@ -257,4 +292,21 @@ impl Inner {
         let notice = Notice { task: task.id.clone(), state: task.state.clone() };
         self.subscribers.retain(|tx| tx.unbounded_send(notice.clone()).is_ok());
     }
+}
+
+fn exit_notice(id: String, me: Weak<Mutex<Inner>>, generation: Arc<()>) -> crate::Exited {
+    Box::new(move |reason| {
+        let Some(inner) = me.upgrade() else { return };
+        let mut inner = inner.lock().unwrap_or_else(|e| e.into_inner());
+        // A stop removed the instance already and records its own outcome.
+        if !inner.live.get(&id).is_some_and(|live| Arc::ptr_eq(&live.generation, &generation)) {
+            return;
+        }
+        inner.live.remove(&id);
+        if let Ok(mut task) = inner.store.load(&id)
+            && task.state == State::Running
+        {
+            let _ = inner.record(&mut task, Event::Stopped { clean: false, reason });
+        }
+    })
 }

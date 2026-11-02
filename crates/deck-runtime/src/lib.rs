@@ -14,6 +14,8 @@ pub mod backend;
 pub mod child;
 pub mod daemon;
 pub mod daemon_client;
+mod detached;
+pub mod holder;
 pub mod lifecycle;
 pub mod local;
 pub mod local_guard;

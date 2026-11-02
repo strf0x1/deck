@@ -9,7 +9,8 @@
 //! process group, and signals go to the group, so its tools stop with it.
 
 use crate::backend::{Backend, Exited, Instance, Stream};
-use crate::lifecycle::Spec;
+use crate::lifecycle::{Spec, Task};
+use crate::record::RecordLock;
 use anyhow::{Context as _, Result, anyhow, bail};
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -28,7 +29,17 @@ impl Backend for Local {
         "local"
     }
 
-    fn start(&mut self, spec: &Spec, exited: Exited) -> Result<Box<dyn Instance>> {
+    fn start(&mut self, task: &Task, lock: RecordLock, exited: Exited) -> Result<Box<dyn Instance>> {
+        Self::spawn(&task.spec, exited, Some(lock))
+    }
+
+    fn destroy(&mut self, _spec: &Spec) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Local {
+    pub(crate) fn spawn(spec: &Spec, exited: Exited, record_lock: Option<RecordLock>) -> Result<Box<dyn Instance>> {
         let (prog, args) = spec.argv.split_first().context("no agent command")?;
         let mut cmd = Command::new(prog);
         cmd.args(args).current_dir(&spec.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -40,12 +51,7 @@ impl Backend for Local {
         let pid = child.id();
         let proc = Arc::new(Mutex::new(Proc { child, exit: None, stopping: false }));
         watch(proc.clone(), exited);
-        Ok(Box::new(Process { proc, pid, stdio: Some((stdout, stdin)) }))
-    }
-
-    fn destroy(&mut self, _spec: &Spec) -> Result<()> {
-        // The agent runs in the user's directory; the task owns nothing else.
-        Ok(())
+        Ok(Box::new(Process { proc, pid, stdio: Some((stdout, stdin)), _lock: record_lock }))
     }
 }
 
@@ -58,6 +64,7 @@ struct Proc {
 }
 
 struct Process {
+    _lock: Option<RecordLock>,
     proc: Arc<Mutex<Proc>>,
     pid: u32,
     stdio: Option<(ChildStdout, ChildStdin)>,

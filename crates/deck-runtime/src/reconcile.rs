@@ -1,33 +1,23 @@
-//! B1 startup safety after hard daemon death. A released task lock proves
-//! deckd died, but its child lifeline may not have run yet. Confirm the old
-//! group has no executing members before Runtime records a reusable stop.
+//! Confirm teardown after holder death. A released task lock is insufficient
+//! while its child lifeline is still killing the agent group. No recorded pid
+//! is signalled; reuse waits until no group member can execute or hold files.
 
-use crate::{State, record::Store};
 use anyhow::{Context as _, Result, bail};
-use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-pub(crate) fn wait_for_children(data: &Path) -> Result<()> {
-    let store = Store::open(data)?;
-    for task in store.list()? {
-        if task.state != State::Running {
-            continue;
+pub(crate) fn wait_for_group(pid: u32) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while group_running(pid)? {
+        if Instant::now() >= deadline {
+            bail!("previous process group {pid} has not stopped; refusing to reuse it");
         }
-        let Some(_lock) = store.lock(&task.id)? else { continue };
-        let Some(pid) = task.pid else { continue };
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while group_running(pid)? {
-            if Instant::now() >= deadline {
-                bail!("task {}: previous process group {pid} has not stopped; refusing to reuse it", task.id);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
 }
 
-fn group_running(pid: u32) -> Result<bool> {
+pub(crate) fn group_running(pid: u32) -> Result<bool> {
     let group = i32::try_from(pid).context("recorded pid is out of range")?;
     // SAFETY: signal zero queries process-group existence, without sending a signal.
     if unsafe { libc::kill(-group, 0) } == -1 {
@@ -35,7 +25,11 @@ fn group_running(pid: u32) -> Result<bool> {
         if error.raw_os_error() == Some(libc::ESRCH) {
             return Ok(false);
         }
-        return Err(error).context("checking previous task process group");
+        // On macOS an orphan zombie can belong to init and reject signal
+        // zero with EPERM. Inspect group members below before deciding.
+        if error.raw_os_error() != Some(libc::EPERM) {
+            return Err(error).context("checking previous task process group");
+        }
     }
     // Orphan zombies may remain under container PID 1. They cannot execute
     // or hold files. ps is available on both supported host platforms.

@@ -249,3 +249,154 @@ fn destroy_stops_a_running_task_and_is_idempotent() {
     assert!(rt.resume(&id).is_err());
     assert!(rt.run(spec(&["cat"])).map(|(new, _)| new != id).unwrap(), "a destroyed task is never reused");
 }
+
+#[test]
+fn an_unrecorded_holder_shuts_down_instead_of_leaving_an_orphan() {
+    use std::io::{BufRead as _, BufReader};
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+
+    hang_guard();
+    let dir = Scratch::new("unrecorded-holder");
+    let store = deck_runtime::record::Store::open(&dir.0).unwrap();
+    let task = store.create("local", spec(&["cat"])).unwrap();
+    let paths = deck_runtime::paths::Paths::for_data(&dir.0).unwrap();
+    std::fs::create_dir_all(paths.directory.join("tasks")).unwrap();
+    let socket = paths.task(&task.id);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.0.join("tasks").join(&task.id).join("lock"))
+        .unwrap();
+    file.try_lock().unwrap();
+    let fd = file.as_raw_fd();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deckd"));
+    command
+        .arg("--holder")
+        .arg(&dir.0)
+        .arg(&task.id)
+        .arg(&socket)
+        .arg(fd.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // SAFETY: only async-signal-safe calls between fork and exec. This fixture
+    // passes the same inherited lock descriptor as the daemon backend.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() == -1 || libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    drop(file);
+    let mut header = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut header).unwrap();
+    let identity: serde_json::Value = serde_json::from_str(&header).unwrap();
+    assert_eq!(identity["Ok"]["holder"]["pid"], child.id());
+    assert!(store.lock(&task.id).unwrap().is_none(), "the child owns the inherited lock");
+    // Simulate deckd dying after the startup reply but before Started is durable.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("unrecorded holder did not exit");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(store.load(&task.id).unwrap().state, State::Created);
+    assert!(store.lock(&task.id).unwrap().is_some());
+    assert!(!socket.exists());
+    assert!(!socket.with_extension("holder").exists());
+    std::fs::remove_dir_all(paths.directory).unwrap();
+}
+
+mod supervision {
+    use super::*;
+    use deck_runtime::{Backend, Exited, Instance, Stream, Task, record::RecordLock};
+    use std::sync::{Arc, Mutex};
+
+    struct Deferred {
+        callbacks: Arc<Mutex<Vec<Exited>>>,
+        fail_stop: bool,
+    }
+    struct DeferredInstance {
+        pid: u32,
+        fail_stop: bool,
+        _lock: RecordLock,
+    }
+    #[expect(clippy::unwrap_used, reason = "test callback queue must stay available")]
+    impl Backend for Deferred {
+        fn name(&self) -> &'static str {
+            "deferred"
+        }
+        fn start(&mut self, _task: &Task, lock: RecordLock, exited: Exited) -> anyhow::Result<Box<dyn Instance>> {
+            let mut callbacks = self.callbacks.lock().unwrap();
+            callbacks.push(exited);
+            Ok(Box::new(DeferredInstance { pid: callbacks.len() as u32, fail_stop: self.fail_stop, _lock: lock }))
+        }
+        fn destroy(&mut self, _spec: &Spec) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+    impl Instance for DeferredInstance {
+        fn pid(&self) -> Option<u32> {
+            Some(self.pid)
+        }
+        fn attach(&mut self) -> anyhow::Result<Stream> {
+            anyhow::bail!("not used by supervision tests")
+        }
+        fn stop(&mut self, _grace: Duration) -> anyhow::Result<String> {
+            if std::mem::take(&mut self.fail_stop) {
+                anyhow::bail!("shutdown not confirmed");
+            }
+            Ok("confirmed stop".into())
+        }
+    }
+
+    #[test]
+    fn an_old_exit_callback_cannot_stop_a_resumed_task() {
+        let dir = Scratch::new("delayed-exit");
+        let callbacks = Arc::new(Mutex::new(vec![]));
+        let rt = Runtime::open(&dir.0, Deferred { callbacks: callbacks.clone(), fail_stop: false }).unwrap();
+        let id = rt.create(spec(&["agent"])).unwrap();
+        rt.start(&id).unwrap();
+        rt.stop(&id).unwrap();
+        rt.resume(&id).unwrap();
+        let old = callbacks.lock().unwrap().remove(0);
+        old("old holder exited".into());
+        let task = rt.task(&id).unwrap();
+        assert_eq!((task.state, task.pid), (State::Running, Some(2)));
+        let current = callbacks.lock().unwrap().remove(0);
+        current("current holder exited".into());
+        assert_eq!(
+            rt.task(&id).unwrap().state,
+            State::Stopped { clean: false, reason: "current holder exited".into() }
+        );
+    }
+
+    #[test]
+    fn destroy_retries_a_failed_stop_and_releases_the_lock() {
+        let dir = Scratch::new("retry-stop");
+        let rt = Runtime::open(&dir.0, Deferred { callbacks: Arc::new(Mutex::new(vec![])), fail_stop: true }).unwrap();
+        let id = rt.create(spec(&["agent"])).unwrap();
+        rt.start(&id).unwrap();
+        assert!(rt.stop(&id).is_err());
+        let failed = rt.task(&id).unwrap();
+        assert!(matches!(failed.state, State::Failed { failure: Failure::ShutdownUnconfirmed(_) }));
+        assert_eq!(failed.pid, Some(1));
+        assert!(rt.resume(&id).is_err());
+        assert!(deck_runtime::record::Store::open(&dir.0).unwrap().lock(&id).unwrap().is_none());
+        rt.destroy(&id).unwrap();
+        assert_eq!(rt.task(&id).unwrap().state, State::Destroyed);
+        assert!(deck_runtime::record::Store::open(&dir.0).unwrap().lock(&id).unwrap().is_some());
+    }
+}
