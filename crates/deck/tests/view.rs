@@ -47,6 +47,34 @@ fn typing_a_prompt_and_answering_a_permission_by_key(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppContext) {
+    use deck_acp::{ToolStatus, conn::Conn};
+
+    let (deck, mut cx) = open(cx);
+    let (mut conn, _) = Conn::load("/w".into(), "saved".into());
+    // Captured from Construct #156 at 996b2d3; only the session id and
+    // temporary error path are normalized. No later status update follows.
+    for line in include_str!("../../deck-acp/tests/fixtures/construct-load.jsonl").lines() {
+        for event in conn.read(line).events {
+            deck.update(&mut cx, |d, cx| d.on_inbound(event, cx));
+        }
+    }
+    cx.run_until_parked();
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(
+            d.session().entries,
+            vec![
+                Entry::You("read files".into()),
+                Entry::Tool { id: "call_1".into(), title: "read note.txt".into(), status: ToolStatus::Done },
+                Entry::Tool { id: "call_2".into(), title: "read missing.txt".into(), status: ToolStatus::Failed },
+                Entry::Agent("done".into()),
+            ]
+        );
+        assert_eq!(d.session().status, Status::Ready);
+    });
+}
+
+#[gpui::test]
 fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
     cx.run_until_parked();

@@ -29,9 +29,16 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
     client.prompt("ship it").unwrap();
 
     let mut text = String::new();
+    let mut tool_seen = false;
     let request = loop {
         match next(rx) {
             Inbound::Message(t) => text.push_str(&t),
+            Inbound::Tool { id, title, status } => {
+                assert_eq!(id, "t1");
+                assert_eq!(title, "shell git push origin deck/spike");
+                assert_eq!(status, ToolStatus::Running);
+                tool_seen = true;
+            }
             Inbound::Permission { request, title, options } => {
                 assert_eq!(title, "shell git push origin deck/spike");
                 assert_eq!(options.iter().filter(|o| o.allows()).count(), 2);
@@ -40,6 +47,7 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
             _ => {}
         }
     };
+    assert!(tool_seen, "the live tool appears before its permission question");
     assert!(text.contains("You said \"ship it\""), "{text}");
 
     client.answer(&request, Some("reject")).unwrap();

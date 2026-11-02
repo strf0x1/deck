@@ -79,7 +79,7 @@ impl Session {
                 Some(Entry::Thought(s)) => s.push_str(&t),
                 _ => self.entries.push(Entry::Thought(t)),
             },
-            Inbound::Tool { id, title } => self.entries.push(Entry::Tool { id, title, status: ToolStatus::Running }),
+            Inbound::Tool { id, title, status } => self.entries.push(Entry::Tool { id, title, status }),
             Inbound::ToolStatus { id, status } => {
                 let tool = self.entries.iter_mut().rev().find_map(|e| match e {
                     Entry::Tool { id: tid, status, .. } if *tid == id => Some(status),
@@ -128,7 +128,7 @@ mod tests {
             Inbound::Thought("plan".into()),
             Inbound::Message("a".into()),
             Inbound::Message("b".into()),
-            Inbound::Tool { id: "t".into(), title: "read".into() },
+            Inbound::Tool { id: "t".into(), title: "read".into(), status: ToolStatus::Running },
             Inbound::ToolStatus { id: "t".into(), status: ToolStatus::Done },
             Inbound::TurnEnded("end_turn".into()),
         ] {

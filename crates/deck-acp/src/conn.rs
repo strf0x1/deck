@@ -23,8 +23,8 @@ pub enum Inbound {
     Message(String),
     /// Streamed reasoning text.
     Thought(String),
-    /// A tool call started.
-    Tool { id: String, title: String },
+    /// A tool call and its current state, including a final state in replay.
+    Tool { id: String, title: String, status: ToolStatus },
     /// A tool call changed status.
     ToolStatus { id: String, status: ToolStatus },
     /// The agent asks before running a tool. Answer with
@@ -220,16 +220,24 @@ fn update(u: &Value) -> Option<Inbound> {
         "user_message_chunk" => Some(Inbound::UserMessage(text()?)),
         "agent_message_chunk" => Some(Inbound::Message(text()?)),
         "agent_thought_chunk" => Some(Inbound::Thought(text()?)),
-        "tool_call" => Some(Inbound::Tool { id: id(), title: u["title"].as_str().unwrap_or("tool").to_string() }),
+        "tool_call" => Some(Inbound::Tool {
+            id: id(),
+            title: u["title"].as_str().unwrap_or("tool").to_string(),
+            status: tool_status(u["status"].as_str().unwrap_or("pending")),
+        }),
         "tool_call_update" => {
-            let status = match u["status"].as_str()? {
-                "completed" => ToolStatus::Done,
-                "failed" => ToolStatus::Failed,
-                _ => ToolStatus::Running,
-            };
+            let status = tool_status(u["status"].as_str()?);
             Some(Inbound::ToolStatus { id: id(), status })
         }
         _ => None,
+    }
+}
+
+fn tool_status(status: &str) -> ToolStatus {
+    match status {
+        "completed" => ToolStatus::Done,
+        "failed" => ToolStatus::Failed,
+        _ => ToolStatus::Running,
     }
 }
 
@@ -342,9 +350,34 @@ mod tests {
         let chunk = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"yo"}}}}"#;
         assert_eq!(c.read(chunk).events, vec![Inbound::Message("yo".into())]);
         let tool = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"t","title":"read x","status":"in_progress"}}}"#;
-        assert_eq!(c.read(tool).events, vec![Inbound::Tool { id: "t".into(), title: "read x".into() }]);
+        assert_eq!(
+            c.read(tool).events,
+            vec![Inbound::Tool { id: "t".into(), title: "read x".into(), status: ToolStatus::Running }]
+        );
         let end = r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#;
         assert_eq!(c.read(end).events, vec![Inbound::TurnEnded("end_turn".into())]);
+    }
+
+    #[test]
+    fn initial_tool_calls_preserve_status_including_finished_replay() {
+        let mut c = handshake();
+        for (status, expected) in [
+            (Some("completed"), ToolStatus::Done),
+            (Some("failed"), ToolStatus::Failed),
+            (Some("pending"), ToolStatus::Running),
+            (Some("in_progress"), ToolStatus::Running),
+            (None, ToolStatus::Running),
+        ] {
+            let mut update = json!({ "sessionUpdate": "tool_call", "toolCallId": "t", "title": "read x" });
+            if let Some(status) = status {
+                update["status"] = json!(status);
+            }
+            let line = rpc::notification("session/update", json!({ "sessionId": "s1", "update": update }));
+            assert_eq!(
+                c.read(&line).events,
+                vec![Inbound::Tool { id: "t".into(), title: "read x".into(), status: expected }]
+            );
+        }
     }
 
     #[test]
