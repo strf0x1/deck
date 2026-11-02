@@ -84,14 +84,30 @@ pid=$(c '{"cmd":"geometry"}' | jq .pid)
 grim -g "$(hyprctl clients -j | jq -r ".[] | select(.pid==$pid) | \"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])\"")" deck.png
 ```
 
+On macOS none of that is needed: `geometry` reports the real window frame in
+points, so hand its bounds straight to `screencapture` (`-o` drops the
+shadow). There is no `$XDG_RUNTIME_DIR` and `socat` is not installed by
+default, but `nc -U` speaks the same protocol and a short path under `/tmp`
+is fine.
+
+```sh
+export DECK_CONTROL=/tmp/deck-ctl.sock
+./target/debug/deck ./target/debug/deck-fake-agent &   # a window in this session
+c() { printf '%s\n' "$1" | nc -U -w 2 "$DECK_CONTROL"; }
+b=$(c '{"cmd":"geometry"}' | jq -r '.bounds | "\(.x),\(.y),\(.w),\(.h)"')
+screencapture -x -o -R"$b" deck.png
+```
+
+Both platforms need a real window to draw into: a headless shell has no
+display, and macOS captures nothing while the session is locked.
+
 ## Checks
 
 ```sh
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-All three must be clean; CI (`.github/workflows/ci.yml`) runs the same on
-Linux, and a non-blocking macOS job reports whether the Mac build passes. A UI behaviour change gets a `crates/deck/tests/view.rs` case
+All three must be clean, on Linux and on macOS; CI runs them on both, blocking. A UI behaviour change gets a `crates/deck/tests/view.rs` case
 (simulate the input, assert on view state); a protocol change gets a
 `conn.rs` unit test and, if it crosses the process, a
 `crates/deck-acp/tests/acp.rs` step. `cargo test -p deck-acp` runs the
@@ -116,6 +132,11 @@ Same as construct's (see `../construct/AGENTS.md`), in short:
 - Read GPUI's own examples at the pinned tag for API questions; docs.rs lags.
 - Window blur is the compositor's call. On Hyprland, blur must be enabled
   (`decoration:blur:enabled`) or set per window for class `deck`.
+- On macOS there is no compositor rule to write: GPUI draws
+  `WindowBackgroundAppearance::Blurred` itself, as an `NSVisualEffectView`
+  behind the scene. deck's base is 90–95% opaque, so it reads as near-black
+  glass rather than a visible blur. macOS also draws the standard title bar
+  with traffic lights; deck has no custom window chrome there.
 - GPUI has no per-element backdrop blur, so the only real blur is the
   window's. Panes are translucent white layers over a near-black base;
   anything that floats over other content (the open rail) is opaque.
