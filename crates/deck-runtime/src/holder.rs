@@ -116,6 +116,15 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
             Ok((socket, _)) => {
                 if let Some(grace) = request(socket, &identity)? {
                     let (mut socket, grace) = grace;
+                    // Reserve ACP through termination. Closing a session is best
+                    // effort; an unresponsive agent must still be stopped.
+                    let closing = relay.take_over()?;
+                    if let Some(session) = store.observe(id)?.session_id {
+                        match deck_acp::shutdown::close_session(&closing, &session, Duration::from_millis(500)) {
+                            Ok(_) => {}
+                            Err(error) => eprintln!("closing task {id} session: {error:#}"),
+                        }
+                    }
                     let stopped = instance
                         .stop(grace)
                         .and_then(|reason| {

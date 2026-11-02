@@ -23,6 +23,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         _ if s.ask.is_some() => ("Needs you", Tokens::amber()),
         Status::Connecting => ("Connecting", Tokens::text_faint().into()),
         Status::Ready => ("Ready", Tokens::lime()),
+        Status::Waiting => ("Waiting", Tokens::amber()),
         Status::Working => ("Working", Tokens::mint()),
         Status::Detached => ("Running, detached", Tokens::mint()),
         Status::Down(_) => ("Down", Tokens::red()),

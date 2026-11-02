@@ -460,3 +460,81 @@ fn an_unrecorded_startup_group_must_stop_before_a_retry_can_launch() {
     drop(client);
     assert!(daemon.wait_exit().success());
 }
+
+#[test]
+fn stop_and_destroy_close_advertised_sessions_with_or_without_an_attached_window() {
+    let script = r#"
+import json,sys
+for line in sys.stdin:
+    v=json.loads(line)
+    if v.get('method')=='initialize':
+        r={'agentCapabilities':{'sessionCapabilities':{'close':{}}}}
+    elif v.get('method')=='session/close':
+        with open(sys.argv[1], 'w') as f: f.write(v['params']['sessionId'])
+        r={}
+    else:
+        r={}
+    print(json.dumps({'id':v.get('id'),'result':r}), flush=True)
+"#;
+    for attached in [false, true] {
+        let (mut daemon, client) = Daemon::new(if attached { "close-attached" } else { "close-detached" });
+        let marker = daemon.data.join("closed");
+        let run = client.run(daemon.spec(&["python3", "-u", "-c", script, marker.to_str().unwrap()])).unwrap();
+        client.session(&run.task.id, "saved-session").unwrap();
+        let mut window = attached.then(|| client.attach(&run.task.id).unwrap());
+        if let Some(window) = &mut window {
+            window.writer.write_all(b"{}\n").unwrap();
+            let mut line = String::new();
+            window.reader.read_line(&mut line).unwrap();
+        }
+        if attached {
+            client.stop(&run.task.id).unwrap();
+            assert!(matches!(client.task(&run.task.id).unwrap().state, State::Stopped { clean: true, .. }));
+        } else {
+            client.destroy(&run.task.id).unwrap();
+            assert_eq!(client.task(&run.task.id).unwrap().state, State::Destroyed);
+        }
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "saved-session");
+        assert!(!running(run.task.pid.unwrap()));
+        assert!(!daemon.paths.task(&run.task.id).exists());
+        drop(window);
+        drop(client);
+        assert!(daemon.wait_exit().success());
+    }
+}
+
+#[test]
+fn an_unresponsive_close_does_not_prevent_confirmed_stop() {
+    let (mut daemon, client) = Daemon::new("close-timeout");
+    let run = client.run(daemon.spec(&["sleep", "30"])).unwrap();
+    client.session(&run.task.id, "saved-session").unwrap();
+    let start = Instant::now();
+    client.stop(&run.task.id).unwrap();
+    assert!(start.elapsed() < WAIT);
+    assert!(matches!(client.task(&run.task.id).unwrap().state, State::Stopped { clean: true, .. }));
+    assert!(!running(run.task.pid.unwrap()));
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn stop_still_terminates_an_agent_with_a_blocked_acp_input_writer() {
+    let (mut daemon, client) = Daemon::new("close-blocked-input");
+    let run = client.run(daemon.spec(&["sleep", "30"])).unwrap();
+    client.session(&run.task.id, "saved-session").unwrap();
+    let mut stream = client.attach(&run.task.id).unwrap();
+    let sender = std::thread::spawn(move || {
+        let mut line = vec![b'x'; 512 * 1024];
+        line.push(b'\n');
+        let _ = stream.writer.write_all(&line);
+    });
+    // The holder forwards more than a pipe can hold to a non-reading agent.
+    std::thread::sleep(Duration::from_millis(100));
+    let start = Instant::now();
+    client.stop(&run.task.id).unwrap();
+    assert!(start.elapsed() < WAIT);
+    assert!(!running(run.task.pid.unwrap()));
+    sender.join().unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}

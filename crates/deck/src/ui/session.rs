@@ -5,8 +5,9 @@
 //! GPUI types, so a whole turn is testable as a list of events in and
 //! entries out.
 
-use deck_acp::{Inbound, PermissionOption, ToolStatus};
+use deck_acp::{Inbound, PermissionOption, ToolStatus, TurnState};
 use serde_json::Value;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -22,6 +23,7 @@ pub enum Status {
     Connecting,
     Ready,
     Working,
+    Waiting,
     /// The task is running in deckd, but this window has no ACP connection.
     Detached,
     Down(String),
@@ -39,11 +41,18 @@ pub struct Session {
     pub status: Status,
     pub entries: Vec<Entry>,
     pub ask: Option<Ask>,
+    questions: VecDeque<Ask>,
 }
 
 impl Session {
     pub fn new() -> Self {
-        Session { agent: String::from("agent"), status: Status::Connecting, entries: vec![], ask: None }
+        Session {
+            agent: String::from("agent"),
+            status: Status::Connecting,
+            entries: vec![],
+            ask: None,
+            questions: VecDeque::new(),
+        }
     }
 
     pub fn can_prompt(&self) -> bool {
@@ -58,15 +67,27 @@ impl Session {
 
     /// Take the pending question once the user has answered it.
     pub fn answered(&mut self) -> Option<Ask> {
-        self.ask.take()
+        let ask = self.ask.take()?;
+        self.ask = self.questions.pop_front();
+        self.status = if self.ask.is_some() { Status::Waiting } else { Status::Working };
+        Some(ask)
     }
 
     pub fn apply(&mut self, ev: Inbound) {
         match ev {
-            Inbound::Ready { agent, .. } => {
+            Inbound::Ready { agent, turn, .. } => {
                 self.agent = agent;
-                self.status = Status::Ready;
+                self.status = if self.ask.is_some() { Status::Waiting } else { Status::Ready };
+                if let Some(state) = turn {
+                    self.set_turn(state);
+                }
             }
+            Inbound::Detached => {
+                self.ask = None;
+                self.questions.clear();
+                self.status = Status::Detached;
+            }
+            Inbound::Turn { state, .. } => self.set_turn(state),
             Inbound::UserMessage(t) => match self.entries.last_mut() {
                 Some(Entry::You(s)) => s.push_str(&t),
                 _ => self.entries.push(Entry::You(t)),
@@ -89,19 +110,52 @@ impl Session {
                     *s = status;
                 }
             }
-            Inbound::Permission { request, title, options } => self.ask = Some(Ask { request, title, options }),
+            Inbound::Permission { request, title, options } => {
+                let ask = Ask { request, title, options };
+                if self.ask.is_none() {
+                    self.ask = Some(ask);
+                } else {
+                    self.questions.push_back(ask);
+                }
+                if self.status != Status::Connecting {
+                    self.status = Status::Waiting;
+                }
+            }
             Inbound::TurnEnded(stop) => {
                 if stop != "end_turn" {
                     self.entries.push(Entry::Note(format!("turn ended: {stop}")));
                 }
                 self.ask = None;
+                self.questions.clear();
                 self.status = Status::Ready;
             }
             Inbound::Failed(e) => {
+                self.ask = None;
+                self.questions.clear();
                 self.entries.push(Entry::Note(e.clone()));
                 if self.status == Status::Connecting || e.contains("exited") || e == "the connection closed" {
                     self.status = Status::Down(e);
                 }
+            }
+        }
+    }
+    fn set_turn(&mut self, state: TurnState) {
+        match state {
+            TurnState::Working => {
+                self.ask = None;
+                self.questions.clear();
+                self.status = Status::Working;
+            }
+            TurnState::Waiting => self.status = Status::Waiting,
+            TurnState::Idle { stop_reason } => {
+                if let Some(stop) = stop_reason
+                    && stop != "end_turn"
+                {
+                    self.entries.push(Entry::Note(format!("turn ended: {stop}")));
+                }
+                self.ask = None;
+                self.questions.clear();
+                self.status = Status::Ready;
             }
         }
     }
@@ -120,7 +174,7 @@ mod tests {
     #[test]
     fn chunks_merge_and_tools_update_in_place() {
         let mut s = Session::new();
-        s.apply(Inbound::Ready { agent: "construct".into(), session_id: "x".into() });
+        s.apply(Inbound::Ready { agent: "construct".into(), session_id: "x".into(), turn: None });
         assert!(s.can_prompt());
         s.sent("go");
         assert!(!s.can_prompt());
@@ -152,12 +206,29 @@ mod tests {
         s.apply(Inbound::UserMessage("what ".into()));
         s.apply(Inbound::UserMessage("changed?".into()));
         s.apply(Inbound::Message("the daemon owns the task".into()));
-        s.apply(Inbound::Ready { agent: "fake".into(), session_id: "saved".into() });
+        s.apply(Inbound::Ready { agent: "fake".into(), session_id: "saved".into(), turn: None });
         assert_eq!(
             s.entries,
             vec![Entry::You("what changed?".into()), Entry::Agent("the daemon owns the task".into())]
         );
         assert_eq!(s.status, Status::Ready);
+    }
+
+    #[test]
+    fn replayed_questions_are_answered_in_order_and_idle_retires_the_rest() {
+        let mut s = Session::new();
+        for id in [901, 902, 903] {
+            s.apply(Inbound::Permission { request: serde_json::json!(id), title: "read".into(), options: vec![] });
+        }
+        s.apply(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: Some(TurnState::Waiting) });
+        assert_eq!(s.status, Status::Waiting);
+        assert!(!s.can_prompt());
+        assert_eq!(s.answered().unwrap().request, serde_json::json!(901));
+        assert_eq!(s.status, Status::Waiting);
+        assert_eq!(s.answered().unwrap().request, serde_json::json!(902));
+        s.apply(Inbound::Turn { number: 1, state: TurnState::Idle { stop_reason: None } });
+        assert!(s.answered().is_none());
+        assert!(s.can_prompt());
     }
 
     #[test]

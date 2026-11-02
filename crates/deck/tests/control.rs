@@ -49,7 +49,9 @@ fn send(cx: &mut VisualTestContext, tx: &UnboundedSender<Request>, cmd: Value) -
 #[gpui::test]
 fn typing_and_answering_through_the_control_channel(cx: &mut TestAppContext) {
     let (deck, mut cx, d) = open(cx);
-    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::Ready { agent: "fake".into(), session_id: "s".into() }, cx));
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "fake".into(), session_id: "s".into(), turn: None }, cx)
+    });
 
     send(&mut cx, &d, json!({ "cmd": "type", "text": "Hi there" }));
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["draft"], json!("Hi there"));

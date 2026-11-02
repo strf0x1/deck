@@ -100,6 +100,10 @@ impl Deck {
         {
             self.session.apply(Inbound::Failed(format!("recording session: {e:#}")));
         }
+        if ev == Inbound::Detached {
+            self.attachment += 1;
+            self.client = None;
+        }
         self.session.apply(ev);
         self.sync_live_lane();
         self.scroll.scroll_to_bottom();
@@ -111,6 +115,7 @@ impl Deck {
             (_, Some(ask)) => (LaneState::Waiting, format!("asks: {}", ask.title)),
             (Status::Connecting, _) => (LaneState::Idle, "connecting…".into()),
             (Status::Ready, _) => (LaneState::Idle, "ready".into()),
+            (Status::Waiting, _) => (LaneState::Waiting, "waiting for permission".into()),
             (Status::Working, _) => (LaneState::Working, "working".into()),
             (Status::Detached, _) => (LaneState::Working, "running · detached".into()),
             (Status::Down(e), _) => (LaneState::Idle, e.clone()),

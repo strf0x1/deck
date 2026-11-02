@@ -13,10 +13,13 @@
 
 pub mod client;
 pub mod conn;
+pub mod inbound;
 pub mod rpc;
+#[cfg(unix)]
+pub mod shutdown;
 
 pub use client::{Client, Writer};
-pub use conn::{Inbound, PermissionOption, ToolStatus};
+pub use inbound::{Inbound, PermissionOption, ToolStatus, TurnState};
 
 /// The ACP protocol version deck speaks.
 pub const VERSION: u64 = 1;

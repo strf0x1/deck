@@ -3,8 +3,8 @@
 //! owns its I/O and only uses these.
 //!
 //! The design choice: ids are opaque `Value`s on the way in (a peer may use
-//! numbers or strings, and a response must echo it exactly), and plain `u64`s
-//! on the way out, which is all deck ever sends. Mirrors construct's
+//! numbers or strings, and a response must echo it exactly). Deck namespaces
+//! outgoing request IDs so old attachment responses cannot collide. Mirrors construct's
 //! `acp/rpc.rs` so the two ends of the wire read the same.
 
 use serde_json::{Value, json};
@@ -54,8 +54,8 @@ fn line(v: Value) -> String {
     format!("{v}\n")
 }
 
-pub fn request(id: u64, method: &str, params: Value) -> String {
-    line(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+pub fn request(id: impl Into<Value>, method: &str, params: Value) -> String {
+    line(json!({ "jsonrpc": "2.0", "id": id.into(), "method": method, "params": params }))
 }
 
 pub fn notification(method: &str, params: Value) -> String {

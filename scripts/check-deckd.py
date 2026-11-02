@@ -56,7 +56,7 @@ class Lines:
     def initialize(self):
         _, result = self.response(self.request("initialize", protocolVersion=1, clientCapabilities={}))
         assert result["agentCapabilities"]["loadSession"] is True, result
-        assert not result["agentCapabilities"].get("_meta", {}).get("construct", {}).get("liveAttach", False)
+        assert result["agentCapabilities"]["_meta"]["construct"]["liveAttach"] is True
 
     def close(self):
         try:
@@ -111,7 +111,7 @@ def prompt(acp, sid, text, finish):
 def load(acp, sid, cwd):
     acp.initialize()
     replay, result = acp.response(acp.request("session/load", sessionId=sid, cwd=str(cwd), mcpServers=[]))
-    assert result == {}, result
+    assert result["_meta"]["construct"]["turn"]["state"] == "idle", result
     return replay
 
 
@@ -152,6 +152,14 @@ def check(deckd, fake):
             existing = control.control("run", spec=spec)
             assert existing["started"] is False and existing["task"]["id"] == task_id, existing
             assert existing["task"]["session_id"] == sid, existing
+            acp = Lines(task_paths / f"{task_id}.sock")
+            replay = load(acp, sid, root)
+            assert texts(replay, "user_message_chunk") == "completed turn", replay
+            assert texts(replay, "agent_message_chunk") == 'You said "completed turn". Checking the workspace first.\npermission: reject', replay
+            assert control.control("task", id=task_id)["pid"] == task["pid"]
+            acp.close()
+            acp = None
+            print("PASS: live reopen restores a completed turn with exact text and the same agent")
             control.control("stop", id=task_id)
             active = control.control("resume", id=task_id)
             acp = Lines(task_paths / f"{task_id}.sock")
@@ -179,7 +187,17 @@ def check(deckd, fake):
             assert adopted["task"]["session_id"] == sid, adopted
             print("PASS: killing deckd preserves a waiting turn and ACP stream; restart adopts the same holder")
 
-            prompt(acp, sid, "interrupted turn", finish=False)
+            _, old = prompt(acp, sid, "interrupted turn", finish=False)
+            acp.close()
+            time.sleep(0.05)
+            acp = Lines(task_paths / f"{task_id}.sock")
+            acp.initialize()
+            acp.send({"jsonrpc": "2.0", "id": old["id"], "result": {"outcome": {"outcome": "selected", "optionId": "reject"}}})
+            replay, attached = acp.response(acp.request("session/load", sessionId=sid, cwd=str(root), mcpServers=[]))
+            assert attached["_meta"]["construct"]["turn"]["state"] == "waiting", attached
+            questions = [v for v in replay if v.get("method") == "session/request_permission"]
+            assert len(questions) == 1 and questions[0]["id"] != old["id"], replay
+            print("PASS: reconnect restores a waiting card, renews its id, and ignores a retired wire reply")
             acp.close()
             acp = None
             control.control("stop", id=task_id)
@@ -187,9 +205,10 @@ def check(deckd, fake):
             acp = Lines(task_paths / f"{task_id}.sock")
             replay = load(acp, sid, root)
             assert texts(replay, "user_message_chunk") == "completed turnsurvives daemon crashinterrupted turn", replay
-            assert "Turn interrupted when the agent stopped. Nothing was retried." in texts(replay, "agent_message_chunk"), replay
+            assert "Turn interrupted when the agent stopped" not in texts(replay, "agent_message_chunk"), replay
+            assert any(u.get("status") == "failed" for u in updates(replay)), replay
             assert not any(message.get("method") == "session/request_permission" for message in replay), replay
-            print("PASS: restarting a cut-off turn loads its history and reports interruption without retry")
+            print("PASS: graceful stop closes the waiting session; restart loads its history without retry")
 
             acp.close()
             acp = None

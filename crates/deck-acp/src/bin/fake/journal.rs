@@ -41,12 +41,12 @@ impl Journal {
         self.append(sid, json!({ "event": "update", "update": update }));
     }
 
-    pub fn end(&self, sid: &str) {
-        self.append(sid, json!({ "event": "end" }));
+    pub fn end(&self, sid: &str, reason: &str) {
+        self.append(sid, json!({ "event": "end", "stopReason": reason }));
     }
 
     /// Recover once, then return the full history and the number of turns.
-    pub fn load(&self, sid: &str) -> io::Result<(Vec<Value>, u32)> {
+    pub fn load(&self, sid: &str) -> io::Result<(Vec<Value>, u32, Option<String>)> {
         let path = self.path(sid).ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let bytes = fs::read(&path)?;
         let complete = bytes.iter().rposition(|&byte| byte == b'\n').map_or(0, |i| i + 1);
@@ -56,6 +56,7 @@ impl Journal {
         let text = String::from_utf8_lossy(&bytes[..complete]);
         let mut updates = Vec::new();
         let (mut pending, mut turns) = (false, 0);
+        let mut stop = None;
         for line in text.lines() {
             let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
             match entry["event"].as_str() {
@@ -63,7 +64,10 @@ impl Journal {
                     pending = true;
                     turns += 1;
                 }
-                Some("end") => pending = false,
+                Some("end") => {
+                    pending = false;
+                    stop = Some(entry["stopReason"].as_str().unwrap_or("end_turn").to_string());
+                }
                 Some("update") => updates.push(entry["update"].clone()),
                 _ => {}
             }
@@ -92,10 +96,11 @@ impl Journal {
                 "content": { "type": "text", "text": "\nTurn interrupted when the agent stopped. Nothing was retried." },
             });
             self.update(sid, &interrupted);
-            self.end(sid);
+            self.end(sid, "cancelled");
+            stop = Some("cancelled".into());
             updates.push(interrupted);
         }
-        Ok((updates, turns))
+        Ok((updates, turns, stop))
     }
 
     fn path(&self, sid: &str) -> Option<PathBuf> {

@@ -3,7 +3,7 @@
 //! turn: handshake, a streamed prompt, a permission answer that reaches the
 //! agent, and a tool that reports failed because the answer was reject.
 
-use deck_acp::{Client, Inbound, ToolStatus};
+use deck_acp::{Client, Inbound, ToolStatus, TurnState};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::executor::block_on;
@@ -25,7 +25,7 @@ fn next(rx: &mut UnboundedReceiver<Inbound>) -> Inbound {
 
 #[expect(clippy::unwrap_used, reason = "a test helper: a rejected write is the failure")]
 fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
-    assert_eq!(next(rx), Inbound::Ready { agent: "fake agent".into(), session_id: "fake-1".into() });
+    assert_eq!(next(rx), Inbound::Ready { agent: "fake agent".into(), session_id: "fake-1".into(), turn: None });
     client.prompt("ship it").unwrap();
 
     let mut text = String::new();
@@ -56,7 +56,7 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
         match next(rx) {
             Inbound::Message(t) => text.push_str(&t),
             Inbound::ToolStatus { status: ToolStatus::Failed, .. } => failed_tool = true,
-            Inbound::TurnEnded(stop) => {
+            Inbound::Turn { state: TurnState::Idle { stop_reason: Some(stop) }, .. } | Inbound::TurnEnded(stop) => {
                 assert_eq!(stop, "end_turn");
                 break;
             }
@@ -221,7 +221,7 @@ fn a_session_outlives_the_fake_agents_process() {
     let mut second = Raw::start(&state);
     second.call("initialize", json!({}));
     let (replayed, loaded) = second.call("session/load", json!({ "sessionId": sid, "cwd": "/", "mcpServers": [] }));
-    assert_eq!(loaded["result"], json!({}));
+    assert_eq!(loaded["result"]["_meta"]["construct"]["turn"]["state"], "idle");
     let said: Vec<(&str, &str)> = replayed
         .iter()
         .filter_map(|v| {
@@ -238,7 +238,7 @@ fn a_session_outlives_the_fake_agents_process() {
     let (_, closed) = second.call("session/close", json!({ "sessionId": sid }));
     assert_eq!(closed["result"], json!({}));
     let (_, closed) = second.call("session/close", json!({ "sessionId": sid }));
-    assert_eq!(closed["error"]["code"], json!(-32002), "a second close is not found, which clients treat as done");
+    assert_eq!(closed["result"], json!({}), "close is idempotent");
     let (replayed, resumed) = second.call("session/resume", json!({ "sessionId": sid, "cwd": "/", "mcpServers": [] }));
     assert_eq!((replayed.len(), &resumed["result"]), (0, &json!({})), "resume does not replay");
     let (_, missing) = second.call("session/load", json!({ "sessionId": "nope", "cwd": "/", "mcpServers": [] }));
@@ -271,7 +271,7 @@ fn client_load_restores_a_cut_off_first_turn_without_repeating_it() {
         let mut events = Vec::new();
         loop {
             match next(rx) {
-                Inbound::Ready { agent, session_id } => {
+                Inbound::Ready { agent, session_id, .. } => {
                     assert_eq!((agent.as_str(), session_id.as_str()), ("fake agent", sid));
                     return events;
                 }

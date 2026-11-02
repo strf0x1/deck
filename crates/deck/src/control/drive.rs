@@ -169,6 +169,7 @@ pub fn state(d: &Deck) -> Value {
     let status = match &s.status {
         Status::Connecting => json!("connecting"),
         Status::Ready => json!("ready"),
+        Status::Waiting => json!("waiting"),
         Status::Working => json!("working"),
         Status::Detached => json!("detached"),
         Status::Down(e) => json!({ "down": e }),
