@@ -1,7 +1,8 @@
 # 0001 — Tasks run under a host runtime, recover from records
 
-Status: accepted, 2026-11-02 (proposed 2026-11-01). Answers #7's "answer now" questions; the input
-is `SANDBOX-DESIGN.md`. Deck's first ADR, in construct's format (see
+Status: accepted, 2026-11-02 (proposed 2026-11-01). Decision 5 superseded,
+and Decision 7's checkpoint owner set, by 0002. Answers #7's "answer now"
+questions; the input is `SANDBOX-DESIGN.md`. Deck's first ADR, in construct's format (see
 `../construct/docs/adr/0001-record-decisions.md`): not edited after
 acceptance except to mark it superseded.
 

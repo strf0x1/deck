@@ -8,26 +8,48 @@
 //! at end of input, which is what closing the stream looks like from here.
 //!
 //! `DECK_FAKE_DELAY_MS` paces the stream (default 35).
+//!
+//! Sessions outlive the process the way construct's do, so the runtime's
+//! restart paths have something to restart: with `DECK_FAKE_STATE` naming a
+//! directory, each finished turn is appended to `<dir>/<session>.jsonl`, and
+//! `session/load` replays it before answering while `session/resume` does
+//! not. Like construct, it refuses to load a session already loaded on this
+//! connection, and `session/close` forgets one. Without the variable a
+//! session is always `fake-1` and nothing persists.
 
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
-const SESSION: &str = "fake-1";
+/// JSON-RPC codes construct answers with.
+const INVALID_PARAMS: i64 = -32602;
+const NOT_FOUND: i64 = -32002;
 
 struct Agent<W: Write> {
     out: W,
     turn: u32,
+    /// The session prompts and updates belong to.
+    session: String,
+    /// Sessions loaded on this connection.
+    loaded: HashSet<String>,
+    state: Option<PathBuf>,
 }
 
 impl<W: Write> Agent<W> {
+    fn new(out: W) -> Self {
+        let state = std::env::var_os("DECK_FAKE_STATE").filter(|v| !v.is_empty()).map(PathBuf::from);
+        Agent { out, turn: 0, session: String::new(), loaded: HashSet::new(), state }
+    }
+
     fn send(&mut self, v: Value) {
         let _ = writeln!(self.out, "{v}");
         let _ = self.out.flush();
     }
 
     fn update(&mut self, u: Value) {
-        let params = json!({ "sessionId": SESSION, "update": u });
+        let params = json!({ "sessionId": self.session, "update": u });
         self.send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": params }));
     }
 
@@ -44,11 +66,34 @@ impl<W: Write> Agent<W> {
                 Some("initialize") => self.send(json!({ "jsonrpc": "2.0", "id": id, "result": {
                     "protocolVersion": 1,
                     "agentInfo": { "name": "fake", "title": "fake agent", "version": "0" },
-                    "agentCapabilities": { "loadSession": false },
+                    "agentCapabilities": {
+                        "loadSession": true,
+                        "sessionCapabilities": { "resume": {}, "close": {} },
+                    },
                     "authMethods": [],
                 }})),
                 Some("session/new") => {
-                    self.send(json!({ "jsonrpc": "2.0", "id": id, "result": { "sessionId": SESSION } }))
+                    let sid = match &self.state {
+                        Some(_) => format!("fake-{:x}", now_nanos()),
+                        None => "fake-1".to_string(),
+                    };
+                    self.session = sid.clone();
+                    self.loaded.insert(sid.clone());
+                    self.send(json!({ "jsonrpc": "2.0", "id": id, "result": { "sessionId": sid } }))
+                }
+                Some(m @ ("session/load" | "session/resume")) => {
+                    let sid = msg["params"]["sessionId"].as_str().unwrap_or_default().to_string();
+                    let reply = self.load(&sid, m == "session/load");
+                    self.reply(id, reply);
+                }
+                Some("session/close") => {
+                    let sid = msg["params"]["sessionId"].as_str().unwrap_or_default();
+                    let reply = if self.loaded.remove(sid) {
+                        Ok(json!({}))
+                    } else {
+                        Err((NOT_FOUND, format!("no session {sid} on this connection")))
+                    };
+                    self.reply(id, reply);
                 }
                 Some("session/prompt") => {
                     let asked = msg["params"]["prompt"][0]["text"].as_str().unwrap_or_default().to_string();
@@ -64,6 +109,49 @@ impl<W: Write> Agent<W> {
         }
     }
 
+    fn reply(&mut self, id: Value, r: Result<Value, (i64, String)>) {
+        self.send(match r {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err((code, message)) => {
+                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+            }
+        });
+    }
+
+    fn log(&self, sid: &str) -> Option<PathBuf> {
+        self.state.as_ref().map(|d| d.join(format!("{sid}.jsonl")))
+    }
+
+    /// `session/load` (replaying) or `session/resume` of a recorded session.
+    fn load(&mut self, sid: &str, replay: bool) -> Result<Value, (i64, String)> {
+        if self.loaded.contains(sid) {
+            return Err((INVALID_PARAMS, format!("session {sid} is already loaded on this connection")));
+        }
+        let text = self.log(sid).and_then(|p| std::fs::read_to_string(p).ok());
+        let Some(text) = text else { return Err((NOT_FOUND, format!("no session {sid}"))) };
+        self.session = sid.to_string();
+        self.loaded.insert(sid.to_string());
+        if replay {
+            for entry in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+                let (kind, said) =
+                    (entry["kind"].as_str().unwrap_or_default(), entry["text"].as_str().unwrap_or_default());
+                self.chunk(kind, said);
+            }
+        }
+        Ok(json!({}))
+    }
+
+    /// Append a finished turn to the session's record, when there is one.
+    fn record(&self, asked: &str, answered: &str) {
+        let Some(path) = self.log(&self.session) else { return };
+        let lines = [("user_message_chunk", asked), ("agent_message_chunk", answered)]
+            .map(|(kind, text)| json!({ "kind": kind, "text": text }).to_string() + "\n")
+            .concat();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(lines.as_bytes());
+        }
+    }
+
     /// One turn. `None` means the input ended while waiting for the answer.
     fn prompt(
         &mut self,
@@ -75,7 +163,8 @@ impl<W: Write> Agent<W> {
         self.turn += 1;
         let tool = format!("t{}", self.turn);
         self.chunk("agent_thought_chunk", "planning a small change");
-        for word in format!("You said \"{asked}\". Checking the workspace first.").split_inclusive(' ') {
+        let said = format!("You said \"{asked}\". Checking the workspace first.");
+        for word in said.split_inclusive(' ') {
             std::thread::sleep(delay);
             self.chunk("agent_message_chunk", word);
         }
@@ -87,7 +176,7 @@ impl<W: Write> Agent<W> {
             "status": "pending",
         }));
         self.send(json!({ "jsonrpc": "2.0", "id": 900 + self.turn, "method": "session/request_permission", "params": {
-            "sessionId": SESSION,
+            "sessionId": self.session,
             "toolCall": { "toolCallId": tool, "title": "shell git push origin deck/spike" },
             "options": [
                 { "optionId": "allow", "name": "Allow once", "kind": "allow_once" },
@@ -106,7 +195,9 @@ impl<W: Write> Agent<W> {
         let ok = outcome == "allow" || outcome == "always";
         let status = if ok { "completed" } else { "failed" };
         self.update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": tool, "status": status }));
-        self.chunk("agent_message_chunk", &format!("\npermission: {outcome}"));
+        let last = format!("\npermission: {outcome}");
+        self.chunk("agent_message_chunk", &last);
+        self.record(&asked, &(said + &last));
         self.send(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } }));
         Some(())
     }
@@ -123,8 +214,7 @@ fn main() {
             std::process::exit(2);
         }
         None => {
-            let agent = Agent { out: std::io::stdout().lock(), turn: 0 };
-            agent.serve(std::io::stdin().lock(), delay);
+            Agent::new(std::io::stdout().lock()).serve(std::io::stdin().lock(), delay);
         }
     }
 }
@@ -158,11 +248,15 @@ fn listen(path: Option<String>, delay: Duration) {
             std::process::exit(1);
         }
     };
-    Agent { out: stream, turn: 0 }.serve(input, delay);
+    Agent::new(stream).serve(input, delay);
 }
 
 #[cfg(not(unix))]
 fn listen(_: Option<String>, _: Duration) {
     eprintln!("--listen needs Unix sockets");
     std::process::exit(2);
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
 }
