@@ -22,6 +22,8 @@ pub enum Status {
     Connecting,
     Ready,
     Working,
+    /// The task is running in deckd, but this window has no ACP connection.
+    Detached,
     Down(String),
 }
 
@@ -65,6 +67,10 @@ impl Session {
                 self.agent = agent;
                 self.status = Status::Ready;
             }
+            Inbound::UserMessage(t) => match self.entries.last_mut() {
+                Some(Entry::You(s)) => s.push_str(&t),
+                _ => self.entries.push(Entry::You(t)),
+            },
             Inbound::Message(t) => match self.entries.last_mut() {
                 Some(Entry::Agent(s)) => s.push_str(&t),
                 _ => self.entries.push(Entry::Agent(t)),
@@ -73,7 +79,7 @@ impl Session {
                 Some(Entry::Thought(s)) => s.push_str(&t),
                 _ => self.entries.push(Entry::Thought(t)),
             },
-            Inbound::Tool { id, title } => self.entries.push(Entry::Tool { id, title, status: ToolStatus::Running }),
+            Inbound::Tool { id, title, status } => self.entries.push(Entry::Tool { id, title, status }),
             Inbound::ToolStatus { id, status } => {
                 let tool = self.entries.iter_mut().rev().find_map(|e| match e {
                     Entry::Tool { id: tid, status, .. } if *tid == id => Some(status),
@@ -93,7 +99,7 @@ impl Session {
             }
             Inbound::Failed(e) => {
                 self.entries.push(Entry::Note(e.clone()));
-                if self.status == Status::Connecting || e.contains("exited") {
+                if self.status == Status::Connecting || e.contains("exited") || e == "the connection closed" {
                     self.status = Status::Down(e);
                 }
             }
@@ -122,7 +128,7 @@ mod tests {
             Inbound::Thought("plan".into()),
             Inbound::Message("a".into()),
             Inbound::Message("b".into()),
-            Inbound::Tool { id: "t".into(), title: "read".into() },
+            Inbound::Tool { id: "t".into(), title: "read".into(), status: ToolStatus::Running },
             Inbound::ToolStatus { id: "t".into(), status: ToolStatus::Done },
             Inbound::TurnEnded("end_turn".into()),
         ] {
@@ -138,6 +144,27 @@ mod tests {
             ]
         );
         assert!(s.can_prompt());
+    }
+
+    #[test]
+    fn loading_history_rebuilds_both_sides_before_ready() {
+        let mut s = Session::new();
+        s.apply(Inbound::UserMessage("what ".into()));
+        s.apply(Inbound::UserMessage("changed?".into()));
+        s.apply(Inbound::Message("the daemon owns the task".into()));
+        s.apply(Inbound::Ready { agent: "fake".into(), session_id: "saved".into() });
+        assert_eq!(
+            s.entries,
+            vec![Entry::You("what changed?".into()), Entry::Agent("the daemon owns the task".into())]
+        );
+        assert_eq!(s.status, Status::Ready);
+    }
+
+    #[test]
+    fn a_detached_running_task_does_not_accept_prompts() {
+        let mut s = Session::new();
+        s.status = Status::Detached;
+        assert!(!s.can_prompt());
     }
 
     #[test]

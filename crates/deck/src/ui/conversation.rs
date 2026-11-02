@@ -24,6 +24,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         Status::Connecting => ("Connecting", Tokens::text_faint().into()),
         Status::Ready => ("Ready", Tokens::lime()),
         Status::Working => ("Working", Tokens::mint()),
+        Status::Detached => ("Running, detached", Tokens::mint()),
         Status::Down(_) => ("Down", Tokens::red()),
     };
     pane()
@@ -67,7 +68,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .p(px(14.))
                 .pt(px(4.))
                 .children(s.ask.as_ref().map(|_| ask(deck, cx)))
-                .child(prompt(deck)),
+                .child(if deck.can_restart() { restart(deck, cx) } else { prompt(deck).into_any_element() }),
         )
 }
 
@@ -111,7 +112,7 @@ fn transcript(deck: &Deck) -> impl IntoElement {
         }
         Entry::Note(t) => div().text_color(Tokens::red()).child(t.clone()),
     });
-    let empty = deck.session.entries.is_empty().then(|| {
+    let empty = (deck.session.entries.is_empty() && deck.session.status != Status::Detached).then(|| {
         div()
             .flex_1()
             .flex()
@@ -198,6 +199,40 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(ask.title.clone()),
         )
         .child(div().flex().gap(px(8.)).children(buttons))
+        .into_any_element()
+}
+
+fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    let title = if deck.session.status == Status::Detached {
+        "Your task is still running."
+    } else {
+        "The task connection needs to be restored."
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .p(px(14.))
+        .rounded(px(14.))
+        .bg(Tokens::raised())
+        .child(title)
+        .child(
+            div()
+                .text_color(Tokens::text_dim())
+                .child("Restart to restore the conversation. Any unfinished turn will be interrupted."),
+        )
+        .child(
+            div()
+                .id("restart-task")
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .cursor_pointer()
+                .text_color(Tokens::accent())
+                .child("Stop and restart")
+                .child(kbd(crate::app::RESTART_HINT))
+                .on_click(cx.listener(|this, _, _, cx| this.restart(cx))),
+        )
         .into_any_element()
 }
 

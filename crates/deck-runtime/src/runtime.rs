@@ -10,11 +10,10 @@
 
 use crate::backend::{Backend, Instance, Stream};
 use crate::lifecycle::{Event, Failure, Spec, State, Task};
-use crate::record::Store;
+use crate::record::{RecordLock, Store};
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::channel::mpsc;
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -23,7 +22,7 @@ use std::time::Duration;
 pub const GRACE: Duration = Duration::from_secs(3);
 
 /// A task changed state; the record already says so.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Notice {
     pub task: String,
     pub state: State,
@@ -46,7 +45,7 @@ struct Inner {
 struct Live {
     instance: Box<dyn Instance>,
     /// Held for as long as the task runs here.
-    _lock: File,
+    _lock: RecordLock,
 }
 
 impl Runtime {
@@ -87,6 +86,23 @@ impl Runtime {
 
     pub fn tasks(&self) -> Result<Vec<Task>> {
         self.lock().store.list()
+    }
+
+    /// Remember the agent's session once ACP has identified it. Repeating
+    /// the same pointer leaves the durable log unchanged.
+    pub fn session(&self, id: &str, session_id: &str) -> Result<()> {
+        if session_id.trim().is_empty() {
+            bail!("an ACP session id cannot be empty");
+        }
+        let mut inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if task.state != State::Running {
+            bail!("task {id} cannot record a session while {:?}", task.state);
+        }
+        if task.session_id.as_deref() == Some(session_id) {
+            return Ok(());
+        }
+        inner.record(&mut task, Event::Session { id: session_id.into() })
     }
 
     /// Record a new task for `spec`. Nothing runs yet.

@@ -1,7 +1,7 @@
 # Working on deck
 
 deck is a native ACP client in Rust on GPUI (Zed's UI framework): it launches
-an agent (construct by default) as a subprocess and shows its session, tool
+an agent (construct by default) through `deckd` and shows its session, tool
 calls and permission questions in a dark-glass window. This is the UI spike;
 `PLAN.md` is the product discussion and is not an implementation plan.
 
@@ -19,13 +19,15 @@ settle.
 |---|---|
 | `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `client.rs` the connection over any reader/writer pair and its reader thread. The UI only sees `Inbound`. |
 | `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. |
+| `crates/deck-runtime/src/daemon.rs`, `daemon_client.rs`, `relay.rs` | The daemon authority, its control client, and the JSON-agnostic per-task holder. `child.rs` ties local process groups to daemon lifetime in B1. See `docs/deckd.md`. |
+| `crates/deck-runtime/tests/daemon.rs` | The real daemon binary: locking, idle shutdown, detached survival, hard-crash cleanup, and concurrent control clients. |
 | `crates/deck-runtime/tests/lifecycle.rs` | The contract against real processes: stop with SIGTERM then SIGKILL, unclean exits, the agent's children, reconciliation after a holder dies, reuse, destroy. |
 | `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. Supports `session/load`, `resume` and `close` like construct; `DECK_FAKE_STATE=<dir>` persists sessions across processes. Keep it in step with what Deck relies on from construct (ADR 0002). |
 | `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch; the fake's sessions across two processes. |
 | `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
 | `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`); app keys: `cmd-q` (macOS) / `ctrl-q` quits, and closing the last window quits. |
-| `crates/deck/src/task.rs` | The window's task: runs the agent through `deck-runtime` and stops it when the window goes. |
-| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the window's task; routes keys and mouse; steps animation. |
+| `crates/deck/src/task.rs` | The window's daemon connection: finds or starts a task, connects ACP, and explicitly restarts detached tasks. Dropping it detaches. |
+| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the window's task; routes keys and mouse; steps animation. `ui/attachment.rs` connects and restarts its daemon-owned task. |
 | `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
 | `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, spring physics. |
 | `crates/deck/src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
@@ -37,10 +39,11 @@ A connection and the process behind it are separate things. `Client` speaks
 ACP over any reader/writer pair — a child's stdio, or a socket a VM-hosted
 agent listens on — and dropping it closes that stream. Processes belong to
 `deck-runtime`: a task's record says what ran and how it ended, and only a
-runtime stop or destroy ends the agent. For now the window owns its task and
-stops it on exit; the next window with the same command and directory
-resumes that task rather than creating another. Records live under the data
-root (`~/Library/Application Support/deck`, `${XDG_DATA_HOME:-~/.local/share}/deck`;
+runtime stop or destroy ends the agent. `deckd` owns local tasks and keeps
+their ACP streams open while Deck is closed. The next window with the same
+command and directory finds the running task. Until live attach is supported, the window offers an explicit stop and
+restart, then rebuilds the conversation with `session/load`. Records live
+under the data root (`~/Library/Application Support/deck`, `${XDG_DATA_HOME:-~/.local/share}/deck`;
 `DECK_DATA` overrides it). A future transport implements `deck_acp::Writer`
 to say how closing works for it.
 

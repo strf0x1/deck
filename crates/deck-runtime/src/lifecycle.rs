@@ -50,6 +50,7 @@ pub enum State {
 pub enum Event {
     Created { backend: String, spec: Spec },
     Started { pid: Option<u32> },
+    Session { id: String },
     Stopped { clean: bool, reason: String },
     Failed { failure: Failure },
     Destroyed,
@@ -64,6 +65,9 @@ pub struct Task {
     pub state: State,
     /// The process the last `Started` named, while it runs.
     pub pid: Option<u32>,
+    /// The agent's session pointer, retained when its process stops.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 impl Task {
@@ -72,11 +76,25 @@ impl Task {
         let Event::Created { backend, spec } = first else {
             bail!("a task record must start with `created`, not {}", name(first));
         };
-        Ok(Task { id: id.into(), backend: backend.clone(), spec: spec.clone(), state: State::Created, pid: None })
+        Ok(Task {
+            id: id.into(),
+            backend: backend.clone(),
+            spec: spec.clone(),
+            state: State::Created,
+            pid: None,
+            session_id: None,
+        })
     }
 
     /// Apply `ev`, or refuse it if it cannot follow the current state.
     pub fn apply(&mut self, ev: &Event) -> Result<()> {
+        if let Event::Session { id } = ev {
+            if self.state != State::Running {
+                bail!("task {}: `session` cannot follow {}", self.id, describe(&self.state));
+            }
+            self.session_id = Some(id.clone());
+            return Ok(());
+        }
         let next = match (&self.state, ev) {
             (
                 State::Created | State::Stopped { .. } | State::Failed { failure: Failure::StartFailed(_) },
@@ -119,6 +137,7 @@ fn name(ev: &Event) -> &'static str {
     match ev {
         Event::Created { .. } => "created",
         Event::Started { .. } => "started",
+        Event::Session { .. } => "session",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -192,6 +211,30 @@ mod tests {
     }
 
     #[test]
+    fn a_session_is_recorded_only_while_running_and_survives_restarts() {
+        let session = Event::Session { id: "session-7".into() };
+        assert!(fold(&[created(), session.clone()]).is_err());
+        let t = fold(&[created(), started(), session.clone()]).unwrap();
+        assert_eq!((t.state, t.pid, t.session_id), (State::Running, Some(7), Some("session-7".into())));
+        let t = fold(&[created(), started(), session.clone(), stopped(false), started()]).unwrap();
+        assert_eq!((t.state, t.pid, t.session_id), (State::Running, Some(7), Some("session-7".into())));
+        assert!(fold(&[created(), started(), stopped(true), session.clone()]).is_err());
+        assert!(fold(&[created(), start_failed(), session.clone()]).is_err());
+        assert!(fold(&[created(), started(), unconfirmed(), session.clone()]).is_err());
+        assert!(fold(&[created(), Event::Destroyed, session]).is_err());
+    }
+
+    #[test]
+    fn old_snapshots_without_a_session_pointer_still_load() {
+        let value = serde_json::json!({
+            "id": "t", "backend": "local", "spec": { "argv": ["agent"], "cwd": "/w" },
+            "state": { "state": "running" }, "pid": 7
+        });
+        let task: Task = serde_json::from_value(value).unwrap();
+        assert_eq!(task.session_id, None);
+    }
+
+    #[test]
     fn an_unconfirmed_shutdown_only_leaves_by_destroy() {
         let t = fold(&[created(), started(), unconfirmed()]).unwrap();
         assert!(!t.resumable() && !t.startable());
@@ -219,7 +262,15 @@ mod tests {
 
     #[test]
     fn events_round_trip_as_tagged_json() {
-        for e in [created(), started(), stopped(false), start_failed(), unconfirmed(), Event::Destroyed] {
+        for e in [
+            created(),
+            started(),
+            Event::Session { id: "session-7".into() },
+            stopped(false),
+            start_failed(),
+            unconfirmed(),
+            Event::Destroyed,
+        ] {
             let line = serde_json::to_string(&e).unwrap();
             assert_eq!(serde_json::from_str::<Event>(&line).unwrap(), e, "{line}");
         }

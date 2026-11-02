@@ -83,6 +83,39 @@ fn start_attach_stop_is_recorded_in_order() {
 }
 
 #[test]
+fn session_pointer_is_durable_idempotent_and_retained_on_resume() {
+    hang_guard();
+    let dir = Scratch::new("session");
+    let rt = open(&dir);
+    let id = rt.create(spec(&["cat"])).unwrap();
+    assert!(rt.session(&id, "session-7").is_err());
+    rt.start(&id).unwrap();
+    let before = rt.task(&id).unwrap();
+    assert!(rt.session(&id, "").is_err());
+    assert!(rt.session(&id, "  ").is_err());
+    rt.session(&id, "session-7").unwrap();
+    let log = dir.0.join("tasks").join(&id).join("events.jsonl");
+    let once = std::fs::read(&log).unwrap();
+    rt.session(&id, "session-7").unwrap();
+    assert_eq!(std::fs::read(&log).unwrap(), once, "repeated session ids are not appended");
+    let running = rt.task(&id).unwrap();
+    assert_eq!(
+        (running.state, running.pid, running.session_id),
+        (State::Running, before.pid, Some("session-7".into()))
+    );
+    rt.stop(&id).unwrap();
+    assert!(rt.session(&id, "session-7").is_err());
+    drop(rt);
+    let rt = open(&dir);
+    assert_eq!(rt.task(&id).unwrap().session_id.as_deref(), Some("session-7"));
+    rt.resume(&id).unwrap();
+    assert_eq!(rt.task(&id).unwrap().session_id.as_deref(), Some("session-7"));
+    rt.session(&id, "session-8").unwrap();
+    assert_eq!(rt.task(&id).unwrap().session_id.as_deref(), Some("session-8"));
+    rt.stop(&id).unwrap();
+}
+
+#[test]
 fn a_process_ignoring_sigterm_is_killed_after_the_grace() {
     hang_guard();
     let dir = Scratch::new("grace");
