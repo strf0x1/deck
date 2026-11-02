@@ -1,4 +1,4 @@
-//! Argument parsing for the host daemon and its internal child lifeline.
+//! Argument parsing for the host daemon, detached holder, and child lifeline.
 
 use anyhow::{Context as _, Result, bail};
 use deck_runtime::{daemon, paths::Paths};
@@ -20,6 +20,16 @@ fn run() -> Result<()> {
         match arg.as_str() {
             "--data" => data = Some(PathBuf::from(args.next().context("--data needs a path")?)),
             "--idle-ms" => idle = Duration::from_millis(args.next().context("--idle-ms needs a number")?.parse()?),
+            "--holder" => {
+                let data = PathBuf::from(args.next().context("--holder needs data")?);
+                let id = args.next().context("--holder needs task id")?;
+                let socket = PathBuf::from(args.next().context("--holder needs socket")?);
+                let fd = args.next().context("--holder needs lock fd")?.parse()?;
+                if args.next().is_some() {
+                    bail!("unexpected holder argument");
+                }
+                return deck_runtime::holder::run(&data, &id, &socket, fd);
+            }
             "--child" => {
                 let mut argv: Vec<_> = args.collect();
                 if argv.first().is_some_and(|a| a == "--") {

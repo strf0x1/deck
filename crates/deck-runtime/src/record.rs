@@ -40,17 +40,24 @@ pub struct Store {
 
 /// A held record lock. The holder releases it explicitly, even if a
 /// concurrently forked child has not yet closed its inherited descriptor.
-pub struct RecordLock(File);
+pub struct RecordLock(Option<File>);
 
 impl RecordLock {
+    /// Transfer ownership through fork/exec without explicitly unlocking it.
+    pub(crate) fn transfer(mut self) -> Option<File> {
+        self.0.take()
+    }
+
     pub(crate) fn held(file: File) -> Self {
-        Self(file)
+        Self(Some(file))
     }
 }
 
 impl Drop for RecordLock {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        if let Some(file) = &self.0 {
+            let _ = file.unlock();
+        }
     }
 }
 
@@ -90,10 +97,20 @@ impl Store {
 
     /// The task `id`, folded from its log.
     pub fn load(&self, id: &str) -> Result<Task> {
+        self.read(id, true)
+    }
+
+    /// Observe a record while its authority may be appending. Ignore an
+    /// incomplete tail, but never truncate another process's in-flight write.
+    pub(crate) fn observe(&self, id: &str) -> Result<Task> {
+        self.read(id, false)
+    }
+
+    fn read(&self, id: &str, repair: bool) -> Result<Task> {
         let path = self.tasks.join(id).join(LOG);
         let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        if complete < bytes.len() {
+        if repair && complete < bytes.len() {
             // A write cut short. Its event never happened as far as anyone
             // was told; drop it so the next append starts on a clean line.
             OpenOptions::new().write(true).open(&path)?.set_len(complete as u64)?;
@@ -189,7 +206,7 @@ mod tests {
         let dir = scratch("reload");
         let store = Store::open(&dir).unwrap();
         let mut t = store.create("local", spec()).unwrap();
-        store.append(&mut t, Event::Started { pid: Some(9) }).unwrap();
+        store.append(&mut t, Event::Started { pid: Some(9), holder: None }).unwrap();
         store.append(&mut t, Event::Stopped { clean: true, reason: "asked".into() }).unwrap();
         let again = Store::open(&dir).unwrap().load(&t.id).unwrap();
         assert_eq!(again, t);
@@ -216,11 +233,14 @@ mod tests {
         let dir = scratch("torn");
         let store = Store::open(&dir).unwrap();
         let mut t = store.create("local", spec()).unwrap();
-        store.append(&mut t, Event::Started { pid: Some(9) }).unwrap();
+        store.append(&mut t, Event::Started { pid: Some(9), holder: None }).unwrap();
         let log = dir.join("tasks").join(&t.id).join(LOG);
         let whole = fs::read(&log).unwrap();
         OpenOptions::new().append(true).open(&log).unwrap().write_all(br#"{"at_ms":1,"event":"stop"#).unwrap();
 
+        let incomplete = fs::read(&log).unwrap();
+        assert_eq!(store.observe(&t.id).unwrap().state, State::Running);
+        assert_eq!(fs::read(&log).unwrap(), incomplete, "an observer cannot truncate an active writer");
         let loaded = store.load(&t.id).unwrap();
         assert_eq!(loaded.state, State::Running);
         assert_eq!(fs::read(&log).unwrap(), whole, "the fragment is gone");

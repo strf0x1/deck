@@ -1,10 +1,10 @@
-//! The internal B1 child helper. It shares a process group with the agent
-//! and kills that entire group when deckd's input pipe closes or the agent
-//! exits. A separate HUP watcher still detects deckd death when forwarding
+//! The internal child lifeline. It shares a process group with the agent
+//! and kills that entire group when the holder's input pipe closes or the agent
+//! exits. A separate HUP watcher still detects holder death when forwarding
 //! stdin is blocked on an agent that stopped reading.
 
 use anyhow::{Context as _, Result, bail};
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -23,6 +23,15 @@ pub fn run(argv: &[String]) -> Result<()> {
     // keeps the supervisor alive while the group receives graceful stop.
     if unsafe { libc::signal(libc::SIGTERM, keep_supervising as *const () as libc::sighandler_t) } == libc::SIG_ERR {
         return Err(io::Error::last_os_error()).context("installing child helper signal handler");
+    }
+    if std::thread::Builder::new().name("deckd-parent-watch".into()).spawn(watch_parent).is_err() {
+        kill_group();
+    }
+    // The holder durably records this group's identity before releasing the
+    // launch gate. EOF before the gate cannot start an unrecorded writer.
+    let mut gate = [0];
+    if io::stdin().lock().read_exact(&mut gate).is_err() || gate != *b"!" {
+        kill_group();
     }
     let mut command = Command::new(program);
     command.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -46,9 +55,6 @@ pub fn run(argv: &[String]) -> Result<()> {
     };
     let mut input = agent.stdin.take().context("agent stdin")?;
     let mut output = agent.stdout.take().context("agent stdout")?;
-    if std::thread::Builder::new().name("deckd-parent-watch".into()).spawn(watch_parent).is_err() {
-        kill_group();
-    }
     if std::thread::Builder::new()
         .name("deckd-child-input".into())
         .spawn(move || {

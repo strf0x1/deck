@@ -44,15 +44,38 @@ pub enum State {
     Destroyed,
 }
 
+/// A detached holder's identity and ACP endpoint. The task pid remains the
+/// agent process-group leader, so teardown can be confirmed after holder death.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Holder {
+    pub pid: u32,
+    pub socket: PathBuf,
+}
+
 /// One line of a task's record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    Created { backend: String, spec: Spec },
-    Started { pid: Option<u32> },
-    Session { id: String },
-    Stopped { clean: bool, reason: String },
-    Failed { failure: Failure },
+    Created {
+        backend: String,
+        spec: Spec,
+    },
+    Started {
+        pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holder: Option<Holder>,
+    },
+    Adopted,
+    Session {
+        id: String,
+    },
+    Stopped {
+        clean: bool,
+        reason: String,
+    },
+    Failed {
+        failure: Failure,
+    },
     Destroyed,
 }
 
@@ -65,6 +88,8 @@ pub struct Task {
     pub state: State,
     /// The process the last `Started` named, while it runs.
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub holder: Option<Holder>,
     /// The agent's session pointer, retained when its process stops.
     #[serde(default)]
     pub session_id: Option<String>,
@@ -82,12 +107,19 @@ impl Task {
             spec: spec.clone(),
             state: State::Created,
             pid: None,
+            holder: None,
             session_id: None,
         })
     }
 
     /// Apply `ev`, or refuse it if it cannot follow the current state.
     pub fn apply(&mut self, ev: &Event) -> Result<()> {
+        if matches!(ev, Event::Adopted) {
+            if self.state != State::Running || self.holder.is_none() {
+                bail!("task {} has no running holder to adopt", self.id);
+            }
+            return Ok(());
+        }
         if let Event::Session { id } = ev {
             if self.state != State::Running {
                 bail!("task {}: `session` cannot follow {}", self.id, describe(&self.state));
@@ -113,8 +145,15 @@ impl Task {
             (s, Event::Destroyed) if *s != State::Destroyed => State::Destroyed,
             (s, ev) => bail!("task {}: `{}` cannot follow {}", self.id, name(ev), describe(s)),
         };
+        let unconfirmed = matches!(ev, Event::Failed { failure: Failure::ShutdownUnconfirmed(_) });
         self.pid = match ev {
-            Event::Started { pid } => *pid,
+            Event::Started { pid, .. } => *pid,
+            _ if unconfirmed => self.pid,
+            _ => None,
+        };
+        self.holder = match ev {
+            Event::Started { holder, .. } => holder.clone(),
+            _ if unconfirmed => self.holder.clone(),
             _ => None,
         };
         self.state = next;
@@ -137,6 +176,7 @@ fn name(ev: &Event) -> &'static str {
     match ev {
         Event::Created { .. } => "created",
         Event::Started { .. } => "started",
+        Event::Adopted => "adopted",
         Event::Session { .. } => "session",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
@@ -163,7 +203,7 @@ mod tests {
         Event::Created { backend: "local".into(), spec: Spec { argv: vec!["agent".into()], cwd: "/w".into() } }
     }
     fn started() -> Event {
-        Event::Started { pid: Some(7) }
+        Event::Started { pid: Some(7), holder: None }
     }
     fn stopped(clean: bool) -> Event {
         Event::Stopped { clean, reason: "why".into() }
@@ -222,6 +262,22 @@ mod tests {
         assert!(fold(&[created(), start_failed(), session.clone()]).is_err());
         assert!(fold(&[created(), started(), unconfirmed(), session.clone()]).is_err());
         assert!(fold(&[created(), Event::Destroyed, session]).is_err());
+    }
+
+    #[test]
+    fn adoption_preserves_the_running_identity_and_failed_shutdown_retains_it() {
+        let holder = Holder { pid: 8, socket: "/tmp/task.sock".into() };
+        let start = Event::Started { pid: Some(7), holder: Some(holder.clone()) };
+        let before = fold(&[created(), start.clone()]).unwrap();
+        let after = fold(&[created(), start.clone(), Event::Adopted]).unwrap();
+        assert_eq!(after, before);
+        assert!(fold(&[created(), Event::Adopted]).is_err());
+        assert!(fold(&[created(), started(), Event::Adopted]).is_err());
+        assert!(fold(&[created(), start.clone(), stopped(false), Event::Adopted]).is_err());
+        let failed = fold(&[created(), start, unconfirmed()]).unwrap();
+        assert_eq!(failed.pid, Some(7));
+        assert_eq!(failed.holder, Some(holder));
+        assert!(!failed.startable() && !failed.resumable());
     }
 
     #[test]

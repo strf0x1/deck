@@ -6,7 +6,8 @@
 //! There is no "probably stopped", because the runtime must never reuse what
 //! a process might still be writing.
 
-use crate::lifecycle::Spec;
+use crate::lifecycle::{Holder, Spec, Task};
+use crate::record::RecordLock;
 use anyhow::Result;
 use deck_acp::Writer;
 use std::io::BufRead;
@@ -28,8 +29,19 @@ pub trait Backend: Send {
     /// of backend that created it.
     fn name(&self) -> &'static str;
 
-    /// Start `spec`'s agent. `exited` reports an end nobody asked for.
-    fn start(&mut self, spec: &Spec, exited: Exited) -> Result<Box<dyn Instance>>;
+    /// Start the task's agent and take its liveness lock. `exited` reports an
+    /// end nobody asked for.
+    fn start(&mut self, task: &Task, lock: RecordLock, exited: Exited) -> Result<Box<dyn Instance>>;
+
+    /// Confirm a dead holder left no executing agent before record reuse.
+    fn reconcile(&mut self, _task: &Task) -> Result<()> {
+        Ok(())
+    }
+
+    /// Adopt an independently running holder. In-process backends leave it alone.
+    fn adopt(&mut self, _task: &Task, _exited: Exited) -> Result<Option<Box<dyn Instance>>> {
+        Ok(None)
+    }
 
     /// Remove what the task owns besides its record (a disk, a checkout).
     /// The task is not running.
@@ -39,6 +51,11 @@ pub trait Backend: Send {
 /// A running task's process.
 pub trait Instance: Send {
     fn pid(&self) -> Option<u32>;
+
+    /// An independent holder, when this instance survives the runtime.
+    fn holder(&self) -> Option<Holder> {
+        None
+    }
 
     /// The agent's ACP stream.
     fn attach(&mut self) -> Result<Stream>;
