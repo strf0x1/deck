@@ -123,23 +123,32 @@ Two experiments, both ending in `kill -9` of the VMM:
    the journal image held `journal.sqlite`, a 391 KiB WAL and all 18 rows
    after the kill.
 
-The second result is a Construct-side gap, not a libkrun one: a hard VMM
-death can lose journal commits that are still in guest memory. A normal
-runtime stop sends ACP `session/close` first, which closes the journal, but
-the backend cannot prove the guest unmounted or checkpointed. Tracked in
-construct#161.
+The second result first looked like a Construct-side gap: a hard VMM death
+can lose journal commits that are still in guest memory. A normal runtime
+stop sends ACP `session/close` first, which closes the journal, but the
+backend cannot prove the guest unmounted or checkpointed. Construct's fix is
+tracked in construct#161, and the re-test below shows the remaining failure
+is lower in the stack.
 
-That issue's first fix (construct PR #163, `synchronous=FULL`) was re-tested
-in the same VM and is **not sufficient on a fresh journal**: with no guest
-sync, a completed turn followed by `kill -9` still left the journal image
-empty. The missing layer is the directory entry. A guest probe that created
-a file and called `dd conv=fsync` (no `sync`) also lost the file, while a
-guest-wide `sync` kept it; SQLite fsyncs the WAL file, not the parent
-directories, and this guest disk does not persist a new directory entry on a
-file fsync alone. A directory fsync when the journal is created (or a guest
-sync before the VMM dies) is still needed. The PR's SIGKILL test cannot see
-this: killing the construct process leaves the host page cache intact, so it
-would pass with `NORMAL` too.
+Construct PR #163 now adds `synchronous=FULL`, synced directory creation and
+a first-commit directory fsync (head `f2dd5df`). Re-tested in this VM with a
+completed turn and no guest `sync`, `kill -9` still left the journal image
+empty. The remaining gap is below construct: **per-inode and directory
+`fsync` on this guest do not force writeback.**
+
+Control: a guest script created a file (and a directory entry) on the journal
+mount, called `fsync` on the file/directory, and the host image showed
+nothing. Thirty-five seconds later — the kernel's dirty-writeback timer — the
+file appeared with its contents. A guest-wide `sync` made it appear at once.
+SQLite's fsyncs behave the same way, so a VMM kill before the next writeback
+loses the journal even though every fsync returned success.
+
+That means #163's fix is correct for a guest whose fsync works, but it cannot
+close the hard-death case on this libkrunfw guest. The next investigation is
+the guest kernel/virtio-blk writeback path (or a newer libkrun/libkrunfw); a
+guest sync on graceful stop is only a partial workaround. The PR's SIGKILL
+test cannot see this: killing the construct process leaves the host page
+cache intact, so it would pass with `NORMAL` too.
 
 The host reboot part of the original measurement was **not performed**.
 Killing the VMM is the conservative writer-death test; a host reboot would

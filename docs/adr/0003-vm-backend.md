@@ -70,11 +70,16 @@ The disk mode is not the whole guarantee. Construct opens the WAL with
 lose the most recent rows even though the journal disk would honour a flush.
 The measurement (`docs/vm-spike.md`) found exactly that: an empty journal
 image without a guest `sync`, and 18 durable rows with one. `session/close`
-on the stop path is best effort, not a checkpoint. The first construct fix
-(`synchronous=FULL`, construct#161) was re-tested and is necessary but not
-sufficient on a fresh journal: the file's directory entry is not durable
-without a directory fsync or a guest-wide `sync`. Until that lands, the VM
-backend cannot claim per-event journal durability across a VMM crash.
+on the stop path is best effort, not a checkpoint.
+
+Construct's fixes (`synchronous=FULL`, synced directories, first-commit
+directory fsync; construct#161) were re-tested. They are correct in code but
+still do not survive a VMM kill on this guest: per-inode and directory
+`fsync` return success without forcing writeback, and the journal only
+appears after the kernel's ~30 s writeback timer or a guest-wide `sync`. The
+remaining gap is the guest kernel/libkrun block path, not construct. Until
+that is resolved, the VM backend cannot claim per-event journal durability
+across a VMM crash.
 
 ### 4. The VMM is the holder, and stop is confirmed by the VMM's death
 
