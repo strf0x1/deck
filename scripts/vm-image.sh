@@ -1,21 +1,26 @@
 #!/bin/sh
-# Build the hand-made aarch64 guest image for the libkrun spike (#16).
+# Build the hand-made guest image for the libkrun spike (#16).
 #
 # Usage: scripts/vm-image.sh [construct-src] [out-dir]
 #
 # construct-src defaults to ../construct; out-dir defaults to target/vm.
-# Produces <out>/base.img (Debian bookworm arm64 + Construct + socat) and
-# <out>/journal.img (a separate ext4 disk for Construct's home).
+# Produces <out>/base.img (host-arch Debian bookworm + Construct + socat) and
+# <out>/journal.img (a separate ext4 disk for Construct's home). The guest
+# must match the host architecture: aarch64 on macOS, x86_64 on Linux.
 #
 # Docker is a build tool here, not a runtime dependency. It must run native
-# arm64 containers. Nothing in this image is an environment pipeline: that is
-# #10's job.
+# containers for the host. Nothing in this image is an environment pipeline:
+# that is #10's job.
 set -eu
 
 construct_src=${1:-../construct}
 out=${2:-target/vm}
 arch=$(uname -m)
-[ "$arch" = arm64 ] || { echo "need an arm64 host, got $arch" >&2; exit 1; }
+case "$arch" in
+    arm64|aarch64) platform=linux/arm64 ;;
+    x86_64|amd64) platform=linux/amd64 ;;
+    *) echo "need an aarch64 or x86_64 host, got $arch" >&2; exit 1 ;;
+esac
 [ -d "$construct_src/crates/construct" ] || { echo "no construct at $construct_src" >&2; exit 1; }
 command -v docker >/dev/null || { echo "docker is required to build the image" >&2; exit 1; }
 
@@ -25,8 +30,8 @@ out=$(cd "$out" && pwd)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/deck-vm-image.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
-echo "building construct for aarch64"
-docker run --rm --platform linux/arm64 \
+echo "building construct for $platform"
+docker run --rm --platform "$platform" \
     -v "$construct_src:/src:ro" -v "$scratch:/out" -w /src rust:1.91-bookworm \
     bash -c 'set -e
         apt-get update -qq
@@ -34,8 +39,8 @@ docker run --rm --platform linux/arm64 \
         CARGO_TARGET_DIR=/tmp/target cargo build --release -p construct
         cp /tmp/target/release/construct /out/construct'
 
-echo "collecting the Debian root"
-cid=$(docker create --platform linux/arm64 debian:bookworm-slim bash -c '
+echo "collecting the Debian root for $platform"
+cid=$(docker create --platform "$platform" debian:bookworm-slim bash -c '
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
         bash ca-certificates coreutils socat util-linux procps git grep sed gawk \
@@ -112,7 +117,7 @@ chmod 755 "$scratch/rootfs/usr/local/bin/deck-flush"
 # mkfs.ext4 -d cannot copy xattrs across a macOS bind mount, so the rootfs is
 # unpacked inside the container from a tar.
 tar -cf "$scratch/rootfs.tar" -C "$scratch/rootfs" --no-xattrs .
-docker run --rm --platform linux/arm64 \
+docker run --rm --platform "$platform" \
     -v "$scratch/rootfs.tar:/rootfs.tar:ro" -v "$out:/out" debian:bookworm-slim \
     bash -c 'set -e
         apt-get update -qq
@@ -128,8 +133,9 @@ docker run --rm --platform linux/arm64 \
 cat <<EOF
 built $out/base.img and $out/journal.img
 
-Point deckd at them, after signing it (scripts/vm-sign.sh):
+Point deckd at them. macOS also needs the Hypervisor entitlement
+(scripts/vm-sign.sh); Linux needs the libkrunfw directory on LD_LIBRARY_PATH:
   export DECK_VM_IMAGE=$out/base.img
   export DECK_VM_JOURNAL=$out/journal.img
-  export DECK_VM_KRUN=/path/to/libkrun.1.19.7.dylib
+  export DECK_VM_KRUN=/path/to/libkrun.so.1.19.7   # .dylib on macOS
 EOF

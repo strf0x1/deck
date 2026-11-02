@@ -3,9 +3,10 @@
 //! links a hypervisor.
 //!
 //! The design choice: the library is pinned to the 1.x ABI by the symbols we
-//! require. `krun_add_disk3` (per-disk sync mode) and
-//! `krun_get_shutdown_eventfd` are absent from 2.0, so loading a 2.0 library
-//! fails here instead of at VM start with a wrong ABI.
+//! require. `krun_add_disk3` (per-disk sync mode) is absent from 2.0, so
+//! loading a 2.0 library fails here instead of at VM start with a wrong ABI.
+//! `krun_get_shutdown_eventfd` is built only for macOS/aarch64 upstream, so it
+//! is resolved when present and the guest-power-key path is skipped elsewhere.
 
 use anyhow::{Context as _, Result, bail};
 use libloading::Library;
@@ -47,7 +48,7 @@ pub struct Krun {
     set_workdir: SetWorkdir,
     set_exec: SetExec,
     set_console_output: SetConsoleOutput,
-    get_shutdown_eventfd: GetShutdownEventfd,
+    get_shutdown_eventfd: Option<GetShutdownEventfd>,
     start_enter: StartEnter,
 }
 
@@ -76,7 +77,7 @@ impl Krun {
                 set_workdir: symbol!(b"krun_set_workdir", SetWorkdir),
                 set_exec: symbol!(b"krun_set_exec", SetExec),
                 set_console_output: symbol!(b"krun_set_console_output", SetConsoleOutput),
-                get_shutdown_eventfd: symbol!(b"krun_get_shutdown_eventfd", GetShutdownEventfd),
+                get_shutdown_eventfd: library.get(b"krun_get_shutdown_eventfd").ok().map(|s| *s),
                 start_enter: symbol!(b"krun_start_enter", StartEnter),
                 _library: library,
             })
@@ -167,8 +168,13 @@ impl Krun {
 
     /// An eventfd that asks the guest to power off. Writing any value to it
     /// triggers the guest's power key; it does not confirm the guest obeyed.
+    /// Returns -1 when the host has no power-key device (x86_64 Linux); stop
+    /// then relies on the VMM's grace instead.
     pub fn shutdown_eventfd(&self, ctx: u32) -> Result<i32> {
-        let fd = self.rc(unsafe { (self.get_shutdown_eventfd)(ctx) })?;
+        let Some(get_shutdown_eventfd) = self.get_shutdown_eventfd else {
+            return Ok(-1);
+        };
+        let fd = self.rc(unsafe { get_shutdown_eventfd(ctx) })?;
         if fd < 0 {
             bail!("libkrun returned shutdown fd {fd}");
         }

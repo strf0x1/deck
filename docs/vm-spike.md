@@ -1,13 +1,14 @@
 # libkrun VM spike (#16)
 
-Status: spike complete on macOS 27 / Apple M4 Pro, 2026-11-02. Decisions are
-in [ADR 0003](adr/0003-vm-backend.md); this file is the recipe and the
-numbers.
+Status: spike complete on macOS 27 / Apple M4 Pro, 2026-11-02, and verified
+on Linux/x86_64 (KVM) the same day. Decisions are in
+[ADR 0003](adr/0003-vm-backend.md); this file is the recipe and the numbers.
 
 The backend is `crates/deck-runtime/src/vm.rs`; the holder is
 `vmm.rs`/`krun.rs`, run as `deckd --vmm <config.json>`. The guest is a
-hand-made aarch64 Debian disk with Construct at `/usr/local/bin/construct`.
-No environment pipeline exists: that is #10.
+hand-made Debian disk for the host architecture (aarch64 on macOS, x86_64 on
+Linux) with Construct at `/usr/local/bin/construct`. No environment pipeline
+exists: that is #10.
 
 ## Recipe
 
@@ -72,6 +73,36 @@ OPENAI_API_KEY=x CONSTRUCT_BASE_URL=http://127.0.0.1:$(cat /tmp/port)/v1 \
 DECK_VM_MOCK=1 ... cargo test -p deck-runtime --test vm -- --ignored --nocapture
 ```
 
+### Linux/x86_64 (KVM)
+
+The host needs `/dev/kvm` and `libkrunfw` 5.6.2 (Arch's `extra/libkrun` is
+1.19.6 and links a virglrenderer this recipe does not need). Build the pinned
+release with only block and net devices:
+
+```sh
+git clone --depth 1 --branch v1.19.7 https://github.com/libkrun/libkrun /tmp/libkrun
+make -C /tmp/libkrun -j"$(nproc)" BLK=1 NET=1
+```
+
+No signing step. Point `DECK_VM_KRUN` at `target/release/libkrun.so.1.19.7`
+and put the directory holding `libkrunfw.so.5` on `LD_LIBRARY_PATH`; the VMM
+forwards it to `libkrun`'s loader:
+
+```sh
+DECK_VM_IMAGE=target/vm/base.img \
+DECK_VM_JOURNAL=target/vm/journal.img \
+DECK_VM_KRUN=/tmp/libkrun/target/release/libkrun.so.1.19.7 \
+DECK_VM_EXECUTABLE=$PWD/target/debug/deckd \
+LD_LIBRARY_PATH=/usr/lib \
+cargo test -p deck-runtime --test vm -- --nocapture
+```
+
+The prompt + permission run is the same command with `DECK_VM_MOCK=1`,
+`CONSTRUCT_BASE_URL` and `OPENAI_API_KEY`. `scripts/vm-image.sh` picks the
+host architecture, so a Linux x86_64 host builds an amd64 Debian guest.
+Keep `TMPDIR` off tmpfs: the per-task 6 GiB root is a sparse image, and a
+plain copy into a RAM-backed `/tmp` exhausts it.
+
 To drive the real window, export the same `DECK_VM_*` values and run
 `cargo run --bin deck`; `deckd` inherits them and runs the VM backend. The
 window's default command is `construct acp`, and the backend maps it to
@@ -89,6 +120,24 @@ window's default command is `construct acp`, and the backend maps it to
 | Adopted after `deckd`/runtime restart | immediate; live attach unchanged (ADR 0002) |
 | Disk per booted task | 240 MiB allocated from a 6 GiB sparse root (APFS clone), journal 528 KiB after a session |
 | After destroy | `disk.img`, `journal.img`, console and config gone; only the task record remains |
+
+Linux/x86_64 (same 2 vCPU / 2048 MiB, btrfs host):
+
+| | |
+|---|---|
+| Launch to ACP ready | **0.53–0.62 s** (525, 577, 596, 618 ms) |
+| Prompt + permission | 40–60 ms round trip; the permission ask/answer was 20–40 ms |
+| Prompt with no ask (scripted `read`) | 20.1 ms |
+| Stop (runtime control, grace 3 s) | ≈ 3.4 s; the record lock is free within 6 ms of the group |
+| Disk per task | reflink (`FICLONE`) of the 6 GiB sparse base, so only the guest's writes allocate |
+
+The Linux runs used Construct 0.3.1's x86_64 Linux release (also built from
+`ff26f88` inside the guest image). A completed turn with one permission ask,
+then `kill -9` of the VMM and `e2fsck -fy` on the journal image's copy, left
+`journal.sqlite`, a 391 KiB WAL and **18 rows**, `pragma integrity_check` ok —
+the same result as the macOS re-run. The ACP handshake and the turn ran with
+no non-JSON line on the stream; secretspec's audit note and keyring warning
+were on the guest console.
 
 Launch-to-ready is the VMM's `Runtime::start` plus the ACP `initialize` +
 `session/new` handshake. Most of it is guest boot; libkrun's device setup and
@@ -169,6 +218,15 @@ does not power off; the VMM then exits, and HVF tears the VM down. A
 the recorded process group being gone (`kill(-pgid, 0)` plus a `ps` zombie
 check), not a guest filesystem state. A disk is reused only after that.
 
+On Linux, libkrun exports `krun_get_shutdown_eventfd` only on
+macOS/aarch64, so `Stop` has no guest power-key request: it waits the grace
+and exits the VMM. Confirmation also waits for the **record lock**, not just
+the process group. The VMM's threads share one file table, so a vCPU thread
+blocked in `KVM_RUN` can outlive the group leader by a few milliseconds, and
+the `flock` with it; an immediate resume after stop otherwise failed with
+"held by another process". `group_running`'s zombie check is correct for a
+single-threaded holder, but not for this multi-threaded one.
+
 **First thing to check when a VM fails to start:** `hv_vm_create` returns a
 bare `EINVAL` if `deckd` is not codesigned with
 `com.apple.security.hypervisor`. Re-run `scripts/vm-sign.sh` after every
@@ -176,9 +234,10 @@ rebuild.
 
 ## Limitations
 
-- The guest is aarch64 Debian bookworm with glibc, built natively in an
-  arm64 container. Construct's release dist only has x86_64; #10 must own
-  producing this artifact.
+- The guest is a host-architecture Debian bookworm with glibc, built
+  natively in a container (`scripts/vm-image.sh`). Construct's release dist
+  has x86_64 Linux and both macOS architectures; #10 must own producing this
+  artifact.
 - The guest has no power-key handler, so stop is VMM death, not guest
   shutdown; this is why the journal needs the Construct-side fix above.
 - The root disk's first boot copies `spec.cwd` through a read-only import
@@ -195,7 +254,12 @@ rebuild.
   inline. Construct's stdout was already clean; construct#164 makes the
   separation structural, and this image now leaves stderr on the guest console
   instead of merging it. Deck still ignores non-JSON lines defensively.
-- Linux/KVM, x86_64 guests, snapshots and the QEMU comparison (#12) were not
-  tried.
+- Linux support is x86_64 only; other Linux architectures are rejected at
+  `Vm::from_env`. Snapshots and the QEMU comparison (#12) were not tried.
+- libkrunfw 5.6.2's kernel has no Landlock, so Construct refuses shell and
+  file tools in the guest ("Landlock isn't available on this kernel") after
+  the permission answer. The permission card still round-trips; set
+  `[sandbox] mode = "off"` for a guest that must run tools, or let #10 supply
+  an environment with a working sandbox.
 - `DECK_SYNC=1` is a measurement aid in the guest image; normal runs leave it
   off.

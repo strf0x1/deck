@@ -13,28 +13,30 @@ be answered before the disk layout existed.
 
 ## Decision
 
-### 1. aarch64 guest, built for aarch64 Linux
+### 1. A host-architecture guest
 
-Apple Silicon under Hypervisor.framework runs only aarch64 guests, so the
-guest is aarch64 even though Construct's release dist ships only
-`x86_64-unknown-linux-gnu`. The spike builds Construct for
-`aarch64-unknown-linux-gnu` inside a native arm64 `rust:1.91-bookworm`
-container and copies the binary into a Debian bookworm arm64 root filesystem.
-No x86_64 Linux host is in scope. #10 owns turning this one-off build into a
-real artifact; the container is a build tool, not a runtime dependency.
+A guest runs the host's architecture: Apple Silicon under Hypervisor.framework
+runs only aarch64, and Linux/x86_64 under KVM runs x86_64. The spike builds
+Construct inside a native `rust:1.91-bookworm` container and copies the
+binary into a Debian bookworm root filesystem for that architecture. The
+support gate is macOS/aarch64 or Linux/x86_64; other hosts are rejected at
+`Vm::from_env`. #10 owns turning this one-off build into a real artifact; the
+container is a build tool, not a runtime dependency.
 
-Docker is used only by `scripts/vm-image.sh`. The guest image is a 6 GiB
-ext4 root with Construct at `/usr/local/bin/construct`, socat, and
-`/usr/local/bin/deck-guest`; the journal template is a separate 256 MiB ext4
-disk. A task clones both with APFS `clonefile(2)`.
+Docker is used only by `scripts/vm-image.sh`, which picks the host platform.
+The guest image is a 6 GiB ext4 root with Construct at
+`/usr/local/bin/construct`, socat, and `/usr/local/bin/deck-guest`; the
+journal template is a separate 256 MiB ext4 disk. A task clones both with
+APFS `clonefile(2)` on macOS or `FICLONE` on Linux.
 
 ### 2. Pin libkrun 1.19.7 and accept only its 1.x ABI
 
 Pinned: libkrun **v1.19.7** (`43b2f5aadeebb90f42053c9df2ec8b16583e554f`)
 with **libkrunfw 5.6.2**, built `BLK=1 NET=1`. The 2.0 `main` API is not
-used. `deck-runtime` loads the dylib at run time and requires
-`krun_add_disk3` and `krun_get_shutdown_eventfd`; those are absent from 2.0,
-so a wrong library fails at load, not at first boot.
+used. `deck-runtime` loads the library at run time and requires
+`krun_add_disk3`; that is absent from 2.0, so a wrong library fails at load,
+not at first boot. `krun_get_shutdown_eventfd` is optional because upstream
+builds it only for macOS/aarch64.
 
 The surface the backend uses:
 
@@ -45,7 +47,7 @@ The surface the backend uses:
 | Project import, first boot only | `krun_add_virtiofs3("import", dir, 0, read_only=true)` |
 | ACP into the guest | `krun_add_vsock_port2(port, socket, listen=true)`: libkrun owns the host listener and opens the guest connection when the runtime connects |
 | Guest readiness | `krun_add_vsock_port2(1025, socket, listen=false)`: the guest connects out, libkrun connects to the VMM's listener |
-| Stop request | `krun_get_shutdown_eventfd` (aarch64 macOS only), written from a signal handler |
+| Stop request | `krun_get_shutdown_eventfd` on aarch64 macOS, written from a signal handler; elsewhere stop waits the grace and exits the VMM |
 
 `listen` is the easy one to get backwards. True is host-listens/guest-listens:
 what an editor needs. False makes the *guest* initiate, which the readiness
@@ -91,7 +93,7 @@ Stop has two layers:
 2. It asks the VMM's control socket to stop. The VMM writes libkrun's
    shutdown eventfd (the guest power key). If the guest powers off, the VMM
    returns from `krun_start_enter`; if it does not within the grace, the VMM
-   exits and HVF tears the VM down. Either way the disk's writer is gone.
+   exits and HVF or KVM tears the VM down. Either way the disk's writer is gone.
 
 Confirmation is the recorded process group being gone: `kill(-pgid, 0)`
 returning `ESRCH`, with `ps` consulted for orphan zombies, exactly as the

@@ -34,14 +34,19 @@ use std::time::{Duration, Instant};
 /// How long the VMM gets to report its relay socket.
 const START: Duration = Duration::from_secs(30);
 
+/// How long the VMM's threads get to finish closing the file table after its
+/// process group is gone. The record lock is shared by every thread, so it is
+/// the only proof that nothing of the VMM still holds the task's disks.
+const RELEASE: Duration = Duration::from_secs(5);
+
 /// Where the image, journal template and libkrun come from.
 pub const IMAGE_ENV: &str = "DECK_VM_IMAGE";
 pub const JOURNAL_ENV: &str = "DECK_VM_JOURNAL";
 pub const KRUN_ENV: &str = "DECK_VM_KRUN";
 pub const GUEST_ENV: &str = "DECK_VM_GUEST";
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
 const VCPUS_ENV: &str = "DECK_VM_VCPUS";
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
 const RAM_ENV: &str = "DECK_VM_RAM_MIB";
 /// The `deckd` binary that implements `--vmm`. Defaults to the running
 /// executable, which is right for the daemon and wrong for a test harness.
@@ -62,12 +67,18 @@ pub struct Vm {
 
 impl Vm {
     pub fn from_env(data: &Path, paths: Paths) -> Result<Self> {
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
         {
             let _ = (data, paths);
-            bail!("the vm backend requires macOS on Apple Silicon (libkrun/HVF)");
+            bail!("the vm backend requires macOS on Apple Silicon (libkrun/HVF) or Linux on x86_64 (libkrun/KVM)");
         }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         {
             let path = |key: &str| std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from);
             let image = path(IMAGE_ENV).with_context(|| format!("{IMAGE_ENV} names the guest root image"))?;
@@ -322,6 +333,7 @@ impl Instance for VmInstance {
 
     fn stop(&mut self, grace: Duration) -> Result<String> {
         if !reconcile::group_running(self.holder.pid)? {
+            released(&self.data, &self.id, RELEASE)?;
             cleanup(&self.paths, &self.id);
             return Ok("VMM already exited".into());
         }
@@ -343,6 +355,7 @@ impl Instance for VmInstance {
             }
         };
         reconcile::wait_for_group(self.holder.pid)?;
+        released(&self.data, &self.id, RELEASE)?;
         cleanup(&self.paths, &self.id);
         Ok(reason)
     }
@@ -382,6 +395,24 @@ fn exchange(holder: &Holder, request: &Request, timeout: Duration) -> Result<Rep
     let line = crate::wire::read(&mut BufReader::new(socket))?.context("VMM closed control connection")?;
     let reply: std::result::Result<Reply, String> = serde_json::from_slice(&line)?;
     reply.map_err(anyhow::Error::msg)
+}
+
+/// Wait until the record lock is free. `group_running` treats a zombie leader
+/// as gone, but the VMM's other threads still share its file table while they
+/// exit, so the lock can outlive the process group by a few milliseconds.
+fn released(data: &Path, id: &str, within: Duration) -> Result<()> {
+    let store = Store::open(data)?;
+    let deadline = Instant::now() + within;
+    loop {
+        if let Some(lock) = store.lock(id)? {
+            drop(lock);
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("VMM still holds the task lock after its process group ended");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn cleanup(paths: &Paths, id: &str) {
@@ -443,7 +474,25 @@ fn clone(source: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::copy(source, target).map(|_| ())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn clone(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    // FICLONE copies the extent map, so a sparse multi-gigabyte base costs
+    // almost nothing on a copy-on-write filesystem and shares its pages.
+    const FICLONE: std::os::raw::c_ulong = 0x4004_9409;
+    let source_file = std::fs::File::open(source)?;
+    let target_file = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(target)?;
+    // SAFETY: both descriptors are valid and owned; FICLONE takes no pointer.
+    if unsafe { libc::ioctl(target_file.as_raw_fd(), FICLONE, source_file.as_raw_fd()) } == 0 {
+        return Ok(());
+    }
+    drop(target_file);
+    let _ = std::fs::remove_file(target);
+    std::fs::copy(source, target).map(|_| ())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn clone(source: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::copy(source, target).map(|_| ())
 }
@@ -471,8 +520,12 @@ fn library_path(library: &Path) -> Option<std::ffi::OsString> {
     if let Some(parent) = library.parent() {
         paths.push(parent.to_owned());
     }
-    if let Some(existing) = std::env::var_os("DYLD_LIBRARY_PATH") {
-        paths.push(PathBuf::from(existing));
+    // Linux names the loader variable differently; libkrun finds libkrunfw
+    // through it, so both are forwarded whatever host this is.
+    for key in ["DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"] {
+        if let Some(existing) = std::env::var_os(key) {
+            paths.extend(std::env::split_paths(&existing));
+        }
     }
     std::env::join_paths(paths).ok()
 }
