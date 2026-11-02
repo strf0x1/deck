@@ -16,13 +16,15 @@ repeating work.
 Three facts constrain the shape:
 
 - **Construct speaks ACP over stdio only, and `loadSession` is `false`**
-  (`construct/crates/construct/src/acp/server.rs:106`). Whatever keeps a task
+  (`construct/crates/construct/src/acp/server.rs:113` at `7179f88`). Whatever keeps a task
   alive while Deck is closed must hold the agent's stdio, and a reconnecting
   client cannot re-run `initialize` and `session/new` on a live stream.
 - **Construct already journals.** One SQLite WAL per project, each event
   written before it is sent, resume projects messages back (construct ADR
-  0008). The journal is the conversation's record; Deck must not keep a
-  second one. It has gaps, listed under Decision 8.
+  0008). Since construct#140, resume also repairs a crash: unknown tool
+  outcomes get a synthetic "interrupted, not re-run" result, orphaned jobs
+  are closed, and a `Recovered` note says nothing was retried. The journal is
+  the conversation's record; Deck must not keep a second one.
 - **Substrate (`../substrate_v3`) ran this before**, with a daemon owning the
   agent loop and the journal. What carried over is below; the daemon running
   the loop did not, because the loop is now Construct's.
@@ -156,18 +158,16 @@ backend runs in the user's directory and does not checkpoint it.
 
 ### 8. What Construct must provide
 
-Filed against construct; Deck's recovery depends on them:
+Construct's journal recovery is done (construct#140): dangling tool calls
+get a synthetic unknown-outcome result, a turn that never ended and jobs
+that never ended are recorded as interrupted, and a failed journal write
+raises an `Error` event. Nothing is retried. One piece is missing, and
+Deck's reattach-after-restart depends on it:
 
-1. Resume answers each dangling tool call (an assistant `tool_calls` with no
-   `tool_result`) with a synthetic "interrupted, not re-run" result, so
-   `journal::project` never hands the provider an unanswered call.
-2. Resume records the missing `turn_end { interrupted: true }` of a turn
-   that never ended.
-3. A `job_start` with no `job_end` is closed on resume as ended by the
-   interruption.
-4. A failed journal write is surfaced, not swallowed (`Writer::emit` drops
-   the error today).
-5. ACP `session/load`, from the journal.
+- **ACP `session/load`** (construct#153). It resumes the journal session
+  through the same recovery path and streams its history back to the client.
+  Until it lands, a task whose agent died can be resumed only as a new ACP
+  session, so the conversation stays in the journal but not on screen.
 
 Also open: where Construct's journal lives under a VM. Inside the guest on
 the task disk, `destroy` deletes the transcript and one corruption takes code
@@ -231,10 +231,12 @@ framed like `rpc.rs`.
 
 - #7, #14 (connection and process split), #16 (first VM backend),
   `SANDBOX-DESIGN.md`.
-- Construct at `ed7127c`: `acp/server.rs:106` (`loadSession: false`),
-  `:142` (ACP sessions never resume); `journal/read.rs:67` (`project` keeps
-  dangling tool calls); `journal/mod.rs` `Writer::emit` (append errors
-  dropped); `jobs/info.rs:177` (`unconsumed` sees only ended jobs); ADR 0008.
+- Construct at `7179f88`: `acp/server.rs` advertises `loadSession: false`,
+  and `session/new` always passes `resume = None`. `journal/recovery.rs` and
+  `journal/writer.rs` (`resume` recovers before projecting, `report` raises
+  failed writes) landed in construct#140. The journal session id is the ACP
+  session id. Construct ADR 0008. A first read at the stale `ed7127c` found
+  four recovery gaps; all four are closed upstream.
 - Substrate at `eda62a2`: `host/data-lock.ts` (flock, one host per data
   root), `host/stale-vms.ts` (startup sweep), `sandbox/gondolin.ts`
   (confirmed shutdown), proposal 01 (cancel by process group), OVERVIEW
