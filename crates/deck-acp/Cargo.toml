@@ -1,6 +1,6 @@
 [package]
 name = "deck-acp"
-description = "deck's ACP client: line framing, the protocol state machine, the agent subprocess. No UI."
+description = "deck's ACP client: line framing, the protocol state machine, the connection. No UI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

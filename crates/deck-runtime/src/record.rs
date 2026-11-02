@@ -1,0 +1,247 @@
+//! Task records on disk: `<data>/tasks/<id>/events.jsonl`, one lifecycle
+//! event per line, and `task.json`, the state they fold into.
+//!
+//! The design choice: the log is the record and `task.json` is only a
+//! convenience for people and listings. Each line is checked against the
+//! task's state (see [`crate::lifecycle`]) and fsynced before the call
+//! returns; lifecycle events are rare, so each one can afford to be durable.
+//! A line cut short by a crash is dropped and truncated away on load, and
+//! anything else that fails to parse is an error, never skipped.
+//!
+//! `lock` is the task's liveness: whatever holds a running task holds an
+//! `flock` on `tasks/<id>/lock`. The kernel drops it however the holder
+//! dies, so a running record with a free lock has a dead holder.
+
+use crate::lifecycle::{Event, Spec, Task};
+use anyhow::{Context as _, Result, bail};
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const LOG: &str = "events.jsonl";
+const SNAPSHOT: &str = "task.json";
+
+#[derive(Serialize, Deserialize)]
+struct Line {
+    at_ms: u64,
+    #[serde(flatten)]
+    event: Event,
+}
+
+/// The tasks under one data root.
+pub struct Store {
+    tasks: PathBuf,
+}
+
+impl Store {
+    pub fn open(data: &Path) -> Result<Store> {
+        let tasks = data.join("tasks");
+        fs::create_dir_all(&tasks).with_context(|| format!("creating {}", tasks.display()))?;
+        Ok(Store { tasks })
+    }
+
+    /// A new task, recorded as created.
+    pub fn create(&self, backend: &str, spec: Spec) -> Result<Task> {
+        let first = Event::Created { backend: backend.into(), spec };
+        loop {
+            let id = new_id();
+            match fs::create_dir(self.tasks.join(&id)) {
+                Ok(()) => {
+                    let task = Task::new(&id, &first)?;
+                    self.write(&task, &first)?;
+                    return Ok(task);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e).context("creating a task directory"),
+            }
+        }
+    }
+
+    /// Record `ev` for `task`, refusing it if it cannot follow the task's
+    /// state. `task` is updated only once the line is on disk.
+    pub fn append(&self, task: &mut Task, ev: Event) -> Result<()> {
+        let mut next = task.clone();
+        next.apply(&ev)?;
+        self.write(&next, &ev)?;
+        *task = next;
+        Ok(())
+    }
+
+    /// The task `id`, folded from its log.
+    pub fn load(&self, id: &str) -> Result<Task> {
+        let path = self.tasks.join(id).join(LOG);
+        let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        if complete < bytes.len() {
+            // A write cut short. Its event never happened as far as anyone
+            // was told; drop it so the next append starts on a clean line.
+            OpenOptions::new().write(true).open(&path)?.set_len(complete as u64)?;
+        }
+        let text =
+            std::str::from_utf8(&bytes[..complete]).with_context(|| format!("{} is not UTF-8", path.display()))?;
+        let mut lines = text.lines().enumerate().map(|(n, l)| {
+            serde_json::from_str::<Line>(l).with_context(|| format!("{} line {}", path.display(), n + 1))
+        });
+        let Some(first) = lines.next() else { bail!("{} is empty", path.display()) };
+        let mut task = Task::new(id, &first?.event)?;
+        for line in lines {
+            task.apply(&line?.event)?;
+        }
+        Ok(task)
+    }
+
+    /// Every task with a record. A directory without a log is a create that
+    /// never finished and is not a task.
+    pub fn list(&self) -> Result<Vec<Task>> {
+        let mut out = vec![];
+        for entry in fs::read_dir(&self.tasks)? {
+            let entry = entry?;
+            let Some(id) = entry.file_name().to_str().map(str::to_owned) else { continue };
+            if entry.path().join(LOG).exists() {
+                out.push(self.load(&id)?);
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
+    /// Take `id`'s liveness lock, or `None` if a live holder has it.
+    pub fn lock(&self, id: &str) -> Result<Option<File>> {
+        let path = self.tasks.join(id).join("lock");
+        let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(e)) => Err(e).with_context(|| format!("locking {}", path.display())),
+        }
+    }
+
+    fn write(&self, task: &Task, ev: &Event) -> Result<()> {
+        let dir = self.tasks.join(&task.id);
+        let mut line = serde_json::to_string(&Line { at_ms: now_ms(), event: ev.clone() })?;
+        line.push('\n');
+        let mut log = OpenOptions::new().create(true).append(true).open(dir.join(LOG))?;
+        log.write_all(line.as_bytes())?;
+        log.sync_data()?;
+        // The snapshot can lag the log after a crash; the log is what loads.
+        let tmp = dir.join(format!("{SNAPSHOT}.tmp"));
+        let mut snap = File::create(&tmp)?;
+        snap.write_all(serde_json::to_string_pretty(task)?.as_bytes())?;
+        snap.sync_data()?;
+        fs::rename(&tmp, dir.join(SNAPSHOT))?;
+        // Make the new names durable; not every platform can sync a directory.
+        if let Ok(d) = File::open(&dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Unique across processes and restarts: time, pid, and a counter for ids
+/// made in the same millisecond.
+fn new_id() -> String {
+    static N: AtomicU32 = AtomicU32::new(0);
+    format!("{:011x}-{:x}-{}", now_ms(), std::process::id(), N.fetch_add(1, Ordering::Relaxed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::State;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("deck-record-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn spec() -> Spec {
+        Spec { argv: vec!["agent".into()], cwd: "/w".into() }
+    }
+
+    #[test]
+    fn a_task_reloads_as_it_was_left() {
+        let dir = scratch("reload");
+        let store = Store::open(&dir).unwrap();
+        let mut t = store.create("local", spec()).unwrap();
+        store.append(&mut t, Event::Started { pid: Some(9) }).unwrap();
+        store.append(&mut t, Event::Stopped { clean: true, reason: "asked".into() }).unwrap();
+        let again = Store::open(&dir).unwrap().load(&t.id).unwrap();
+        assert_eq!(again, t);
+        let snap: Task =
+            serde_json::from_str(&fs::read_to_string(dir.join("tasks").join(&t.id).join(SNAPSHOT)).unwrap()).unwrap();
+        assert_eq!(snap, t);
+        assert_eq!(store.list().unwrap(), vec![t]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_refused_event_leaves_the_record_alone() {
+        let dir = scratch("refused");
+        let store = Store::open(&dir).unwrap();
+        let mut t = store.create("local", spec()).unwrap();
+        assert!(store.append(&mut t, Event::Stopped { clean: true, reason: "never ran".into() }).is_err());
+        assert_eq!(t.state, State::Created);
+        assert_eq!(store.load(&t.id).unwrap(), t);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_torn_last_line_is_dropped_and_truncated() {
+        let dir = scratch("torn");
+        let store = Store::open(&dir).unwrap();
+        let mut t = store.create("local", spec()).unwrap();
+        store.append(&mut t, Event::Started { pid: Some(9) }).unwrap();
+        let log = dir.join("tasks").join(&t.id).join(LOG);
+        let whole = fs::read(&log).unwrap();
+        OpenOptions::new().append(true).open(&log).unwrap().write_all(br#"{"at_ms":1,"event":"stop"#).unwrap();
+
+        let loaded = store.load(&t.id).unwrap();
+        assert_eq!(loaded.state, State::Running);
+        assert_eq!(fs::read(&log).unwrap(), whole, "the fragment is gone");
+        let mut loaded = loaded;
+        store.append(&mut loaded, Event::Stopped { clean: false, reason: "x".into() }).unwrap();
+        assert_eq!(store.load(&t.id).unwrap(), loaded);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_complete_line_is_an_error() {
+        let dir = scratch("corrupt");
+        let store = Store::open(&dir).unwrap();
+        let t = store.create("local", spec()).unwrap();
+        let log = dir.join("tasks").join(&t.id).join(LOG);
+        OpenOptions::new().append(true).open(&log).unwrap().write_all(b"not json\n").unwrap();
+        assert!(store.load(&t.id).is_err());
+        assert!(store.list().is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_unfinished_create_is_not_a_task() {
+        let dir = scratch("unfinished");
+        let store = Store::open(&dir).unwrap();
+        fs::create_dir(dir.join("tasks").join("half")).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_lock_is_held_until_its_file_closes() {
+        let dir = scratch("lock");
+        let store = Store::open(&dir).unwrap();
+        let t = store.create("local", spec()).unwrap();
+        let held = store.lock(&t.id).unwrap().unwrap();
+        assert!(store.lock(&t.id).unwrap().is_none(), "a second holder is refused");
+        drop(held);
+        assert!(store.lock(&t.id).unwrap().is_some(), "closing releases it");
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

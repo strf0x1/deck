@@ -1214,6 +1214,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "deck-acp",
+ "deck-runtime",
  "futures",
  "gpui",
  "gpui_platform",
@@ -1226,6 +1227,18 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "futures",
+ "serde_json",
+]
+
+[[package]]
+name = "deck-runtime"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "deck-acp",
+ "futures",
+ "libc",
+ "serde",
  "serde_json",
 ]
 

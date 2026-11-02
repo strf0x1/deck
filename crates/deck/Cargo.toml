@@ -11,6 +11,7 @@ default-run = "deck"
 [dependencies]
 anyhow.workspace = true
 deck-acp.workspace = true
+deck-runtime.workspace = true
 futures.workspace = true
 serde_json.workspace = true
 gpui.workspace = true

@@ -8,18 +8,24 @@ calls and permission questions in a dark-glass window. This is the UI spike;
 ## Layout
 
 A Cargo workspace. Crates are the boundaries the compiler enforces:
-`deck-acp` never depends on GPUI or any UI crate (CI checks `cargo tree`),
-so protocol work builds and tests without compiling GPUI. `deck` depends on
-`deck-acp`, never the reverse.
+`deck-acp` and `deck-runtime` never depend on GPUI or any UI crate (CI
+checks `cargo tree`), so protocol and runtime work builds and tests without
+compiling GPUI. `deck-runtime` depends on `deck-acp`, and `deck` on both,
+never the reverse. Decisions that constrain later work are ADRs in
+`docs/adr/`, in construct's format; read them before changing what they
+settle.
 
 | Path | What |
 |---|---|
-| `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `client.rs` the connection over any reader/writer pair and its reader thread, `process.rs` the local subprocess launcher. The UI only sees `Inbound`. |
+| `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `client.rs` the connection over any reader/writer pair and its reader thread. The UI only sees `Inbound`. |
+| `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. |
+| `crates/deck-runtime/tests/lifecycle.rs` | The contract against real processes: stop with SIGTERM then SIGKILL, unclean exits, the agent's children, reconciliation after a holder dies, reuse, destroy. |
 | `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. |
 | `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch. |
 | `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
-| `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`). |
-| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the agent process it launched; routes keys and mouse; steps animation. |
+| `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`); app keys: `cmd-q` (macOS) / `ctrl-q` quits, and closing the last window quits. |
+| `crates/deck/src/task.rs` | The window's task: runs the agent through `deck-runtime` and stops it when the window goes. |
+| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the window's task; routes keys and mouse; steps animation. |
 | `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
 | `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, spring physics. |
 | `crates/deck/src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
@@ -29,10 +35,14 @@ so protocol work builds and tests without compiling GPUI. `deck` depends on
 
 A connection and the process behind it are separate things. `Client` speaks
 ACP over any reader/writer pair — a child's stdio, or a socket a VM-hosted
-agent listens on — and dropping it closes that stream. Only `Agent`, the
-handle a local launch returns, kills the child. Deck kills an agent it
-launched when it exits; an agent reached over a socket outlives it. A future
-transport implements `deck_acp::Writer` to say how closing works for it.
+agent listens on — and dropping it closes that stream. Processes belong to
+`deck-runtime`: a task's record says what ran and how it ended, and only a
+runtime stop or destroy ends the agent. For now the window owns its task and
+stops it on exit; the next window with the same command and directory
+resumes that task rather than creating another. Records live under the data
+root (`~/Library/Application Support/deck`, `${XDG_DATA_HOME:-~/.local/share}/deck`;
+`DECK_DATA` overrides it). A future transport implements `deck_acp::Writer`
+to say how closing works for it.
 
 Shared versions, lints and profiles live in the root `Cargo.toml`
 (`[workspace.*]`, taken with `.workspace = true`); `[patch]` and
@@ -106,7 +116,11 @@ screencapture -x -o -R"$b" deck.png
 ```
 
 Both platforms need a real window to draw into: a headless shell has no
-display, and macOS captures nothing while the session is locked.
+display, and macOS captures nothing while the session is locked. On macOS,
+`screencapture` also fails ("could not create image from rect") until the
+app the shell runs under (Terminal, the Claude app, …) is allowed in System
+Settings → Privacy & Security → Screen & System Audio Recording; reopen
+that app after granting it.
 
 ## Checks
 
@@ -117,8 +131,10 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 All three must be clean, on Linux and on macOS; CI runs them on both, blocking. A UI behaviour change gets a `crates/deck/tests/view.rs` case
 (simulate the input, assert on view state); a protocol change gets a
 `conn.rs` unit test and, if it crosses the process, a
-`crates/deck-acp/tests/acp.rs` step. `cargo test -p deck-acp` runs the
-protocol tests alone, without building GPUI.
+`crates/deck-acp/tests/acp.rs` step; a lifecycle change gets a
+`lifecycle.rs` unit test and, if it involves a process, a
+`crates/deck-runtime/tests/lifecycle.rs` case. `cargo test -p deck-acp` and
+`cargo test -p deck-runtime` run those alone, without building GPUI.
 
 ## Conventions
 

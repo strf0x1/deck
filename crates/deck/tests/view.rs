@@ -84,3 +84,36 @@ fn the_rail_opens_under_the_pointer_and_selects_by_click(cx: &mut TestAppContext
     cx.simulate_mouse_move(point(px(700.), px(300.)), None, Modifiers::none());
     assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()), "leaving the rail closes it");
 }
+
+#[gpui::test]
+fn the_quit_key_is_bound(cx: &mut TestAppContext) {
+    cx.update(deck::app::bind);
+    let (_deck, mut cx) = open(cx);
+    let binding = cx.update(|window, _| window.highest_precedence_binding_for_action(&deck::app::Quit)).unwrap();
+    let [key] = binding.keystrokes() else { panic!("quit is one keystroke") };
+    assert_eq!(key.key(), "q");
+    let m = key.modifiers();
+    assert!(if cfg!(target_os = "macos") { m.platform } else { m.control }, "{}", deck::app::QUIT_KEY);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn quitting_stops_the_windows_task(cx: &mut TestAppContext) {
+    use deck_runtime::{Local, Runtime, State};
+    let data = std::env::temp_dir().join(format!("deck-view-quit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, std::env::temp_dir(), cx)))
+            .unwrap()
+    });
+    let vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx.clone()).unwrap();
+    let id = deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)).expect("the window runs a task");
+    assert_eq!(Runtime::open(&data, Local).unwrap().task(&id).unwrap().state, State::Running);
+
+    cx.quit();
+    let after = Runtime::open(&data, Local).unwrap().task(&id).unwrap().state;
+    assert!(matches!(after, State::Stopped { clean: true, .. }), "{after:?}");
+    let _ = std::fs::remove_dir_all(&data);
+}

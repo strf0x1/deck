@@ -1,6 +1,6 @@
 # 0001 — Tasks run under a host runtime, recover from records
 
-Status: proposed, 2026-11-01. Answers #7's "answer now" questions; the input
+Status: accepted, 2026-11-02 (proposed 2026-11-01). Answers #7's "answer now" questions; the input
 is `SANDBOX-DESIGN.md`. Deck's first ADR, in construct's format (see
 `../construct/docs/adr/0001-record-decisions.md`): not edited after
 acceptance except to mark it superseded.
@@ -119,16 +119,24 @@ apart for an arbitrary agent.
 client is attached at a time; a new attach closes the previous one, so two
 windows never answer the same ask.
 
-Until Construct supports `session/load`, the holder buffers enough to make
-reattach work. It keeps the `initialize` and `session/new` results, every
-agent-to-client request still unanswered, and a bounded window of updates
-since the last client left; it replays them on attach. `deck-acp` gains an
-attach-to-existing mode that takes the session id from the record instead
-of sending the handshake. Once `session/load` exists, the holder becomes a
-plain byte relay. A client with no transcript (Deck restarted) uses
-`session/load`, which replays it from Construct's journal. A client that
-kept one (Deck stayed open while the agent restarted) uses `session/resume`,
-which skips the replay (construct#153).
+Reattach has two cases, and Construct's `session/load` (construct#153)
+covers only one of them:
+
+- **The agent restarted.** The new process has no session in memory. A
+  client with no transcript (Deck restarted too) sends `session/load`, which
+  replays it from Construct's journal; one that kept its transcript (Deck
+  stayed open) sends `session/resume`, which skips the replay.
+- **The agent kept running** while Deck was away. Its stream is the same
+  one, already initialized, and Construct refuses `session/load` for a
+  session already loaded on that connection. So the holder buffers enough
+  to make this reattach work: the `initialize` and `session/new` results,
+  every agent-to-client request still unanswered, and a bounded window of
+  updates since the last client left, replayed on attach. `deck-acp` gains
+  an attach-to-existing mode that takes the session id from the record
+  instead of sending the handshake.
+
+The holder becomes a plain byte relay only if Construct later lets a client
+reattach to a live session on the same connection.
 
 ### 6. Recovery runs from records, and is visible
 
@@ -190,8 +198,14 @@ Deck's, under its data root: `~/Library/Application Support/deck` on macOS,
   rename. It holds: id; project and environment reference; backend; state;
   holder pid and socket path; ACP session ids; Construct session ids and
   journal path; checkpoint refs; base commit and branch (from #8).
+- `tasks/<id>/lock`: whatever holds the running task (the runtime in
+  process for now, the shim or VMM's supervisor later) holds an `flock` on
+  it. The kernel drops it however the holder dies, so reconciliation reads
+  a `running` record with a free lock as a dead holder, and two runtimes on
+  one data root never run the same task.
 - Sockets live under `$XDG_RUNTIME_DIR/deck/` or `/tmp/deck-$UID/`, not the
   data root, because the macOS path is too long for `sun_path`.
+- `$DECK_DATA` overrides the data root, for tests and side-by-side builds.
 
 Session ids are pointers. The transcript stays in Construct's journal.
 

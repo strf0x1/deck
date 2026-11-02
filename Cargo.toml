@@ -13,7 +13,10 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 deck-acp = { path = "crates/deck-acp" }
+deck-runtime = { path = "crates/deck-runtime" }
 futures = "0.3"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # GPUI pinned to Zed v0.233.10. The crates.io `gpui` lags Zed by months, so
 # this is a git dependency on purpose; bump the rev deliberately, never float.
