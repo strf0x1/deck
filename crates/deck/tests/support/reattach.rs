@@ -269,12 +269,13 @@ pub fn eventually(mut check: impl FnMut() -> bool) {
     }
 }
 
-#[expect(clippy::unwrap_used, reason = "test detached completion barrier must be readable")]
+/// A line observed while the agent appends it is not JSON yet; it is not the
+/// end event, so the barrier keeps polling instead of failing the test.
 pub fn journal_finished(root: &std::path::Path) -> bool {
-    std::fs::read_dir(root.join("journal")).unwrap().flatten().any(|entry| {
-        std::fs::read_to_string(entry.path())
-            .unwrap()
-            .lines()
-            .any(|line| serde_json::from_str::<Value>(line).unwrap()["event"] == json!("end"))
+    let Ok(entries) = std::fs::read_dir(root.join("journal")) else { return false };
+    entries.flatten().any(|entry| {
+        std::fs::read_to_string(entry.path()).is_ok_and(|text| {
+            text.lines().any(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["event"] == json!("end")))
+        })
     })
 }
