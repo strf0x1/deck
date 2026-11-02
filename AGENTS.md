@@ -7,24 +7,34 @@ calls and permission questions in a dark-glass window. This is the UI spike;
 
 ## Layout
 
+A Cargo workspace. Crates are the boundaries the compiler enforces:
+`deck-acp` never depends on GPUI or any UI crate (CI checks `cargo tree`),
+so protocol work builds and tests without compiling GPUI. `deck` depends on
+`deck-acp`, never the reverse.
+
 | Path | What |
 |---|---|
-| `src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
-| `src/app.rs` | Opens the window (blurred background, `app_id = "deck"`). |
-| `src/acp/` | The ACP client. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `process.rs` the subprocess and reader thread. The UI only sees `Inbound`. |
-| `src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client; routes keys and mouse; steps animation. |
-| `src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
-| `src/ui/session.rs`, `board.rs`, `rail.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, spring physics. |
-| `src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
-| `src/control/` | Dev-only control socket (`DECK_CONTROL`). `protocol.rs` the pure line grammar, `socket.rs` the listener threads, `drive.rs` dispatches commands as GPUI input on the window and reads `state`. |
-| `src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. |
-| `tests/acp.rs` | Client against the fake agent as a real subprocess. |
-| `tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |
-| `tests/control.rs` | Control commands run against a headless window (no compositor in CI). |
+| `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `process.rs` the subprocess and reader thread. The UI only sees `Inbound`. |
+| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. |
+| `crates/deck-acp/tests/acp.rs` | Client against the fake agent as a real subprocess. |
+| `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
+| `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`). |
+| `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client; routes keys and mouse; steps animation. |
+| `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
+| `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, spring physics. |
+| `crates/deck/src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
+| `crates/deck/src/control/` | Dev-only control socket (`DECK_CONTROL`). `protocol.rs` the pure line grammar, `socket.rs` the listener threads, `drive.rs` dispatches commands as GPUI input on the window and reads `state`. |
+| `crates/deck/tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |
+| `crates/deck/tests/control.rs` | Control commands run against a headless window (no compositor in CI). |
+
+Shared versions, lints and profiles live in the root `Cargo.toml`
+(`[workspace.*]`, taken with `.workspace = true`); `[patch]` and
+`[profile.*]` only work there. A dependency goes in the crate that uses it.
 
 ## Run it
 
 ```sh
+cargo build                                              # every crate, the fake agent included
 cargo run --bin deck -- target/debug/deck-fake-agent    # no model, permission dialog included
 cargo run --bin deck                                     # construct acp in the current dir
 ```
@@ -81,9 +91,11 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
 All three must be clean; CI (`.github/workflows/ci.yml`) runs the same on
-Linux, and a non-blocking macOS job reports whether the Mac build passes. A UI behaviour change gets a `tests/view.rs` case
+Linux, and a non-blocking macOS job reports whether the Mac build passes. A UI behaviour change gets a `crates/deck/tests/view.rs` case
 (simulate the input, assert on view state); a protocol change gets a
-`conn.rs` unit test and, if it crosses the process, a `tests/acp.rs` step.
+`conn.rs` unit test and, if it crosses the process, a
+`crates/deck-acp/tests/acp.rs` step. `cargo test -p deck-acp` runs the
+protocol tests alone, without building GPUI.
 
 ## Conventions
 
@@ -99,8 +111,8 @@ Same as construct's (see `../construct/AGENTS.md`), in short:
 
 - Pinned to Zed `v0.233.10` (rev `350f3387…`) as a git dependency, with Zed's
   `[patch.crates-io]` entries mirrored and `Cargo.lock` seeded from Zed's.
-  Bump deliberately: change the rev in all three places, re-seed the lock
-  from that tag, run the checks, and look at the window.
+  Bump deliberately: change both revs in the root `[workspace.dependencies]`,
+  re-seed the lock from that tag, run the checks, and look at the window.
 - Read GPUI's own examples at the pinned tag for API questions; docs.rs lags.
 - Window blur is the compositor's call. On Hyprland, blur must be enabled
   (`decoration:blur:enabled`) or set per window for class `deck`.

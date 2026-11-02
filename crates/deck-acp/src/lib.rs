@@ -6,6 +6,7 @@
 //! The design choice: everything that decides what to send lives in the pure
 //! [`conn::Conn`], fed one parsed line at a time, so the protocol is tested
 //! without a process, a UI or a clock. The UI only ever sees [`Inbound`].
+//! This crate has no UI dependency, and must never gain one.
 
 pub mod conn;
 pub mod process;

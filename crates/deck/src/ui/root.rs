@@ -11,7 +11,7 @@ use super::rail::Rail;
 use super::session::Session;
 use super::theme::{SANS, Tokens};
 use super::{chrome, conversation, panels};
-use crate::acp::{Client, Inbound};
+use deck_acp::{Client, Inbound};
 use futures::StreamExt as _;
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,

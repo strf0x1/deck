@@ -1,0 +1,17 @@
+[package]
+name = "deck-acp"
+description = "deck's ACP client: line framing, the protocol state machine, the agent subprocess. No UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Never add gpui or any other UI dependency here; CI checks `cargo tree`.
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

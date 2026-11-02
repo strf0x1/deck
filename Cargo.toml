@@ -1,36 +1,37 @@
-[package]
-name = "deck"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"
 publish = false
-default-run = "deck"
 
-[dependencies]
+# Shared versions. Each crate takes what it uses with `.workspace = true`.
+[workspace.dependencies]
 anyhow = "1"
+deck-acp = { path = "crates/deck-acp" }
 futures = "0.3"
 serde_json = { version = "1", features = ["preserve_order"] }
 # GPUI pinned to Zed v0.233.10. The crates.io `gpui` lags Zed by months, so
 # this is a git dependency on purpose; bump the rev deliberately, never float.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "350f33871e84d5ed83a403523e9490b9bf014a94" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "350f33871e84d5ed83a403523e9490b9bf014a94", features = ["font-kit", "wayland", "x11"] }
-
-[dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "350f33871e84d5ed83a403523e9490b9bf014a94", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "350f33871e84d5ed83a403523e9490b9bf014a94" }
 
 # Zed's workspace patches these; a git dependency doesn't inherit [patch], so
 # mirror the ones GPUI's Linux build needs, at the revs Zed's lock resolves.
 # Cargo.lock was seeded from Zed's at that tag, so transitive versions match
-# what Zed ships.
+# what Zed ships. Cargo reads [patch] only here, in the workspace root.
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 calloop = { git = "https://github.com/zed-industries/calloop", rev = "eb6b4fd17b9af5ecc226546bdd04185391b3e265" }
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
@@ -40,6 +41,7 @@ string_slice = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 
+# Profiles, like [patch], are read only from the workspace root.
 [profile.dev]
 debug = "line-tables-only"
 

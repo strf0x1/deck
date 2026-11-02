@@ -1213,9 +1213,19 @@ name = "deck"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "deck-acp",
  "futures",
  "gpui",
  "gpui_platform",
+ "serde_json",
+]
+
+[[package]]
+name = "deck-acp"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "futures",
  "serde_json",
 ]
 

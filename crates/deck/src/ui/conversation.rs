@@ -11,7 +11,7 @@ use super::panels::{glyph, pane};
 use super::root::Deck;
 use super::session::{Entry, Status};
 use super::theme::{MONO, Tokens, icon, tint};
-use crate::acp::ToolStatus;
+use deck_acp::ToolStatus;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px, relative,
