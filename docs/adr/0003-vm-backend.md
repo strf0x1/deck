@@ -65,21 +65,18 @@ cannot read the guest's ext4 without mounting it. A separate guest disk keeps
 journal I/O native, isolates a workspace corruption from the transcript, and
 lets the journal use `SYNC_FULL` while the workspace stays `RELAXED`.
 
-The disk mode is not the whole guarantee. Construct opens the WAL with
-`PRAGMA synchronous=normal`, so commits are not fsynced; a hard VMM death can
-lose the most recent rows even though the journal disk would honour a flush.
-The measurement (`docs/vm-spike.md`) found exactly that: an empty journal
-image without a guest `sync`, and 18 durable rows with one. `session/close`
-on the stop path is best effort, not a checkpoint.
+The disk mode is not the whole guarantee. Construct originally opened the
+WAL with `PRAGMA synchronous=normal`, so commits were not fsynced and a VMM
+death could lose them. construct#161 fixed it with `synchronous=FULL`, synced
+directory creation and a first-commit directory fsync.
 
-Construct's fixes (`synchronous=FULL`, synced directories, first-commit
-directory fsync; construct#161) were re-tested. They are correct in code but
-still do not survive a VMM kill on this guest: per-inode and directory
-`fsync` return success without forcing writeback, and the journal only
-appears after the kernel's ~30 s writeback timer or a guest-wide `sync`. The
-remaining gap is the guest kernel/libkrun block path, not construct. Until
-that is resolved, the VM backend cannot claim per-event journal durability
-across a VMM crash.
+Measured in this VM: with that fix, a completed turn followed by a VMM
+`kill -9` and no guest `sync` leaves `journal.sqlite`, the WAL and 18 rows in
+the journal image **after ext4 replays its journal** (`e2fsck -fy` on a
+copy). The pre-fix `NORMAL` build leaves an empty database. Raw `debugfs` on
+an unclean image shows neither; the harness must replay first. `session/close`
+on the stop path is best effort; hard-death durability now comes from
+SQLite's fsyncs plus ext4 recovery.
 
 ### 4. The VMM is the holder, and stop is confirmed by the VMM's death
 

@@ -123,36 +123,33 @@ Two experiments, both ending in `kill -9` of the VMM:
    the journal image held `journal.sqlite`, a 391 KiB WAL and all 18 rows
    after the kill.
 
-The second result first looked like a Construct-side gap: a hard VMM death
-can lose journal commits that are still in guest memory. A normal runtime
-stop sends ACP `session/close` first, which closes the journal, but the
-backend cannot prove the guest unmounted or checkpointed. Construct's fix is
-tracked in construct#161, and the re-test below shows the remaining failure
-is lower in the stack.
+The original second result looked like a Construct-side gap: a hard VMM
+death can lose journal commits that are still in guest memory. A normal
+runtime stop sends ACP `session/close` first, which closes the journal, but
+the backend cannot prove the guest unmounted or checkpointed. Tracked in
+construct#161.
 
-Construct PR #163 now adds `synchronous=FULL`, synced directory creation and
-a first-commit directory fsync (head `f2dd5df`). Re-tested in this VM with a
-completed turn and no guest `sync`, `kill -9` still left the journal image
-empty. The remaining gap is below construct: **per-inode and directory
-`fsync` on this guest do not force writeback.**
+**The first conclusion drawn here was wrong: raw `debugfs` on a killed VM
+under-reports, because ext4 has not replayed its journal yet.** Re-running the
+same images through `e2fsck -fy` before inspecting changes the result.
 
-Control: a guest script created a file (and a directory entry) on the journal
-mount, called `fsync` on the file/directory, and the host image showed
-nothing. Thirty-five seconds later — the kernel's dirty-writeback timer — the
-file appeared with its contents. A guest-wide `sync` made it appear at once.
-Appending to an **existing**, already-durable file with `dd conv=fsync` was
-also lost; the file still held only its old contents. The guest is Linux
-6.12.109, the mount is `ext4 rw,relatime`, `write_cache` reports `write back`,
-and `dirty_expire_centisecs` is 3000. SQLite's fsyncs behave the same way, so
-a VMM kill before the next writeback loses the journal even though every
-fsync returned success.
+- Fixed Construct (`f2dd5df`: `synchronous=FULL`, synced directories, first
+  commit directory fsync), completed turn, no guest `sync`, VMM `kill -9`:
+  after replay the journal image holds `projects/<id>`, `journal.sqlite`, the
+  WAL and **18 rows**. Raw `debugfs` showed an empty filesystem; the rows were
+  in the ext4 journal.
+- The pre-fix build (`883e7fd`, `synchronous=normal`) under the same kill
+  leaves an empty database after replay (no `events` table): the fix is what
+  makes the rows durable.
+- The fsync controls that appeared to lose data were the same artifact. After
+  replay, a file appended with `fsync` (and its directory entry) is present.
+  The 35 s appearance without a kill is ext4 checkpointing a clean, mounted
+  filesystem, not the only durability path.
 
-That means #163's fix is correct for a guest whose fsync works, but it cannot
-close the hard-death case on this libkrunfw guest. The next investigation is
-the guest kernel/virtio-blk writeback path (or a newer libkrun/libkrunfw); a
-guest sync on graceful stop is only a partial workaround. The PR's SIGKILL
-test cannot see this: killing the construct process leaves the host page
-cache intact, so it would pass with `NORMAL` too.
+The harness must replay a killed guest's ext4 journal (`e2fsck -fy` on a copy,
+or mount it in a guest) before judging durability. `session/close` on the stop
+path remains best effort; with construct#163 the hard-death path is covered by
+SQLite's fsyncs plus ext4 recovery.
 
 The host reboot part of the original measurement was **not performed**.
 Killing the VMM is the conservative writer-death test; a host reboot would
