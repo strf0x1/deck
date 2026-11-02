@@ -9,7 +9,8 @@
 //! interleave a line. Who launched the agent is not this module's business;
 //! `deck_runtime` runs agents and hands their streams here.
 
-use super::conn::{Conn, Inbound};
+use super::Inbound;
+use super::conn::{Conn, Target};
 use anyhow::{Result, anyhow};
 use futures::channel::mpsc;
 use std::io::{BufRead, Write};
@@ -61,7 +62,7 @@ impl Client {
         input: impl BufRead + Send + 'static,
         output: impl Writer,
     ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
-        Self::connect(Conn::start(cwd), input, output)
+        Self::connect(cwd, Target::New, input, output)
     }
 
     /// Initialize and load an existing session, replaying its history before Ready.
@@ -71,14 +72,26 @@ impl Client {
         output: impl Writer,
         session_id: String,
     ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
-        Self::connect(Conn::load(cwd, session_id), input, output)
+        Self::connect(cwd, Target::Load(session_id), input, output)
+    }
+
+    /// Reattach to a running session only when the agent advertises liveAttach.
+    pub fn attach(
+        cwd: PathBuf,
+        input: impl BufRead + Send + 'static,
+        output: impl Writer,
+        session_id: String,
+    ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
+        Self::connect(cwd, Target::Attach(session_id), input, output)
     }
 
     fn connect(
-        (conn, init): (Conn, String),
+        cwd: PathBuf,
+        target: Target,
         input: impl BufRead + Send + 'static,
         output: impl Writer,
     ) -> Result<(Client, mpsc::UnboundedReceiver<Inbound>)> {
+        let (conn, init) = Conn::begin(cwd, target, Some(request_prefix()));
         let conn = Arc::new(Mutex::new(conn));
         let out: Out = Arc::new(Mutex::new(Some(Box::new(output))));
         write(&out, &init)?;
@@ -122,7 +135,14 @@ impl Client {
 
     /// Reply to a permission request with an option id, or `None` to cancel.
     pub fn answer(&self, request: &serde_json::Value, option: Option<&str>) -> Result<()> {
-        write(&self.out, &Conn::answer(request, option))
+        #[expect(clippy::unwrap_used, reason = "poisoned lock: the reader panicked")]
+        let line = self
+            .conn
+            .lock()
+            .unwrap()
+            .answer(request, option)
+            .ok_or_else(|| anyhow!("the permission request is stale"))?;
+        write(&self.out, &line)
     }
 }
 
@@ -145,4 +165,12 @@ fn write(out: &Mutex<Option<Box<dyn Writer>>>, line: &str) -> Result<()> {
     w.write_all(line.as_bytes())?;
     w.flush()?;
     Ok(())
+}
+
+/// Namespaces survive window/process restarts without depending on the peer's epochs.
+pub(crate) fn request_prefix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    format!("deck-{}-{time}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
 }

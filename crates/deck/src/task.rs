@@ -17,13 +17,19 @@ pub struct WindowTask {
 }
 
 impl WindowTask {
-    /// Find or start the task. An already running agent remains detached
-    /// until the user chooses restart, because B1 has no live attach.
+    /// Find or start a task, rebuilding an existing live session when supported.
     pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
         let daemon = DaemonClient::connect_or_start(data)?;
         let run = daemon.run(Spec { argv, cwd: cwd.clone() })?;
         let task = WindowTask { daemon, id: run.task.id, cwd };
-        let connection = if run.started { Some(task.connect(run.task.session_id)?) } else { None };
+        let connection = if run.started {
+            Some(task.connect(run.task.session_id)?)
+        } else if let Some(id) = run.task.session_id {
+            let stream = task.daemon.attach(&task.id)?;
+            Some(Client::attach(task.cwd.clone(), stream.reader, stream.writer, id)?)
+        } else {
+            None
+        };
         Ok((task, connection))
     }
 

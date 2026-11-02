@@ -22,7 +22,7 @@ fn open(cx: &mut TestAppContext) -> (gpui::Entity<Deck>, VisualTestContext) {
 fn typing_a_prompt_and_answering_a_permission_by_key(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into() }, cx)
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
     });
 
     cx.simulate_keystrokes("h i backspace o enter");
@@ -71,6 +71,54 @@ fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppCont
             ]
         );
         assert_eq!(d.session().status, Status::Ready);
+    });
+}
+
+#[gpui::test]
+fn reattached_turn_state_controls_typing_and_permission_keys(cx: &mut TestAppContext) {
+    use deck_acp::TurnState;
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::UserMessage("go".into()), cx);
+        d.on_inbound(Inbound::Message("partial".into()), cx);
+        d.on_inbound(
+            Inbound::Ready { agent: "construct".into(), session_id: "saved".into(), turn: Some(TurnState::Working) },
+            cx,
+        );
+    });
+    cx.simulate_keystrokes("x enter");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.session().status, Status::Working);
+        assert_eq!(d.session().entries, vec![Entry::You("go".into()), Entry::Agent("partial".into())]);
+        assert_eq!(d.draft(), "x");
+    });
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Permission {
+                request: json!(902),
+                title: "read outside".into(),
+                options: vec![PermissionOption { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() }],
+            },
+            cx,
+        );
+        d.on_inbound(Inbound::Turn { number: 1, state: TurnState::Waiting }, cx);
+    });
+    cx.simulate_keystrokes("z 1");
+    deck.read_with(&cx, |d, _| {
+        assert!(d.session().ask.is_none());
+        assert_eq!(d.session().status, Status::Working);
+        assert_eq!(d.draft(), "x");
+    });
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Message(" continued".into()), cx);
+        d.on_inbound(Inbound::Turn { number: 1, state: TurnState::Idle { stop_reason: Some("end_turn".into()) } }, cx);
+    });
+    cx.simulate_keystrokes("backspace h i enter");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(
+            d.session().entries,
+            vec![Entry::You("go".into()), Entry::Agent("partial continued".into()), Entry::You("hi".into())]
+        );
     });
 }
 

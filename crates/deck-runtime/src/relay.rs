@@ -32,6 +32,7 @@ pub struct Relay {
     path: PathBuf,
     done: Arc<AtomicBool>,
     current: Current,
+    writer: Arc<Mutex<Box<dyn deck_acp::Writer>>>,
 }
 
 impl Relay {
@@ -61,6 +62,7 @@ impl Relay {
         let input_peer = current.clone();
         let quit = done.clone();
         let writer = Arc::new(Mutex::new(stream.writer));
+        let accept_writer = writer.clone();
         std::thread::Builder::new().name("holder-accept".into()).spawn(move || {
             while !quit.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -68,84 +70,104 @@ impl Relay {
                         if socket.set_nonblocking(false).is_err() {
                             continue;
                         }
-                        let mut slot = input_peer.lock().unwrap_or_else(|e| e.into_inner());
+                        let slot = input_peer.lock().unwrap_or_else(|e| e.into_inner());
                         if slot.is_some() {
                             let _ = socket.shutdown(Shutdown::Both);
                             continue;
                         }
-                        let Ok(read) = socket.try_clone() else { continue };
-                        let Ok(mut write) = socket.try_clone() else { continue };
-                        let _ = write.set_write_timeout(Some(Duration::from_millis(200)));
-                        let (tx, rx) = mpsc::sync_channel(QUEUE);
-                        let peer = Arc::new(Peer { socket, output: tx });
-                        *slot = Some(peer.clone());
-                        drop(slot);
-                        let output_current = input_peer.clone();
-                        let output_identity = peer.clone();
-                        std::thread::spawn(move || {
-                            loop {
-                                let active = output_current
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .as_ref()
-                                    .is_some_and(|p| Arc::ptr_eq(p, &output_identity));
-                                if !active {
-                                    break;
-                                }
-                                match rx.recv_timeout(POLL) {
-                                    Ok(Some(line)) => {
-                                        if write.write_all(&line).is_err() {
-                                            break;
-                                        }
-                                    }
-                                    Ok(None) => break,
-                                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                                }
-                            }
-                            detach(&output_current, &output_identity);
-                        });
-                        let input_current = input_peer.clone();
-                        let writer = writer.clone();
-                        std::thread::spawn(move || {
-                            let mut failed = false;
-                            let _ = lines(BufReader::new(read), |line| {
-                                if failed {
-                                    return;
-                                }
-                                let Some(line) = line else {
-                                    detach(&input_current, &peer);
-                                    failed = true;
-                                    return;
-                                };
-                                let mut out = writer.lock().unwrap_or_else(|e| e.into_inner());
-                                // Serialize the identity check with agent writes. A line
-                                // accepted before detach finishes before the next peer's
-                                // initialize; buffered old-peer lines are discarded.
-                                let active = input_current
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .as_ref()
-                                    .is_some_and(|p| Arc::ptr_eq(p, &peer));
-                                if !active {
-                                    failed = true;
-                                    return;
-                                }
-                                if out.write_all(&line).and_then(|_| out.flush()).is_err() {
-                                    detach(&input_current, &peer);
-                                    failed = true;
-                                }
-                            });
-                            detach(&input_current, &peer);
-                        });
+                        let _ = serve_peer(socket, slot, &input_peer, &accept_writer);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
                     Err(_) => break,
                 }
             }
         })?;
-        Ok(Self { path: path.to_owned(), done, current })
+        Ok(Self { path: path.to_owned(), done, current, writer })
     }
+    /// Reserve the transport for runtime shutdown, evicting the window. No
+    /// listener peer can enter until this private stream is dropped.
+    pub(crate) fn take_over(&self) -> Result<UnixStream> {
+        let (client, held) = UnixStream::pair()?;
+        // Never wait for a blocked agent stdin here. Input threads serialize
+        // writes and reject queued old-peer lines after this identity swap.
+        let slot = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(peer) = slot.as_ref() {
+            let _ = peer.socket.shutdown(Shutdown::Both);
+        }
+        serve_peer(held, slot, &self.current, &self.writer)?;
+        Ok(client)
+    }
+}
+
+fn serve_peer(
+    socket: UnixStream,
+    mut slot: std::sync::MutexGuard<'_, Option<Arc<Peer>>>,
+    current: &Current,
+    writer: &Arc<Mutex<Box<dyn deck_acp::Writer>>>,
+) -> Result<()> {
+    let read = socket.try_clone()?;
+    let mut write = socket.try_clone()?;
+    let _ = write.set_write_timeout(Some(Duration::from_millis(200)));
+    let (tx, rx) = mpsc::sync_channel(QUEUE);
+    let peer = Arc::new(Peer { socket, output: tx });
+    *slot = Some(peer.clone());
+    drop(slot);
+    let output_current = current.clone();
+    let output_identity = peer.clone();
+    std::thread::spawn(move || {
+        loop {
+            let active = output_current
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|p| Arc::ptr_eq(p, &output_identity));
+            if !active {
+                break;
+            }
+            match rx.recv_timeout(POLL) {
+                Ok(Some(line)) => {
+                    if write.write_all(&line).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        detach(&output_current, &output_identity);
+    });
+    let input_current = current.clone();
+    let writer = writer.clone();
+    std::thread::spawn(move || {
+        let mut failed = false;
+        let _ = lines(BufReader::new(read), |line| {
+            if failed {
+                return;
+            }
+            let Some(line) = line else {
+                detach(&input_current, &peer);
+                failed = true;
+                return;
+            };
+            let mut out = writer.lock().unwrap_or_else(|e| e.into_inner());
+            // Serialize the identity check with agent writes. A line
+            // accepted before detach finishes before the next peer's
+            // initialize; buffered old-peer lines are discarded.
+            let active =
+                input_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|p| Arc::ptr_eq(p, &peer));
+            if !active {
+                failed = true;
+                return;
+            }
+            if out.write_all(&line).and_then(|_| out.flush()).is_err() {
+                detach(&input_current, &peer);
+                failed = true;
+            }
+        });
+        detach(&input_current, &peer);
+    });
+    Ok(())
 }
 
 impl Drop for Relay {
@@ -330,6 +352,27 @@ mod tests {
         let mut output = Vec::new();
         peer.read_to_end(&mut output).unwrap();
         assert_eq!(output, b"final reply\n");
+    }
+
+    #[test]
+    fn shutdown_takeover_evicts_the_window_and_reserves_the_stream() {
+        let (relay, mut agent, path) = relay();
+        let mut window = connect(&path);
+        window.write_all(b"ready\n").unwrap();
+        let mut ready = [0; 6];
+        agent.read_exact(&mut ready).unwrap();
+        let mut closing = relay.take_over().unwrap();
+        let mut bytes = [0; 1];
+        assert_eq!(window.read(&mut bytes).unwrap(), 0);
+        let mut intruder = connect(&path);
+        assert_eq!(intruder.read(&mut bytes).unwrap(), 0);
+        closing.write_all(b"close\n").unwrap();
+        agent.read_exact(&mut ready).unwrap();
+        assert_eq!(&ready, b"close\n");
+        agent.write_all(b"done\n").unwrap();
+        let mut done = [0; 5];
+        closing.read_exact(&mut done).unwrap();
+        assert_eq!(&done, b"done\n");
     }
 
     #[test]
