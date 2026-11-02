@@ -19,7 +19,10 @@ settle.
 |---|---|
 | `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `inbound.rs` typed events and payload decoding, `shutdown.rs` the bounded close-only exchange, `client.rs` the connection over any reader/writer pair and its reader thread. The UI only sees `Inbound`. |
 | `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. |
-| `crates/deck-runtime/src/daemon.rs`, `daemon_client.rs`, `relay.rs` | The daemon authority, its control client, and the JSON-agnostic line relay. `holder.rs` owns each task independently; `detached.rs` launches and adopts it. `child.rs` ties agent process groups to holder lifetime. See `docs/deckd.md`. |
+|`crates/deck-runtime/src/daemon.rs`, `daemon_client.rs`, `relay.rs`|The daemon authority, its control client, and the JSON-agnostic line relay. `holder.rs` owns each task independently; `detached.rs` launches and adopts it. `child.rs` ties agent process groups to holder lifetime. See `docs/deckd.md`.|
+|`crates/deck-runtime/src/vm.rs`, `vmm.rs`, `krun.rs`|The libkrun backend: `vm.rs` is the `Backend`/`Instance`, `vmm.rs` is the detached holder (`deckd --vmm`) that owns the microVM, and `krun.rs` loads the pinned 1.x C API. Decisions and measurements: `docs/adr/0003-vm-backend.md`, `docs/vm-spike.md`.|
+|`crates/deck-runtime/tests/vm.rs`|The same lifecycle contract against a real guest; skipped unless `DECK_VM_*` names an image, journal, libkrun and a signed `deckd`.|
+|`scripts/vm-image.sh`, `vm-sign.sh`|Build the hand-made aarch64 Debian guest image with Docker, and codesign a `deckd` with the Hypervisor entitlement.|
 | `crates/deck-runtime/tests/daemon.rs` | The real daemon binary: locking, idle shutdown, detached survival, holder adoption after daemon death, holder-crash cleanup, and concurrent control clients. |
 | `crates/deck-runtime/tests/lifecycle.rs` | The contract against real processes: stop with SIGTERM then SIGKILL, unclean exits, the agent's children, reconciliation after a holder dies, reuse, destroy. |
 | `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. Supports live attach, `session/load`, `resume` and `close` like construct; `DECK_FAKE_STATE=<dir>` persists sessions across processes. Keep it in step with what Deck relies on from construct (ADR 0002). |
@@ -64,6 +67,25 @@ cargo run --bin deck                                     # construct acp in the 
 construct without spending tokens: start its scripted model (see
 construct's AGENTS.md, `scripts/mock.sh`), then
 `deck -- env CONSTRUCT_HOME=… CONSTRUCT_BASE_URL=http://127.0.0.1:$port/v1 OPENAI_API_KEY=x construct acp`.
+
+### The libkrun backend (macOS/arm64)
+
+Build the pinned libkrun 1.19.7 and the guest image once
+(`docs/vm-spike.md` has the commands), then:
+
+```sh
+scripts/vm-sign.sh target/debug/deckd          # hv_vm_create needs this
+export DECK_VM_IMAGE=target/vm/base.img DECK_VM_JOURNAL=target/vm/journal.img
+export DECK_VM_KRUN=$HOME/src/libkrun/target/release/libkrun.1.19.7.dylib
+cargo run --bin deck                           # construct acp in a VM
+```
+
+`deckd` inherits `DECK_VM_*`, so the window's task is a VMM. The project is
+copied into the guest's writable disk on first start; it is not a host
+mount. The lifecycle contract runs with
+`cargo test -p deck-runtime --test vm` when the same variables plus
+`DECK_VM_EXECUTABLE` (a signed `deckd`) are set. A bare `EINVAL` at VM start
+is almost always an unsigned daemon.
 
 ### Driving the live window (agents)
 

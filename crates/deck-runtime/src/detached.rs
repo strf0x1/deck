@@ -5,7 +5,7 @@
 
 use crate::backend::{Backend, Exited, Instance, Stream};
 use crate::holder::{self, Identity, Reply, Request, WAIT};
-use crate::lifecycle::{Holder, Spec, Task};
+use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
 use crate::record::{RecordLock, Store};
 use crate::{reconcile, wire};
@@ -117,7 +117,7 @@ impl Backend for Detached {
         Ok(Some(Box::new(Proxy::watch(self.data.clone(), task.id.clone(), identity, exited))))
     }
 
-    fn destroy(&mut self, _spec: &Spec) -> Result<()> {
+    fn destroy(&mut self, _task: &Task) -> Result<()> {
         Ok(())
     }
 }

@@ -6,7 +6,7 @@
 //! There is no "probably stopped", because the runtime must never reuse what
 //! a process might still be writing.
 
-use crate::lifecycle::{Holder, Spec, Task};
+use crate::lifecycle::{Holder, Task};
 use crate::record::RecordLock;
 use anyhow::Result;
 use deck_acp::Writer;
@@ -44,8 +44,9 @@ pub trait Backend: Send {
     }
 
     /// Remove what the task owns besides its record (a disk, a checkout).
-    /// The task is not running.
-    fn destroy(&mut self, spec: &Spec) -> Result<()>;
+    /// The task is not running. The whole task, not just its spec, because a
+    /// backend's per-task files live under the task's id (ADR 0003).
+    fn destroy(&mut self, task: &Task) -> Result<()>;
 }
 
 /// A running task's process.

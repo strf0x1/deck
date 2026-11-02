@@ -1238,6 +1238,7 @@ dependencies = [
  "deck-acp",
  "futures",
  "libc",
+ "libloading",
  "serde",
  "serde_json",
 ]

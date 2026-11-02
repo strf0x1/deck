@@ -33,7 +33,7 @@ impl Backend for Local {
         Self::spawn(&task.spec, exited, Some(lock))
     }
 
-    fn destroy(&mut self, _spec: &Spec) -> Result<()> {
+    fn destroy(&mut self, _task: &Task) -> Result<()> {
         Ok(())
     }
 }

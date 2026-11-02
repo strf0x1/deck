@@ -343,7 +343,7 @@ mod supervision {
             callbacks.push(exited);
             Ok(Box::new(DeferredInstance { pid: callbacks.len() as u32, fail_stop: self.fail_stop, _lock: lock }))
         }
-        fn destroy(&mut self, _spec: &Spec) -> anyhow::Result<()> {
+        fn destroy(&mut self, _task: &Task) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -360,6 +360,28 @@ mod supervision {
             }
             Ok("confirmed stop".into())
         }
+    }
+
+    #[test]
+    fn a_runtime_leaves_another_backends_task_alone() {
+        let dir = Scratch::new("other-backend");
+        let local = Runtime::open(&dir.0, Local).unwrap();
+        let id = local.create(spec(&["cat"])).unwrap();
+        local.start(&id).unwrap();
+        drop(local); // the local backend's Drop reaps the child and frees the lock
+
+        let callbacks = Arc::new(Mutex::new(vec![]));
+        let other = Runtime::open(&dir.0, Deferred { callbacks, fail_stop: false }).unwrap();
+        assert_eq!(
+            other.task(&id).unwrap().state,
+            State::Running,
+            "another backend must not reconcile or stop this task"
+        );
+        assert!(other.destroy(&id).is_err(), "another backend must not delete its files");
+
+        let local = Runtime::open(&dir.0, Local).unwrap();
+        assert!(matches!(local.task(&id).unwrap().state, State::Stopped { clean: false, .. }));
+        local.destroy(&id).unwrap();
     }
 
     #[test]

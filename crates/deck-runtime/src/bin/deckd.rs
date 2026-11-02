@@ -30,6 +30,13 @@ fn run() -> Result<()> {
                 }
                 return deck_runtime::holder::run(&data, &id, &socket, fd);
             }
+            "--vmm" => {
+                let config = PathBuf::from(args.next().context("--vmm needs a config path")?);
+                if args.next().is_some() {
+                    bail!("unexpected VMM argument");
+                }
+                return deck_runtime::vmm::run(&config);
+            }
             "--child" => {
                 let mut argv: Vec<_> = args.collect();
                 if argv.first().is_some_and(|a| a == "--") {
