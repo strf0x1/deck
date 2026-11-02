@@ -16,9 +16,9 @@ use deck_acp::{Client, Inbound};
 use futures::StreamExt as _;
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
-    ParentElement as _, Render, ScrollHandle, Styled as _, Window, div, px,
+    ParentElement as _, Render, ScrollHandle, Styled as _, Subscription, Window, div, px,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -37,9 +37,10 @@ pub struct Deck {
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
-    /// The task this window runs, if it runs one. Held so that dropping the
-    /// view stops it.
+    /// The task this window runs, if it runs one. Dropping it stops it: on
+    /// app quit (`_quit`), or with the view.
     task: Option<WindowTask>,
+    _quit: Option<Subscription>,
     client: Option<Arc<Client>>,
     last_frame: Option<Instant>,
 }
@@ -66,18 +67,37 @@ impl Deck {
             scroll: ScrollHandle::new(),
             agent_cmd: String::new(),
             task: None,
+            _quit: None,
             client: None,
             last_frame: None,
         }
     }
 
-    /// A Deck driving the agent `argv` in `cwd`.
+    /// A Deck driving the agent `argv` in `cwd`, with task records at the
+    /// default data root.
     pub fn launch(argv: Vec<String>, cwd: PathBuf, cx: &mut Context<Self>) -> Self {
+        match deck_runtime::data_root() {
+            Ok(data) => Deck::launch_in(&data, argv, cwd, cx),
+            Err(e) => {
+                let mut deck = Deck::detached(cx);
+                deck.session.apply(Inbound::Failed(format!("{e:#}")));
+                deck
+            }
+        }
+    }
+
+    /// A Deck driving the agent `argv` in `cwd`, with task records under `data`.
+    pub fn launch_in(data: &Path, argv: Vec<String>, cwd: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut deck = Deck::detached(cx);
         deck.agent_cmd = argv.join(" ");
-        match WindowTask::run(argv, cwd) {
+        match WindowTask::run(data, argv, cwd) {
             Ok((task, client, mut rx)) => {
                 deck.task = Some(task);
+                // Quitting may not drop the view first; stop the task ourselves.
+                deck._quit = Some(cx.on_app_quit(|deck, _| {
+                    deck.task = None;
+                    async {}
+                }));
                 deck.client = Some(Arc::new(client));
                 cx.spawn(async move |this, cx| {
                     while let Some(ev) = rx.next().await {
@@ -91,6 +111,11 @@ impl Deck {
             Err(e) => deck.session.apply(Inbound::Failed(format!("{e:#}"))),
         }
         deck
+    }
+
+    /// The id of the task this window runs, while it runs one.
+    pub fn task_id(&self) -> Option<&str> {
+        self.task.as_ref().map(WindowTask::id)
     }
 
     pub fn session(&self) -> &Session {

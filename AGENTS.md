@@ -23,7 +23,7 @@ settle.
 | `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. |
 | `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch. |
 | `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
-| `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`). |
+| `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`); app keys: `cmd-q` (macOS) / `ctrl-q` quits, and closing the last window quits. |
 | `crates/deck/src/task.rs` | The window's task: runs the agent through `deck-runtime` and stops it when the window goes. |
 | `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the window's task; routes keys and mouse; steps animation. |
 | `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
@@ -116,7 +116,11 @@ screencapture -x -o -R"$b" deck.png
 ```
 
 Both platforms need a real window to draw into: a headless shell has no
-display, and macOS captures nothing while the session is locked.
+display, and macOS captures nothing while the session is locked. On macOS,
+`screencapture` also fails ("could not create image from rect") until the
+app the shell runs under (Terminal, the Claude app, …) is allowed in System
+Settings → Privacy & Security → Screen & System Audio Recording; reopen
+that app after granting it.
 
 ## Checks
 
