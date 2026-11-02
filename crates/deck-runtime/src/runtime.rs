@@ -10,11 +10,10 @@
 
 use crate::backend::{Backend, Instance, Stream};
 use crate::lifecycle::{Event, Failure, Spec, State, Task};
-use crate::record::Store;
+use crate::record::{RecordLock, Store};
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::channel::mpsc;
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -46,7 +45,7 @@ struct Inner {
 struct Live {
     instance: Box<dyn Instance>,
     /// Held for as long as the task runs here.
-    _lock: File,
+    _lock: RecordLock,
 }
 
 impl Runtime {

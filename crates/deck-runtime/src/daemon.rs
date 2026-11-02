@@ -40,6 +40,7 @@ pub fn serve(options: Options) -> Result<()> {
     std::fs::create_dir_all(&options.data)?;
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(options.data.join("deckd.lock"))?;
     lock.try_lock().context("deckd is already running for this data root")?;
+    let _lock = crate::record::RecordLock::held(lock);
     options.paths.prepare()?;
     let path = options.paths.control();
     if path.exists() {

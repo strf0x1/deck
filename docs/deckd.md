@@ -57,7 +57,9 @@ needs to reopen to obtain a new control connection.
 ## Paths and lifetime
 
 The daemon holds `<data>/deckd.lock` until its control socket is removed. A second
-daemon on that data root fails clearly. It exits after five seconds with no
+daemon on that data root fails clearly. Normal lock release explicitly unlocks
+before closing its file, so an unrelated concurrent fork cannot extend task or
+daemon ownership until exec. It exits after five seconds with no
 running task and no control client. A quiet notice subscription counts as a
 client, and disconnecting that subscription permits idle exit.
 

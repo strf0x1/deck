@@ -10,7 +10,9 @@
 //!
 //! `lock` is the task's liveness: whatever holds a running task holds an
 //! `flock` on `tasks/<id>/lock`. The kernel drops it however the holder
-//! dies, so a running record with a free lock has a dead holder.
+//! dies, so a running record with a free lock has a dead holder. Normal
+//! release explicitly unlocks before close: an unrelated concurrent fork
+//! can retain the descriptor until exec and must not extend its lifetime.
 
 use crate::lifecycle::{Event, Spec, Task};
 use anyhow::{Context as _, Result, bail};
@@ -34,6 +36,22 @@ struct Line {
 /// The tasks under one data root.
 pub struct Store {
     tasks: PathBuf,
+}
+
+/// A held record lock. The holder releases it explicitly, even if a
+/// concurrently forked child has not yet closed its inherited descriptor.
+pub struct RecordLock(File);
+
+impl RecordLock {
+    pub(crate) fn held(file: File) -> Self {
+        Self(file)
+    }
+}
+
+impl Drop for RecordLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 impl Store {
@@ -109,11 +127,11 @@ impl Store {
     }
 
     /// Take `id`'s liveness lock, or `None` if a live holder has it.
-    pub fn lock(&self, id: &str) -> Result<Option<File>> {
+    pub fn lock(&self, id: &str) -> Result<Option<RecordLock>> {
         let path = self.tasks.join(id).join("lock");
         let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path)?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
+            Ok(()) => Ok(Some(RecordLock::held(file))),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(e)) => Err(e).with_context(|| format!("locking {}", path.display())),
         }
@@ -242,6 +260,47 @@ mod tests {
         assert!(store.lock(&t.id).unwrap().is_none(), "a second holder is refused");
         drop(held);
         assert!(store.lock(&t.id).unwrap().is_some(), "closing releases it");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn releasing_a_lock_does_not_wait_for_a_forked_child_to_exec() {
+        use std::io::Read as _;
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::net::UnixStream;
+
+        let dir = scratch("fork-lock");
+        let store = Store::open(&dir).unwrap();
+        let task = store.create("local", spec()).unwrap();
+        let held = store.lock(&task.id).unwrap().unwrap();
+        let (mut parent, child) = UnixStream::pair().unwrap();
+        let child_fd = child.as_raw_fd();
+        // SAFETY: the child only calls async-signal-safe libc functions and
+        // _exit. It holds the inherited descriptor until the parent signals
+        // it, reproducing Command's fork-to-exec window deterministically.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            let mut byte = 1u8;
+            // SAFETY: byte lives across these one-byte I/O calls, the socket
+            // is inherited, and _exit skips Rust's multithreaded cleanup.
+            unsafe {
+                libc::write(child_fd, (&byte as *const u8).cast(), 1);
+                libc::read(child_fd, (&mut byte as *mut u8).cast(), 1);
+                libc::_exit(0);
+            }
+        }
+        let mut ready = [0];
+        parent.read_exact(&mut ready).unwrap();
+        drop(held);
+        let available_while_child_lives = store.lock(&task.id).unwrap().is_some();
+        // Reap before asserting so a failing baseline cannot strand a child.
+        parent.write_all(&[1]).unwrap();
+        let mut status = 0;
+        // SAFETY: pid names our child and status is a valid output pointer.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(available_while_child_lives, "an unrelated fork must not extend the task lock's lifetime");
         fs::remove_dir_all(dir).unwrap();
     }
 }
