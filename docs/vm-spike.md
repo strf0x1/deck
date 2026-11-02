@@ -140,8 +140,12 @@ Control: a guest script created a file (and a directory entry) on the journal
 mount, called `fsync` on the file/directory, and the host image showed
 nothing. Thirty-five seconds later — the kernel's dirty-writeback timer — the
 file appeared with its contents. A guest-wide `sync` made it appear at once.
-SQLite's fsyncs behave the same way, so a VMM kill before the next writeback
-loses the journal even though every fsync returned success.
+Appending to an **existing**, already-durable file with `dd conv=fsync` was
+also lost; the file still held only its old contents. The guest is Linux
+6.12.109, the mount is `ext4 rw,relatime`, `write_cache` reports `write back`,
+and `dirty_expire_centisecs` is 3000. SQLite's fsyncs behave the same way, so
+a VMM kill before the next writeback loses the journal even though every
+fsync returned success.
 
 That means #163's fix is correct for a guest whose fsync works, but it cannot
 close the hard-death case on this libkrunfw guest. The next investigation is
