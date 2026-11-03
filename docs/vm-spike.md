@@ -132,6 +132,7 @@ through the normal window path.
 | Adopted after `deckd`/runtime restart | immediate; live attach unchanged (ADR 0002) |
 | Disk per booted task | 240 MiB allocated from a 6 GiB sparse root (APFS clone), journal 528 KiB after a session |
 | After destroy | `disk.img`, `journal.img`, console and config gone; only the task record remains |
+| Hard host power cut during a write | journal hash unchanged across the cut; 52 events recovered after ext4 replay, integrity `ok` (one run) |
 
 Linux/x86_64 (same 2 vCPU / 2048 MiB, btrfs host):
 
@@ -214,10 +215,14 @@ or mount it in a guest) before judging durability. `session/close` on the stop
 path remains best effort; with construct#163 the hard-death path is covered by
 SQLite's fsyncs plus ext4 recovery.
 
-The host reboot part of the original measurement was **not performed**.
-Killing the VMM is the conservative writer-death test; a host reboot would
-also flush the page cache, and the only remaining risk is the SSD's own
-volatile cache, which `RELAXED` does not flush.
+A hard host power cut was run on 2026-11-03: the VMM was killed mid-turn
+(seven transcript entries observed), then the Mac was powered off by holding
+the power button. The journal image's SHA-256 was identical before and after
+the reboot, and ext4 replay recovered 52 SQLite events with
+`PRAGMA integrity_check` returning `ok`. This one run therefore lost no
+host-side journal bytes. It cannot distinguish the page cache surviving the
+cut from APFS writing the pages in the seconds before shutdown, nor does it
+exercise the SSD's own volatile cache, which `RELAXED` does not flush.
 
 ## Confirmed stop
 
