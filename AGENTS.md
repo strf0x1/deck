@@ -90,8 +90,10 @@ cargo run --bin deck                           # construct acp in a VM
 runtime runs, so `cargo build` is enough for `cargo run`. A test harness that
 points `DECK_VM_EXECUTABLE` at a copy elsewhere must name the gateway too.
 The VM backend sets `CONSTRUCT_SANDBOX=off` for the guest: the VM is the
-sandbox and the host gateways are the external boundary (ADR 0004 §2.1). The
-local backend leaves Construct's configured sandbox alone.
+sandbox and the host gateways are the external boundary (ADR 0004 §2.1). It
+also sets `DECK_MANAGED=1`, which tells Construct the guest's credentials are
+host-owned and injected at the gateway (ADR 0004 §4). The local backend leaves
+Construct's configured sandbox and credential mode alone.
 
 On Linux/x86_64 the same variables point at the host-arch image and
 `libkrun.so.1.19.7`; no signing step, but `/dev/kvm` must be accessible and

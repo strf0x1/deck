@@ -173,24 +173,7 @@ impl Backend for Vm {
         }
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let mut env = Vec::new();
-        env.push(format!("DECK_AGENT={guest}"));
-        env.push(format!("DECK_ARGS={}", quote(args)));
-        // The guest gets the relay's address and a non-empty placeholder, so
-        // Construct's environment-first secretspec never reaches for a keyring
-        // (there is none) and never sees a real value. The host gateway adds
-        // the provider key after discarding this one.
-        env.push(format!("CONSTRUCT_MODEL={}", self.model));
-        // The VM is the sandbox: Construct's process sandbox is off, and its
-        // value is host policy, never the guest's writable config. The local
-        // backend does not override it.
-        env.push(format!("CONSTRUCT_SANDBOX={}", boundary::GUEST_SANDBOX));
-        env.push(format!("OPENAI_API_KEY={}", boundary::PLACEHOLDER_KEY));
-        env.push(format!("DECK_RELAY_PORT={}", boundary::RELAY_PORT));
-        env.push(format!("DECK_BOUNDARY_PORT={}", boundary::BOUNDARY_PORT));
-        env.push(format!("DECK_MODEL_PORT={}", boundary::MODEL_PORT));
-        env.push(format!("DECK_EXTENSION_PORT={}", boundary::EXTENSION_PORT));
-        env.push(format!("DECK_BOUNDARY_KIND={}", boundary::BOUNDARY_KIND));
+        let env = guest_environment(&guest, args, &self.model);
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -557,6 +540,30 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The environment the guest agent starts with. Host policy, not the guest's
+/// writable config: the VM is the sandbox, the gateway owns the provider key,
+/// and `DECK_MANAGED` tells Construct every credential is host-owned. The
+/// local backend does not set any of this.
+fn guest_environment(guest: &str, args: &[String], model: &str) -> Vec<String> {
+    // The guest gets the relay's address and a non-empty placeholder, so
+    // Construct's environment-first secretspec never reaches for a keyring
+    // (there is none) and never sees a real value. The host gateway adds the
+    // provider key after discarding this one.
+    vec![
+        format!("DECK_AGENT={guest}"),
+        format!("DECK_ARGS={}", quote(args)),
+        format!("CONSTRUCT_MODEL={model}"),
+        format!("CONSTRUCT_SANDBOX={}", boundary::GUEST_SANDBOX),
+        format!("OPENAI_API_KEY={}", boundary::PLACEHOLDER_KEY),
+        format!("{}={}", boundary::MANAGED_ENV, boundary::MANAGED_VALUE),
+        format!("DECK_RELAY_PORT={}", boundary::RELAY_PORT),
+        format!("DECK_BOUNDARY_PORT={}", boundary::BOUNDARY_PORT),
+        format!("DECK_MODEL_PORT={}", boundary::MODEL_PORT),
+        format!("DECK_EXTENSION_PORT={}", boundary::EXTENSION_PORT),
+        format!("DECK_BOUNDARY_KIND={}", boundary::BOUNDARY_KIND),
+    ]
+}
+
 /// Turn the agent arguments into one shell word list for socat's `EXEC:`.
 fn quote(args: &[String]) -> String {
     args.iter().map(|arg| format!("'{}'", arg.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ")
@@ -575,4 +582,21 @@ fn library_path(library: &Path) -> Option<std::ffi::OsString> {
         }
     }
     std::env::join_paths(paths).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_guest_environment_marks_the_task_managed() {
+        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free");
+        let has = |line: &str| env.iter().any(|e| e == line);
+        assert!(has("DECK_MANAGED=1"), "a VM task's credentials are host-owned: {env:?}");
+        assert!(has("OPENAI_API_KEY=deck-placeholder"), "the guest never gets a real key: {env:?}");
+        assert!(has("CONSTRUCT_SANDBOX=off"), "the VM is the sandbox: {env:?}");
+        assert!(has("CONSTRUCT_MODEL=openrouter/free"));
+        assert!(has("DECK_AGENT=/usr/local/bin/construct"));
+        assert!(has("DECK_ARGS='acp'"));
+    }
 }

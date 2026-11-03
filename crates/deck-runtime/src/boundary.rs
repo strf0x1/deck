@@ -38,6 +38,13 @@ pub const SECRET: &str = "OPENAI_API_KEY";
 /// boundary around the real workspace and host credentials.
 pub const GUEST_SANDBOX: &str = "off";
 
+/// The marker Construct reads to treat every guest credential as host-owned
+/// (ADR 0004 §4). Any non-empty value other than `0`/`false` means managed;
+/// the runtime uses `1`. Without it a guest would take Deck's placeholder for
+/// a real key and keep the host-facing secrets UI paths.
+pub const MANAGED_ENV: &str = "DECK_MANAGED";
+pub const MANAGED_VALUE: &str = "1";
+
 /// Construct's own default endpoint and model. The runtime uses them when the
 /// host names neither, so the task is configured the way Construct would be
 /// without Deck.
