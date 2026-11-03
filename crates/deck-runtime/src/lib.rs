@@ -16,6 +16,7 @@ pub mod daemon;
 pub mod daemon_client;
 mod detached;
 pub mod holder;
+pub mod krun;
 pub mod lifecycle;
 pub mod local;
 pub mod local_guard;
@@ -24,6 +25,8 @@ mod reconcile;
 pub mod record;
 pub mod relay;
 pub mod runtime;
+pub mod vm;
+pub mod vmm;
 mod wire;
 
 pub use backend::{Backend, Exited, Instance, Stream};
@@ -31,6 +34,7 @@ pub use daemon_client::{DaemonClient, RunResult};
 pub use lifecycle::{Event, Failure, Spec, State, Task};
 pub use local::Local;
 pub use runtime::{GRACE, Notice, Runtime};
+pub use vm::Vm;
 
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;

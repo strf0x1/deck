@@ -45,9 +45,13 @@ pub fn serve(options: Options) -> Result<()> {
     let listener = UnixListener::bind(&path)?;
     let _socket = SocketPath(path);
     listener.set_nonblocking(true)?;
-    let backend =
-        Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
-    let runtime = Runtime::open(&options.data, backend)?;
+    let runtime = if std::env::var_os(crate::vm::IMAGE_ENV).is_some() {
+        Runtime::open(&options.data, crate::vm::Vm::from_env(&options.data, options.paths.clone())?)?
+    } else {
+        let backend =
+            Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
+        Runtime::open(&options.data, backend)?
+    };
     let service = Arc::new(Mutex::new(Service { runtime }));
     let clients = Arc::new(AtomicUsize::new(0));
     let mut idle_since = Instant::now();

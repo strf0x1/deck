@@ -64,6 +64,12 @@ impl Runtime {
         {
             let mut inner = runtime.lock();
             for mut task in inner.store.list()? {
+                // One runtime serves one backend. A record from another
+                // backend is not ours to reconcile, adopt or stop; switching
+                // backends leaves it alone.
+                if task.backend != inner.backend.name() {
+                    continue;
+                }
                 let running = task.state == State::Running;
                 let unconfirmed = matches!(task.state, State::Failed { failure: Failure::ShutdownUnconfirmed(_) });
                 if !running && !unconfirmed {
@@ -214,6 +220,9 @@ impl Runtime {
         }
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
+        if task.backend != inner.backend.name() {
+            bail!("task {id} belongs to the {} backend, not {}", task.backend, inner.backend.name());
+        }
         match &task.state {
             State::Destroyed => return Ok(()),
             State::Running => bail!("task {id} is running in another process"),
@@ -221,7 +230,7 @@ impl Runtime {
         }
         let Some(_lock) = inner.store.lock(id)? else { bail!("task {id} is held by another process") };
         inner.backend.reconcile(&task)?;
-        inner.backend.destroy(&task.spec)?;
+        inner.backend.destroy(&task)?;
         inner.record(&mut task, Event::Destroyed)
     }
 
