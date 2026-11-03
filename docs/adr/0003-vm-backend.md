@@ -45,13 +45,15 @@ The surface the backend uses:
 | Disk with a chosen flush mode | `krun_add_disk3` (`RAW`, `direct_io`, `SYNC_{NONE,RELAXED,FULL}`) |
 | Boot from that disk | `krun_set_root_disk_remount("/dev/vda", "ext4")` |
 | Project import, first boot only | `krun_add_virtiofs3("import", dir, 0, read_only=true)` |
-| ACP into the guest | `krun_add_vsock_port2(port, socket, listen=true)`: libkrun owns the host listener and opens the guest connection when the runtime connects |
-| Guest readiness | `krun_add_vsock_port2(1025, socket, listen=false)`: the guest connects out, libkrun connects to the VMM's listener |
+| ACP stream and readiness | `krun_add_vsock_port2(port, socket, listen=false)`: the guest connects out at boot; libkrun connects the VMM's `socket` listener, and that connection is both the readiness event and the stream |
 | Stop request | `krun_get_shutdown_eventfd` on aarch64 macOS, written from a signal handler; elsewhere stop waits the grace and exits the VMM |
 
 `listen` is the easy one to get backwards. True is host-listens/guest-listens:
-what an editor needs. False makes the *guest* initiate, which the readiness
-port uses.
+libkrun would own a host listener and open the guest connection when the
+runtime attached, which is reset if the guest's listener does not exist yet.
+False makes the *guest* initiate: the VMM binds the forward path before boot,
+the guest entry opens the stream once the agent is started, and the accept is
+the readiness signal. There is no separate readiness port and no delay.
 
 ### 3. Construct's journal gets its own disk
 
@@ -115,13 +117,16 @@ ignore the argument.
 
 ### 6. Reattach and the relay
 
-The VMM connects to the guest once and serves that stream through the same
-`relay` the local holder uses. Closing Deck's window closes a peer, not the
-guest's stdin. A new window attaches to the relay socket; when the agent kept
-running it uses ADR 0002's live-attach handshake. The guest connection is
-opened only after the guest connects out to the readiness port, because
-libkrun accepts a host connection to the ACP forward before the guest's
-listener exists and resets it.
+The guest entry starts the agent and opens the ACP stream out to the VMM's
+forward listener; the VMM binds that listener before boot, then serves the
+accepted stream through the same `relay` the local holder uses. Seeing the
+connection is the readiness event, so `runtime.start` returns as soon as the
+relay is listening and nothing sleeps. Closing Deck's window closes a peer,
+not the guest's stdin. A new window attaches to the relay socket; when the
+agent kept running it uses ADR 0002's live-attach handshake. #30 removed the
+fixed 300 ms guest sleep, the 1025 readiness port and its one-shot socat, and
+the 20 ms polls in the VMM and the test harness. The agent stream still has
+its own socat; it is the process that connects out and starts the agent.
 
 ## Consequences
 

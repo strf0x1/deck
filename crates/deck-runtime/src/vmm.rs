@@ -3,10 +3,12 @@
 //! runtime's socket. `deckd --vmm <config>` starts it; nothing else does.
 //!
 //! The design choice: the VMM is the task's detached holder (ADR 0001), so
-//! it survives `deckd` and is re-adopted from the record. It connects once to
-//! the guest's vsock port and serves that single stream through the same
-//! relay the local holder uses, so closing Deck's window does not close the
-//! agent's stdin. The guest cannot ask the host to do anything else.
+//! it survives `deckd` and is re-adopted from the record. The guest opens the
+//! ACP stream out to the VMM's forward listener as soon as it starts the
+//! agent, so that connection is both the readiness signal and the stream the
+//! VMM serves through the same relay the local holder uses. Closing Deck's
+//! window does not close the agent's stdin. The guest cannot ask the host to
+//! do anything else.
 
 use crate::backend::Stream;
 use crate::holder::{Identity, Reply, Request};
@@ -18,7 +20,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::ffi::c_int;
 use std::io::{BufRead, BufReader, Read, Write as _};
-use std::os::fd::FromRawFd as _;
+use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -43,15 +45,14 @@ pub struct Config {
     pub journal: PathBuf,
     /// The ACP endpoint the runtime attaches to.
     pub socket: PathBuf,
-    /// The internal host end of libkrun's vsock forward; the VMM consumes it.
+    /// The host listener the guest's ACP connection arrives on. The VMM binds
+    /// it before boot; libkrun connects it when the guest opens the stream.
     pub forward: PathBuf,
-    /// The guest connects out to this port when ACP is actually listening.
-    pub ready: PathBuf,
     pub console: PathBuf,
     /// The project to copy into the guest's workspace on first boot.
     #[serde(default)]
     pub import: Option<PathBuf>,
-    /// The agent's path inside the guest.
+    /// The guest entry script. `DECK_AGENT` in `env` names the agent it runs.
     pub guest: String,
     pub argv: Vec<String>,
     /// Guest environment: `K=V`, already filtered by the runtime.
@@ -70,10 +71,6 @@ fn default_port() -> u32 {
 
 const START: Duration = Duration::from_secs(30);
 const GUEST_DEATH: Duration = Duration::from_secs(2);
-/// The guest connects out here after its ACP listener is bound. A separate
-/// port exists because a host connection to the ACP forward can be accepted
-/// before the guest listener exists, and that connection is then reset.
-pub const READY_PORT: u32 = 1025;
 
 static SHUTDOWN_FD: AtomicI32 = AtomicI32::new(-1);
 static EXITED: AtomicBool = AtomicBool::new(false);
@@ -81,21 +78,22 @@ static TERMINATED: AtomicBool = AtomicBool::new(false);
 
 /// Read the config, boot the guest, and serve until stopped.
 pub fn run(config: &Path) -> Result<()> {
+    let started = Instant::now();
     let bytes = std::fs::read(config).with_context(|| format!("reading {}", config.display()))?;
     let config: Config = serde_json::from_slice(&bytes).context("parsing the VMM configuration")?;
-    let _sockets =
-        Sockets(vec![config.socket.clone(), config.forward.clone(), config.ready.clone(), control(&config.socket)]);
+    let _sockets = Sockets(vec![config.socket.clone(), config.forward.clone(), control(&config.socket)]);
     let _lock = inherited_lock(config.lock_fd)?;
 
-    for path in [&config.socket, &config.forward, &config.ready] {
+    for path in [&config.socket, &config.forward] {
         if path.exists() {
             std::fs::remove_file(path)?;
         }
     }
     let listener = UnixListener::bind(control(&config.socket))?;
     listener.set_nonblocking(true)?;
-    let ready = UnixListener::bind(&config.ready)?;
-    ready.set_nonblocking(true)?;
+    // Bind before boot: libkrun connects this path on the guest's first vsock
+    // request, so a missing listener would refuse the agent's only stream.
+    let forward = UnixListener::bind(&config.forward)?;
 
     let krun = Krun::load(&config.library)?;
     krun.init_log()?;
@@ -108,18 +106,24 @@ pub fn run(config: &Path) -> Result<()> {
         krun.import(ctx, "import", import).context("adding the import share")?;
     }
     krun.console(ctx, &config.console).context("setting the guest console")?;
-    krun.vsock_port(ctx, config.port, &config.forward).context("forwarding the ACP port")?;
-    krun.guest_vsock_port(ctx, READY_PORT, &config.ready).context("mapping the readiness port")?;
+    krun.guest_vsock_port(ctx, config.port, &config.forward).context("forwarding the guest's ACP port")?;
     krun.workdir(ctx, "/workspace")?;
     krun.exec(ctx, &config.guest, &config.argv, &guest_env(&config)).context("configuring the guest command")?;
     let shutdown = krun.shutdown_eventfd(ctx).context("enabling guest shutdown")?;
     install_signals(shutdown)?;
+    eprintln!("vmm: configured at {} ms", started.elapsed().as_millis());
 
     let config = Arc::new(config);
     let (eof_tx, eof_rx) = mpsc::channel();
     std::thread::Builder::new().name("vmm-relay".into()).spawn({
         let config = config.clone();
-        move || serve(&config, ready, eof_tx)
+        move || {
+            if let Err(error) = serve(&config, forward, eof_tx, started) {
+                // The runtime waits for one startup line; an error is better
+                // than the 30 s silence a dead serve thread would leave.
+                let _ = report(Err(format!("{error:#}")));
+            }
+        }
     })?;
     std::thread::Builder::new().name("vmm-control".into()).spawn({
         let config = config.clone();
@@ -161,6 +165,7 @@ pub fn run(config: &Path) -> Result<()> {
         }
     })?;
 
+    eprintln!("vmm: booting at {} ms", started.elapsed().as_millis());
     let outcome = krun.start(ctx);
     EXITED.store(true, Ordering::Release);
     outcome?;
@@ -184,11 +189,12 @@ fn inherited_lock(fd: i32) -> Result<crate::record::RecordLock> {
     Ok(crate::record::RecordLock::held(unsafe { std::fs::File::from_raw_fd(fd) }))
 }
 
-/// Connect to the host end of the vsock forward once libkrun has created it,
-/// then serve the guest stream and report readiness.
-fn serve(config: &Config, ready: UnixListener, eof: mpsc::Sender<()>) -> Result<()> {
-    await_ready(&ready, START)?;
-    let stream = connect_for(&config.forward, START)?;
+/// Accept the guest's ACP connection, serve it through the relay, and report
+/// readiness. The guest opens the connection only after it has started the
+/// agent, so the accept is the readiness event; nothing sleeps.
+fn serve(config: &Config, forward: UnixListener, eof: mpsc::Sender<()>, started: Instant) -> Result<()> {
+    let stream = accept_within(&forward, START)?;
+    eprintln!("vmm: guest connected at {} ms", started.elapsed().as_millis());
     let reader = BufReader::new(stream.try_clone()?);
     let relay = Relay::serve(
         &config.socket,
@@ -196,6 +202,7 @@ fn serve(config: &Config, ready: UnixListener, eof: mpsc::Sender<()>) -> Result<
     )?;
     let identity = Identity { holder: Holder { pid: std::process::id(), socket: config.socket.clone() }, agent: None };
     report(Ok(identity))?;
+    eprintln!("vmm: relay ready at {} ms", started.elapsed().as_millis());
     // The relay owns the reader and writer; hold it until the process ends.
     let _relay = relay;
     loop {
@@ -203,39 +210,29 @@ fn serve(config: &Config, ready: UnixListener, eof: mpsc::Sender<()>) -> Result<
     }
 }
 
-/// The guest connects out to `READY_PORT` only after its ACP listener is
-/// bound. Seeing that connection is the one reliable readiness signal.
-fn await_ready(listener: &UnixListener, within: Duration) -> Result<()> {
+/// Wait for the guest's first vsock connection with poll(2), so the accept
+/// wakes on the connection instead of on a polling interval.
+fn accept_within(listener: &UnixListener, within: Duration) -> Result<UnixStream> {
     let deadline = Instant::now() + within;
     loop {
-        match listener.accept() {
-            Ok((socket, _)) => {
-                socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-                let mut line = String::new();
-                BufReader::new(socket).read_line(&mut line)?;
-                if line.trim() == "ready" {
-                    return Ok(());
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e).context("accepting the guest readiness connection"),
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("the guest did not connect its ACP stream within {} s", within.as_secs());
         }
-        if Instant::now() >= deadline {
-            bail!("guest did not signal ACP readiness within {} s", within.as_secs());
+        let mut request = libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let millis = i32::try_from(remaining.as_millis().max(1)).unwrap_or(i32::MAX);
+        // SAFETY: one initialised pollfd for the listener's own descriptor.
+        let ready = unsafe { libc::poll(&mut request, 1, millis) };
+        if ready > 0 {
+            let (socket, _) = listener.accept()?;
+            return Ok(socket);
         }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn connect_for(path: &Path, within: Duration) -> Result<UnixStream> {
-    let deadline = Instant::now() + within;
-    loop {
-        match UnixStream::connect(path) {
-            Ok(stream) => return Ok(stream),
-            Err(e) if Instant::now() >= deadline => {
-                return Err(e).with_context(|| format!("connecting to {}", path.display()));
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            return Err(error).context("waiting for the guest's ACP connection");
         }
     }
 }
@@ -340,7 +337,6 @@ fn guest_env(config: &Config) -> Vec<String> {
         "HOME=/root".into(),
         "CONSTRUCT_HOME=/root/.construct".into(),
         "TERM=dumb".into(),
-        format!("DECK_AGENT={}", config.guest),
     ];
     env.extend(config.env.iter().cloned());
     env
@@ -395,5 +391,49 @@ impl BufRead for EofReader {
 
     fn consume(&mut self, n: usize) {
         self.inner.consume(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("deck-vmm-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn accept_within_wakes_on_the_guest_connection() {
+        let dir = scratch("accept-wake");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("forward");
+        let listener = UnixListener::bind(&path).unwrap();
+        let peer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let mut stream = UnixStream::connect(&path).unwrap();
+            stream.write_all(b"hello\n").unwrap();
+        });
+        let started = Instant::now();
+        let mut stream = accept_within(&listener, Duration::from_secs(5)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2), "accept waited on the timeout");
+        let mut line = String::new();
+        BufReader::new(&mut stream).read_line(&mut line).unwrap();
+        assert_eq!(line, "hello\n");
+        peer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accept_within_times_out_without_a_connection() {
+        let dir = scratch("accept-timeout");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = UnixListener::bind(dir.join("forward")).unwrap();
+        let started = Instant::now();
+        let error = accept_within(&listener, Duration::from_millis(30)).unwrap_err();
+        assert!(error.to_string().contains("did not connect"), "{error:#}");
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

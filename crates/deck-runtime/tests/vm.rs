@@ -13,11 +13,34 @@ use deck_acp::{Client, Inbound, TurnState};
 use deck_runtime::lifecycle::Spec;
 use deck_runtime::paths::Paths;
 use deck_runtime::{Runtime, State, Vm};
-use futures::channel::mpsc::TryRecvError;
+use futures::channel::mpsc::UnboundedReceiver;
+use futures::future::{Either, select};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const READY: Duration = Duration::from_secs(60);
+
+/// Block until the next inbound event or the deadline. The old 20 ms tick sat
+/// between the agent's line and the test, so launch timings included up to
+/// 20 ms of harness latency; this wakes on the event itself.
+fn next(events: &mut UnboundedReceiver<Inbound>, deadline: Instant) -> Option<Inbound> {
+    let wait = deadline.saturating_duration_since(Instant::now());
+    let (fired, fire) = futures::channel::oneshot::channel();
+    let (cancel, cancelled) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if matches!(cancelled.recv_timeout(wait), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+            let _ = fired.send(());
+        }
+    });
+    let outcome = futures::executor::block_on(select(events.recv(), fire));
+    drop(cancel);
+    watchdog.join().ok();
+    match outcome {
+        Either::Left((Ok(event), _)) => Some(event),
+        Either::Left((Err(_), _)) => panic!("the ACP stream closed"),
+        Either::Right(_) => None,
+    }
+}
 
 #[test]
 fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
@@ -100,21 +123,25 @@ fn vm_prompt_and_permission_round_trip() {
     let mut cleanup = Cleanup { data: data.clone(), paths: paths.clone(), id: id.clone(), armed: true };
     let launched = Instant::now();
     runtime.start(&id).unwrap();
+    let started = launched.elapsed();
     let stream = runtime.attach(&id).unwrap();
+    let attached = launched.elapsed();
     let (client, mut events) = Client::over(PathBuf::from("/workspace"), stream.reader, stream.writer).unwrap();
     let deadline = Instant::now() + READY;
     loop {
-        match events.try_recv() {
-            Ok(Inbound::Ready { session_id, .. }) => {
-                println!("launch to ACP ready: {:?}", launched.elapsed());
+        let Some(event) = next(&mut events, deadline) else { panic!("no Ready within {READY:?}") };
+        match event {
+            Inbound::Ready { session_id, .. } => {
+                println!(
+                    "runtime.start: {started:?}; attach: {:?}; launch to ACP ready: {:?}",
+                    attached - started,
+                    launched.elapsed()
+                );
                 runtime.session(&id, &session_id).unwrap();
                 break;
             }
-            Ok(Inbound::Failed(reason)) => panic!("ACP failed: {reason}"),
-            Ok(_) => {}
-            Err(TryRecvError::Closed) => panic!("stream closed before Ready"),
-            Err(TryRecvError::Empty) if Instant::now() >= deadline => panic!("no Ready"),
-            Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+            Inbound::Failed(reason) => panic!("ACP failed: {reason}"),
+            _ => {}
         }
     }
 
@@ -122,29 +149,70 @@ fn vm_prompt_and_permission_round_trip() {
     let turn_deadline = prompted + Duration::from_secs(20);
     client.prompt("read /etc/hostname").unwrap();
     loop {
-        match events.try_recv() {
-            Ok(Inbound::Permission { request, options, .. }) => {
+        let Some(event) = next(&mut events, turn_deadline) else { panic!("turn did not finish") };
+        match event {
+            Inbound::Permission { request, options, .. } => {
                 let allowed = options.iter().find(|o| o.allows()).expect("an allow option");
                 client.answer(&request, Some(&allowed.id)).unwrap();
                 println!("permission asked and answered: {:?}", prompted.elapsed());
             }
             // Construct advertises liveAttach, so the turn's end is the
             // authoritative `_construct/turn` state, not a prompt response.
-            Ok(Inbound::Turn { state: TurnState::Idle { stop_reason }, .. }) => {
+            Inbound::Turn { state: TurnState::Idle { stop_reason }, .. } => {
                 println!("prompt round trip: {:?} ({stop_reason:?})", prompted.elapsed());
                 break;
             }
-            Ok(Inbound::Failed(reason)) => panic!("ACP failed: {reason}"),
-            Ok(_) => {}
-            Err(TryRecvError::Closed) => panic!("stream closed during the turn"),
-            Err(TryRecvError::Empty) if Instant::now() >= turn_deadline => panic!("turn did not finish"),
-            Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+            Inbound::Failed(reason) => panic!("ACP failed: {reason}"),
+            _ => {}
         }
     }
     drop(client);
     runtime.stop(&id).unwrap();
     runtime.destroy(&id).unwrap();
     cleanup.armed = false;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// #30's acceptance run: twenty consecutive launches on fresh tasks, each
+/// timed from `runtime.start` to ACP `Ready`. Stops use a short grace because
+/// the guest has no power-key handler; that grace is not in the measurement.
+#[test]
+#[ignore = "twenty VM launches take about a minute; run explicitly"]
+fn vm_launch_to_ready_is_event_driven_twenty_times() {
+    if std::env::var_os(deck_runtime::vm::IMAGE_ENV).is_none() {
+        eprintln!("skipping: {} is not set", deck_runtime::vm::IMAGE_ENV);
+        return;
+    }
+    for key in [deck_runtime::vm::JOURNAL_ENV, deck_runtime::vm::KRUN_ENV, deck_runtime::vm::EXECUTABLE_ENV] {
+        assert!(std::env::var_os(key).is_some(), "the launch test needs {key}");
+    }
+    let root = std::env::temp_dir().join(format!("deck-vm-launch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    let data = root.join("data");
+    let paths = Paths::for_data(&data).unwrap();
+    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project") };
+    let runtime = Runtime::open(&data, Vm::from_env(&data, paths.clone()).expect("VM backend configuration"))
+        .expect("runtime")
+        .with_grace(Duration::from_millis(200));
+
+    let mut launches = Vec::new();
+    for run in 1..=20 {
+        let id = runtime.create(spec.clone()).unwrap();
+        let mut cleanup = Cleanup { data: data.clone(), paths: paths.clone(), id: id.clone(), armed: true };
+        let launched = Instant::now();
+        runtime.start(&id).unwrap();
+        let started = launched.elapsed();
+        let (_, _, ready) = ready_timed(&runtime, &id, false, launched);
+        println!("launch {run:>2}: runtime.start {started:?}, launch to ACP ready {ready:?}");
+        launches.push(ready);
+        runtime.stop(&id).unwrap();
+        runtime.destroy(&id).unwrap();
+        cleanup.armed = false;
+    }
+    let total = launches.iter().sum::<Duration>();
+    let worst = launches.iter().max().unwrap();
+    println!("launch to ACP ready over 20 starts: mean {:?}, worst {worst:?}", total / 20);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -176,6 +244,12 @@ impl Drop for Cleanup {
 
 /// Attach, handshake, and return the agent name and session id.
 fn ready(runtime: &Runtime, id: &str, attach: bool) -> (String, String) {
+    let (agent, session, _) = ready_timed(runtime, id, attach, Instant::now());
+    (agent, session)
+}
+
+/// [`ready`] with the time from `launched` to ACP `Ready`.
+fn ready_timed(runtime: &Runtime, id: &str, attach: bool, launched: Instant) -> (String, String, Duration) {
     let stream = runtime.attach(id).unwrap();
     let (client, mut events) = if attach {
         let session = runtime.task(id).unwrap().session_id.unwrap();
@@ -185,18 +259,17 @@ fn ready(runtime: &Runtime, id: &str, attach: bool) -> (String, String) {
     };
     let deadline = Instant::now() + READY;
     loop {
-        match events.try_recv() {
-            Ok(Inbound::Ready { agent, session_id, .. }) => {
+        let Some(event) = next(&mut events, deadline) else { panic!("no ACP Ready within {READY:?}") };
+        match event {
+            Inbound::Ready { agent, session_id, .. } => {
+                let elapsed = launched.elapsed();
                 drop(client);
                 // The relay notices the closed peer on its own poll tick.
                 std::thread::sleep(Duration::from_millis(150));
-                return (agent, session_id);
+                return (agent, session_id, elapsed);
             }
-            Ok(Inbound::Failed(reason)) => panic!("ACP failed: {reason}"),
-            Ok(_) => {}
-            Err(TryRecvError::Closed) => panic!("the ACP stream closed before Ready"),
-            Err(TryRecvError::Empty) if Instant::now() >= deadline => panic!("no ACP Ready within {READY:?}"),
-            Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+            Inbound::Failed(reason) => panic!("ACP failed: {reason}"),
+            _ => {}
         }
     }
 }

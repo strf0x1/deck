@@ -123,7 +123,8 @@ through the normal window path.
 
 | | |
 |---|---|
-| Launch to ACP ready | **0.60–0.64 s** (four runs: 616.7, 632.5, 635.6, 624.7 ms), 2 vCPU / 2048 MiB |
+| Launch to ACP ready, before #30 | **0.60–0.64 s** (four runs: 616.7, 632.5, 635.6, 624.7 ms), with the fixed 300 ms guest sleep |
+| Launch to ACP ready, after #30 | **≈300 ms mean, ≈320 ms worst** over 20 consecutive starts (below) |
 | Idle CPU / RSS per task | **0.0 % / 179.5 MiB** (`top` second sample, 2 vCPU / 2048 MiB) |
 | Prompt turn with the local scripted model | 22–50 ms before SQLite `FULL`; **210–276 ms with v0.3.1** (permission ask 120–162 ms) |
 | Cost of `FULL` in the VM | ≈20–30 ms per durable row (`fsync` on the guest journal disk); ≈8 rows per turn |
@@ -138,7 +139,7 @@ Linux/x86_64 (same 2 vCPU / 2048 MiB, btrfs host):
 
 | | |
 |---|---|
-| Launch to ACP ready | **0.53–0.62 s** (525, 577, 596, 618 ms) |
+| Launch to ACP ready, before #30 | **0.53–0.62 s** (525, 577, 596, 618 ms); not re-measured here after #30 |
 | Prompt + permission | 40–60 ms round trip; the permission ask/answer was 20–40 ms |
 | Prompt with no ask (scripted `read`) | 20.1 ms |
 | Stop (runtime control, grace 3 s) | ≈ 3.4 s; the record lock is free within 6 ms of the group |
@@ -152,9 +153,41 @@ the same result as the macOS re-run. The ACP handshake and the turn ran with
 no non-JSON line on the stream; secretspec's audit note and keyring warning
 were on the guest console.
 
-Launch-to-ready is the VMM's `Runtime::start` plus the ACP `initialize` +
-`session/new` handshake. Most of it is guest boot; libkrun's device setup and
-the vsock relay are a small part.
+### Launch path after #30 (macOS/aarch64)
+
+`vm_launch_to_ready_is_event_driven_twenty_times` (`--ignored`) launched a
+fresh task 20 times, timing `runtime.start` and the ACP handshake separately.
+All 20 reached `Ready`; there was no ACP reset or flake.
+
+| stage | macOS |
+|---|---|
+| `runtime.start` (spawn VMM → relay reported) | ≈160–200 ms |
+| VMM: start → guest connected, back-to-back starts | ≈150–170 ms (132 ms on a single cold run) |
+| VMM: relay ready → `runtime.start` returns (record fsync) | ≈25 ms |
+| guest entry → provisioned / journal mounted / connecting (`/proc/uptime`) | 0.04 s → 0.06 s |
+| `attach` → ACP `Ready` | ≈100–115 ms |
+| launch → ACP ready | **≈300 ms mean, ≈320 ms worst** |
+
+The fixed 300 ms sleep, the 1025 readiness connection and its separate socat
+process, and the 20 ms polls in the old `await_ready`, `Vm::start` and the
+test loop are gone. The readiness event is now the guest's own vsock
+connection, accepted with `poll(2)`; the VMM reports through the existing
+startup pipe and the runtime wakes on the line instead of polling
+`is_finished`.
+
+The remaining time is not in the readiness path. The guest entry starts at
+0.04 s of guest uptime and connects at 0.06 s, but `krun.start`'s pre-guest
+setup plus kernel and init put that entry roughly 100 ms into the host's
+launch. The first ACP handshake costs 99–117 ms; a second handshake in the
+same Construct process costs 37–50 ms. The difference is Construct's
+first-request work, which begins when the host sends `initialize`, so
+starting the agent earlier cannot hide it.
+
+The #30 target (<150 ms on both arches) is therefore **not met on macOS**:
+guest boot plus Construct's first handshake alone exceeds it, and neither is
+in the readiness code. Hiding the boot needs a pre-warmed VM/snapshot
+(libkrun 1.19.7 exposes no snapshot API) or a lean libkrunfw; #30's item 3.
+Linux was not re-measured on this host after #30.
 
 ## Journal placement and flush
 

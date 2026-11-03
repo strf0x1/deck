@@ -123,19 +123,9 @@ impl Krun {
         Ok(())
     }
 
-    /// Serve a host Unix socket that connects to a guest vsock port. `listen`
-    /// must be true: libkrun then owns the host listener and opens the guest
-    /// connection when the runtime attaches. With false, libkrun would instead
-    /// expect the *guest* to connect out to this host path, which reverses the
-    /// ACP direction.
-    pub fn vsock_port(&self, ctx: u32, port: u32, socket: &Path) -> Result<()> {
-        let socket = cstring(&socket.to_string_lossy())?;
-        self.rc(unsafe { (self.add_vsock_port2)(ctx, port, socket.as_ptr(), true) })?;
-        Ok(())
-    }
-
-    /// A path libkrun connects to when the *guest* connects out to `port`.
-    /// The host side must be listening on `socket` for that connection.
+    /// A path libkrun connects to when the guest connects out to `port`. The
+    /// host side must already be listening on `socket`: the guest opens the
+    /// ACP stream, so the connection also proves the agent is up.
     pub fn guest_vsock_port(&self, ctx: u32, port: u32, socket: &Path) -> Result<()> {
         let socket = cstring(&socket.to_string_lossy())?;
         self.rc(unsafe { (self.add_vsock_port2)(ctx, port, socket.as_ptr(), false) })?;
