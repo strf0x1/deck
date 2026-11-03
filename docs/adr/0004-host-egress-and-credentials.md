@@ -55,9 +55,19 @@ that libkrun connects to when the guest opens a mapped vsock port:
 guest AF_VSOCK connect(2:port) -> libkrun unix_ipc_port_map -> host socket
 ```
 
-The port-to-socket map is in the VMM's config, written by the runtime. The
-guest cannot add, remove or redirect a port. A task's VM has only its own
-map, so it cannot address another task's socket.
+The port-to-socket map is in the VMM's config, written by the runtime, and is
+fixed when the VM starts: `krun_start_enter` consumes the context and libkrun
+1.19.7 has no add-port-after-start call. The guest cannot add, remove or
+redirect a port. A task's VM has only its own map, so it cannot address
+another task's socket.
+
+That is a configuration boundary, not a policy boundary. One mapped port
+accepts many concurrent connections, each becoming its own host Unix stream,
+and the gateway applies its current policy to every new connection or parsed
+request. A new destination or rule needs no new port; a new *gateway kind*
+needs a port reserved at boot (or a VM restart). If that becomes common, one
+reserved control port can carry framed gateway requests instead of adding a
+port per service.
 
 Guest relays (`deck-egress`, part of the curated image) expose TCP endpoints
 on `127.0.0.1` for clients that cannot speak AF_VSOCK — Construct's HTTP
@@ -99,6 +109,13 @@ control socket; a credential request asks `deckd` for the value. If `deckd`
 is unreachable, cached grants continue to their expiry and every new scope is
 denied. If the gateway dies, the VMM fails the task closed rather than leave
 an agent running with half a boundary.
+
+Policy is live. `deckd` pushes a changed project rule or task grant to the
+running gateway, and new connections and parsed requests use it without a VM
+restart. Removal is stricter than addition: removing a destination or grant
+also closes matching open tunnels. For a CONNECT tunnel the gateway knows
+only the destination, so that is the granularity; the model gateway parses
+each request and applies a changed model or budget immediately.
 
 Why not put the parser in the VMM: the VMM should stay a small, constrained
 component that owns the microVM and relays bytes. Why not put it in `deckd`:
@@ -338,8 +355,11 @@ The implementation is not done until these have tests where practical.
 1. Revoking a task grant closes an open tunnel and blocks the next request.
 2. Revoking a project rule also revokes matching active grants after an
    explicit confirmation.
-3. Stop/destroy terminates every tunnel, grant and gateway with the task.
-4. Closing Deck leaves saved rules and task grants until expiry and lets
+3. A policy edit that adds a destination applies to the next connection; one
+   that removes a destination closes matching open tunnels. Neither restarts
+   the VM.
+4. Stop/destroy terminates every tunnel, grant and gateway with the task.
+5. Closing Deck leaves saved rules and task grants until expiry and lets
    pending items time out; it never grants.
 
 **Retry**
