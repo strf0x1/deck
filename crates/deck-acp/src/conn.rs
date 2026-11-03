@@ -8,6 +8,10 @@
 
 use super::VERSION;
 use super::inbound::{Inbound, TurnState, parse_turn, permission, update};
+use super::names::{
+    BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, LEGACY_BOUNDARY_METHOD, LEGACY_CONSTRUCT_META, LEGACY_DECK_META,
+    LEGACY_TURN_METHOD, TURN_METHOD,
+};
 use super::rpc::{self, Incoming};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -50,7 +54,8 @@ pub struct Conn {
     prefix: Option<String>,
     initialized: bool,
     live: bool,
-    boundary: bool,
+    /// The boundary notification method the agent advertised, if any.
+    boundary: Option<&'static str>,
     questions: HashSet<Value>,
     turn: Option<(u64, TurnState)>,
     agent: String,
@@ -85,11 +90,18 @@ impl Conn {
             prefix,
             initialized: false,
             live: false,
-            boundary: false,
+            boundary: None,
             questions: HashSet::new(),
             turn: None,
         };
-        let caps = json!({ "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false });
+        let mut caps = json!({
+            "fs": { "readTextFile": false, "writeTextFile": false },
+            "terminal": false,
+            "_meta": {},
+        });
+        // Ask a new Construct for the reverse-DNS turn method; a released one
+        // ignores the key and keeps sending the bare one (deck#36).
+        caps["_meta"][CONSTRUCT_META] = json!({ "turn": true });
         let line = c.request(
             Pending::Initialize,
             "initialize",
@@ -135,13 +147,11 @@ impl Conn {
     /// after the agent stopped waiting. Only an agent that advertised the
     /// capability gets it; the notification grants nothing.
     pub fn boundary_notice(&self, params: &Value) -> Option<String> {
-        if !self.boundary {
-            return None;
-        }
+        let method = self.boundary?;
         let sid = self.session.as_deref()?;
         let mut params = params.clone();
         params["sessionId"] = json!(sid);
-        Some(rpc::notification("_deck/boundary", params))
+        Some(rpc::notification(method, params))
     }
 
     /// The reply to a permission request: the chosen option, or cancelled.
@@ -161,7 +171,9 @@ impl Conn {
         match rpc::parse(line) {
             Some(Incoming::Response { id, result }) => self.response(&id, result),
             _ if !self.initialized => Step::default(),
-            Some(Incoming::Notification { method, params }) if method == "_construct/turn" => {
+            Some(Incoming::Notification { method, params })
+                if method == TURN_METHOD || method == LEGACY_TURN_METHOD =>
+            {
                 if self.session.is_none() || self.session.as_deref() != params["sessionId"].as_str() {
                     return Step::default();
                 }
@@ -195,8 +207,16 @@ impl Conn {
         match kind {
             Pending::Initialize => {
                 self.initialized = true;
-                self.live = value["agentCapabilities"]["_meta"]["construct"]["liveAttach"] == true;
-                self.boundary = value["agentCapabilities"]["_meta"]["deck"]["boundary"] == true;
+                let meta = &value["agentCapabilities"]["_meta"];
+                self.live =
+                    meta[CONSTRUCT_META]["liveAttach"] == true || meta[LEGACY_CONSTRUCT_META]["liveAttach"] == true;
+                self.boundary = if meta[DECK_META]["boundary"] == true {
+                    Some(BOUNDARY_METHOD)
+                } else if meta[LEGACY_DECK_META]["boundary"] == true {
+                    Some(LEGACY_BOUNDARY_METHOD)
+                } else {
+                    None
+                };
                 if matches!(self.target, Target::Attach(_)) && !self.live {
                     return Step { lines: vec![], events: vec![Inbound::Detached] };
                 }
@@ -227,7 +247,12 @@ impl Conn {
             },
             Pending::LoadSession(sid) => {
                 self.session = Some(sid.clone());
-                let snapshot = &value["_meta"]["construct"]["turn"];
+                let meta = &value["_meta"];
+                let snapshot = if meta[CONSTRUCT_META]["turn"].is_null() {
+                    &meta[LEGACY_CONSTRUCT_META]["turn"]
+                } else {
+                    &meta[CONSTRUCT_META]["turn"]
+                };
                 if matches!(self.target, Target::Attach(_))
                     && (snapshot["sessionId"] != sid || parse_turn(snapshot).is_none())
                 {
@@ -313,7 +338,11 @@ mod tests {
                 method: "initialize".into(),
                 params: json!({
                     "protocolVersion": VERSION,
-                    "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
+                    "clientCapabilities": {
+                        "fs": { "readTextFile": false, "writeTextFile": false },
+                        "terminal": false,
+                        "_meta": { "com.sprawlcommons/construct": { "turn": true } },
+                    },
                     "clientInfo": { "name": "deck", "version": env!("CARGO_PKG_VERSION") },
                 }),
             })
@@ -372,9 +401,25 @@ mod tests {
         ))
     }
 
+    fn live_init_new(c: &mut Conn) -> Step {
+        c.read(&rpc::ok(
+            &json!(1),
+            json!({ "agentInfo": { "name": "construct" }, "agentCapabilities": {
+                "loadSession": true, "_meta": { "com.sprawlcommons/construct": { "liveAttach": true } }
+            }}),
+        ))
+    }
+
     fn turn_line(sid: &str, number: u64, state: &str) -> String {
         rpc::notification(
             "_construct/turn",
+            json!({ "sessionId": sid, "turn": number, "state": state, "stopReason": "cancelled" }),
+        )
+    }
+
+    fn turn_line_new(sid: &str, number: u64, state: &str) -> String {
+        rpc::notification(
+            "_com.sprawlcommons/construct/turn",
             json!({ "sessionId": sid, "turn": number, "state": state, "stopReason": "cancelled" }),
         )
     }
@@ -582,5 +627,59 @@ mod tests {
         let (mut c, _) = Conn::start(PathBuf::from("/w"));
         let s = c.read(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"boom"}}"#);
         assert_eq!(s.events, vec![Inbound::Failed("initialize: boom (-32603)".into())]);
+    }
+
+    #[test]
+    fn a_new_only_agent_gets_the_reverse_dns_boundary_method() {
+        let (mut c, _) = Conn::start(PathBuf::from("/w"));
+        c.read(
+            r#"{"id":1,"result":{"agentInfo":{"name":"construct"},"agentCapabilities":{"_meta":{"com.sprawlcommons/deck":{"boundary":true}}}}}"#,
+        );
+        c.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+        let line = c.boundary_notice(&json!({ "approval_id": "a1" })).unwrap();
+        let Some(Incoming::Notification { method, params }) = rpc::parse(&line) else {
+            panic!("expected a notification: {line}");
+        };
+        assert_eq!(method, "_com.sprawlcommons/deck/boundary");
+        assert_eq!(params["sessionId"], json!("s1"));
+    }
+
+    #[test]
+    fn the_new_capability_key_wins_when_the_agent_advertises_both() {
+        let (mut c, _) = Conn::start(PathBuf::from("/w"));
+        let step = c.read(&rpc::ok(
+            &json!(1),
+            json!({ "agentInfo": { "name": "construct" }, "agentCapabilities": {
+                "loadSession": true,
+                "_meta": {
+                    "construct": { "liveAttach": true, "boundary": true },
+                    "com.sprawlcommons/construct": { "liveAttach": true },
+                    "deck": { "boundary": true },
+                    "com.sprawlcommons/deck": { "boundary": true },
+                }
+            }}),
+        ));
+        assert_eq!(step.lines.len(), 1, "initialize opens a session");
+        c.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+        let line = c.boundary_notice(&json!({ "approval_id": "a1" })).unwrap();
+        let Some(Incoming::Notification { method, .. }) = rpc::parse(&line) else {
+            panic!("expected a notification: {line}");
+        };
+        assert_eq!(method, "_com.sprawlcommons/deck/boundary");
+    }
+
+    #[test]
+    fn the_new_snapshot_and_turn_names_work_alongside_the_bare_ones() {
+        let (mut c, _) = Conn::attach(PathBuf::from("/w"), "saved".into());
+        live_init_new(&mut c);
+        let snapshot = json!({ "sessionId": "saved", "turn": 1, "state": "idle" });
+        let ready =
+            c.read(&rpc::ok(&json!(2), json!({ "_meta": { "com.sprawlcommons/construct": { "turn": snapshot } } })));
+        assert!(
+            matches!(ready.events.as_slice(), [Inbound::Ready { turn: Some(TurnState::Idle { .. }), .. }]),
+            "{ready:?}"
+        );
+        assert!(matches!(c.read(&turn_line_new("saved", 2, "working")).events.as_slice(), [Inbound::Turn { .. }]));
+        assert!(matches!(c.read(&turn_line("saved", 3, "working")).events.as_slice(), [Inbound::Turn { .. }]));
     }
 }

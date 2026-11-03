@@ -431,8 +431,8 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     let outcome = approved.join().unwrap().unwrap();
     assert_eq!(outcome.state, ApprovalState::Allowed(Scope::Task));
 
-    // The agent was not waiting, so Deck sends `_deck/boundary`; the fake
-    // agent puts the same note in its transcript.
+    // The agent was not waiting, so Deck sends the reverse-DNS boundary
+    // notification; the fake agent puts the same note in its transcript.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         vcx.run_until_parked();

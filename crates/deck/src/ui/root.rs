@@ -131,8 +131,9 @@ impl Deck {
         cx.notify();
     }
 
-    /// An agent that advertised `_meta.deck.boundary` learns about a decision it
-    /// did not wait for; the client ignores an agent without the capability.
+    /// An agent that advertised a boundary capability (reverse-DNS, or the
+    /// bare key from a released Construct) learns about a decision it did
+    /// not wait for; the client ignores an agent without the capability.
     fn notify_boundary(&self, approval: &Approval) {
         let Some(client) = &self.client else { return };
         let mut notice = serde_json::json!({

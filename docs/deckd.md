@@ -4,8 +4,9 @@ Closing Deck disconnects its ACP and control sockets. Each task has a detached
 `deckd --holder` process that owns its liveness lock, agent stdio, and ACP relay.
 Both the task and an attached ACP connection survive a `deckd` crash.
 Reopening the same command and directory finds the same task. When the agent
-advertises `_meta.construct.liveAttach`, Deck initializes a new attachment and
-loads the recorded session. Construct replays the transcript, restores the turn
+advertises live attach (`_meta["com.sprawlcommons/construct"].liveAttach`, or
+the bare `_meta.construct.liveAttach` from a released Construct), Deck
+initializes a new attachment and loads the recorded session. Construct replays the transcript, restores the turn
 state, and renews unanswered permission requests. A streaming or waiting turn
 continues in the same agent. A completed turn opens idle.
 
@@ -34,8 +35,9 @@ through the separate `session` control operation.
 Every connection replaces the view's `Session` before replay. Namespaced request
 IDs and a handshake gate discard output from the previous attachment. The load
 response supplies the initial working, waiting, or idle state atomically with
-Ready. Later `_construct/turn` notifications drive status, including completion
-of a prompt sent by a previous window. Matching prompt responses do not end the
+Ready. Later turn notifications (the reverse-DNS method when the Construct
+supports it, the bare `_construct/turn` otherwise) drive status, including
+completion of a prompt sent by a previous window. Matching prompt responses do not end the
 same turn twice. Permission cards retain every renewed request, and answers
 consume current request IDs once.
 

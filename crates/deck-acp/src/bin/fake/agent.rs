@@ -3,6 +3,10 @@
 
 use super::journal::Journal;
 use super::turn::{self, Turn};
+use deck_acp::names::{
+    BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, LEGACY_BOUNDARY_METHOD, LEGACY_CONSTRUCT_META, LEGACY_DECK_META,
+    LEGACY_TURN_METHOD, TURN_METHOD,
+};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::sync::mpsc;
@@ -22,6 +26,9 @@ pub struct Agent<W> {
     /// Whether this process has a boundary endpoint, matching Construct: the
     /// capability is advertised only when the endpoint exists.
     boundary: bool,
+    /// The turn method this client asked for: the reverse-DNS name when it
+    /// named the namespace, otherwise the bare one (deck#36).
+    turn_method: &'static str,
 }
 
 impl<W: Write> Agent<W> {
@@ -38,6 +45,7 @@ impl<W: Write> Agent<W> {
             turn: None,
             stop: None,
             boundary: std::env::var_os("DECK_BOUNDARY_URL").is_some_and(|value| !value.is_empty()),
+            turn_method: LEGACY_TURN_METHOD,
         }
     }
 
@@ -96,7 +104,7 @@ impl<W: Write> Agent<W> {
 
     fn notice(&mut self) {
         if !self.session.is_empty() {
-            self.send(json!({ "jsonrpc": "2.0", "method": "_construct/turn", "params": self.snapshot() }));
+            self.send(json!({ "jsonrpc": "2.0", "method": self.turn_method, "params": self.snapshot() }));
         }
     }
 
@@ -138,9 +146,16 @@ impl<W: Write> Agent<W> {
                 if let Some(turn) = &mut self.turn {
                     turn.question = None;
                 }
-                let mut meta = json!({ "construct": { "liveAttach": true } });
+                let requested = &msg["params"]["clientCapabilities"]["_meta"];
+                self.turn_method =
+                    if requested[CONSTRUCT_META]["turn"] == true { TURN_METHOD } else { LEGACY_TURN_METHOD };
+                let mut meta = json!({
+                    LEGACY_CONSTRUCT_META: { "liveAttach": true },
+                    CONSTRUCT_META: { "liveAttach": true },
+                });
                 if self.boundary {
-                    meta["deck"] = json!({ "boundary": true });
+                    meta[LEGACY_DECK_META] = json!({ "boundary": true });
+                    meta[DECK_META] = json!({ "boundary": true });
                 }
                 self.reply(
                     id,
@@ -180,7 +195,7 @@ impl<W: Write> Agent<W> {
                 self.reply(id, Ok(json!({})));
             }
             Some("session/cancel") => self.finish("cancelled"),
-            Some("_deck/boundary") => {
+            Some(method) if method == BOUNDARY_METHOD || method == LEGACY_BOUNDARY_METHOD => {
                 // Construct queues this for its next model request; the fake
                 // has no model, so it puts the same note in the transcript.
                 self.chunk("agent_message_chunk", &format!("\n{}", boundary_note(&msg["params"])));
@@ -237,7 +252,11 @@ impl<W: Write> Agent<W> {
         self.ask();
         if replay {
             self.notice();
-            Ok(json!({ "_meta": { "construct": { "turn": self.snapshot() } } }))
+            let turn = self.snapshot();
+            let mut meta = json!({});
+            meta[LEGACY_CONSTRUCT_META] = json!({ "turn": turn.clone() });
+            meta[CONSTRUCT_META] = json!({ "turn": turn });
+            Ok(json!({ "_meta": meta }))
         } else {
             Ok(json!({}))
         }

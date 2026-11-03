@@ -42,7 +42,7 @@ pub struct Session {
     pub entries: Vec<Entry>,
     pub ask: Option<Ask>,
     /// The live session this connection attached to, for extension
-    /// notifications such as `_deck/boundary`.
+    /// notifications such as the boundary decision.
     pub session_id: Option<String>,
     questions: VecDeque<Ask>,
 }
