@@ -17,6 +17,15 @@ pub struct Spec {
     pub cwd: PathBuf,
 }
 
+/// What the task's model gateway has spent. The gateway owns the live
+/// counters and reports totals here; recording them on the task is what lets
+/// a resumed gateway continue a budget instead of resetting it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub requests: u64,
+    pub tokens: u64,
+}
+
 /// Why a task needs the user before it can run again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
@@ -69,6 +78,12 @@ pub enum Event {
     Session {
         id: String,
     },
+    /// The model gateway's latest totals. This is accounting, not a
+    /// lifecycle transition.
+    Usage {
+        requests: u64,
+        tokens: u64,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -93,6 +108,9 @@ pub struct Task {
     /// The agent's session pointer, retained when its process stops.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// The model gateway's latest totals, retained across runs.
+    #[serde(default)]
+    pub usage: Usage,
 }
 
 impl Task {
@@ -109,6 +127,7 @@ impl Task {
             pid: None,
             holder: None,
             session_id: None,
+            usage: Usage::default(),
         })
     }
 
@@ -125,6 +144,17 @@ impl Task {
                 bail!("task {}: `session` cannot follow {}", self.id, describe(&self.state));
             }
             self.session_id = Some(id.clone());
+            return Ok(());
+        }
+        if let Event::Usage { requests, tokens } = ev {
+            if self.state == State::Destroyed {
+                bail!("task {}: `usage` cannot follow destroyed", self.id);
+            }
+            // Totals only move forward. A late report from a previous gateway
+            // is ignored rather than rewinding the record.
+            if *requests >= self.usage.requests && *tokens >= self.usage.tokens {
+                self.usage = Usage { requests: *requests, tokens: *tokens };
+            }
             return Ok(());
         }
         let next = match (&self.state, ev) {
@@ -178,6 +208,7 @@ fn name(ev: &Event) -> &'static str {
         Event::Started { .. } => "started",
         Event::Adopted => "adopted",
         Event::Session { .. } => "session",
+        Event::Usage { .. } => "usage",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -288,6 +319,33 @@ mod tests {
         });
         let task: Task = serde_json::from_value(value).unwrap();
         assert_eq!(task.session_id, None);
+        assert_eq!(task.usage, Usage::default());
+    }
+
+    #[test]
+    fn usage_is_accounting_not_a_transition() {
+        let reported = Event::Usage { requests: 1, tokens: 9 };
+        let t = fold(&[created(), started(), reported.clone()]).unwrap();
+        assert_eq!((t.state, t.usage), (State::Running, Usage { requests: 1, tokens: 9 }));
+
+        // Usage survives the stop that ends the run.
+        let t = fold(&[created(), started(), reported, stopped(true)]).unwrap();
+        assert_eq!(t.usage, Usage { requests: 1, tokens: 9 });
+
+        // A later report with smaller totals is stale, not a rewind.
+        let t = fold(&[
+            created(),
+            started(),
+            Event::Usage { requests: 2, tokens: 12 },
+            Event::Usage { requests: 1, tokens: 4 },
+        ])
+        .unwrap();
+        assert_eq!(t.usage, Usage { requests: 2, tokens: 12 });
+
+        assert!(
+            fold(&[created(), started(), Event::Destroyed, Event::Usage { requests: 1, tokens: 1 }]).is_err(),
+            "a destroyed task has no gateway to report usage"
+        );
     }
 
     #[test]
@@ -322,6 +380,7 @@ mod tests {
             created(),
             started(),
             Event::Session { id: "session-7".into() },
+            Event::Usage { requests: 2, tokens: 12 },
             stopped(false),
             start_failed(),
             unconfirmed(),

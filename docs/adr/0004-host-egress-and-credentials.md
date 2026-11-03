@@ -126,7 +126,8 @@ running gateway, and new connections and parsed requests use it without a VM
 restart. Removal is stricter than addition: removing a destination or grant
 also closes matching open tunnels. For a CONNECT tunnel the gateway knows
 only the destination, so that is the granularity; the model gateway parses
-each request and applies a changed model or budget immediately.
+each request and applies a changed budget immediately. A model allowlist
+change takes effect on the next gateway process, not a running one.
 
 Why not put the parser in the VMM: the VMM should stay a small, constrained
 component that owns the microVM and relays bytes. Why not put it in `deckd`:
@@ -198,6 +199,18 @@ with. It accepts only the paths Construct uses (`/v1/chat/completions`,
 the model field, and maps it to a host-side provider entry. It rejects a
 model the task is not allowed to use, enforces per-task request/token budgets,
 streams the response, and records usage.
+
+A budget belongs to one task and is made of exact counts, not wildcards. The
+gateway counts a chat request when it admits it, before any provider request,
+and takes tokens from the provider's own `usage` (the last SSE chunk
+included). Once either limit is spent the next request gets
+`429 deck_budget_exhausted` and no provider request is made. The gateway
+reports its totals to `deckd`, which records them on the task, so a resumed
+gateway continues from the same counts. The launch limits come from
+`DECK_MODEL_REQUEST_BUDGET` and `DECK_MODEL_TOKEN_BUDGET`; a live
+`set_budget` control call rewrites `tasks/<id>/budget.json`, which the gateway
+re-reads before each admission. That is the one model policy that changes
+without a VM restart; the model allowlist stays fixed at process start.
 
 It **strips every credential-bearing header from the guest request** —
 `Authorization`, `Proxy-Authorization`, `Cookie`, `x-api-key`, `api-key`, and
@@ -543,6 +556,16 @@ The implementation is not done until these have tests where practical.
 11. Malformed HTTP, oversized headers, slowloris, and fuzzed git pkt-lines
     get bounded responses; a gateway crash fails the task closed.
 
+**Budgets**
+
+1. Each admitted chat request increments the task's request count before the
+   provider is contacted. A request over the request limit, or one made after
+   the token total reached its limit, gets `429 deck_budget_exhausted` and
+   makes no provider request. Tokens are the provider's `usage.total_tokens`
+   (or prompt plus completion), read from a JSON body or the last SSE chunk,
+   and both totals appear on the task record. Changing a task's budget applies
+   to its next request without restarting the VM.
+
 **Revocation**
 
 1. Revoking a task grant closes an open tunnel and blocks the next request.
@@ -640,15 +663,15 @@ The implementation is not done until these have tests where practical.
    the guest cannot reach the host's model port directly.
 4. Add the approval queue with the bounded hold (the gateway learns from
    `deckd` whether a window is attached to the task), model-gateway
-   budget/model checks and the boundary card. Queue, lease, hold and card
-   landed 2026-11-03; budgets are still open.
+   budget/model checks and the boundary card. Queue, lease, hold, card and
+   budgets landed 2026-11-03.
 5. Add the boundary status kind on the extension port and its relay
    listener, the card's waiting/moved-on state, and the boundary
    notification in Deck; teach `deck-fake-agent` the note, the three tools
    and the notification (ADR 0002 keeps it in step with Construct), then
    land the Construct side.
 
-   Landed 2026-11-03, without budgets. The gateway serves `boundary` on the
+   Landed 2026-11-03. The gateway serves `boundary` on the
    extension port: `/events`, long-polled `/approvals/<id>` (300 s host cap)
    and `/approvals/<id>/withdraw`. A long poll is one `approval_wait` control
    call that `deckd` holds, counting the wait on the item, so the card says
@@ -738,7 +761,7 @@ The implementation is not done until these have tests where practical.
   disabled, the scripted prompt round trip through the gateway, and the
   gateway's own tests (guest credential headers stripped, host key injected,
   model/path denials, framed extension refusal). Not yet implemented: the
-  approval queue and hold, budgets, grants, `deckd`'s credential broker (the
+  approval queue and hold, grants, `deckd`'s credential broker (the
   key is still the daemon's environment), the boundary status kind and
   `_com.sprawlcommons/deck/boundary`, and the web/package gateway. No
   security validation against the bypass cases beyond TSI being off.
@@ -753,5 +776,14 @@ The implementation is not done until these have tests where practical.
   control socket (lease hold, fail-fast without a lease, durable task and
   project grants, stop clearing task grants), the gateway against a fake
   queue (pending/allowed/denied/unreachable, and waiting for a held reply),
-  and the window answering a live daemon approval by key. Budget enforcement
-  remains unimplemented.
+  and the window answering a live daemon approval by key.
+- Third slice (2026-11-03): per-task model budgets in `crates/deck-gateway`
+  (`policy::Budget`, `Ledger` admission and token charge, `usage::Meter` for
+  JSON and SSE), `DECK_MODEL_REQUEST_BUDGET` / `DECK_MODEL_TOKEN_BUDGET` as
+  launch limits, and `tasks/<id>/budget.json` as the live override re-read
+  before each admission. The gateway reports totals with `model_usage`; the
+  daemon records them as a `usage` event on the task, and a resumed gateway
+  starts from those totals. Verified by ledger and meter unit tests, the real
+  gateway (request denial before the provider, SSE usage in the final chunk,
+  usage recording, a budget file change between two requests), and the real
+  daemon (`model_usage` totals, stale reports ignored, `set_budget` file).

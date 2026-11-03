@@ -728,3 +728,27 @@ fn a_status_wait_and_withdrawal_cross_the_control_socket() {
     assert!(client.grants(&task.id).unwrap().is_empty());
     client.stop(&task.id).unwrap();
 }
+
+#[test]
+fn model_usage_and_a_live_budget_are_recorded_on_the_task() {
+    let (mut daemon, client) = Daemon::new("model-budget");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+
+    client.model_usage(&task.id, 2, 40).unwrap();
+    let recorded = client.task(&task.id).unwrap();
+    assert_eq!((recorded.usage.requests, recorded.usage.tokens), (2, 40));
+
+    // A late report from an older gateway must not rewind the totals.
+    client.model_usage(&task.id, 1, 10).unwrap();
+    let recorded = client.task(&task.id).unwrap();
+    assert_eq!((recorded.usage.requests, recorded.usage.tokens), (2, 40));
+
+    client.set_budget(&task.id, Some(4), Some(100)).unwrap();
+    let path = daemon.data.join("tasks").join(&task.id).join("budget.json");
+    let budget: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(budget, serde_json::json!({ "requests": 4, "tokens": 100 }));
+
+    assert!(client.set_budget("absent", None, None).is_err());
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}

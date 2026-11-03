@@ -237,6 +237,7 @@ fn reason(status: u16) -> &'static str {
         411 => "Length Required",
         413 => "Payload Too Large",
         417 => "Expectation Failed",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         502 => "Bad Gateway",
         503 => "Service Unavailable",

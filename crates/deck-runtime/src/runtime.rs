@@ -139,6 +139,28 @@ impl Runtime {
         inner.record(&mut task, Event::Session { id: session_id.into() })
     }
 
+    /// Store the model gateway's latest totals. Repeating a report is free, a
+    /// stale one is ignored, and accounting never wakes state subscribers.
+    pub fn usage(&self, id: &str, requests: u64, tokens: u64) -> Result<()> {
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if task.usage.requests == requests && task.usage.tokens == tokens {
+            return Ok(());
+        }
+        if requests < task.usage.requests || tokens < task.usage.tokens {
+            return Ok(());
+        }
+        inner.store.append(&mut task, Event::Usage { requests, tokens })
+    }
+
+    /// Write a task's live model budget; its gateway reads the file before
+    /// the next admission, so no restart is involved. `None` is unlimited.
+    pub fn set_budget(&self, id: &str, requests: Option<u64>, tokens: Option<u64>) -> Result<()> {
+        let inner = self.lock();
+        inner.store.load(id)?;
+        inner.store.set_budget(id, requests, tokens)
+    }
+
     /// Record a new task for `spec`. Nothing runs yet.
     pub fn create(&self, spec: Spec) -> Result<String> {
         let mut inner = self.lock();

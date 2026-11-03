@@ -56,6 +56,10 @@ pub const EXECUTABLE_ENV: &str = "DECK_VM_EXECUTABLE";
 /// The egress gateway binary. Defaults to `deck-gateway` beside the `deckd`
 /// named above (ADR 0004).
 pub const GATEWAY_ENV: &str = "DECK_GATEWAY_EXECUTABLE";
+/// Process-start model limits. A task's `budget.json` written by `deckd`
+/// overrides them live.
+pub const REQUEST_BUDGET_ENV: &str = "DECK_MODEL_REQUEST_BUDGET";
+pub const TOKEN_BUDGET_ENV: &str = "DECK_MODEL_TOKEN_BUDGET";
 
 pub struct Vm {
     data: PathBuf,
@@ -72,6 +76,8 @@ pub struct Vm {
     /// configuration: the guest gets the relay URL and a placeholder key.
     upstream: String,
     model: String,
+    request_budget: Option<u64>,
+    token_budget: Option<u64>,
 }
 
 impl Vm {
@@ -110,6 +116,14 @@ impl Vm {
                 bail!("{GATEWAY_ENV} names the egress gateway; {} does not exist", gateway.display());
             }
             let host = |key: &str| std::env::var(key).ok().filter(|value| !value.is_empty());
+            let number = |key: &str| -> Result<Option<u64>> {
+                match host(key) {
+                    Some(value) => {
+                        value.parse().map(Some).with_context(|| format!("{key} must be a whole number, not {value:?}"))
+                    }
+                    None => Ok(None),
+                }
+            };
             Ok(Self {
                 data: data.to_owned(),
                 paths,
@@ -123,6 +137,8 @@ impl Vm {
                 gateway,
                 upstream: host("CONSTRUCT_BASE_URL").unwrap_or_else(|| boundary::DEFAULT_UPSTREAM.into()),
                 model: host("CONSTRUCT_MODEL").unwrap_or_else(|| boundary::DEFAULT_MODEL.into()),
+                request_budget: number(REQUEST_BUDGET_ENV)?,
+                token_budget: number(TOKEN_BUDGET_ENV)?,
             })
         }
     }
@@ -203,6 +219,10 @@ impl Backend for Vm {
                 extension_port: boundary::EXTENSION_PORT,
                 upstream: self.upstream.clone(),
                 models: vec![self.model.clone()],
+                request_budget: self.request_budget,
+                token_budget: self.token_budget,
+                usage: task.usage,
+                budget_file: self.dir(&task.id).join("budget.json"),
                 secret: boundary::SECRET.into(),
                 control: self.paths.control(),
                 task: task.id.clone(),

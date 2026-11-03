@@ -13,7 +13,7 @@
 use crate::backend::Stream;
 use crate::holder::{Identity, Reply, Request};
 use crate::krun::{Krun, SYNC_FULL, SYNC_RELAXED};
-use crate::lifecycle::Holder;
+use crate::lifecycle::{Holder, Usage};
 use crate::relay::Relay;
 use crate::wire;
 use anyhow::{Context as _, Result, bail};
@@ -80,6 +80,16 @@ pub struct Gateway {
     pub extension_port: u32,
     pub upstream: String,
     pub models: Vec<String>,
+    /// Process-start model limits; the task's budget file overrides them.
+    #[serde(default)]
+    pub request_budget: Option<u64>,
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    /// Totals already recorded for this task, so a resumed run continues.
+    #[serde(default)]
+    pub usage: Usage,
+    /// The live budget file the gateway re-reads before each admission.
+    pub budget_file: PathBuf,
     /// The environment variable the gateway reads the host key from.
     pub secret: String,
     /// The daemon's control socket and this task, so a model the task was not
@@ -274,6 +284,12 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         .arg(&gateway.upstream)
         .arg("--secret")
         .arg(&gateway.secret)
+        .arg("--budget-file")
+        .arg(&gateway.budget_file)
+        .arg("--used-requests")
+        .arg(gateway.usage.requests.to_string())
+        .arg("--used-tokens")
+        .arg(gateway.usage.tokens.to_string())
         .arg("--control")
         .arg(&gateway.control)
         .arg("--task")
@@ -284,6 +300,12 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         .stderr(Stdio::inherit());
     for model in &gateway.models {
         command.args(["--model", model]);
+    }
+    if let Some(limit) = gateway.request_budget {
+        command.arg("--request-budget").arg(limit.to_string());
+    }
+    if let Some(limit) = gateway.token_budget {
+        command.arg("--token-budget").arg(limit.to_string());
     }
     let mut child =
         command.spawn().with_context(|| format!("starting the egress gateway {}", gateway.executable.display()))?;
@@ -573,6 +595,10 @@ mod tests {
             extension_port: 1027,
             upstream: "http://127.0.0.1:1/v1".into(),
             models: vec!["m".into()],
+            request_budget: None,
+            token_budget: None,
+            usage: Usage::default(),
+            budget_file: PathBuf::from("/tmp/task.budget.json"),
             secret: "KEY".into(),
             control: PathBuf::from("/tmp/task.control"),
             task: "task".into(),

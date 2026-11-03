@@ -84,6 +84,24 @@ writer 200 ms to catch up before disconnecting it. Oversized lines are drained
 and dropped, and any attached peer is disconnected. No fragment crosses into
 the next attachment, and no holder parses ACP JSON.
 
+## Model budgets
+
+A VM task's model gateway enforces one request limit and one token limit. The
+gateway counts an admitted chat request before contacting the provider and
+reads tokens from the provider's `usage` (the last SSE chunk included); a
+spent budget returns `429 deck_budget_exhausted` without a provider request.
+After each response it sends `model_usage {task, requests, tokens}` and the
+daemon appends a `usage` event, so `task.json` and the `task` control reply
+carry the totals. A resumed gateway is started with them.
+
+Launch limits come from `DECK_MODEL_REQUEST_BUDGET` and
+`DECK_MODEL_TOKEN_BUDGET` in `deckd`'s environment. `set_budget {task,
+requests, tokens}` replaces them live by writing `tasks/<id>/budget.json`
+(mode 0600, atomic rename); `null` means unlimited. The gateway re-reads that
+file before each admission, so the next request uses the new limits without
+restarting the VM. The model allowlist is still fixed when the gateway
+starts.
+
 ## Daemon death and reuse
 
 `deckd` starts each holder with `setsid` and transfers an already-held task lock

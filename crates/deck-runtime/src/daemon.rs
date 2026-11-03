@@ -257,6 +257,14 @@ impl Service {
                 self.runtime.session(&id, &session_id)?;
                 Ok(json!(null))
             }
+            Request::ModelUsage { task, requests, tokens } => {
+                self.runtime.usage(&task, requests, tokens)?;
+                Ok(json!(null))
+            }
+            Request::SetBudget { task, requests, tokens } => {
+                self.runtime.set_budget(&task, requests, tokens)?;
+                Ok(json!(null))
+            }
             Request::Subscribe
             | Request::Watch { .. }
             | Request::Approval { .. }

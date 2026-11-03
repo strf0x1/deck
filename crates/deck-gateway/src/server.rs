@@ -11,8 +11,8 @@
 //! VMM treats the gateway's exit as the task's failure.
 
 use crate::control::Control;
-use crate::model::Model;
-use crate::policy::Models;
+use crate::model::{Model, Settings};
+use crate::policy::{Budget, Models, Usage};
 use crate::status::Status;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,13 @@ pub struct Config {
     pub secret: String,
     /// The daemon queue that decides a model the task was not configured with.
     pub control: Option<Control>,
+    /// Process-start limits; `budget_file` overrides them when present.
+    pub budget: Budget,
+    /// Counts already on the task's record, so a resumed gateway continues
+    /// rather than resetting the budget.
+    pub usage: Usage,
+    /// The task's live budget, rewritten by `deckd`.
+    pub budget_file: Option<PathBuf>,
     pub model_socket: PathBuf,
     pub extension_socket: PathBuf,
 }
@@ -66,15 +73,19 @@ pub fn serve(config: Config) -> Result<()> {
     println!("{}", serde_json::to_string(&ready)?);
     io::stdout().flush().context("announcing gateway readiness")?;
 
+    let budget = config.budget_file.as_ref().and_then(|path| Budget::load(path)).unwrap_or(config.budget);
     let status = Status::new(config.control.clone());
-    let model = Arc::new(Model::new(
-        config.upstream,
-        Models::new(config.models),
-        config.key,
-        config.secret,
-        config.control,
-        status.clone(),
-    ));
+    let model = Arc::new(Model::new(Settings {
+        upstream: config.upstream,
+        models: Models::new(config.models),
+        key: config.key,
+        secret: config.secret,
+        control: config.control,
+        status: status.clone(),
+        budget,
+        usage: config.usage,
+        budget_file: config.budget_file,
+    }));
     let limits = Arc::new(Limit::new(CONNECTIONS));
     let (failed, failure) = mpsc::channel();
 

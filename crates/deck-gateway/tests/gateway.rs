@@ -13,7 +13,8 @@ use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 struct Gateway {
     child: Child,
@@ -35,6 +36,14 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+#[derive(Clone, Copy, Default)]
+struct Limits {
+    requests: Option<u64>,
+    tokens: Option<u64>,
+    used_requests: u64,
+    used_tokens: u64,
+}
+
 fn start(name: &str, upstream: &str, models: &[&str], key: Option<&str>) -> Gateway {
     start_with(name, upstream, models, key, None)
 }
@@ -45,6 +54,18 @@ fn start_with(
     models: &[&str],
     key: Option<&str>,
     control: Option<(&Path, &str)>,
+) -> Gateway {
+    start_full(name, upstream, models, key, control, Limits::default(), None)
+}
+
+fn start_full(
+    name: &str,
+    upstream: &str,
+    models: &[&str],
+    key: Option<&str>,
+    control: Option<(&Path, &str)>,
+    limits: Limits,
+    budget_file: Option<&Path>,
 ) -> Gateway {
     let dir = scratch(name);
     let mut command = Command::new(env!("CARGO_BIN_EXE_deck-gateway"));
@@ -57,12 +78,25 @@ fn start_with(
         .arg(upstream)
         .arg("--secret")
         .arg("DECK_GATEWAY_TEST_KEY")
+        .arg("--used-requests")
+        .arg(limits.used_requests.to_string())
+        .arg("--used-tokens")
+        .arg(limits.used_tokens.to_string())
         .arg("--exit-on-stdin-eof")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     for model in models {
         command.args(["--model", model]);
+    }
+    if let Some(limit) = limits.requests {
+        command.arg("--request-budget").arg(limit.to_string());
+    }
+    if let Some(limit) = limits.tokens {
+        command.arg("--token-budget").arg(limit.to_string());
+    }
+    if let Some(path) = budget_file {
+        command.arg("--budget-file").arg(path);
     }
     if let Some((socket, task)) = control {
         command.arg("--control").arg(socket).arg("--task").arg(task);
@@ -83,6 +117,14 @@ fn start_with(
 /// One connection to the fake provider. `assert` runs against the request the
 /// provider saw; the reply is a fixed JSON body.
 fn provider(assert: impl Fn(&Request) + Send + 'static) -> (u16, std::thread::JoinHandle<()>) {
+    provider_with("text/event-stream", r#"{"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}"#, assert)
+}
+
+fn provider_with(
+    content_type: &'static str,
+    body: &'static str,
+    assert: impl Fn(&Request) + Send + 'static,
+) -> (u16, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = std::thread::spawn(move || {
@@ -91,10 +133,9 @@ fn provider(assert: impl Fn(&Request) + Send + 'static) -> (u16, std::thread::Jo
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let request = http::read(&mut BufReader::new(&stream)).unwrap().unwrap();
         assert(&request);
-        let body = r#"{"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}"#;
         write!(
             stream,
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -325,6 +366,37 @@ fn queue(name: &str, reply: Value, delay: Duration, assert: impl Fn(&Value) + Se
     socket
 }
 
+/// A fake daemon that answers every control connection and records it, so a
+/// test can see a report that the gateway sends after the response.
+fn recorder(name: &str) -> (PathBuf, Arc<Mutex<Vec<Value>>>) {
+    let dir = scratch(name);
+    let socket = dir.join("deckd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut line = String::new();
+            if BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+            let Ok(request) = serde_json::from_str::<Value>(&line) else { continue };
+            recorded.lock().unwrap().push(request);
+            let _ = stream.write_all(b"{\"ok\":null}\n");
+            let _ = stream.flush();
+        }
+    });
+    (socket, seen)
+}
+
+fn eventually(mut check: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !check() {
+        assert!(Instant::now() < deadline, "condition was not observed before timeout");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn chat(model: &str) -> String {
     let body = format!(r#"{{"model":"{model}","messages":[]}}"#);
     format!(
@@ -429,4 +501,117 @@ fn an_unreachable_queue_fails_closed() {
     assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
     assert!(response.contains("unreachable"), "{response}");
     assert!(!response.contains("approval_id"), "{response}");
+}
+
+#[test]
+fn a_spent_request_budget_denies_before_the_provider() {
+    let (port, provider) = provider(|_| {});
+    let gateway = start_full(
+        "request-budget",
+        &format!("http://127.0.0.1:{port}/v1"),
+        &["allowed"],
+        Some("host-key"),
+        None,
+        Limits { requests: Some(1), ..Limits::default() },
+        None,
+    );
+    let first = send(&gateway.ready.model, &chat("allowed"));
+    assert!(first.starts_with("HTTP/1.1 200 OK"), "{first}");
+    provider.join().unwrap();
+
+    // The provider is gone; a second upstream request would be a 502. Budget
+    // admission must refuse it first.
+    let second = send(&gateway.ready.model, &chat("allowed"));
+    assert!(second.starts_with("HTTP/1.1 429 Too Many Requests"), "{second}");
+    assert!(second.contains(r#""code":"deck_budget_exhausted""#), "{second}");
+    assert!(second.contains("no provider request was made"), "{second}");
+}
+
+#[test]
+fn token_usage_from_the_final_sse_chunk_spends_the_budget() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+        "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (port, provider) = provider_with("text/event-stream", body, |_| {});
+    let gateway = start_full(
+        "token-budget",
+        &format!("http://127.0.0.1:{port}/v1"),
+        &["allowed"],
+        Some("host-key"),
+        None,
+        Limits { tokens: Some(7), ..Limits::default() },
+        None,
+    );
+    let first = send(&gateway.ready.model, &chat("allowed"));
+    assert!(first.starts_with("HTTP/1.1 200 OK"), "{first}");
+    assert!(first.contains("data: [DONE]"), "the response still streamed: {first}");
+    provider.join().unwrap();
+
+    let second = send(&gateway.ready.model, &chat("allowed"));
+    assert!(second.starts_with("HTTP/1.1 429 Too Many Requests"), "{second}");
+    assert!(second.contains("token budget is spent (7 of 7)"), "{second}");
+}
+
+#[test]
+fn the_gateway_records_usage_on_the_task() {
+    let (socket, seen) = recorder("usage-record");
+    let (port, provider) = provider_with("application/json", r#"{"id":"x","usage":{"total_tokens":5}}"#, |_| {});
+    let gateway = start_with(
+        "usage",
+        &format!("http://127.0.0.1:{port}/v1"),
+        &["allowed"],
+        Some("host-key"),
+        Some((&socket, "task-1")),
+    );
+    let response = send(&gateway.ready.model, &chat("allowed"));
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    provider.join().unwrap();
+
+    eventually(|| seen.lock().unwrap().iter().any(|request| request["op"] == "model_usage"));
+    let seen = seen.lock().unwrap();
+    let usage = seen.iter().find(|request| request["op"] == "model_usage").unwrap();
+    assert_eq!(usage["task"], "task-1");
+    assert_eq!(usage["requests"], 1);
+    assert_eq!(usage["tokens"], 5);
+}
+
+#[test]
+fn an_admitted_request_is_recorded_even_when_the_provider_fails() {
+    let (socket, seen) = recorder("usage-failed-provider");
+    let gateway =
+        start_with("usage-failure", "http://127.0.0.1:9/v1", &["allowed"], Some("host-key"), Some((&socket, "task-1")));
+    let response = send(&gateway.ready.model, &chat("allowed"));
+    assert!(response.starts_with("HTTP/1.1 502 Bad Gateway"), "{response}");
+
+    eventually(|| seen.lock().unwrap().iter().any(|request| request["op"] == "model_usage"));
+    let seen = seen.lock().unwrap();
+    let usage = seen.iter().find(|request| request["op"] == "model_usage").unwrap();
+    assert_eq!((usage["requests"].as_u64(), usage["tokens"].as_u64()), (Some(1), Some(0)));
+}
+
+#[test]
+fn a_live_budget_file_applies_to_the_next_request() {
+    let dir = scratch("live-budget");
+    let budget = dir.join("budget.json");
+    std::fs::write(&budget, r#"{"requests":2,"tokens":null}"#).unwrap();
+    let (port, provider) = provider(|_| {});
+    let gateway = start_full(
+        "budget-file",
+        &format!("http://127.0.0.1:{port}/v1"),
+        &["allowed"],
+        Some("host-key"),
+        None,
+        Limits::default(),
+        Some(&budget),
+    );
+    let first = send(&gateway.ready.model, &chat("allowed"));
+    assert!(first.starts_with("HTTP/1.1 200 OK"), "{first}");
+    provider.join().unwrap();
+
+    std::fs::write(&budget, r#"{"requests":1,"tokens":null}"#).unwrap();
+    let second = send(&gateway.ready.model, &chat("allowed"));
+    assert!(second.starts_with("HTTP/1.1 429 Too Many Requests"), "{second}");
+    assert!(second.contains("request budget is spent (1 of 1)"), "{second}");
 }

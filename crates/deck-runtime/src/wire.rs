@@ -64,6 +64,18 @@ pub(crate) enum Request {
         task: String,
         id: String,
     },
+    /// The gateway's latest model totals for a task.
+    ModelUsage {
+        task: String,
+        requests: u64,
+        tokens: u64,
+    },
+    /// Replace a task's live model budget; the gateway re-reads the file.
+    SetBudget {
+        task: String,
+        requests: Option<u64>,
+        tokens: Option<u64>,
+    },
     DecideApproval {
         id: String,
         decision: Decision,
@@ -96,6 +108,8 @@ impl Request {
             | Self::ApprovalStatus { task: id, .. }
             | Self::ApprovalWait { task: id, .. }
             | Self::WithdrawApproval { task: id, .. }
+            | Self::ModelUsage { task: id, .. }
+            | Self::SetBudget { task: id, .. }
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }
             | Self::Watch { task: id } => Some(id),

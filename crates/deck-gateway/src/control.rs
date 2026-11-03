@@ -5,9 +5,11 @@
 //! daemon's (it knows whether a capable window is attached), so this client's
 //! read timeout only has to outlast that hold. Any failure to reach `deckd`
 //! is a denial, because the same failure makes a decision impossible. The
-//! same client also reads an item and reports an open status wait for the
-//! extension port's boundary kind (§6).
+//! same client also reads an item, reports an open status wait for the
+//! extension port's boundary kind (§6), and reports model usage totals after
+//! a response was already delivered.
 
+use crate::policy::Usage;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{BufReader, Write as _};
@@ -17,6 +19,9 @@ use std::time::Duration;
 
 /// Longer than the daemon's 20 s hold, so a held decision is not cut short.
 const REPLY: Duration = Duration::from_secs(30);
+/// Usage is accounting after the response was delivered; a slow daemon must
+/// not accumulate saturated reporter threads.
+const USAGE_REPLY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
@@ -124,6 +129,18 @@ impl Control {
     pub fn withdraw(&self, id: &str) -> Result<(), String> {
         let request = json!({ "op": "withdraw_approval", "task": self.task, "id": id });
         self.call(&request).map(|_| ())
+    }
+
+    /// Report this task's model totals so `deckd` records them. The gateway
+    /// owns the counters; the daemon only stores the latest totals.
+    pub fn usage(&self, usage: Usage) -> Result<(), String> {
+        let request = json!({
+            "op": "model_usage",
+            "task": self.task,
+            "requests": usage.requests,
+            "tokens": usage.tokens,
+        });
+        self.call_within(&request, USAGE_REPLY).map(|_| ())
     }
 
     fn call(&self, request: &Value) -> Result<Value, String> {
