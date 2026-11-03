@@ -33,9 +33,10 @@ LIBCLANG_PATH="$(brew --prefix llvm)/lib" DYLD_LIBRARY_PATH="$(brew --prefix llv
 
 Build the guest image (Docker is a build tool only). The original
 measurements used Construct at `883e7fd` (0.3.0) and `rust:1.91-bookworm`;
-the final durability and stdout re-runs used `bc94e9d`, the merged tree of
-construct #163 and #164 (`main` at `ff26f88`). `vm-image.sh` takes the
-construct checkout as its first argument so the commit is the caller's
+the final verification used Construct `v0.3.1` (`8836ed0`), which contains
+#163 and #164. That release ships macOS and x86_64 Linux artifacts only, so
+the aarch64 guest is built from the tag with `vm-image.sh`. The script takes
+the construct checkout as its first argument so the commit is the caller's
 choice:
 
 ```sh
@@ -108,13 +109,24 @@ To drive the real window, export the same `DECK_VM_*` values and run
 window's default command is `construct acp`, and the backend maps it to
 `/usr/local/bin/construct` in the guest.
 
+## Window check
+
+The real window was run against the v0.3.1 guest, not only the runtime tests.
+`deck` started a `construct acp` task in the VM, attached, and reached status
+`ready`. Typing `read /root/outside.txt` produced the permission card
+(`Allow once`, `Allow for this session`, `Always allow`, `Deny`); answering
+`1` ran the tool and the transcript showed the prompt, `read` as done, and the
+agent's `done` message. The same run's control socket reported geometry
+through the normal window path.
+
 ## Measurements
 
 | | |
 |---|---|
 | Launch to ACP ready | **0.60–0.64 s** (four runs: 616.7, 632.5, 635.6, 624.7 ms), 2 vCPU / 2048 MiB |
 | Idle CPU / RSS per task | **0.0 % / 179.5 MiB** (`top` second sample, 2 vCPU / 2048 MiB) |
-| Prompt turn with the local scripted model | 22–50 ms, including one permission ask/answer (23–29 ms) |
+| Prompt turn with the local scripted model | 22–50 ms before SQLite `FULL`; **276 ms with v0.3.1** (permission ask 162 ms) |
+| Cost of `FULL` in the VM | ≈20–30 ms per durable row (`fsync` on the guest journal disk); ≈8 rows per turn |
 | Stop (runtime control, grace 3 s) | ≈ 3 s, then the VMM is gone; the guest does not power off (no power-key handler) |
 | SIGTERM without the control socket | 2.05 s (the VMM's own grace) |
 | Adopted after `deckd`/runtime restart | immediate; live attach unchanged (ADR 0002) |
