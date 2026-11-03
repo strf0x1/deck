@@ -45,8 +45,10 @@ fn pending_requests_dedupe_and_expire() {
     assert_eq!(first.state, State::Pending);
     assert_eq!(boundary.pending("t").unwrap().len(), 1);
     std::thread::sleep(Duration::from_millis(120));
-    assert!(boundary.pending("t").unwrap().is_empty());
+    // Decide before pruning: a slow runner may already be past the short
+    // post-expiry retention window that `pending()` would enforce.
     assert_eq!(boundary.decide(&first.id, Decision::Task).unwrap().state, State::Expired);
+    assert!(boundary.pending("t").unwrap().is_empty());
     fs::remove_dir_all(dir).unwrap();
 }
 
