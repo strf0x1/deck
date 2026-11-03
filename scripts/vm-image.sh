@@ -39,6 +39,30 @@ docker run --rm --platform "$platform" \
         CARGO_TARGET_DIR=/tmp/target cargo build --release -p construct
         cp /tmp/target/release/construct /out/construct'
 
+# deck-egress is the guest half of the egress boundary (ADR 0004): the guest
+# has no IP route, so loopback clients reach the host gateways through this
+# relay. It is built for the guest architecture in the same native container
+# shape as construct.
+deck_src=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$scratch/egress/src"
+cp -R "$deck_src/crates/deck-egress/src/." "$scratch/egress/src/"
+cat > "$scratch/egress/Cargo.toml" <<'MANIFEST'
+[package]
+name = "deck-egress"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+libc = "0.2"
+MANIFEST
+echo "building deck-egress for $platform"
+# A standalone copy of the crate, not the workspace: the workspace's [patch]
+# entries would clone Zed's gpui git dependencies just to build this relay.
+docker run --rm --platform "$platform" \
+    -v "$scratch/egress:/src" -v "$scratch:/out" -w /src \
+    -e CARGO_TARGET_DIR=/tmp/target rust:1.94-bookworm \
+    bash -c 'cargo build --release && cp /tmp/target/release/deck-egress /out/deck-egress'
+
 echo "collecting the Debian root for $platform"
 cid=$(docker create --platform "$platform" debian:bookworm-slim bash -c '
     apt-get update -qq
@@ -54,6 +78,8 @@ tar -xf "$scratch/rootfs.tar" -C "$scratch/rootfs" --no-same-owner --no-xattrs
 
 cp "$scratch/construct" "$scratch/rootfs/usr/local/bin/construct"
 chmod 755 "$scratch/rootfs/usr/local/bin/construct"
+cp "$scratch/deck-egress" "$scratch/rootfs/usr/local/bin/deck-egress"
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-egress"
 cat > "$scratch/rootfs/usr/local/bin/deck-guest" <<'GUEST'
 #!/bin/sh
 # deck's guest entry: provision the workspace once, mount the journal disk,
@@ -86,6 +112,15 @@ fi
 if [ "${DECK_SYNC:-0}" = "1" ]; then
   ( while :; do sleep 1; sync; done ) &
 fi
+# The egress relay: loopback TCP -> the host's model gateway vsock port.
+# It is a byte carrier, not a policy point; the host gateway enforces the
+# model allowlist and the credential. A client that skips it meets the same
+# gateway on the vsock port.
+relay_port=${DECK_RELAY_PORT:-8080}
+model_port=${DECK_MODEL_PORT:-1026}
+mark "egress relay port=$model_port"
+/usr/local/bin/deck-egress --listen "127.0.0.1:${relay_port}" --vsock "2:${model_port}" &
+export CONSTRUCT_BASE_URL="http://127.0.0.1:${relay_port}/v1"
 cd /workspace || cd /
 # The guest opens the ACP stream to the host, so the connection itself is the
 # readiness signal: no listener race, no fixed delay, and the agent starts

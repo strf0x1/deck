@@ -1,0 +1,19 @@
+[package]
+name = "deck-gateway"
+description = "deck's host-side egress gateway for VM tasks: model gateway and the reserved extension port. No UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Keep this crate out of deck-runtime: the HTTP/TLS stack stays with the one
+# host process that speaks to providers (ADR 0004).
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[lints]
+workspace = true

@@ -59,14 +59,16 @@ DECK_VM_IMAGE=target/vm/base.img \
 DECK_VM_JOURNAL=target/vm/journal.img \
 DECK_VM_KRUN=/tmp/libkrun/target/release/libkrun.1.19.7.dylib \
 DECK_VM_EXECUTABLE=/tmp/deckd \
+DECK_GATEWAY_EXECUTABLE=$PWD/target/debug/deck-gateway \
 cargo test -p deck-runtime --test vm -- --nocapture
 ```
 
 For a prompt + permission round trip, run construct's scripted endpoint on
-the host and point the guest at it with `CONSTRUCT_BASE_URL`
-(`http://127.0.0.1:<port>/v1`). libkrun's implicit vsock device enables TSI,
-so the guest reaches host loopback without a network interface. The
-measurement run:
+the host and name it as the gateway's upstream with `CONSTRUCT_BASE_URL`
+(`http://127.0.0.1:<port>/v1`). The guest has no IP route (ADR 0004), so the
+guest's Construct talks to `deck-egress` on guest loopback; that relay carries
+the stream over vsock to the `deck-gateway` process, which adds the host key
+from `OPENAI_API_KEY` and forwards the request upstream. The measurement run:
 
 ```sh
 construct-dev serve --script script.json --port-file /tmp/port
@@ -94,6 +96,7 @@ DECK_VM_IMAGE=target/vm/base.img \
 DECK_VM_JOURNAL=target/vm/journal.img \
 DECK_VM_KRUN=/tmp/libkrun/target/release/libkrun.so.1.19.7 \
 DECK_VM_EXECUTABLE=$PWD/target/debug/deckd \
+DECK_GATEWAY_EXECUTABLE=$PWD/target/debug/deck-gateway \
 LD_LIBRARY_PATH=/usr/lib \
 cargo test -p deck-runtime --test vm -- --nocapture
 ```
@@ -107,7 +110,10 @@ plain copy into a RAM-backed `/tmp` exhausts it.
 To drive the real window, export the same `DECK_VM_*` values and run
 `cargo run --bin deck`; `deckd` inherits them and runs the VM backend. The
 window's default command is `construct acp`, and the backend maps it to
-`/usr/local/bin/construct` in the guest.
+`/usr/local/bin/construct` in the guest. `DECK_GATEWAY_EXECUTABLE` defaults to
+`deck-gateway` beside the `deckd` the runtime runs, and `CONSTRUCT_BASE_URL` /
+`CONSTRUCT_MODEL` in `deckd`'s environment configure the task's model gateway;
+neither the endpoint nor `OPENAI_API_KEY` is passed into the guest.
 
 ## Window check
 
@@ -118,6 +124,37 @@ The real window was run against the v0.3.1 guest, not only the runtime tests.
 `1` ran the tool and the transcript showed the prompt, `read` as done, and the
 agent's `done` message. The same run's control socket reported geometry
 through the normal window path.
+
+## Egress boundary check (ADR 0004, first slice)
+
+The guest has no IP route. The VMM disables libkrun's implicit vsock and adds
+an explicit device with no TSI features, so only mapped ports cross. Two
+checks were run on macOS/arm64 with the rebuilt image:
+
+- **Model path.** A scripted `construct-dev` endpoint on host loopback is the
+  gateway's upstream (`CONSTRUCT_BASE_URL` in the test process). The guest's
+  prompt turn completed in 95 ms, and the endpoint's log recorded
+  `"auth":"Bearer host…"` — the host key the gateway injected. The guest's own
+  `OPENAI_API_KEY` is `deck-placeholder`, whose first four characters differ,
+  so a log line starting `Bearer host…` proves the guest value was discarded.
+- **No host loopback.** A host listener on `127.0.0.1:45679` was running while
+  the scripted model asked the guest to run
+  `socat -u /dev/null TCP:127.0.0.1:45679; echo rc=$?`. The tool result was
+  `socat[...] E connect(...): Connection refused` and `rc=1`; the host listener
+  accepted nothing. This is bypass case 1 in ADR 0004 §9. The run set
+  `CONSTRUCT_SANDBOX=off` by hand; the VM backend now sets it for the guest,
+  because Construct's shell tool refuses to run when the guest kernel has no
+  Landlock.
+
+The end-to-end model request also proves `deck-egress` works: the guest's
+Construct is configured with `http://127.0.0.1:8080/v1`, which exists only in
+the guest, and the request reached the host gateway.
+
+These are manual runs, not permanent tests yet: the bypass check needs a
+scripted endpoint whose script names the listening port, and the VM test
+harness does not yet start `construct-dev` itself. The gateway's own tests
+cover header stripping, key injection, model/path denials, and the extension
+port refusal.
 
 ## Measurements
 
@@ -293,9 +330,16 @@ rebuild.
 - The root disk's first boot copies `spec.cwd` through a read-only import
   share. That is a one-time provisioning compromise, not a workspace mount;
   #10 replaces it with a real environment/checkout.
-- The image has no general network. TSI (the implicit vsock device) is on, so
-  the guest can reach host loopback; this is the seed of #9's gateway, not a
-  policy.
+- The image has no general network and no IP route. The VMM disables
+  libkrun's implicit vsock (which would enable TSI and proxy the guest's
+  AF_INET sockets through the host) and adds an explicit vsock device with no
+  TSI features. Only the mapped ports cross: ACP (1024), the model gateway
+  (1026) and the reserved extension port (1027). `deck-egress` listens on
+  guest loopback at 8080 for clients that cannot speak AF_VSOCK, but it is a
+  byte carrier: the host gateway applies the same policy to a direct vsock
+  connection. That is ADR 0004's boundary, not a policy exception. The image
+  also still has no resolver: host names resolve only on the host, in a
+  gateway kind that has shipped.
 - A data root is served by one backend. With `DECK_VM_IMAGE` set every new
   task is `vm`; records from the previous `local` run are left untouched and
   the VM runtime refuses to destroy them.
@@ -306,10 +350,12 @@ rebuild.
   instead of merging it. Deck still ignores non-JSON lines defensively.
 - Linux support is x86_64 only; other Linux architectures are rejected at
   `Vm::from_env`. Snapshots and the QEMU comparison (#12) were not tried.
-- libkrunfw 5.6.2's kernel has no Landlock, so Construct refuses shell and
-  file tools in the guest ("Landlock isn't available on this kernel") after
-  the permission answer. The permission card still round-trips; set
-  `[sandbox] mode = "off"` for a guest that must run tools, or let #10 supply
-  an environment with a working sandbox.
+- libkrunfw 5.6.2's kernel has no Landlock, so Construct's own `workspace`
+  sandbox refuses shell and file tools in the guest ("Landlock isn't
+  available on this kernel") after the permission answer. The VM backend
+  therefore sets `CONSTRUCT_SANDBOX=off` for the guest as host policy (ADR
+  0004 §2.1); the guest is the sandbox and the host gateways are the external
+  boundary. The local backend keeps Construct's configured sandbox. Revisit
+  if the image gets a Landlock-capable kernel or agents share a guest.
 - `DECK_SYNC=1` is a measurement aid in the guest image; normal runs leave it
   off.

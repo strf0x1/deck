@@ -11,6 +11,7 @@
 //! dependency, and must never gain one.
 
 pub mod backend;
+pub mod boundary;
 pub mod child;
 pub mod daemon;
 pub mod daemon_client;

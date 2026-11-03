@@ -1,6 +1,6 @@
 # 0004 — Host gateways enforce guest egress, credentials, and approvals
 
-Status: proposed, 2026-11-03. Answers #9; the input is
+Status: accepted, 2026-11-03; first slice landed 2026-11-03. Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
 operations; #12 compares runtimes.
 
@@ -139,6 +139,53 @@ the same way the VMM names its executable.
 The local-process backend is not boundary-enforced. It remains a development
 backend and is never the VM task's backend; the UI should not present it as
 a sandbox.
+
+#### The agent's own sandbox follows the backend
+
+Construct's `[sandbox]` (default `workspace`, also `read-only` and `off`) is a
+*process* boundary: Landlock on Linux or a Seatbelt profile on macOS around
+the paths tools may touch, and an environment with credentials removed. It is
+not egress control; a sandboxed process can still open sockets, which is why
+this ADR's boundary cannot be built from it.
+
+The two backends therefore get different policies, and the backend, not the
+agent's configuration, decides:
+
+- **Local backend.** Construct's configured sandbox stays exactly as the user
+  set it. That process boundary is the right one there: the agent shares the
+  user's real workspace, home directories, keyring and environment, and
+  `workspace` (read/write the working directory, read system paths and
+  toolchains, nothing else under `$HOME`) is what keeps a tool call from
+  reading the host's credentials. Deck overrides neither `[sandbox]` nor
+  `CONSTRUCT_SANDBOX` for a local task. It remains true that this backend has
+  no enforced *external* boundary and the UI must not call it a sandbox.
+- **VM backend.** The guest is the isolation boundary and the gateways are the
+  external one. The runtime sets `CONSTRUCT_SANDBOX=off` in the guest agent's
+  environment. `off` removes Construct's filesystem and exec boundary but
+  keeps its process-lifetime helper (a shell call and everything it starts are
+  killed when the call ends). Inside the guest that boundary would protect only
+  the guest's own files and its journal, which the host already treats as
+  untrusted; it would not protect the host, and libkrunfw 5.6.2's kernel has no
+  Landlock, so `workspace` refuses every shell command (`exit 126`). Turning
+  it off is what makes tools work, not a loosening of the host boundary.
+
+This setting is not itself a boundary in the VM. The guest's `config.toml` is
+agent-writable, so reading the mode from it would be agent policy; the runtime
+wins by setting the environment before Construct starts. Even that is only
+hygiene: the agent can unset the variable for its own children. Nothing in
+§1, §3 or §4 depends on it — a guest process with a sandbox on, off, or
+absent still has no IP route, no host credential, and only the mapped
+gateways.
+
+Approvals are unchanged by this split. ACP `session/request_permission`
+remains cooperative UX in both backends; in the VM the enforcement surface is
+the host boundary in §5, not Construct's process sandbox.
+
+Revisit if the guest image gains a Landlock-capable kernel or another working
+process sandbox: keeping Construct's sandbox on inside the VM is useful
+defense in depth, and it becomes necessary if several agents ever share one
+guest. Until then, the local backend keeps the process boundary and the VM
+backend keeps the hypervisor boundary, and neither claims the other's.
 
 ### 3. Three gateway kinds in v1
 
@@ -289,6 +336,20 @@ the hold, or no attached window returns `403` with a JSON body such as
 later decision applies to the next attempt. The hold is bounded so a socket
 never waits on a human indefinitely, and it is per request, so a slow
 decision cannot stall unrelated traffic.
+
+**What counts as attached.** Attachment is an explicit lease from a window
+that can answer, not a connection to the task socket. A Deck window registers
+a watch on a task over its long-lived control connection (the notice
+subscription), carrying its boundary-card capability; detaching, closing the
+window or losing that connection drops the lease, and the window re-registers
+after it reconnects. `deckd` is the source of truth: the gateway asks it both
+for decisions and for whether a capable window is attached. A raw ACP
+connection is not attachment — a test harness, a CLI or an older window
+without the card would otherwise cause a 20 s hold for a human who is not
+there. Multiple capable windows count as attached; the first decision wins
+and every attached window sees the item. Leases are ephemeral like pending
+items, never persisted. If `deckd` is unreachable the gateway fails fast,
+because the same failure makes a decision undecidable.
 
 The hold matters most for CONNECT. Most clients report a refused tunnel as
 "CONNECT failed: 403" and never show the body, so the agent cannot see the
@@ -611,6 +672,10 @@ The implementation is not done until these have tests where practical.
   existing TSI shortcut and its VM tests must change in the same slice.
 - A gateway crash is a task failure, not a silent loss of egress; the runtime
   must report it as such.
+- A VM task's agent runs with Construct's process sandbox off, because the
+  guest is the boundary; a local task keeps Construct's configured sandbox.
+  Neither backend inherits the other's claim, and the UI must label them
+  differently.
 - The first request to a new destination waits briefly for a human
   decision, then fails rather than hanging. Construct is told why and
   chooses whether to wait (§6); other ACP agents see only the failure.
@@ -637,5 +702,19 @@ The implementation is not done until these have tests where practical.
   headers), `config.rs` (`CONSTRUCT_BASE_URL`, `CONSTRUCT_MODEL` overrides).
 - `docs/vm-spike.md`: the current `http://127.0.0.1:<port>/v1` measurement
   path and the TSI note in Limitations.
-- No implementation or security validation has been run for this design yet;
-  the acceptance cases in §9 are the first tests.
+- First slice (2026-11-03): `crates/deck-gateway/` (policy core, bounded
+  HTTP/1.1 carrier, model gateway, extension port), `crates/deck-egress/`
+  (guest loopback relay), `krun_disable_implicit_vsock` + `krun_add_vsock(ctx, 0)`
+  in `krun.rs`, the gateway process under the VMM with its sockets mapped
+  (ACP 1024, model 1026, extension 1027), and the guest image building and
+  starting the relay. The runtime passes the guest `CONSTRUCT_MODEL`, a
+  non-empty `OPENAI_API_KEY` placeholder and the relay port; the host's
+  `CONSTRUCT_BASE_URL` / `CONSTRUCT_MODEL` / `OPENAI_API_KEY` configure the
+  gateway instead. Verified on macOS/arm64: the VM lifecycle contract with TSI
+  disabled, the scripted prompt round trip through the gateway, and the
+  gateway's own tests (guest credential headers stripped, host key injected,
+  model/path denials, framed extension refusal). Not yet implemented: the
+  approval queue and hold, budgets, grants, `deckd`'s credential broker (the
+  key is still the daemon's environment), the boundary status kind and
+  `_deck/boundary`, and the web/package gateway. No security validation
+  against the bypass cases beyond TSI being off.
