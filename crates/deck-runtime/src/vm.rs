@@ -18,7 +18,7 @@ use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
 use crate::record::RecordLock;
 use crate::{reconcile, record::Store, vmm};
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use std::io::BufReader;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -28,6 +28,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
+    mpsc,
 };
 use std::time::{Duration, Instant};
 
@@ -152,8 +153,7 @@ impl Backend for Vm {
         }
         let socket = self.paths.task(&task.id);
         let forward = self.forward(&task.id);
-        let ready = socket.with_extension("ready");
-        for path in [&socket, &forward, &ready] {
+        for path in [&socket, &forward] {
             if path.exists() {
                 std::fs::remove_file(path)?;
             }
@@ -173,7 +173,6 @@ impl Backend for Vm {
             journal: self.journal(&task.id),
             socket: socket.clone(),
             forward,
-            ready,
             console: self.console(&task.id),
             import: task.spec.cwd.is_dir().then(|| task.spec.cwd.clone()),
             guest: self.guest.clone(),
@@ -213,23 +212,31 @@ impl Backend for Vm {
         drop(file);
         let stdout = child.stdout.take().context("VMM startup pipe")?;
         let pid = child.id();
+        let (startup_tx, startup_rx) = mpsc::channel();
         let startup = std::thread::spawn(move || {
-            let line = crate::wire::read(&mut BufReader::new(stdout))?.context("VMM did not report startup")?;
-            let outcome: std::result::Result<Identity, String> = serde_json::from_slice(&line)?;
-            outcome.map_err(anyhow::Error::msg)
+            let outcome = (|| {
+                let line = crate::wire::read(&mut BufReader::new(stdout))?.context("VMM did not report startup")?;
+                let outcome: std::result::Result<Identity, String> = serde_json::from_slice(&line)?;
+                outcome.map_err(anyhow::Error::msg)
+            })();
+            let _ = startup_tx.send(outcome);
         });
-        let deadline = Instant::now() + START;
-        let identity = loop {
-            if startup.is_finished() {
-                break startup.join().map_err(|_| anyhow!("VMM startup thread panicked"))??;
+        // The VMM writes one line when its relay is listening for the window.
+        // Wake on that line rather than polling the reader thread.
+        let identity = match startup_rx.recv_timeout(START) {
+            Ok(Ok(identity)) => identity,
+            Ok(Err(error)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("VMM startup failed");
             }
-            if Instant::now() >= deadline {
+            Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 bail!("VMM did not report a relay socket within {} s", START.as_secs());
             }
-            std::thread::sleep(Duration::from_millis(20));
         };
+        let _ = startup.join();
         if identity.holder.pid != pid || identity.holder.socket != socket {
             let _ = child.kill();
             let _ = child.wait();
@@ -419,7 +426,6 @@ fn cleanup(paths: &Paths, id: &str) {
     let socket = paths.task(id);
     let _ = std::fs::remove_file(socket.with_extension("holder"));
     let _ = std::fs::remove_file(socket.with_extension("vsock"));
-    let _ = std::fs::remove_file(socket.with_extension("ready"));
     let _ = std::fs::remove_file(socket);
 }
 

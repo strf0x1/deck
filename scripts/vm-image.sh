@@ -57,20 +57,24 @@ chmod 755 "$scratch/rootfs/usr/local/bin/construct"
 cat > "$scratch/rootfs/usr/local/bin/deck-guest" <<'GUEST'
 #!/bin/sh
 # deck's guest entry: provision the workspace once, mount the journal disk,
-# start the ACP listener, then tell the host it is ready on vsock port 1025.
+# then hand ACP to the host over vsock. The guest opens the connection, so
+# the connection is the readiness signal: no listener port, no fixed delay.
 set -u
 port=${1:-1024}
-echo "deck-guest: start port=$port"
+# /proc/uptime is free to read, unlike `date`, so the marks do not distort the
+# launch they measure.
+mark() { read -r up _ </proc/uptime; echo "deck-guest: $1 at ${up}s"; }
+mark "start port=$port"
 mkdir -p /workspace /mnt/import /root/.construct /tmp
 if [ ! -e /workspace/.deck-provisioned ] && mount -t virtiofs import /mnt/import 2>/dev/null; then
   cp -a /mnt/import/. /workspace/ 2>/dev/null || true
   touch /workspace/.deck-provisioned
   umount /mnt/import
-  echo "deck-guest: provisioned"
+  mark "provisioned"
 fi
 if [ -b /dev/vdb ]; then
   if mount -t ext4 /dev/vdb /root/.construct 2>/dev/null; then
-    echo "deck-guest: journal mounted"
+    mark "journal mounted"
   else
     echo "deck-guest: journal mount failed"
   fi
@@ -83,15 +87,15 @@ if [ "${DECK_SYNC:-0}" = "1" ]; then
   ( while :; do sleep 1; sync; done ) &
 fi
 cd /workspace || cd /
-# Do not add socat's `stderr` option: it merges the agent's diagnostics into
-# the ACP socket. They inherit the guest console instead, so the relay only
-# ever carries protocol frames.
-/usr/bin/socat "VSOCK-LISTEN:${port},fork,reuseaddr" "SYSTEM:${DECK_AGENT} ${DECK_ARGS}" &
-soc=$!
-sleep 0.3
-echo "deck-guest: ready"
-printf 'ready\n' | /usr/bin/socat - VSOCK-CONNECT:2:1025
-wait "$soc"
+# The guest opens the ACP stream to the host, so the connection itself is the
+# readiness signal: no listener race, no fixed delay, and the agent starts
+# while the host is still finishing the launch. Do not add socat's `stderr`
+# option: it merges the agent's diagnostics into the ACP socket. They inherit
+# the guest console instead, so the relay only ever carries protocol frames.
+mark "connecting port=$port"
+# The agent is the first address, so socat starts it immediately and only then
+# connects the stream; its startup overlaps the vsock handshake.
+exec /usr/bin/socat "SYSTEM:${DECK_AGENT} ${DECK_ARGS}" "VSOCK-CONNECT:2:${port}"
 GUEST
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest"
 # A readable file outside /workspace, for the permission-ask measurement.
