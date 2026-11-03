@@ -198,6 +198,11 @@ Same as construct's (see `../construct/AGENTS.md`), in short:
 3. One concern per file; soft ceiling 300 non-test lines.
 4. No `unwrap`/`expect` outside tests; escape hatches are `#[expect(..., reason)]`, never `#[allow]`.
 5. Pure state (no GPUI types) wherever possible, so it is unit-testable; views read it.
+6. ACP extension names and payloads are the shared Deck-Construct contract in
+   `strf0x1/sprawlcommons-acp`, pinned by `CONTRACT.lock`. Change the contract
+   first (semver, matrix, schemas), then both implementations; CI's
+   `scripts/acp-contract.sh verify` and `crates/deck-acp/tests/contract.rs`
+   keep this repo honest.
 
 ## GPUI notes
 

@@ -1,0 +1,97 @@
+{
+  "contract": "1.0.0",
+  "acp": "1",
+  "names": {
+    "construct_meta": "com.sprawlcommons/construct",
+    "construct_meta_legacy": "construct",
+    "deck_meta": "com.sprawlcommons/deck",
+    "deck_meta_legacy": "deck",
+    "event_method": "_com.sprawlcommons/construct/event",
+    "event_method_legacy": "_construct/event",
+    "turn_method": "_com.sprawlcommons/construct/turn",
+    "turn_method_legacy": "_construct/turn",
+    "boundary_method": "_com.sprawlcommons/deck/boundary",
+    "boundary_method_legacy": "_deck/boundary"
+  },
+  "accepts": {
+    "boundary_methods": [
+      "_com.sprawlcommons/deck/boundary",
+      "_deck/boundary"
+    ],
+    "start_meta_keys": [
+      "com.sprawlcommons/construct",
+      "construct"
+    ],
+    "load_snapshot_keys": [
+      "com.sprawlcommons/construct",
+      "construct"
+    ]
+  },
+  "negotiation": [
+    {
+      "case": "current",
+      "client_meta": {
+        "com.sprawlcommons/construct": { "events": true, "turn": true }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_com.sprawlcommons/construct/turn"
+      }
+    },
+    {
+      "case": "current-events-only",
+      "client_meta": {
+        "com.sprawlcommons/construct": { "events": true }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "legacy",
+      "client_meta": {
+        "construct": { "events": true }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "legacy-turn-is-not-a-capability",
+      "client_meta": {
+        "construct": { "events": true, "turn": true }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "none",
+      "client_meta": {},
+      "expect": {
+        "lossless": false,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "both-keys-current-wins",
+      "client_meta": {
+        "construct": { "events": true },
+        "com.sprawlcommons/construct": { "events": true, "turn": true }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_com.sprawlcommons/construct/turn"
+      }
+    }
+  ]
+}

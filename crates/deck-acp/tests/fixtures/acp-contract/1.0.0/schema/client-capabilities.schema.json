@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/client-capabilities.schema.json",
+  "title": "clientCapabilities._meta for the SprawlCommons extensions",
+  "type": "object",
+  "properties": {
+    "com.sprawlcommons/construct": {
+      "type": "object",
+      "properties": {
+        "events": { "type": "boolean", "description": "The client reads the lossless event notification." },
+        "turn": { "type": "boolean", "description": "The client reads turn notifications under the current method." }
+      },
+      "additionalProperties": true
+    },
+    "construct": {
+      "type": "object",
+      "description": "Legacy key, accepted until contract 2.0. Only `events` is read.",
+      "properties": { "events": { "type": "boolean" } },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

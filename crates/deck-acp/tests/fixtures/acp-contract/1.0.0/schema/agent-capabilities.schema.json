@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/agent-capabilities.schema.json",
+  "title": "agentCapabilities._meta for the SprawlCommons extensions",
+  "type": "object",
+  "properties": {
+    "com.sprawlcommons/construct": {
+      "type": "object",
+      "properties": {
+        "events": { "type": "boolean" },
+        "liveAttach": { "type": "boolean", "description": "User mode only; never a delegated child." }
+      },
+      "additionalProperties": true
+    },
+    "construct": {
+      "type": "object",
+      "description": "Legacy key, advertised until contract 2.0.",
+      "properties": { "events": { "type": "boolean" }, "liveAttach": { "type": "boolean" } },
+      "additionalProperties": true
+    },
+    "com.sprawlcommons/deck": {
+      "type": "object",
+      "properties": { "boundary": { "type": "boolean" } },
+      "additionalProperties": true
+    },
+    "deck": {
+      "type": "object",
+      "description": "Legacy key, advertised until contract 2.0.",
+      "properties": { "boundary": { "type": "boolean" } },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

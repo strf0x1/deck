@@ -1,0 +1,9 @@
+# The shared Deck-Construct ACP extension contract (docs/adr/0006).
+# Source of truth: https://github.com/strf0x1/sprawlcommons-acp
+# Verify with `scripts/acp-contract.sh verify`; refresh with
+# `scripts/acp-contract.sh update <version>`.
+repo = "strf0x1/sprawlcommons-acp"
+version = "1.0.0"
+commit = "8c24a07c28aaabd539582d749a5ee9c583ca107d"
+vendored = "crates/deck-acp/tests/fixtures/acp-contract/1.0.0"
+sha256 = "e81f09d4e72a79bef0a3f5f43880a17a8bb3d6af6b89b49124ecd1826b431a5c"
