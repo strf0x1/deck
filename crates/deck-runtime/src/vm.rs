@@ -60,6 +60,12 @@ pub const GATEWAY_ENV: &str = "DECK_GATEWAY_EXECUTABLE";
 /// overrides them live.
 pub const REQUEST_BUDGET_ENV: &str = "DECK_MODEL_REQUEST_BUDGET";
 pub const TOKEN_BUDGET_ENV: &str = "DECK_MODEL_TOKEN_BUDGET";
+/// The web and package profiles a task may use without asking. A comma- or
+/// space-separated list of the names the gateway defines (`repo`,
+/// `registry`, `package-mirrors`, `os-mirrors`, `docs`). Empty means the task
+/// has a web gateway with no pre-approved destination, which is the closed
+/// default; `none` disables it entirely.
+pub const WEB_PROFILES_ENV: &str = "DECK_WEB_PROFILES";
 
 pub struct Vm {
     data: PathBuf,
@@ -76,6 +82,8 @@ pub struct Vm {
     /// configuration: the guest gets the relay URL and a placeholder key.
     upstream: String,
     model: String,
+    /// The web and package profiles; `None` disables the web gateway.
+    web_profiles: Option<Vec<String>>,
     request_budget: Option<u64>,
     token_budget: Option<u64>,
 }
@@ -139,6 +147,7 @@ impl Vm {
                 model: host("CONSTRUCT_MODEL").unwrap_or_else(|| boundary::DEFAULT_MODEL.into()),
                 request_budget: number(REQUEST_BUDGET_ENV)?,
                 token_budget: number(TOKEN_BUDGET_ENV)?,
+                web_profiles: web_profiles(host(WEB_PROFILES_ENV))?,
             })
         }
     }
@@ -189,7 +198,7 @@ impl Backend for Vm {
         }
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let env = guest_environment(&guest, args, &self.model);
+        let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some());
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -217,6 +226,13 @@ impl Backend for Vm {
                 extension_socket: socket.with_extension("extension"),
                 model_port: boundary::MODEL_PORT,
                 extension_port: boundary::EXTENSION_PORT,
+                web_socket: self.web_profiles.as_ref().map(|_| socket.with_extension("web")),
+                web_port: self.web_profiles.as_ref().map(|_| boundary::WEB_VSOCK_PORT),
+                web_profiles: self.web_profiles.clone().unwrap_or_default(),
+                web_grants: vec![
+                    self.dir(&task.id).join("grants.json"),
+                    self.data.join("approvals").join("projects.json"),
+                ],
                 upstream: self.upstream.clone(),
                 models: vec![self.model.clone()],
                 request_budget: self.request_budget,
@@ -564,12 +580,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// writable config: the VM is the sandbox, the gateway owns the provider key,
 /// and `DECK_MANAGED` tells Construct every credential is host-owned. The
 /// local backend does not set any of this.
-fn guest_environment(guest: &str, args: &[String], model: &str) -> Vec<String> {
+fn guest_environment(guest: &str, args: &[String], model: &str, web: bool) -> Vec<String> {
     // The guest gets the relay's address and a non-empty placeholder, so
     // Construct's environment-first secretspec never reaches for a keyring
     // (there is none) and never sees a real value. The host gateway adds the
     // provider key after discarding this one.
-    vec![
+    let mut env = vec![
         format!("DECK_AGENT={guest}"),
         format!("DECK_ARGS={}", quote(args)),
         format!("CONSTRUCT_MODEL={model}"),
@@ -581,7 +597,36 @@ fn guest_environment(guest: &str, args: &[String], model: &str) -> Vec<String> {
         format!("DECK_MODEL_PORT={}", boundary::MODEL_PORT),
         format!("DECK_EXTENSION_PORT={}", boundary::EXTENSION_PORT),
         format!("DECK_BOUNDARY_KIND={}", boundary::BOUNDARY_KIND),
-    ]
+        format!("DECK_WEB_PORT={}", boundary::WEB_PORT),
+        format!("DECK_MIRROR_PORT={}", boundary::MIRROR_PORT),
+        format!("DECK_WEB_VSOCK_PORT={}", boundary::WEB_VSOCK_PORT),
+    ];
+    // The guest script starts the web relays only for a task with a web
+    // gateway; without them a proxy variable would point at a closed port,
+    // which is worse for a package manager than no proxy at all.
+    env.push(format!("DECK_WEB_ENABLED={}", u8::from(web)));
+    env
+}
+
+/// `DECK_WEB_PROFILES`: absent means every built-in profile but the OS
+/// mirrors, which a project that builds on Debian or Ubuntu wants and a task
+/// that does not use it does not need. `none` disables the web gateway.
+fn web_profiles(value: Option<String>) -> Result<Option<Vec<String>>> {
+    let Some(value) = value else {
+        return Ok(Some(vec!["repo".into(), "registry".into(), "package-mirrors".into(), "docs".into()]));
+    };
+    let names: Vec<String> =
+        value.split([',', ' ']).map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect();
+    if names.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    if names.iter().any(|name| name.eq_ignore_ascii_case("none")) {
+        if names.len() > 1 {
+            bail!("{WEB_PROFILES_ENV}: `none` cannot be combined with a profile");
+        }
+        return Ok(None);
+    }
+    Ok(Some(names))
 }
 
 /// Turn the agent arguments into one shell word list for socat's `EXEC:`.
@@ -610,7 +655,7 @@ mod tests {
 
     #[test]
     fn the_guest_environment_marks_the_task_managed() {
-        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free");
+        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free", true);
         let has = |line: &str| env.iter().any(|e| e == line);
         assert!(has("DECK_MANAGED=1"), "a VM task's credentials are host-owned: {env:?}");
         assert!(has("OPENAI_API_KEY=deck-placeholder"), "the guest never gets a real key: {env:?}");
@@ -618,5 +663,29 @@ mod tests {
         assert!(has("CONSTRUCT_MODEL=openrouter/free"));
         assert!(has("DECK_AGENT=/usr/local/bin/construct"));
         assert!(has("DECK_ARGS='acp'"));
+        assert!(has("DECK_WEB_ENABLED=1"), "the relay is started for a task with a web gateway: {env:?}");
+        assert!(has("DECK_WEB_PORT=8082") && has("DECK_MIRROR_PORT=8083"));
+    }
+
+    #[test]
+    fn a_task_without_a_web_gateway_starts_no_relay() {
+        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free", false);
+        assert!(env.iter().any(|line| line == "DECK_WEB_ENABLED=0"), "{env:?}");
+    }
+
+    #[test]
+    fn the_web_profiles_are_named_or_disabled() {
+        assert_eq!(
+            web_profiles(None).unwrap().unwrap(),
+            vec!["repo".to_string(), "registry".into(), "package-mirrors".into(), "docs".into()],
+            "a task gets the reads and registries by default, never the OS mirrors"
+        );
+        assert_eq!(
+            web_profiles(Some("repo, os-mirrors".into())).unwrap().unwrap(),
+            vec!["repo".to_string(), "os-mirrors".into()]
+        );
+        assert!(web_profiles(Some("none".into())).unwrap().is_none(), "`none` disables the web gateway");
+        assert!(web_profiles(Some("repo,none".into())).is_err(), "`none` cannot be combined");
+        assert_eq!(web_profiles(Some(" ".into())).unwrap(), Some(Vec::new()));
     }
 }

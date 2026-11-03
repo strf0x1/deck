@@ -70,6 +70,17 @@ pub(crate) enum Request {
         requests: u64,
         tokens: u64,
     },
+    /// Approve a whole web profile for a project: one decision instead of one
+    /// per destination. Expands to project rules before the reply.
+    WebProfile {
+        task: String,
+        #[serde(default)]
+        project: Option<String>,
+        profile: String,
+        destinations: Vec<String>,
+        #[serde(default)]
+        revoke: bool,
+    },
     /// Replace a task's live model budget; the gateway re-reads the file.
     SetBudget {
         task: String,
@@ -109,6 +120,7 @@ impl Request {
             | Self::ApprovalWait { task: id, .. }
             | Self::WithdrawApproval { task: id, .. }
             | Self::ModelUsage { task: id, .. }
+            | Self::WebProfile { task: id, .. }
             | Self::SetBudget { task: id, .. }
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }

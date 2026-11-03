@@ -155,6 +155,28 @@ impl DaemonClient {
         self.request(Request::RevokeGrant { task: task.into(), id: id.into() })
     }
 
+    /// Approve (`revoke = false`) or revoke a whole web profile for a project.
+    /// `destinations` is the profile's expansion as the host compiled it, so a
+    /// project's rule file names exactly those and the guest never defines
+    /// what a profile means. Returns how many rules changed.
+    pub fn web_profile(
+        &self,
+        task: &str,
+        project: Option<&str>,
+        profile: &str,
+        destinations: &[String],
+        revoke: bool,
+    ) -> Result<u64> {
+        let reply: serde_json::Value = self.request(Request::WebProfile {
+            task: task.into(),
+            project: project.map(str::to_owned),
+            profile: profile.into(),
+            destinations: destinations.to_vec(),
+            revoke,
+        })?;
+        Ok(reply.get("changed").and_then(serde_json::Value::as_u64).unwrap_or(0))
+    }
+
     pub fn attach(&self, id: &str) -> Result<Stream> {
         Request::Task { id: id.into() }.validate()?;
         let socket = UnixStream::connect(self.paths.task(id))?;

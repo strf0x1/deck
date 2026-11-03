@@ -71,6 +71,14 @@ impl Control {
         Self { socket, task }
     }
 
+    pub fn socket(&self) -> &PathBuf {
+        &self.socket
+    }
+
+    pub fn task(&self) -> &str {
+        &self.task
+    }
+
     pub fn ask(&self, ask: &Ask) -> Answer {
         let mut request = json!({
             "op": "approval",

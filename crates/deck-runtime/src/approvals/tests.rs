@@ -25,14 +25,24 @@ fn incoming(task: &str, project: &str, destination: &str) -> Incoming {
 }
 
 fn fast() -> Settings {
-    Settings { hold: Duration::from_secs(2), pending: Duration::from_millis(80), once: Duration::from_millis(200) }
+    Settings {
+        hold: Duration::from_secs(2),
+        pending: Duration::from_millis(80),
+        once: Duration::from_millis(200),
+        task: super::TASK,
+    }
 }
 
 /// Tests that are not about expiry must not lose their item to a slow runner.
 /// Five minutes is production; five seconds is plenty for a test, and the
 /// 80 ms `fast` window stays reserved for the expiry test.
 fn steady() -> Settings {
-    Settings { hold: Duration::from_secs(2), pending: Duration::from_secs(5), once: Duration::from_millis(200) }
+    Settings {
+        hold: Duration::from_secs(2),
+        pending: Duration::from_secs(5),
+        once: Duration::from_millis(200),
+        task: super::TASK,
+    }
 }
 
 #[test]
@@ -214,5 +224,56 @@ fn the_first_decision_wins() {
     assert_eq!(boundary.decide(&item.id, Decision::Deny).unwrap().state, State::Denied);
     assert_eq!(boundary.decide(&item.id, Decision::Task).unwrap().state, State::Denied);
     assert!(boundary.grants("t").unwrap().is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_profile_decision_is_project_rules_the_gateway_can_read() {
+    let dir = scratch("profile");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let destinations = vec!["deb.debian.org:443".to_string(), "security.debian.org:443".to_string()];
+    assert_eq!(boundary.profile(Some("/w"), &destinations, false).unwrap(), 2);
+    // A second approval replaces rather than duplicates.
+    assert_eq!(boundary.profile(Some("/w"), &destinations, false).unwrap(), 0);
+    let file = fs::read_to_string(dir.join("approvals/projects.json")).unwrap();
+    let rules: Vec<Grant> = serde_json::from_str::<serde_json::Value>(&file)
+        .map(|value| serde_json::from_value(value["rules"].clone()).unwrap())
+        .unwrap();
+    assert_eq!(rules.len(), 2, "one rule per destination, not per approval: {rules:?}");
+    for rule in &rules {
+        assert_eq!((rule.gateway.as_str(), rule.operation.as_str()), ("web", "connect"));
+        assert_eq!(rule.project.as_deref(), Some("/w"));
+        assert_eq!(rule.scope, Scope::Project);
+    }
+    // Another project's approval is a different set of rules.
+    boundary.profile(Some("/other"), &destinations[..1], false).unwrap();
+    assert_eq!(boundary.profile(Some("/w"), &destinations, true).unwrap(), 2);
+    let left = Boundary::open(&dir).unwrap();
+    assert!(left.profile(Some("/w"), &destinations, true).unwrap() == 0, "revoking twice changes nothing");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_profile_decision_needs_a_project_and_a_name() {
+    let dir = scratch("profile-names");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    assert!(boundary.profile(None, &[], false).is_err(), "a rule belongs to a project");
+    assert!(boundary.profile(Some(""), &[], false).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_allow_for_task_has_an_expiry_while_a_project_rule_does_not() {
+    let dir = scratch("task-expiry");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    let allowed = boundary.decide(&item.id, Decision::Task).unwrap();
+    assert_eq!(allowed.state, State::Allowed(Scope::Task));
+    let grant = boundary.grants("t").unwrap().into_iter().next().unwrap();
+    assert!(grant.expires_ms.is_some(), "a task grant is not unbounded (ADR 0004 §5)");
+    let project = boundary.submit(incoming("t", "/w", "other")).unwrap();
+    boundary.decide(&project.id, Decision::Project).unwrap();
+    let file = fs::read_to_string(dir.join("approvals/projects.json")).unwrap();
+    assert!(!file.contains("expires_ms"), "a project rule has no expiry: {file}");
     fs::remove_dir_all(dir).unwrap();
 }

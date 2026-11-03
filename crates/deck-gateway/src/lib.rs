@@ -9,8 +9,9 @@
 //! [`policy`] is pure and unit-tested without sockets. [`http`] is the
 //! bounded HTTP/1.1 carrier. [`usage`] reads provider token counts.
 //! [`model`] is the OpenAI-compatible reverse proxy. [`status`] is the
-//! boundary status kind on the extension port. [`server`] binds the model and
-//! extension sockets and dispatches.
+//! boundary status kind on the extension port. [`web`] is the CONNECT and
+//! plain-mirror proxy, served on its own socket and on the extension port.
+//! [`server`] binds the sockets and dispatches.
 
 pub mod control;
 pub mod http;
@@ -19,3 +20,4 @@ pub mod policy;
 pub mod server;
 pub mod status;
 pub mod usage;
+pub mod web;

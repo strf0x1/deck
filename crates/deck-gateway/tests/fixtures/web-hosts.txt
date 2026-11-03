@@ -1,0 +1,6 @@
+# The fixture host file for the web gateway's tests. It proves the gateway
+# resolves names from its own file (the guest's has no effect) and that a
+# redirect to a name that resolves nowhere is refused rather than dialled.
+web-github.com-22=140.82.112.3,140.82.112.4,2606:50c0:8000::3,2606:50c0:8001::3
+web-raw.githubusercontent.com-443=185.199.108.133,2606:50c0:8000::154
+web-pypi.org-443=151.101.0.223,151.101.64.223,2a04:4e42::223
