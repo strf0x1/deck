@@ -362,3 +362,79 @@ fn a_new_session_can_be_loaded_before_any_prompt() {
     }
     std::fs::remove_dir_all(state).unwrap();
 }
+
+#[test]
+fn a_boundary_notice_reaches_the_fake_agent_that_advertised_it() {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+
+    hang_guard();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+        .env("DECK_FAKE_DELAY_MS", "0")
+        .env("DECK_BOUNDARY_URL", "http://127.0.0.1:9")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = BufReader::new(child.stdout.take().unwrap());
+    let output = child.stdin.take().unwrap();
+    let (client, mut rx) = Client::over(std::env::temp_dir(), input, output).unwrap();
+    let Inbound::Ready { .. } = next(&mut rx) else { panic!("expected Ready") };
+    client
+        .boundary_notice(&serde_json::json!({
+            "approval_id": "a1f3",
+            "destination": "index.crates.io:443",
+            "outcome": "allowed",
+            "scope": "task",
+        }))
+        .unwrap();
+    let note = loop {
+        match next(&mut rx) {
+            Inbound::Message(text) => break text,
+            Inbound::Failed(error) => panic!("{error}"),
+            _ => {}
+        }
+    };
+    assert!(note.contains("[deck boundary] index.crates.io:443"), "{note}");
+    assert!(note.contains("approval a1f3"), "{note}");
+    assert!(note.contains("is now allowed (scope: task)"), "{note}");
+    drop(client);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn an_agent_without_the_capability_is_never_sent_a_boundary_notice() {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+
+    hang_guard();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+        .env("DECK_FAKE_DELAY_MS", "0")
+        .env_remove("DECK_BOUNDARY_URL")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = BufReader::new(child.stdout.take().unwrap());
+    let output = child.stdin.take().unwrap();
+    let (client, mut rx) = Client::over(std::env::temp_dir(), input, output).unwrap();
+    let Inbound::Ready { .. } = next(&mut rx) else { panic!("expected Ready") };
+    // The client drops it instead of writing a method the agent never offered.
+    client.boundary_notice(&serde_json::json!({ "approval_id": "a1" })).unwrap();
+    client.prompt("ship it").unwrap();
+    let mut text = String::new();
+    loop {
+        match next(&mut rx) {
+            Inbound::Message(chunk) => text.push_str(&chunk),
+            Inbound::Permission { request, .. } => {
+                client.answer(&request, Some("reject")).unwrap();
+            }
+            Inbound::Turn { state: TurnState::Idle { .. }, .. } | Inbound::TurnEnded(_) => break,
+            Inbound::Failed(error) => panic!("{error}"),
+            _ => {}
+        }
+    }
+    assert!(!text.contains("[deck boundary]"), "{text}");
+    drop(client);
+    assert!(child.wait().unwrap().success());
+}

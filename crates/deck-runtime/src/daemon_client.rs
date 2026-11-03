@@ -127,6 +127,16 @@ impl DaemonClient {
         self.request(Request::DecideApproval { id: id.into(), decision })
     }
 
+    /// One item's state, readable after a decision as well as while pending.
+    pub fn approval_status(&self, task: &str, id: &str) -> Result<Option<Approval>> {
+        self.request(Request::ApprovalStatus { task: task.into(), id: id.into() })
+    }
+
+    /// Drop a pending item on the agent's behalf.
+    pub fn withdraw(&self, task: &str, id: &str) -> Result<Approval> {
+        self.request(Request::WithdrawApproval { task: task.into(), id: id.into() })
+    }
+
     pub fn grants(&self, task: &str) -> Result<Vec<Grant>> {
         self.request(Request::Grants { task: task.into() })
     }

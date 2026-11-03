@@ -2,9 +2,10 @@
 //! runtime's VMM and mapped to a guest vsock port.
 //!
 //! The design choice: the listener set is fixed at process start because the
-//! VM's port map is. The reserved extension port accepts a framed kind and,
-//! in v1, answers every kind as unsupported; adding a gateway kind later is a
-//! gateway update that running tasks pick up without a VM restart.
+//! VM's port map is. The reserved extension port accepts a framed kind: the
+//! boundary status endpoint is the first, and an unknown kind is refused.
+//! Adding another gateway kind later is a gateway update that running tasks
+//! pick up without a VM restart.
 //!
 //! The process fails closed: any listener that stops returns an error, and the
 //! VMM treats the gateway's exit as the task's failure.
@@ -12,9 +13,10 @@
 use crate::control::Control;
 use crate::model::Model;
 use crate::policy::Models;
+use crate::status::Status;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufReader, Read as _, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -27,6 +29,9 @@ const CONNECTIONS: usize = 64;
 /// The extension port's kind header is a 4-byte big-endian length plus its
 /// UTF-8 name. Four KiB is far more than any kind needs.
 const MAX_KIND: usize = 4 * 1024;
+/// The first kind on the extension port: the boundary status endpoint. The
+/// guest relay writes this name before forwarding plain HTTP.
+pub const BOUNDARY_KIND: &str = "boundary";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -61,8 +66,15 @@ pub fn serve(config: Config) -> Result<()> {
     println!("{}", serde_json::to_string(&ready)?);
     io::stdout().flush().context("announcing gateway readiness")?;
 
-    let model =
-        Arc::new(Model::new(config.upstream, Models::new(config.models), config.key, config.secret, config.control));
+    let status = Status::new(config.control.clone());
+    let model = Arc::new(Model::new(
+        config.upstream,
+        Models::new(config.models),
+        config.key,
+        config.secret,
+        config.control,
+        status.clone(),
+    ));
     let limits = Arc::new(Limit::new(CONNECTIONS));
     let (failed, failure) = mpsc::channel();
 
@@ -70,7 +82,9 @@ pub fn serve(config: Config) -> Result<()> {
         let failed = failed.clone();
         let limits = limits.clone();
         move || {
-            let reason = accept(extension_listener, limits, extension).err().map(|error| format!("{error:#}"));
+            let reason = accept(extension_listener, limits, move |stream| extension(stream, status.clone()))
+                .err()
+                .map(|error| format!("{error:#}"));
             let _ = failed.send(("extension", reason));
         }
     })?;
@@ -129,23 +143,33 @@ where
     }
 }
 
-/// The extension port's v1 answer: no kind is implemented, and no request on
-/// this port can allow anything or reveal another task's state.
-fn extension(mut stream: UnixStream) -> io::Result<()> {
+/// The extension port's dispatch: the framed kind names the gateway the
+/// connection wants. The boundary kind speaks HTTP from that point on; any
+/// other kind is refused, and no request on this port can allow anything.
+///
+/// The frame is read without a `BufReader`, because a buffered read could
+/// consume the first HTTP bytes and strand them from the status handler.
+fn extension(mut stream: UnixStream, status: Arc<Status>) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(MAX_WAIT_SECS + 5)))?;
     let mut length = [0u8; 4];
-    let mut reader = BufReader::new(&stream);
-    reader.read_exact(&mut length)?;
+    (&stream).read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
     if length > MAX_KIND {
         return answer(&mut stream, 0, "kind header too large");
     }
     let mut kind = vec![0; length];
-    reader.read_exact(&mut kind)?;
+    (&stream).read_exact(&mut kind)?;
     let kind = String::from_utf8_lossy(&kind);
+    if kind == BOUNDARY_KIND {
+        return status.handle(stream);
+    }
     answer(&mut stream, 1, &format!("unsupported kind {kind:?}"))
 }
+
+/// Matches the status endpoint's host cap; the listener's write timeout must
+/// outlast a long poll.
+const MAX_WAIT_SECS: u64 = 300;
 
 fn answer(stream: &mut UnixStream, error: u8, message: &str) -> io::Result<()> {
     let body = serde_json::json!({ "error": error, "message": message }).to_string();
@@ -214,7 +238,7 @@ mod tests {
             left.read_exact(&mut body).unwrap();
             String::from_utf8(body).unwrap()
         });
-        extension(right).unwrap();
+        extension(right, Status::new(None)).unwrap();
         let body = writer.join().unwrap();
         assert!(body.contains("unsupported kind"), "{body}");
     }

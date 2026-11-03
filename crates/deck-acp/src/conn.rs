@@ -50,6 +50,7 @@ pub struct Conn {
     prefix: Option<String>,
     initialized: bool,
     live: bool,
+    boundary: bool,
     questions: HashSet<Value>,
     turn: Option<(u64, TurnState)>,
     agent: String,
@@ -84,6 +85,7 @@ impl Conn {
             prefix,
             initialized: false,
             live: false,
+            boundary: false,
             questions: HashSet::new(),
             turn: None,
         };
@@ -127,6 +129,19 @@ impl Conn {
     /// The `session/cancel` notification, or `None` before the session exists.
     pub fn cancel(&self) -> Option<String> {
         Some(rpc::notification("session/cancel", json!({ "sessionId": self.session.as_deref()? })))
+    }
+
+    /// The informational `_deck/boundary` notification for a decision taken
+    /// after the agent stopped waiting. Only an agent that advertised the
+    /// capability gets it; the notification grants nothing.
+    pub fn boundary_notice(&self, params: &Value) -> Option<String> {
+        if !self.boundary {
+            return None;
+        }
+        let sid = self.session.as_deref()?;
+        let mut params = params.clone();
+        params["sessionId"] = json!(sid);
+        Some(rpc::notification("_deck/boundary", params))
     }
 
     /// The reply to a permission request: the chosen option, or cancelled.
@@ -181,6 +196,7 @@ impl Conn {
             Pending::Initialize => {
                 self.initialized = true;
                 self.live = value["agentCapabilities"]["_meta"]["construct"]["liveAttach"] == true;
+                self.boundary = value["agentCapabilities"]["_meta"]["deck"]["boundary"] == true;
                 if matches!(self.target, Target::Attach(_)) && !self.live {
                     return Step { lines: vec![], events: vec![Inbound::Detached] };
                 }
@@ -534,6 +550,31 @@ mod tests {
         let mut c = handshake();
         let s = c.read(r#"{"jsonrpc":"2.0","id":5,"method":"fs/read_text_file","params":{}}"#);
         assert!(s.lines[0].contains("-32601"));
+    }
+
+    #[test]
+    fn only_an_agent_that_advertised_boundary_gets_the_notification() {
+        let (mut plain, _) = Conn::start("/w".into());
+        plain.read(r#"{"id":1,"result":{"agentInfo":{"name":"fake"}}}"#);
+        plain.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+        assert_eq!(plain.boundary_notice(&json!({ "approval_id": "a1" })), None);
+
+        let (mut capable, _) = Conn::start("/w".into());
+        capable.read(
+            r#"{"id":1,"result":{"agentInfo":{"name":"construct"},"agentCapabilities":{"_meta":{"deck":{"boundary":true}}}}}"#,
+        );
+        capable.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+        let line = capable.boundary_notice(&json!({
+            "approval_id": "a1", "destination": "index.crates.io:443", "outcome": "allowed", "scope": "task"
+        }));
+        let line = line.unwrap();
+        let Some(Incoming::Notification { method, params }) = rpc::parse(&line) else {
+            panic!("expected a notification: {line}");
+        };
+        assert_eq!(method, "_deck/boundary");
+        assert_eq!(params["sessionId"], json!("s1"));
+        assert_eq!(params["approval_id"], json!("a1"));
+        assert_eq!(params["outcome"], json!("allowed"));
     }
 
     #[test]

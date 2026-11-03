@@ -41,6 +41,9 @@ pub struct Session {
     pub status: Status,
     pub entries: Vec<Entry>,
     pub ask: Option<Ask>,
+    /// The live session this connection attached to, for extension
+    /// notifications such as `_deck/boundary`.
+    pub session_id: Option<String>,
     questions: VecDeque<Ask>,
 }
 
@@ -51,6 +54,7 @@ impl Session {
             status: Status::Connecting,
             entries: vec![],
             ask: None,
+            session_id: None,
             questions: VecDeque::new(),
         }
     }
@@ -75,8 +79,9 @@ impl Session {
 
     pub fn apply(&mut self, ev: Inbound) {
         match ev {
-            Inbound::Ready { agent, turn, .. } => {
+            Inbound::Ready { agent, session_id, turn } => {
                 self.agent = agent;
+                self.session_id = Some(session_id);
                 self.status = if self.ask.is_some() { Status::Waiting } else { Status::Ready };
                 if let Some(state) = turn {
                     self.set_turn(state);
@@ -85,6 +90,7 @@ impl Session {
             Inbound::Detached => {
                 self.ask = None;
                 self.questions.clear();
+                self.session_id = None;
                 self.status = Status::Detached;
             }
             Inbound::Turn { state, .. } => self.set_turn(state),

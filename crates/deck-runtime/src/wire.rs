@@ -48,6 +48,22 @@ pub(crate) enum Request {
     Approvals {
         task: String,
     },
+    /// One item's state, for the gateway's boundary status endpoint.
+    ApprovalStatus {
+        task: String,
+        id: String,
+    },
+    /// Long-poll one item for the gateway's boundary status endpoint.
+    ApprovalWait {
+        task: String,
+        id: String,
+        wait_ms: u64,
+    },
+    /// The agent no longer needs a pending item.
+    WithdrawApproval {
+        task: String,
+        id: String,
+    },
     DecideApproval {
         id: String,
         decision: Decision,
@@ -77,6 +93,9 @@ impl Request {
             | Self::Session { id, .. }
             | Self::Approval { task: id, .. }
             | Self::Approvals { task: id }
+            | Self::ApprovalStatus { task: id, .. }
+            | Self::ApprovalWait { task: id, .. }
+            | Self::WithdrawApproval { task: id, .. }
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }
             | Self::Watch { task: id } => Some(id),
@@ -88,7 +107,11 @@ impl Request {
             bail!("invalid task id");
         }
         let approval = match self {
-            Self::DecideApproval { id, .. } | Self::RevokeGrant { id, .. } => Some(id),
+            Self::DecideApproval { id, .. }
+            | Self::RevokeGrant { id, .. }
+            | Self::ApprovalStatus { id, .. }
+            | Self::ApprovalWait { id, .. }
+            | Self::WithdrawApproval { id, .. } => Some(id),
             _ => None,
         };
         if let Some(id) = approval

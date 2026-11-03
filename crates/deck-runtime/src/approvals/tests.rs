@@ -117,6 +117,87 @@ fn without_a_lease_the_request_is_answered_pending_at_once() {
 }
 
 #[test]
+fn a_status_wait_is_visible_and_a_decision_wakes_it() {
+    let dir = scratch("waiting");
+    let boundary = Boundary::with_settings(&dir, fast()).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    assert_eq!(item.waiters, 0);
+    let asked = boundary.clone();
+    let id = item.id.clone();
+    let waiter = std::thread::spawn(move || asked.wait("t", &id, Duration::from_secs(2)).unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if boundary.pending("t").unwrap()[0].waiters == 1 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the wait was never visible");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let decided = boundary.decide(&item.id, Decision::Deny).unwrap();
+    assert_eq!(decided.waiters, 1, "the decision knows a wait was open");
+    let outcome = waiter.join().unwrap();
+    assert_eq!(outcome.state, State::Denied);
+    assert_eq!(outcome.waiters, 0);
+    assert!(boundary.status("t", &item.id).unwrap().unwrap().state == State::Denied);
+    assert!(boundary.status("other", &item.id).unwrap().is_none());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_wait_on_a_decided_item_returns_at_once_and_never_reopens_it() {
+    let dir = scratch("wait-decided");
+    let boundary = Boundary::with_settings(&dir, fast()).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    boundary.decide(&item.id, Decision::Task).unwrap();
+    let started = std::time::Instant::now();
+    let outcome = boundary.wait("t", &item.id, Duration::from_secs(2)).unwrap();
+    assert!(matches!(outcome.state, State::Allowed(Scope::Task)));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(boundary.wait("t", "missing", Duration::from_secs(1)).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_wait_times_out_on_its_own_deadline_and_leaves_the_item_pending() {
+    let dir = scratch("wait-timeout");
+    let boundary = Boundary::with_settings(&dir, fast()).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    let started = std::time::Instant::now();
+    let outcome = boundary.wait("t", &item.id, Duration::from_millis(50)).unwrap();
+    assert_eq!(outcome.state, State::Pending);
+    assert_eq!(outcome.waiters, 0);
+    assert!(started.elapsed() >= Duration::from_millis(50));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn withdrawal_closes_a_pending_item_and_grants_nothing() {
+    let dir = scratch("withdraw");
+    let boundary = Boundary::with_settings(&dir, fast()).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    let withdrawn = boundary.withdraw("t", &item.id).unwrap();
+    assert_eq!(withdrawn.state, State::Withdrawn);
+    assert!(boundary.pending("t").unwrap().is_empty());
+    assert!(boundary.grants("t").unwrap().is_empty());
+    assert_eq!(boundary.withdraw("t", &item.id).unwrap().state, State::Withdrawn);
+    assert!(boundary.withdraw("other", &item.id).is_err());
+    assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_new_watch_sees_items_that_were_already_pending() {
+    let dir = scratch("watch-snapshot");
+    let boundary = Boundary::with_settings(&dir, fast()).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    let (_lease, mut rx) = boundary.watch("t");
+    let snapshot = rx.try_recv().unwrap();
+    assert_eq!(snapshot.id, item.id);
+    assert_eq!(snapshot.state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn the_first_decision_wins() {
     let dir = scratch("first");
     let boundary = Boundary::with_settings(&dir, fast()).unwrap();

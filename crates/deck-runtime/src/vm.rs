@@ -187,7 +187,10 @@ impl Backend for Vm {
         env.push(format!("CONSTRUCT_SANDBOX={}", boundary::GUEST_SANDBOX));
         env.push(format!("OPENAI_API_KEY={}", boundary::PLACEHOLDER_KEY));
         env.push(format!("DECK_RELAY_PORT={}", boundary::RELAY_PORT));
+        env.push(format!("DECK_BOUNDARY_PORT={}", boundary::BOUNDARY_PORT));
         env.push(format!("DECK_MODEL_PORT={}", boundary::MODEL_PORT));
+        env.push(format!("DECK_EXTENSION_PORT={}", boundary::EXTENSION_PORT));
+        env.push(format!("DECK_BOUNDARY_KIND={}", boundary::BOUNDARY_KIND));
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {

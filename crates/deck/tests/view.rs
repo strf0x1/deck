@@ -139,6 +139,7 @@ fn approval(id: &str) -> Approval {
         expires_ms: 0,
         policy: 0,
         state: deck_runtime::approvals::State::Pending,
+        waiters: 0,
     }
 }
 
@@ -363,6 +364,90 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
     assert_eq!(outcome.state, ApprovalState::Allowed(Scope::Task));
     deck.read_with(&vcx, |d, _| assert!(d.boundary().pending().is_none(), "the decision closes the card"));
     assert_eq!(watcher.grants(&id).unwrap().len(), 1);
+
+    cx.quit();
+    watcher.stop(&id).unwrap();
+    assert!(matches!(watcher.task(&id).unwrap().state, State::Stopped { .. }));
+    drop(watcher);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestAppContext) {
+    use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
+    use deck_runtime::{DaemonClient, State};
+    // The watch connection and the held request wake the UI from real threads.
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-boundary-note-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    // `env` gives the agent a boundary endpoint, so it advertises the
+    // capability and accepts the notification.
+    let argv = vec!["env".to_string(), "DECK_BOUNDARY_URL=http://127.0.0.1:9".to_string(), fake.display().to_string()];
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, std::env::temp_dir(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let ready = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let id = loop {
+        vcx.run_until_parked();
+        let id = deck.read_with(&vcx, |d, _| {
+            (d.session().status == Status::Ready).then(|| d.task_id().map(str::to_owned)).flatten()
+        });
+        if let Some(id) = id {
+            break id;
+        }
+        assert!(std::time::Instant::now() < ready, "the fake agent never became ready");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+
+    let watcher = DaemonClient::connect_or_start(&data).unwrap();
+    let holder = DaemonClient::connect(&data).unwrap();
+    let ask = Ask {
+        gateway: "model".into(),
+        operation: "chat_completions".into(),
+        destination: "other".into(),
+        credential: Some("OPENAI_API_KEY".into()),
+        details: Default::default(),
+        reason: None,
+    };
+    let asked = id.clone();
+    let approved = std::thread::spawn(move || holder.request_approval(&asked, ask));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        vcx.run_until_parked();
+        if deck.read_with(&vcx, |d, _| d.boundary().pending().is_some()) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the window never saw the approval");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    vcx.simulate_keystrokes("2");
+    let outcome = approved.join().unwrap().unwrap();
+    assert_eq!(outcome.state, ApprovalState::Allowed(Scope::Task));
+
+    // The agent was not waiting, so Deck sends `_deck/boundary`; the fake
+    // agent puts the same note in its transcript.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        vcx.run_until_parked();
+        let noted = deck.read_with(&vcx, |d, _| {
+            d.session()
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, Entry::Agent(text) if text.contains("[deck boundary] other") && text.contains("approval")))
+        });
+        if noted {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the agent never received the boundary note");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 
     cx.quit();
     watcher.stop(&id).unwrap();

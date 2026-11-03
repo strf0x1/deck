@@ -447,9 +447,9 @@ withdraw, and never try another route to the same resource. An `allowed`
 result is the cue to retry; `denied` means choose another approach, not
 retry.
 
-**Back to the user.** The gateway knows when a wait is open on an item and
-reports it to `deckd`, so the boundary card says **agent is waiting** or
-**agent moved on**. A withdrawn item leaves the queue. That tells the user
+**Back to the user.** `deckd` knows when a wait is open on an item because
+the gateway's long poll is a bounded daemon call, so the boundary card says
+**agent is waiting** or **agent moved on**. A withdrawn item leaves the queue. That tells the user
 which decisions are holding up work and keeps an exploration burst from
 leaving a stack of stale cards.
 
@@ -640,6 +640,19 @@ The implementation is not done until these have tests where practical.
    Deck; teach `deck-fake-agent` the note, the three tools and the
    notification (ADR 0002 keeps it in step with Construct), then land the
    Construct side.
+
+   Landed 2026-11-03, without budgets. The gateway serves `boundary` on the
+   extension port: `/events`, long-polled `/approvals/<id>` (300 s host cap)
+   and `/approvals/<id>/withdraw`. A long poll is one `approval_wait` control
+   call that `deckd` holds, counting the wait on the item, so the card says
+   the agent is waiting or has moved on without the gateway polling.
+   Deck sends `_deck/boundary` to an agent that advertised
+   `_meta.deck.boundary` when a decision lands after no wait was open. The
+   guest image runs a second `deck-egress` with `--kind boundary` and exports
+   `DECK_BOUNDARY_URL`; the VMM maps the same extension port as before.
+   `deck-fake-agent` advertises the capability when that URL is set and puts
+   the note in its transcript. The three boundary tools and the tool-result
+   note are Construct's side, merged in its `deck/boundary-feedback` work.
 6. Add the web/package profiles; then hand the transport to #8.
 
 ## Deferred

@@ -133,6 +133,14 @@ impl Client {
         line.map_or(Ok(()), |l| write(&self.out, &l))
     }
 
+    /// Tell an agent that advertised `_meta.deck.boundary` about a decision taken
+    /// after it stopped waiting. An agent without the capability is a no-op.
+    pub fn boundary_notice(&self, notice: &serde_json::Value) -> Result<()> {
+        #[expect(clippy::unwrap_used, reason = "poisoned lock: the reader panicked")]
+        let line = self.conn.lock().unwrap().boundary_notice(notice);
+        line.map_or(Ok(()), |line| write(&self.out, &line))
+    }
+
     /// Reply to a permission request with an option id, or `None` to cancel.
     pub fn answer(&self, request: &serde_json::Value, option: Option<&str>) -> Result<()> {
         #[expect(clippy::unwrap_used, reason = "poisoned lock: the reader panicked")]

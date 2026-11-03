@@ -15,7 +15,7 @@ use super::{chrome, conversation, panels};
 use crate::task::WindowTask;
 use deck_acp::{Client, Inbound};
 use deck_runtime::Watch;
-use deck_runtime::approvals::{Approval, Decision};
+use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
     ParentElement as _, Render, ScrollHandle, Styled as _, Subscription, Window, div, px,
@@ -107,7 +107,9 @@ impl Deck {
 
     /// Apply a boundary change from the daemon's watch connection.
     pub fn on_boundary(&mut self, approval: Approval, cx: &mut Context<Self>) {
-        self.boundary.apply(approval);
+        if let Some(decided) = self.boundary.apply(approval) {
+            self.notify_boundary(&decided);
+        }
         self.sync_live_lane();
         cx.notify();
     }
@@ -118,11 +120,34 @@ impl Deck {
         let Some(item) = self.boundary.pending().cloned() else { return };
         let Some(task) = self.task.clone() else { return };
         match task.decide(&item.id, decision) {
-            Ok(approval) => self.boundary.apply(approval),
+            Ok(approval) => {
+                if let Some(decided) = self.boundary.apply(approval) {
+                    self.notify_boundary(&decided);
+                }
+            }
             Err(e) => self.session.apply(Inbound::Failed(format!("deciding boundary approval: {e:#}"))),
         }
         self.sync_live_lane();
         cx.notify();
+    }
+
+    /// An agent that advertised `_meta.deck.boundary` learns about a decision it
+    /// did not wait for; the client ignores an agent without the capability.
+    fn notify_boundary(&self, approval: &Approval) {
+        let Some(client) = &self.client else { return };
+        let mut notice = serde_json::json!({
+            "approval_id": approval.id,
+            "destination": approval.destination,
+        });
+        match &approval.state {
+            State::Allowed(scope) => {
+                notice["outcome"] = serde_json::json!("allowed");
+                notice["scope"] = serde_json::json!(scope.as_str());
+            }
+            State::Denied => notice["outcome"] = serde_json::json!("denied"),
+            _ => return,
+        }
+        let _ = client.boundary_notice(&notice);
     }
 
     pub fn on_inbound(&mut self, ev: Inbound, cx: &mut Context<Self>) {

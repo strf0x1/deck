@@ -116,6 +116,9 @@ fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>, boundary: Ar
                     &request,
                     Request::Approval { .. }
                         | Request::Approvals { .. }
+                        | Request::ApprovalStatus { .. }
+                        | Request::ApprovalWait { .. }
+                        | Request::WithdrawApproval { .. }
                         | Request::DecideApproval { .. }
                         | Request::Grants { .. }
                         | Request::RevokeGrant { .. }
@@ -158,6 +161,12 @@ fn approval(service: &Mutex<Service>, boundary: &Arc<Boundary>, request: Request
             Ok(serde_json::to_value(boundary.submit(incoming)?)?)
         }
         Request::Approvals { task } => Ok(serde_json::to_value(boundary.pending(&task)?)?),
+        Request::ApprovalStatus { task, id } => Ok(serde_json::to_value(boundary.status(&task, &id)?)?),
+        Request::ApprovalWait { task, id, wait_ms } => {
+            let wait = Duration::from_millis(wait_ms.min(300_000));
+            Ok(serde_json::to_value(boundary.wait(&task, &id, wait)?)?)
+        }
+        Request::WithdrawApproval { task, id } => Ok(serde_json::to_value(boundary.withdraw(&task, &id)?)?),
         Request::DecideApproval { id, decision } => Ok(serde_json::to_value(boundary.decide(&id, decision)?)?),
         Request::Grants { task } => Ok(serde_json::to_value(boundary.grants(&task)?)?),
         Request::RevokeGrant { task, id } => {
@@ -252,6 +261,9 @@ impl Service {
             | Request::Watch { .. }
             | Request::Approval { .. }
             | Request::Approvals { .. }
+            | Request::ApprovalStatus { .. }
+            | Request::ApprovalWait { .. }
+            | Request::WithdrawApproval { .. }
             | Request::DecideApproval { .. }
             | Request::Grants { .. }
             | Request::RevokeGrant { .. } => unreachable!("handled before service dispatch"),

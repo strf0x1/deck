@@ -19,20 +19,32 @@ impl Boundary {
     }
 
     /// Apply an item update. Only pending items are kept; a decided or
-    /// expired item closes its card.
-    pub fn apply(&mut self, approval: Approval) {
+    /// expired item closes its card. A decision the agent did not wait for is
+    /// returned, because the agent would otherwise never learn the path is
+    /// open (ADR 0004 §6).
+    pub fn apply(&mut self, approval: Approval) -> Option<Approval> {
         let pending = approval.state == State::Pending;
+        let decided = matches!(approval.state, State::Allowed(_) | State::Denied);
         match self.items.iter_mut().find(|item| item.id == approval.id) {
             Some(slot) => {
                 if pending {
                     *slot = approval;
+                    None
                 } else {
-                    let id = approval.id;
+                    // The decision carries how many waits were open when it
+                    // was made, so a wait that ended between the decision and
+                    // the watch update cannot suppress the note.
+                    let waited = approval.waiters > 0;
+                    let id = approval.id.clone();
                     self.items.retain(|item| item.id != id);
+                    (decided && !waited).then_some(approval)
                 }
             }
-            None if pending => self.items.push(approval),
-            None => {}
+            None if pending => {
+                self.items.push(approval);
+                None
+            }
+            None => None,
         }
     }
 
@@ -66,23 +78,36 @@ mod tests {
             expires_ms: 0,
             policy: 0,
             state,
+            waiters: 0,
         }
     }
 
     #[test]
     fn updates_upsert_and_a_decision_closes_the_card() {
         let mut boundary = Boundary::new();
-        boundary.apply(item("a", State::Pending));
-        boundary.apply(item("a", State::Pending));
+        assert!(boundary.apply(item("a", State::Pending)).is_none());
+        assert!(boundary.apply(item("a", State::Pending)).is_none());
         assert_eq!(boundary.pending().map(|item| item.id.as_str()), Some("a"));
-        boundary.apply(item("a", State::Allowed(Scope::Task)));
+        assert!(boundary.apply(item("a", State::Allowed(Scope::Task))).is_some());
         assert!(boundary.pending().is_none());
     }
 
     #[test]
     fn a_decided_item_never_opens_a_card() {
         let mut boundary = Boundary::new();
-        boundary.apply(item("a", State::Denied));
+        assert!(boundary.apply(item("a", State::Denied)).is_none());
         assert!(boundary.pending().is_none());
+    }
+
+    #[test]
+    fn a_decision_the_agent_waited_for_needs_no_note() {
+        let mut boundary = Boundary::new();
+        boundary.apply(item("a", State::Pending));
+        let mut waiting = item("a", State::Pending);
+        waiting.waiters = 1;
+        boundary.apply(waiting);
+        let mut decided = item("a", State::Allowed(Scope::Task));
+        decided.waiters = 1;
+        assert!(boundary.apply(decided).is_none());
     }
 }

@@ -19,6 +19,9 @@ pub struct Agent<W> {
     next_question: u64,
     turn: Option<Turn>,
     stop: Option<String>,
+    /// Whether this process has a boundary endpoint, matching Construct: the
+    /// capability is advertised only when the endpoint exists.
+    boundary: bool,
 }
 
 impl<W: Write> Agent<W> {
@@ -34,6 +37,7 @@ impl<W: Write> Agent<W> {
             next_question: 900,
             turn: None,
             stop: None,
+            boundary: std::env::var_os("DECK_BOUNDARY_URL").is_some_and(|value| !value.is_empty()),
         }
     }
 
@@ -134,6 +138,10 @@ impl<W: Write> Agent<W> {
                 if let Some(turn) = &mut self.turn {
                     turn.question = None;
                 }
+                let mut meta = json!({ "construct": { "liveAttach": true } });
+                if self.boundary {
+                    meta["deck"] = json!({ "boundary": true });
+                }
                 self.reply(
                     id,
                     Ok(json!({
@@ -141,7 +149,7 @@ impl<W: Write> Agent<W> {
                         "agentInfo": { "name": "fake", "title": "fake agent", "version": "0" },
                         "agentCapabilities": { "loadSession": true,
                             "sessionCapabilities": { "resume": {}, "close": {} },
-                            "_meta": { "construct": { "liveAttach": true } },
+                            "_meta": meta,
                         }, "authMethods": [],
                     })),
                 );
@@ -172,6 +180,11 @@ impl<W: Write> Agent<W> {
                 self.reply(id, Ok(json!({})));
             }
             Some("session/cancel") => self.finish("cancelled"),
+            Some("_deck/boundary") => {
+                // Construct queues this for its next model request; the fake
+                // has no model, so it puts the same note in the transcript.
+                self.chunk("agent_message_chunk", &format!("\n{}", boundary_note(&msg["params"])));
+            }
             Some("session/prompt") if sid == self.session && !sid.is_empty() && self.turn.is_none() => {
                 let asked = msg["params"]["prompt"][0]["text"].as_str().unwrap_or_default();
                 self.journal.begin(&self.session, asked);
@@ -260,4 +273,18 @@ impl<W: Write> Agent<W> {
             self.reply(turn.prompt, Ok(json!({ "stopReason": reason })));
         }
     }
+}
+
+/// The note a late decision adds, matching Construct's wording closely enough
+/// that a Deck test can assert on one prefix.
+fn boundary_note(params: &Value) -> String {
+    let id = params["approval_id"].as_str().unwrap_or_default();
+    let destination = params["destination"].as_str().unwrap_or("an unnamed destination");
+    let outcome = params["outcome"].as_str().unwrap_or("decided");
+    let mut text = format!("[deck boundary] {destination} (approval {id}) is now {outcome}");
+    if let Some(scope) = params["scope"].as_str() {
+        text.push_str(&format!(" (scope: {scope})"));
+    }
+    text.push_str(". This updates an earlier denial; it grants nothing. Retry only if the task needs it.");
+    text
 }

@@ -189,6 +189,122 @@ fn the_extension_port_answers_every_kind_as_unsupported() {
     assert!(body.contains("ssh-key"), "{body}");
 }
 
+/// One connection to the extension port: the framed kind, then the request.
+fn send_kind(socket: &PathBuf, kind: &str, request: &str) -> String {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(&u32::try_from(kind.len()).unwrap().to_be_bytes()).unwrap();
+    stream.write_all(kind.as_bytes()).unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+/// A fake daemon that answers any number of connections from one closure.
+/// The closure sees each request and returns its `ok` value.
+fn interactive_queue(
+    name: &str,
+    handler: impl Fn(&Value) -> Value + Send + Sync + 'static,
+) -> (PathBuf, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    let dir = scratch(name);
+    let socket = dir.join("deckd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let handler = std::sync::Arc::new(handler);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let handler = handler.clone();
+            let log = log.clone();
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                log.lock().unwrap().push(request.clone());
+                let reply = serde_json::to_string(&serde_json::json!({ "ok": handler(&request) })).unwrap();
+                stream.write_all(reply.as_bytes()).unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            });
+        }
+    });
+    (socket, seen)
+}
+
+#[test]
+fn the_boundary_kind_serves_events_and_long_polls_a_decision() {
+    let (socket, seen) = interactive_queue("boundary-status", |request| match request["op"].as_str() {
+        Some("approval") => serde_json::json!({ "id": "a1", "destination": "other", "state": "pending" }),
+        Some("approval_status") => {
+            serde_json::json!({ "id": "a1", "destination": "other", "state": "pending" })
+        }
+        // The daemon owns the wait; its reply is the decision.
+        Some("approval_wait") => serde_json::json!({
+            "id": "a1", "destination": "other", "state": { "allowed": "task" }
+        }),
+        _ => serde_json::Value::Null,
+    });
+    let gateway =
+        start_with("boundary-kind", "http://127.0.0.1:9/v1", &["allowed"], Some("host-key"), Some((&socket, "t")));
+
+    let response = send(&gateway.ready.model, &chat("other"));
+    assert!(response.contains(r#""approval_id":"a1""#), "{response}");
+
+    let events = send_kind(&gateway.ready.extension, "boundary", "GET /events?after=0 HTTP/1.1\r\nhost: relay\r\n\r\n");
+    assert!(events.starts_with("HTTP/1.1 200 OK"), "{events}");
+    assert!(events.contains(r#""approval_id":"a1""#), "{events}");
+    assert!(events.contains(r#""state":"pending""#), "{events}");
+
+    // The long poll is one bounded daemon call; its decidable reply is the
+    // response, and the daemon marks the wait on the item for the card.
+    let waited =
+        send_kind(&gateway.ready.extension, "boundary", "GET /approvals/a1?wait=5 HTTP/1.1\r\nhost: relay\r\n\r\n");
+    assert!(waited.starts_with("HTTP/1.1 200 OK"), "{waited}");
+    assert!(waited.contains(r#""state":"allowed""#), "{waited}");
+    assert!(waited.contains(r#""scope":"task""#), "{waited}");
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().any(|r| r["op"] == "approval_wait" && r["wait_ms"] == 5000), "{seen:?}");
+}
+
+#[test]
+fn the_boundary_kind_withdraws_and_refuses_unknown_items() {
+    let (socket, seen) = interactive_queue("boundary-withdraw", |request| match request["op"].as_str() {
+        Some("withdraw_approval") => serde_json::Value::Null,
+        Some("approval_status") => serde_json::Value::Null,
+        _ => serde_json::Value::Null,
+    });
+    let gateway =
+        start_with("withdraw-kind", "http://127.0.0.1:9/v1", &["allowed"], Some("host-key"), Some((&socket, "t")));
+    let withdrawn = send_kind(
+        &gateway.ready.extension,
+        "boundary",
+        "POST /approvals/a1/withdraw HTTP/1.1\r\nhost: relay\r\ncontent-length: 0\r\n\r\n",
+    );
+    assert!(withdrawn.starts_with("HTTP/1.1 200 OK"), "{withdrawn}");
+    let missing =
+        send_kind(&gateway.ready.extension, "boundary", "GET /approvals/absent HTTP/1.1\r\nhost: relay\r\n\r\n");
+    assert!(missing.starts_with("HTTP/1.1 404 Not Found"), "{missing}");
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().any(|r| r["op"] == "withdraw_approval" && r["id"] == "a1"), "{seen:?}");
+}
+
+#[test]
+fn an_unreachable_queue_still_answers_the_boundary_kind_with_an_error() {
+    let dir = scratch("boundary-missing");
+    let missing = dir.join("absent.sock");
+    let gateway =
+        start_with("boundary-down", "http://127.0.0.1:9/v1", &["allowed"], Some("host-key"), Some((&missing, "t")));
+    let events = send_kind(&gateway.ready.extension, "boundary", "GET /events?after=0 HTTP/1.1\r\nhost: relay\r\n\r\n");
+    assert!(events.starts_with("HTTP/1.1 200 OK"), "{events}");
+    assert!(events.contains("[]"), "{events}");
+    let polled =
+        send_kind(&gateway.ready.extension, "boundary", "GET /approvals/a1?wait=0 HTTP/1.1\r\nhost: relay\r\n\r\n");
+    assert!(polled.starts_with("HTTP/1.1 503"), "{polled}");
+    assert!(polled.contains("unreachable"), "{polled}");
+}
+
 /// A fake daemon: one approval connection, one line in, one JSON reply out.
 fn queue(name: &str, reply: Value, delay: Duration, assert: impl Fn(&Value) + Send + 'static) -> PathBuf {
     let dir = scratch(name);
