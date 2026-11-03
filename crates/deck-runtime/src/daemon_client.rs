@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 
 pub use crate::wire::RunResult;
 
+/// Longer than any backend start deckd waits on (a VMM gets 30 s).
+const REPLY: Duration = Duration::from_secs(45);
+
 #[derive(Clone)]
 pub struct DaemonClient {
     socket: Arc<Mutex<BufReader<UnixStream>>>,
@@ -30,8 +33,10 @@ impl DaemonClient {
 
     fn at(paths: Paths) -> Result<Self> {
         let socket = UnixStream::connect(paths.control())?;
-        socket.set_read_timeout(Some(Duration::from_secs(15)))?;
-        socket.set_write_timeout(Some(Duration::from_secs(15)))?;
+        // A request can wait on a backend start (a holder or a VMM), so this
+        // outlasts the longest of those rather than cutting them short.
+        socket.set_read_timeout(Some(REPLY))?;
+        socket.set_write_timeout(Some(REPLY))?;
         let client = Self { socket: Arc::new(Mutex::new(BufReader::new(socket))), paths };
         // A connect alone can succeed after idle shutdown was committed.
         // A reply proves deckd accepted and counted this connection.
@@ -65,7 +70,8 @@ impl DaemonClient {
         std::thread::spawn(move || {
             let _ = child.wait();
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // A cold first exec of a freshly built deckd can be slow on macOS.
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             match Self::at(paths.clone()) {
                 Ok(client) => return Ok(client),

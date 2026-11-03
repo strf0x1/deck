@@ -18,6 +18,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub(crate) const WAIT: Duration = Duration::from_secs(5);
+/// How long deckd waits for a new holder to report. It covers three cold
+/// execs (holder, child helper, agent), and the first run of a freshly
+/// linked binary on macOS can take seconds, so it outlasts the helper's own
+/// startup wait and never shortens a successful start.
+pub(crate) const STARTUP: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

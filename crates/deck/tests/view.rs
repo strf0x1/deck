@@ -187,7 +187,10 @@ fn quitting_detaches_and_the_windows_task_keeps_running(cx: &mut TestAppContext)
     });
     let vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx.clone()).unwrap();
-    let id = deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)).expect("the window runs a task");
+    // A failed launch only lands in the session, so name it in the panic.
+    let id = deck.read_with(&vcx, |d, _| {
+        d.task_id().map(str::to_owned).unwrap_or_else(|| panic!("the window runs no task: {:?}", d.session().status))
+    });
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let before = daemon.task(&id).unwrap();
     assert_eq!(before.state, State::Running);

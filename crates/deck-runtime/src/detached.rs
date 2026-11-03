@@ -4,7 +4,7 @@
 //! recorded pid. Dropping a proxy only detaches from supervision.
 
 use crate::backend::{Backend, Exited, Instance, Stream};
-use crate::holder::{self, Identity, Reply, Request, WAIT};
+use crate::holder::{self, Identity, Reply, Request, STARTUP, WAIT};
 use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
 use crate::record::{RecordLock, Store};
@@ -72,7 +72,7 @@ impl Backend for Detached {
             })();
             let _ = ready.send(startup);
         });
-        let identity = match result.recv_timeout(WAIT) {
+        let identity = match result.recv_timeout(STARTUP) {
             Ok(Ok(identity)) if identity.holder.pid == pid && identity.holder.socket == socket => identity,
             outcome => {
                 let _ = child.kill();

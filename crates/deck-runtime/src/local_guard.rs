@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-const STARTUP_WAIT: Duration = Duration::from_secs(5);
+/// Shorter than the holder's `STARTUP`, so this error reaches deckd first.
+const STARTUP_WAIT: Duration = Duration::from_secs(15);
 const HEADER_LIMIT: u64 = 8192;
 
 pub struct GuardedLocal {
