@@ -143,9 +143,10 @@ impl Conn {
         Some(rpc::notification("session/cancel", json!({ "sessionId": self.session.as_deref()? })))
     }
 
-    /// The informational `_deck/boundary` notification for a decision taken
-    /// after the agent stopped waiting. Only an agent that advertised the
-    /// capability gets it; the notification grants nothing.
+    /// The informational boundary notification for a decision taken after the
+    /// agent stopped waiting, under the method the agent advertised
+    /// (reverse-DNS, or the bare name a released Construct advertises). The
+    /// notification grants nothing.
     pub fn boundary_notice(&self, params: &Value) -> Option<String> {
         let method = self.boundary?;
         let sid = self.session.as_deref()?;

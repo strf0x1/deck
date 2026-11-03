@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/turn-notice.schema.json",
+  "title": "Turn state notification params, and the `turn` snapshot",
+  "type": "object",
+  "required": ["sessionId", "turn", "state"],
+  "properties": {
+    "sessionId": { "type": "string", "minLength": 1 },
+    "turn": { "type": "integer", "minimum": 0 },
+    "state": { "enum": ["idle", "working", "waiting"] },
+    "stopReason": {
+      "type": "string",
+      "description": "Only with state=idle, and only when the turn stopped with a reason."
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/start.schema.json",
+  "title": "ACL child setup in session/new _meta",
+  "type": "object",
+  "required": ["config", "origin"],
+  "properties": {
+    "config": { "type": "object", "description": "Construct's Config for the child; opaque to this contract." },
+    "origin": {
+      "type": "object",
+      "required": ["policy", "system", "parent_session", "parent_call_id"],
+      "properties": {
+        "policy": { "type": "object" },
+        "system": { "type": "string" },
+        "parent_session": { "type": "string" },
+        "parent_call_id": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

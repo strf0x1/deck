@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-notice.schema.json",
+  "title": "Late Deck boundary decision",
+  "type": "object",
+  "required": ["approval_id"],
+  "properties": {
+    "approval_id": { "type": "string", "minLength": 1 },
+    "id": { "type": "string", "description": "Alias for approval_id." },
+    "destination": { "type": "string" },
+    "outcome": { "type": "string", "description": "Defaults to `decided` when absent." },
+    "state": { "type": "string", "description": "Alias for outcome." },
+    "scope": { "type": "string" },
+    "sessionId": { "type": "string", "description": "Target session; absent means every session." },
+    "session_id": { "type": "string", "description": "Alias for sessionId." }
+  },
+  "additionalProperties": true
+}

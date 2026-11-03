@@ -457,8 +457,11 @@ leaving a stack of stale cards.
 **Pushed over ACP.** When the user decides after the hold has expired and
 nobody is waiting, the agent would otherwise never learn the path is open.
 Deck, the ACP client that showed the card, sends an extension notification
-`_deck/boundary` (`{approval_id, destination, outcome, scope}`) to the agent
-if the agent advertised it in its `initialize` capabilities `_meta`.
+`_com.sprawlcommons/deck/boundary`
+(`{approval_id, destination, outcome, scope}`) to the agent if the agent
+advertised it in its `initialize` capabilities
+`_meta["com.sprawlcommons/deck"]` (ADR 0005); the bare `_deck/boundary` and
+`_meta.deck` a released Construct advertised still count.
 Construct queues it as a short note on its next model request, within the
 current turn or the next, and skips it for an id the agent already saw
 resolve through `boundary_wait` or `boundary_status`. The notification
@@ -587,10 +590,11 @@ The implementation is not done until these have tests where practical.
    `boundary_withdraw` the item leaves the queue and the audit names the
    agent.
 4. A decision made after the hold expired, with no wait open, reaches the
-   agent as `_deck/boundary` and appears once on its next model request; an
-   id it already saw resolve is not repeated.
+   agent as `_com.sprawlcommons/deck/boundary` (the bare `_deck/boundary`
+   during the transition) and appears once on its next model request; an id
+   it already saw resolve is not repeated.
 5. No call on the status endpoint can allow an item or read another task's.
-6. An agent that did not advertise `_deck/boundary` receives no
+6. An agent that did not advertise the boundary capability receives no
    notification and still gets the hold and the `403`.
 
 ### 10. Construct and ACP follow-ups
@@ -601,9 +605,10 @@ The implementation is not done until these have tests where practical.
   metadata for a readable prefix; extend it rather than adding a second error
   path.
 - **Construct:** the boundary note on tool results, the `boundary_wait`,
-  `boundary_status` and `boundary_withdraw` tools, the `_deck/boundary`
-  capability and its queued note (§6). Their tool descriptions are part of
-  the contract: they are what keeps the model from routing around a block.
+  `boundary_status` and `boundary_withdraw` tools, the
+  `_com.sprawlcommons/deck/boundary` capability and its queued note (§6).
+  Their tool descriptions are part of the contract: they are what keeps the
+  model from routing around a block.
 - **Construct:** keep secretspec environment-first; Deck supplies placeholders.
   `construct secrets set` inside the guest is not a supported path. A guest
   keyring warning is noise, not a working store.
@@ -611,8 +616,9 @@ The implementation is not done until these have tests where practical.
   enabling them in a guest. A key in the guest environment is not acceptable,
   even an optional one.
 - **ACP:** no ACP method carries a boundary *decision*; the decision stays
-  host-side. The one addition is the informational `_deck/boundary`
-  extension notification from Deck to an agent that advertises it, which
+  host-side. The one addition is the informational
+  `_com.sprawlcommons/deck/boundary` extension notification from Deck to an
+  agent that advertises it, which
   grants nothing. ACP permissions remain cooperative; the runtime approval
   is a Deck/runtime event. #13's forwarding
   is the separate cooperative fix and does not replace this boundary.
@@ -637,18 +643,19 @@ The implementation is not done until these have tests where practical.
    budget/model checks and the boundary card. Queue, lease, hold and card
    landed 2026-11-03; budgets are still open.
 5. Add the boundary status kind on the extension port and its relay
-   listener, the card's waiting/moved-on state, and `_deck/boundary` in
-   Deck; teach `deck-fake-agent` the note, the three tools and the
-   notification (ADR 0002 keeps it in step with Construct), then land the
-   Construct side.
+   listener, the card's waiting/moved-on state, and the boundary
+   notification in Deck; teach `deck-fake-agent` the note, the three tools
+   and the notification (ADR 0002 keeps it in step with Construct), then
+   land the Construct side.
 
    Landed 2026-11-03, without budgets. The gateway serves `boundary` on the
    extension port: `/events`, long-polled `/approvals/<id>` (300 s host cap)
    and `/approvals/<id>/withdraw`. A long poll is one `approval_wait` control
    call that `deckd` holds, counting the wait on the item, so the card says
    the agent is waiting or has moved on without the gateway polling.
-   Deck sends `_deck/boundary` to an agent that advertised
-   `_meta.deck.boundary` when a decision lands after no wait was open. The
+   Deck sends `_com.sprawlcommons/deck/boundary` to an agent that advertised
+   `_meta["com.sprawlcommons/deck"].boundary` (or the bare names, ADR 0005)
+   when a decision lands after no wait was open. The
    guest image runs a second `deck-egress` with `--kind boundary` and exports
    `DECK_BOUNDARY_URL`; the VMM maps the same extension port as before.
    `deck-fake-agent` advertises the capability when that URL is set and puts
@@ -672,8 +679,9 @@ The implementation is not done until these have tests where practical.
   deferred item).
 - Per-destination data-loss controls; approved channels can carry data.
 - Boundary feedback for ACP agents other than Construct. The status
-  endpoint and `_deck/boundary` are written as a contract so another agent
-  can implement them; until one does, it gets the hold and the `403` only.
+  endpoint and the boundary notification are written as a contract so
+  another agent can implement them; until one does, it gets the hold and
+  the `403` only.
 
 ## Consequences
 
@@ -732,8 +740,8 @@ The implementation is not done until these have tests where practical.
   model/path denials, framed extension refusal). Not yet implemented: the
   approval queue and hold, budgets, grants, `deckd`'s credential broker (the
   key is still the daemon's environment), the boundary status kind and
-  `_deck/boundary`, and the web/package gateway. No security validation
-  against the bypass cases beyond TSI being off.
+  `_com.sprawlcommons/deck/boundary`, and the web/package gateway. No
+  security validation against the bypass cases beyond TSI being off.
 - Second slice (2026-11-03): `crates/deck-runtime/src/approvals.rs` (pending
   items, dedup, expiry, once/task/project grants, attachment leases and the
   bounded hold), the daemon's `watch`/`approval`/`approvals`/

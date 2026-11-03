@@ -27,7 +27,7 @@ settle.
 |`scripts/vm-image.sh`, `vm-sign.sh`|Build the hand-made Debian guest image for the host architecture with Docker (its `deck-guest` entry connects ACP out to the host and marks boot stages from `/proc/uptime`), and codesign a `deckd` with the Hypervisor entitlement (macOS).|
 | `crates/deck-runtime/tests/daemon.rs` | The real daemon binary: locking, idle shutdown, detached survival, holder adoption after daemon death, holder-crash cleanup, and concurrent control clients. |
 | `crates/deck-runtime/tests/lifecycle.rs` | The contract against real processes: stop with SIGTERM then SIGKILL, unclean exits, the agent's children, reconciliation after a holder dies, reuse, destroy. |
-| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. Supports live attach, `session/load`, `resume` and `close` like construct; with `DECK_BOUNDARY_URL` set it advertises both the reverse-DNS and bare boundary keys and puts a late decision in its transcript. `DECK_FAKE_STATE=<dir>` persists sessions across processes. Keep it in step with what Deck relies on from construct (ADR 0002). |
+| `crates/deck-acp/src/bin/deck-fake-agent.rs` | Scripted ACP agent: streams, calls a tool, asks permission. For tests and for driving the UI without a model. `--listen <socket>` serves a Unix socket instead of stdio. Supports live attach, `session/load`, `resume` and `close` like construct; with `DECK_BOUNDARY_URL` set it advertises both the reverse-DNS and bare boundary keys and puts a late decision in its transcript. `DECK_FAKE_STATE=<dir>` persists sessions across processes; `DECK_FAKE_NAMES=legacy|reverse` pins it to one extension namespace like a particular Construct release. Keep it in step with what Deck relies on from construct (ADR 0002). |
 | `crates/deck-acp/tests/acp.rs` | Client against the fake agent over stdio, and over a Unix socket the client did not launch; the fake's sessions across two processes. |
 | `crates/deck/src/main.rs` | Argument split only: `deck [--] [agent argv…]`, default `construct acp`. |
 | `crates/deck/src/app.rs` | Opens the window (blurred background, `app_id = "deck"`); app keys: `cmd-q` (macOS) / `ctrl-q` quits, and closing the last window quits. |
@@ -198,6 +198,11 @@ Same as construct's (see `../construct/AGENTS.md`), in short:
 3. One concern per file; soft ceiling 300 non-test lines.
 4. No `unwrap`/`expect` outside tests; escape hatches are `#[expect(..., reason)]`, never `#[allow]`.
 5. Pure state (no GPUI types) wherever possible, so it is unit-testable; views read it.
+6. ACP extension names and payloads are the shared Deck-Construct contract in
+   `strf0x1/sprawlcommons-acp`, pinned by `CONTRACT.lock`. Change the contract
+   first (semver, matrix, schemas), then both implementations; CI's
+   `scripts/acp-contract.sh verify` and `crates/deck-acp/tests/contract.rs`
+   keep this repo honest.
 
 ## GPUI notes
 
