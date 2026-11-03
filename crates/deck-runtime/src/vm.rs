@@ -218,6 +218,8 @@ impl Backend for Vm {
                 upstream: self.upstream.clone(),
                 models: vec![self.model.clone()],
                 secret: boundary::SECRET.into(),
+                control: self.paths.control(),
+                task: task.id.clone(),
             },
         };
         write_atomic(&self.config(&task.id), &serde_json::to_vec(&config)?)?;

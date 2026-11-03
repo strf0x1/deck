@@ -9,6 +9,7 @@
 //! The process fails closed: any listener that stops returns an error, and the
 //! VMM treats the gateway's exit as the task's failure.
 
+use crate::control::Control;
 use crate::model::Model;
 use crate::policy::Models;
 use anyhow::{Context as _, Result, bail};
@@ -36,6 +37,8 @@ pub struct Config {
     pub key: Option<String>,
     /// The name the key came from, for a denial message.
     pub secret: String,
+    /// The daemon queue that decides a model the task was not configured with.
+    pub control: Option<Control>,
     pub model_socket: PathBuf,
     pub extension_socket: PathBuf,
 }
@@ -58,7 +61,8 @@ pub fn serve(config: Config) -> Result<()> {
     println!("{}", serde_json::to_string(&ready)?);
     io::stdout().flush().context("announcing gateway readiness")?;
 
-    let model = Arc::new(Model::new(config.upstream, Models::new(config.models), config.key, config.secret));
+    let model =
+        Arc::new(Model::new(config.upstream, Models::new(config.models), config.key, config.secret, config.control));
     let limits = Arc::new(Limit::new(CONNECTIONS));
     let (failed, failure) = mpsc::channel();
 

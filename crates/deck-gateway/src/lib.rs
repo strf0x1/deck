@@ -10,6 +10,7 @@
 //! bounded HTTP/1.1 carrier. [`model`] is the OpenAI-compatible reverse proxy.
 //! [`server`] binds the model and extension sockets and dispatches.
 
+pub mod control;
 pub mod http;
 pub mod model;
 pub mod policy;

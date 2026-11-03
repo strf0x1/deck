@@ -1,6 +1,7 @@
 //! Domain client for deckd. Startup races, detached process launch, control
 //! framing and Unix paths stay here; windows see tasks and ACP streams.
 
+use crate::approvals::{Approval, Ask, Decision, Grant};
 use crate::paths::Paths;
 use crate::wire::{self, Reply, Request};
 use crate::{Notice, Spec, Stream, Task};
@@ -12,7 +13,10 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 pub use crate::wire::RunResult;
@@ -109,10 +113,74 @@ impl DaemonClient {
         self.request(Request::Session { id: id.into(), session_id: session_id.into() })
     }
 
+    /// Ask the daemon's queue for a scope. This may hold for a decision when
+    /// a capable window is attached; the gateway is the normal caller.
+    pub fn request_approval(&self, task: &str, ask: Ask) -> Result<Approval> {
+        self.request(Request::Approval { task: task.into(), ask })
+    }
+
+    pub fn approvals(&self, task: &str) -> Result<Vec<Approval>> {
+        self.request(Request::Approvals { task: task.into() })
+    }
+
+    pub fn decide(&self, id: &str, decision: Decision) -> Result<Approval> {
+        self.request(Request::DecideApproval { id: id.into(), decision })
+    }
+
+    pub fn grants(&self, task: &str) -> Result<Vec<Grant>> {
+        self.request(Request::Grants { task: task.into() })
+    }
+
+    pub fn revoke_grant(&self, task: &str, id: &str) -> Result<()> {
+        self.request(Request::RevokeGrant { task: task.into(), id: id.into() })
+    }
+
     pub fn attach(&self, id: &str) -> Result<Stream> {
         Request::Task { id: id.into() }.validate()?;
         let socket = UnixStream::connect(self.paths.task(id))?;
         Ok(Stream { reader: Box::new(BufReader::new(socket.try_clone()?)), writer: Box::new(socket) })
+    }
+
+    /// Attach this window to a task's boundary card and stream its approval
+    /// changes. The daemon holds the lease for exactly this connection's life,
+    /// so dropping the receiver detaches the window.
+    pub fn watch(&self, task: &str) -> Result<(Watch, mpsc::UnboundedReceiver<Approval>)> {
+        let socket = UnixStream::connect(self.paths.control())?;
+        socket.set_read_timeout(Some(Duration::from_secs(15)))?;
+        let mut input = BufReader::new(socket);
+        wire::write(input.get_mut(), &Request::Watch { task: task.into() })?;
+        let reply = wire::read(&mut input)?.context("deckd closed the watch before confirming it")?;
+        decode::<()>(&reply)?;
+        input.get_mut().set_read_timeout(Some(Duration::from_millis(100)))?;
+        let (tx, rx) = mpsc::unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let watched = stop.clone();
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut pending = Vec::new();
+            while !tx.is_closed() && !watched.load(Ordering::Acquire) {
+                let mut bytes = [0; 4096];
+                match input.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        pending.extend_from_slice(&bytes[..n]);
+                        while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+                            let line: Vec<_> = pending.drain(..=end).collect();
+                            let Ok(approval) = serde_json::from_slice(&line) else { return };
+                            if tx.unbounded_send(approval).is_err() {
+                                return;
+                            }
+                        }
+                        if pending.len() > wire::LIMIT {
+                            return;
+                        }
+                    }
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok((Watch { stop }, rx))
     }
 
     /// Notices use a separate connection, leaving ordinary control requests
@@ -161,6 +229,18 @@ impl DaemonClient {
         wire::write(socket.get_mut(), &request)?;
         let reply = wire::read(&mut *socket)?.context("deckd closed control connection")?;
         decode(&reply)
+    }
+}
+
+/// Ends a watch connection when the window that owns it is dropped, even
+/// though the receiving task may still be parked on an empty channel.
+pub struct Watch {
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 

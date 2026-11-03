@@ -7,12 +7,13 @@
 //! gateway prints one JSON line, then never writes a secret anywhere.
 
 use anyhow::{Context as _, Result, bail};
+use deck_gateway::control::Control;
 use deck_gateway::server::{self, Config};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH --upstream URL --model NAME [--model NAME] --secret NAME [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH --upstream URL --model NAME [--model NAME] --secret NAME [--control PATH --task ID] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -51,6 +52,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     let mut upstream = None;
     let mut models = Vec::new();
     let mut secret = None;
+    let mut control = None;
+    let mut task = None;
     let mut watch_stdin = false;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -60,6 +63,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             "--upstream" => upstream = Some(value(&mut args, &flag)?),
             "--model" => models.push(value(&mut args, &flag)?),
             "--secret" => secret = Some(value(&mut args, &flag)?),
+            "--control" => control = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--task" => task = Some(value(&mut args, &flag)?),
             "--exit-on-stdin-eof" => watch_stdin = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -77,12 +82,18 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         bail!("--model names at least one model the task may use");
     }
     let key = std::env::var(&secret).ok().filter(|value| !value.is_empty());
+    let control = match (control, task) {
+        (Some(socket), Some(task)) => Some(Control::new(socket, task)),
+        (None, None) => None,
+        _ => bail!("--control and --task are given together or not at all"),
+    };
     Ok((
         Config {
             upstream,
             models,
             key,
             secret: secret.clone(),
+            control,
             model_socket: model_socket.context(USAGE)?,
             extension_socket: extension_socket.context(USAGE)?,
         },

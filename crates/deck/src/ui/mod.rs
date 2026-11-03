@@ -5,6 +5,7 @@
 
 mod attachment;
 pub mod board;
+pub mod boundary;
 mod chrome;
 mod conversation;
 mod panels;

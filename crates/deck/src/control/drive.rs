@@ -214,6 +214,15 @@ pub fn state(d: &Deck) -> Value {
                 "options": a.options.iter().map(|o| json!({ "id": o.id, "name": o.name, "kind": o.kind })).collect::<Vec<_>>(),
             })),
         },
+        "approval": d.boundary().pending().map(|item| json!({
+            "id": item.id,
+            "task": item.task,
+            "gateway": item.gateway,
+            "operation": item.operation,
+            "destination": item.destination,
+            "credential": item.credential,
+            "state": format!("{:?}", item.state).to_lowercase(),
+        })),
         "draft": d.draft(),
         "animating": d.animating(),
     })

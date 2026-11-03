@@ -211,6 +211,22 @@ pub fn write_error(stream: &mut impl Write, status: u16, code: &str, message: &s
     write(stream, status, &[("content-type", "application/json".into())], body.as_bytes())
 }
 
+/// A boundary denial that names the approval item (ADR 0004 §5). Construct
+/// reads `approval_id` from the body or `X-Deck-Approval`; clients that only
+/// see the status still get a bounded, retryable failure.
+pub fn write_denied(stream: &mut impl Write, approval: Option<&str>, retryable: bool, message: &str) -> io::Result<()> {
+    let mut body = json!({
+        "error": { "message": message, "type": "deck_boundary_denied", "code": "deck_boundary_denied" },
+        "retryable": retryable,
+    });
+    let mut headers = vec![("content-type", "application/json".to_string())];
+    if let Some(id) = approval {
+        body["approval_id"] = json!(id);
+        headers.push(("x-deck-approval", id.to_string()));
+    }
+    write(stream, 403, &headers, body.to_string().as_bytes())
+}
+
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -277,6 +293,22 @@ mod tests {
     fn refuses_a_proxy_form_target() {
         let raw = b"GET http://example.com/ HTTP/1.1\r\n\r\n";
         assert!(matches!(read_from(raw), Err(ReadError::Refused { status: 400, .. })));
+    }
+
+    #[test]
+    fn a_boundary_denial_names_the_approval() {
+        let mut out = Vec::new();
+        write_denied(&mut out, Some("a1f3"), true, "needs approval").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+        assert!(text.contains("x-deck-approval: a1f3"), "{text}");
+        assert!(text.contains("\"approval_id\":\"a1f3\""), "{text}");
+        assert!(text.contains("\"retryable\":true"), "{text}");
+        let mut out = Vec::new();
+        write_denied(&mut out, None, false, "queue down").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("approval_id"), "{text}");
+        assert!(text.contains("\"retryable\":false"), "{text}");
     }
 
     #[test]

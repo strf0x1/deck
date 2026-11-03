@@ -82,6 +82,10 @@ pub struct Gateway {
     pub models: Vec<String>,
     /// The environment variable the gateway reads the host key from.
     pub secret: String,
+    /// The daemon's control socket and this task, so a model the task was not
+    /// configured with can ask the approval queue (ADR 0004 §5).
+    pub control: PathBuf,
+    pub task: String,
 }
 
 fn default_port() -> u32 {
@@ -270,6 +274,10 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         .arg(&gateway.upstream)
         .arg("--secret")
         .arg(&gateway.secret)
+        .arg("--control")
+        .arg(&gateway.control)
+        .arg("--task")
+        .arg(&gateway.task)
         .arg("--exit-on-stdin-eof")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -566,6 +574,8 @@ mod tests {
             upstream: "http://127.0.0.1:1/v1".into(),
             models: vec!["m".into()],
             secret: "KEY".into(),
+            control: PathBuf::from("/tmp/task.control"),
+            task: "task".into(),
         }
     }
 

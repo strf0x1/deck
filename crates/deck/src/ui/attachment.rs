@@ -5,6 +5,7 @@ use super::root::Deck;
 use super::session::{Session, Status};
 use crate::task::{Connection, WindowTask};
 use deck_acp::Inbound;
+use deck_runtime::approvals::Approval;
 use futures::StreamExt as _;
 use gpui::Context;
 use std::path::{Path, PathBuf};
@@ -29,11 +30,21 @@ impl Deck {
         deck.agent_cmd = argv.join(" ");
         match WindowTask::run(data, argv, cwd) {
             Ok((task, connection)) => {
+                match task.watch() {
+                    Ok((watch, rx)) => {
+                        deck.watch = Some(watch);
+                        deck.watch_boundary(rx, cx);
+                    }
+                    Err(e) => deck.session.apply(Inbound::Failed(format!("watching task approvals: {e:#}"))),
+                }
                 deck.task = Some(task);
                 deck._quit = Some(cx.on_app_quit(|deck, _| {
                     deck.attachment += 1;
                     deck.client = None;
                     deck.task = None;
+                    // Drop the watch before the entity can outlive the app;
+                    // its reader thread then closes the daemon connection.
+                    deck.watch = None;
                     async {}
                 }));
                 match connection {
@@ -78,6 +89,19 @@ impl Deck {
                 deck.sync_live_lane();
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Follow the daemon's approval queue for this window's task. The
+    /// watch connection is the attachment lease; dropping it detaches.
+    fn watch_boundary(&mut self, mut rx: futures::channel::mpsc::UnboundedReceiver<Approval>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            while let Some(approval) = rx.next().await {
+                if this.update(cx, |deck, cx| deck.on_boundary(approval, cx)).is_err() {
+                    break;
+                }
+            }
         })
         .detach();
     }

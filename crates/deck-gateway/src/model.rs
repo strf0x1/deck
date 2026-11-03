@@ -6,6 +6,7 @@
 //! guest header was discarded. Responses stream back with chunked encoding, so
 //! an SSE turn is not buffered until it ends.
 
+use crate::control::{Answer, Ask, Control};
 use crate::http::{self, ReadError, Request};
 use crate::policy::{self, Models};
 use std::io::{self, BufReader, Read as _};
@@ -22,6 +23,7 @@ pub struct Model {
     models: Models,
     key: Option<String>,
     secret: String,
+    control: Option<Control>,
     agent: ureq::Agent,
 }
 
@@ -30,7 +32,13 @@ impl Model {
     /// (`https://openrouter.ai/api/v1`); `key` is the host-side credential for
     /// that provider. A missing key denies instead of forwarding the guest's
     /// placeholder.
-    pub fn new(upstream: String, models: Models, key: Option<String>, secret: String) -> Self {
+    pub fn new(
+        upstream: String,
+        models: Models,
+        key: Option<String>,
+        secret: String,
+        control: Option<Control>,
+    ) -> Self {
         let config = ureq::Agent::config_builder()
             // The gateway decides what a non-2xx means; it is not an ureq error.
             .http_status_as_error(false)
@@ -41,7 +49,14 @@ impl Model {
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_recv_response(Some(Duration::from_secs(120)))
             .build();
-        Self { upstream: upstream.trim_end_matches('/').to_string(), models, key, secret, agent: config.new_agent() }
+        Self {
+            upstream: upstream.trim_end_matches('/').to_string(),
+            models,
+            key,
+            secret,
+            control,
+            agent: config.new_agent(),
+        }
     }
 
     /// Read one request and answer it. The connection always closes after the
@@ -72,7 +87,46 @@ impl Model {
             let Some(model) = requested_model(&request) else {
                 return http::write_error(&mut stream, 400, "deck_invalid_body", "the request has no model");
             };
-            if !self.models.allows(&model) {
+            if !self.models.allows(&model)
+                && let Some(control) = &self.control
+            {
+                let ask = Ask {
+                    operation: "chat_completions".into(),
+                    destination: model.clone(),
+                    credential: Some(self.secret.clone()),
+                    method: Some(request.method.clone()),
+                    path: Some(request.target.clone()),
+                    size: Some(request.body.len() as u64),
+                };
+                match control.ask(&ask) {
+                    Answer::Allowed => {}
+                    Answer::Pending(id) => {
+                        return http::write_denied(
+                            &mut stream,
+                            Some(&id),
+                            true,
+                            &format!("model {model:?} needs the user's approval; retry after they decide"),
+                        );
+                    }
+                    Answer::Denied(id) => {
+                        let id = (!id.is_empty()).then_some(id.as_str());
+                        return http::write_denied(
+                            &mut stream,
+                            id,
+                            false,
+                            &format!("model {model:?} was denied by the user's boundary policy"),
+                        );
+                    }
+                    Answer::Unavailable(why) => {
+                        return http::write_denied(
+                            &mut stream,
+                            None,
+                            true,
+                            &format!("model {model:?} needs approval, but {why}"),
+                        );
+                    }
+                }
+            } else if !self.models.allows(&model) {
                 return http::write_error(
                     &mut stream,
                     403,
