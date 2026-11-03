@@ -14,6 +14,7 @@
 pub mod client;
 pub mod conn;
 pub mod inbound;
+pub mod names;
 pub mod rpc;
 #[cfg(unix)]
 pub mod shutdown;

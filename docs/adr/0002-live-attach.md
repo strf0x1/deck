@@ -3,6 +3,7 @@
 Status: accepted, 2026-11-02. Supersedes ADR 0001 Decision 5 (attach and
 reattach), and adds an owner to Decision 7's turn checkpoints. Reviewed
 with a second model before acceptance; its findings are folded in below.
+Its extension names are superseded in part by ADR 0005.
 
 ## Context
 

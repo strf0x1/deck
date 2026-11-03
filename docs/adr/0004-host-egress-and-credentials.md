@@ -2,7 +2,8 @@
 
 Status: accepted, 2026-11-03; first and second slices landed 2026-11-03. Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
-operations; #12 compares runtimes.
+operations; #12 compares runtimes. Its extension names are superseded in
+part by ADR 0005.
 
 ## Context
 

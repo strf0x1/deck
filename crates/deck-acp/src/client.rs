@@ -133,8 +133,10 @@ impl Client {
         line.map_or(Ok(()), |l| write(&self.out, &l))
     }
 
-    /// Tell an agent that advertised `_meta.deck.boundary` about a decision taken
-    /// after it stopped waiting. An agent without the capability is a no-op.
+    /// Tell an agent that advertised a boundary capability (the reverse-DNS
+    /// key, or the bare one a released Construct advertises) about a decision
+    /// taken after it stopped waiting. An agent without the capability is a
+    /// no-op.
     pub fn boundary_notice(&self, notice: &serde_json::Value) -> Result<()> {
         #[expect(clippy::unwrap_used, reason = "poisoned lock: the reader panicked")]
         let line = self.conn.lock().unwrap().boundary_notice(notice);
