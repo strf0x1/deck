@@ -198,11 +198,35 @@ Same as construct's (see `../construct/AGENTS.md`), in short:
 3. One concern per file; soft ceiling 300 non-test lines.
 4. No `unwrap`/`expect` outside tests; escape hatches are `#[expect(..., reason)]`, never `#[allow]`.
 5. Pure state (no GPUI types) wherever possible, so it is unit-testable; views read it.
-6. ACP extension names and payloads are the shared Deck-Construct contract in
-   `strf0x1/sprawlcommons-acp`, pinned by `CONTRACT.lock`. Change the contract
-   first (semver, matrix, schemas), then both implementations; CI's
-   `scripts/acp-contract.sh verify` and `crates/deck-acp/tests/contract.rs`
-   keep this repo honest.
+6. ACP extension names and payloads are a shared contract
+   (`strf0x1/sprawlcommons-acp`, pinned by `CONTRACT.lock`); see
+   "The ACP extension contract" below.
+
+## The ACP extension contract
+
+Deck and Construct's shared ACP wire lives in one private, versioned
+repository: `strf0x1/sprawlcommons-acp`. Its `SPEC.md`, `schema/` and
+`conformance/matrix.json` are normative; the prose is not vendored here.
+`CONTRACT.lock` names the release, and
+`crates/deck-acp/tests/fixtures/acp-contract/<version>/` holds the vendored
+matrix and schemas. ADR 0005 records the names; ADR 0006 records the pin.
+
+1. A change to an extension method, `_meta` key, capability flag or payload
+   starts in the contract repo, not here. Add the matrix/schema/CHANGELOG
+   entry and bump `VERSION` by semver (patch = prose/fixture, minor =
+   additive, major = rename/removal or changed meaning).
+2. Tag `v<VERSION>` there; here, run `scripts/acp-contract.sh update <version>`
+   and extend `crates/deck-acp/tests/contract.rs` if the matrix grew.
+3. Construct pins the same release in the same wave. Never land a wire change
+   in one implementation only.
+4. `scripts/acp-contract.sh verify` runs in CI and fails on a stale vendored
+   copy or a hand edit.
+5. The bare names are removed in contract 2.0.0, one released pair after both
+   speak 1.x.
+
+Read `SPEC.md` before changing `crates/deck-acp/src/names.rs` or the
+`initialize` negotiation in `conn.rs`: its §4 table is the rule both sides
+implement.
 
 ## GPUI notes
 
