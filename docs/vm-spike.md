@@ -125,7 +125,7 @@ through the normal window path.
 |---|---|
 | Launch to ACP ready | **0.60–0.64 s** (four runs: 616.7, 632.5, 635.6, 624.7 ms), 2 vCPU / 2048 MiB |
 | Idle CPU / RSS per task | **0.0 % / 179.5 MiB** (`top` second sample, 2 vCPU / 2048 MiB) |
-| Prompt turn with the local scripted model | 22–50 ms before SQLite `FULL`; **276 ms with v0.3.1** (permission ask 162 ms) |
+| Prompt turn with the local scripted model | 22–50 ms before SQLite `FULL`; **210–276 ms with v0.3.1** (permission ask 120–162 ms) |
 | Cost of `FULL` in the VM | ≈20–30 ms per durable row (`fsync` on the guest journal disk); ≈8 rows per turn |
 | Stop (runtime control, grace 3 s) | ≈ 3 s, then the VMM is gone; the guest does not power off (no power-key handler) |
 | SIGTERM without the control socket | 2.05 s (the VMM's own grace) |
