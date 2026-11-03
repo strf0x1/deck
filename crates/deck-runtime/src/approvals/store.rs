@@ -1,0 +1,73 @@
+//! Grant and project-rule files under the data root (ADR 0004 §5).
+//!
+//! The design choice: both files are atomic replacements, written before the
+//! decision is reported, and a missing file is an empty policy, not an error.
+//! Pending items and leases never reach this module.
+
+use super::Grant;
+use anyhow::{Context as _, Result};
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+pub(super) fn load_projects(data: &Path) -> Result<(Vec<Grant>, u64)> {
+    let path = projects_file(data);
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let file: Projects =
+                serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+            Ok((file.rules, file.version))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((vec![], 0)),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Projects {
+    version: u64,
+    rules: Vec<Grant>,
+}
+
+pub(super) fn save_projects(data: &Path, rules: &[Grant], version: u64) -> Result<()> {
+    write_json(&projects_file(data), &Projects { version, rules: rules.to_vec() })
+}
+
+pub(super) fn save_task(data: &Path, task: &str, grants: &[Grant]) -> Result<()> {
+    let path = task_grants(data, task);
+    if grants.is_empty() {
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+        }
+    } else {
+        write_json(&path, &grants)
+    }
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let temp = path.with_extension("tmp");
+    let mut file = File::create(&temp).with_context(|| format!("creating {}", temp.display()))?;
+    file.write_all(&serde_json::to_vec(value)?)?;
+    file.sync_all()?;
+    fs::rename(&temp, path).with_context(|| format!("renaming into {}", path.display()))?;
+    if let Some(dir) = path.parent()
+        && let Ok(dir) = File::open(dir)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+fn projects_file(data: &Path) -> PathBuf {
+    data.join("approvals").join("projects.json")
+}
+
+pub(super) fn task_grants(data: &Path, task: &str) -> PathBuf {
+    data.join("tasks").join(task).join("grants.json")
+}

@@ -41,7 +41,25 @@ consume current request IDs once.
 
 The Runtime remains the lifecycle authority. A daemon service mutex serializes
 find-or-create and launch. The detached holder installs the existing relay. ACP traffic and notice
-subscriptions run independently. The alternative command-owner loop added a
+subscriptions run independently.
+
+## Boundary approvals
+
+ADR 0004's approval queue lives in `deckd`, not in a window or the gateway.
+A gateway sends `{"op":"approval", task, gateway, operation, destination,
+credential?, details:{method,path,size}, reason?}` and blocks for the answer;
+the daemon adds the task's project and session, deduplicates, and holds the
+call only while a capable window is attached and only for 20 s. A window
+attaches by opening a `watch {task}` control connection: it confirms with
+`{"ok":null}`, then receives one JSON approval per line for as long as the
+connection lives. Dropping the connection ends the lease. Windows decide with
+`decide_approval {id, decision}` where decision is `once`, `task`, `project`
+or `deny`; `approvals {task}` lists pending items, `grants {task}` lists
+task-scoped grants, and `revoke_grant {task,id}` removes one. Task grants are
+written to `tasks/<id>/grants.json` before the decision is reported; project
+rules are in `approvals/projects.json`; pending items and leases never touch
+disk. A new run of a task clears its items and grants. If the daemon cannot
+answer, the gateway fails the new scope closed. The alternative command-owner loop added a
 queue and scheduling model without changing the serial control workload.
 
 `relay.rs` knows bytes and line endings. Each attachment owns its input fragment.

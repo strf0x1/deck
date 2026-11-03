@@ -7,12 +7,15 @@
 //! frame only while something still moves, so an idle window draws nothing.
 
 use super::board::{Board, Lane, LaneState};
+use super::boundary::Boundary;
 use super::rail::Rail;
 use super::session::{Session, Status};
 use super::theme::{SANS, Tokens};
 use super::{chrome, conversation, panels};
 use crate::task::WindowTask;
 use deck_acp::{Client, Inbound};
+use deck_runtime::Watch;
+use deck_runtime::approvals::{Approval, Decision};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
     ParentElement as _, Render, ScrollHandle, Styled as _, Subscription, Window, div, px,
@@ -32,11 +35,14 @@ pub struct Deck {
     pub(super) board: Board,
     pub(super) rail: Rail,
     pub(super) session: Session,
+    pub(super) boundary: Boundary,
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
     /// A connection to the daemon-owned task. Window shutdown detaches it.
     pub(super) task: Option<WindowTask>,
+    /// The boundary watch connection; dropping it ends the window's lease.
+    pub(super) watch: Option<Watch>,
     pub(super) _quit: Option<Subscription>,
     pub(super) client: Option<Arc<Client>>,
     pub(super) attachment: u64,
@@ -61,10 +67,12 @@ impl Deck {
             board: Board::new(lanes()),
             rail: Rail::new(),
             session: Session::new(),
+            boundary: Boundary::new(),
             draft: String::new(),
             scroll: ScrollHandle::new(),
             agent_cmd: String::new(),
             task: None,
+            watch: None,
             _quit: None,
             client: None,
             attachment: 0,
@@ -93,6 +101,30 @@ impl Deck {
         &self.draft
     }
 
+    pub fn boundary(&self) -> &Boundary {
+        &self.boundary
+    }
+
+    /// Apply a boundary change from the daemon's watch connection.
+    pub fn on_boundary(&mut self, approval: Approval, cx: &mut Context<Self>) {
+        self.boundary.apply(approval);
+        self.sync_live_lane();
+        cx.notify();
+    }
+
+    /// Send the card's decision. The card closes on the daemon's reply and
+    /// on its next watch update; a failed decision leaves it open.
+    pub fn decide_boundary(&mut self, decision: Decision, cx: &mut Context<Self>) {
+        let Some(item) = self.boundary.pending().cloned() else { return };
+        let Some(task) = self.task.clone() else { return };
+        match task.decide(&item.id, decision) {
+            Ok(approval) => self.boundary.apply(approval),
+            Err(e) => self.session.apply(Inbound::Failed(format!("deciding boundary approval: {e:#}"))),
+        }
+        self.sync_live_lane();
+        cx.notify();
+    }
+
     pub fn on_inbound(&mut self, ev: Inbound, cx: &mut Context<Self>) {
         if let Inbound::Ready { session_id, .. } = &ev
             && let Some(task) = &self.task
@@ -112,6 +144,7 @@ impl Deck {
 
     pub(super) fn sync_live_lane(&mut self) {
         let (state, detail) = match (&self.session.status, &self.session.ask) {
+            _ if self.boundary.pending().is_some() => (LaneState::Waiting, "asks: external access".into()),
             (_, Some(ask)) => (LaneState::Waiting, format!("asks: {}", ask.title)),
             (Status::Connecting, _) => (LaneState::Idle, "connecting…".into()),
             (Status::Ready, _) => (LaneState::Idle, "ready".into()),
@@ -168,6 +201,16 @@ impl Deck {
                     let i = d.parse::<usize>().unwrap_or(1) - 1;
                     self.choose(Some(i), cx);
                 }
+                _ => {}
+            }
+            return;
+        }
+        if self.boundary.pending().is_some() {
+            match k.key.as_str() {
+                "1" => self.decide_boundary(Decision::Once, cx),
+                "2" => self.decide_boundary(Decision::Task, cx),
+                "3" => self.decide_boundary(Decision::Project, cx),
+                "4" | "escape" => self.decide_boundary(Decision::Deny, cx),
                 _ => {}
             }
             return;

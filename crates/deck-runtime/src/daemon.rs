@@ -2,6 +2,7 @@
 //! operations over the existing Runtime; ACP relays never take that lock or
 //! interpret JSON. The kernel data lock is held for the daemon's whole life.
 
+use crate::approvals::{Approval, Boundary};
 use crate::detached::Detached;
 use crate::paths::Paths;
 use crate::wire::{self, Reply, Request, RunResult};
@@ -29,6 +30,7 @@ pub struct Options {
 
 struct Service {
     runtime: Runtime,
+    boundary: Arc<Boundary>,
 }
 
 /// Run until there are no running tasks and no control clients for `idle`.
@@ -52,7 +54,8 @@ pub fn serve(options: Options) -> Result<()> {
             Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
         Runtime::open(&options.data, backend)?
     };
-    let service = Arc::new(Mutex::new(Service { runtime }));
+    let boundary = Boundary::open(&options.data)?;
+    let service = Arc::new(Mutex::new(Service { runtime, boundary: boundary.clone() }));
     let clients = Arc::new(AtomicUsize::new(0));
     let mut idle_since = Instant::now();
     loop {
@@ -61,9 +64,10 @@ pub fn serve(options: Options) -> Result<()> {
                 clients.fetch_add(1, Ordering::AcqRel);
                 let client_count = clients.clone();
                 let service = service.clone();
+                let boundary = boundary.clone();
                 std::thread::spawn(move || {
                     let _connected = Connected(client_count);
-                    if let Err(e) = connection(socket, service) {
+                    if let Err(e) = connection(socket, service, boundary) {
                         eprintln!("deckd: client: {e:#}");
                     }
                 });
@@ -85,28 +89,114 @@ pub fn serve(options: Options) -> Result<()> {
     Ok(())
 }
 
-fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>) -> Result<()> {
+fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>, boundary: Arc<Boundary>) -> Result<()> {
     socket.set_nonblocking(false)?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut input = BufReader::new(socket.try_clone()?);
     while let Some(line) = wire::read(&mut input)? {
         let request = serde_json::from_slice::<Request>(&line);
-        if matches!(request, Ok(Request::Subscribe)) {
-            let rx = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.subscribe();
-            wire::write(&mut socket, &Reply { ok: Some(json!(null)), error: None })?;
-            return subscribe(socket, rx);
+        match request {
+            Ok(Request::Subscribe) => {
+                let rx = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.subscribe();
+                wire::write(&mut socket, &Reply { ok: Some(json!(null)), error: None })?;
+                return subscribe(socket, rx);
+            }
+            Ok(Request::Watch { task }) => {
+                let exists = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task);
+                if let Err(error) = exists {
+                    wire::write(&mut socket, &failed(error))?;
+                    continue;
+                }
+                let (lease, rx) = boundary.watch(&task);
+                wire::write(&mut socket, &Reply { ok: Some(json!(null)), error: None })?;
+                return watch(socket, lease, rx, task);
+            }
+            Ok(request)
+                if matches!(
+                    &request,
+                    Request::Approval { .. }
+                        | Request::Approvals { .. }
+                        | Request::DecideApproval { .. }
+                        | Request::Grants { .. }
+                        | Request::RevokeGrant { .. }
+                ) =>
+            {
+                let result = request.validate().and_then(|()| approval(&service, &boundary, request));
+                wire::write(&mut socket, &reply(result))?;
+            }
+            request => {
+                let result = request.map_err(anyhow::Error::from).and_then(|request| {
+                    request.validate()?;
+                    service.lock().unwrap_or_else(|e| e.into_inner()).execute(request)
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
         }
-        let result = request.map_err(anyhow::Error::from).and_then(|request| {
-            request.validate()?;
-            service.lock().unwrap_or_else(|e| e.into_inner()).execute(request)
-        });
-        let reply = match result {
-            Ok(v) => Reply { ok: Some(v), error: None },
-            Err(e) => Reply { ok: None, error: Some(format!("{e:#}")) },
-        };
-        wire::write(&mut socket, &reply)?;
     }
     Ok(())
+}
+
+fn reply(result: Result<Value>) -> Reply {
+    match result {
+        Ok(v) => Reply { ok: Some(v), error: None },
+        Err(e) => failed(e),
+    }
+}
+
+fn failed(error: anyhow::Error) -> Reply {
+    Reply { ok: None, error: Some(format!("{error:#}")) }
+}
+
+/// Approval requests do not take the service lock while they may hold for a
+/// decision; the task record is read briefly and the queue does the waiting.
+fn approval(service: &Mutex<Service>, boundary: &Arc<Boundary>, request: Request) -> Result<Value> {
+    match request {
+        Request::Approval { task, ask } => {
+            let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?;
+            let project = record.spec.cwd.to_string_lossy().into_owned();
+            let incoming = ask.into_incoming(task, project, record.session_id.clone());
+            Ok(serde_json::to_value(boundary.submit(incoming)?)?)
+        }
+        Request::Approvals { task } => Ok(serde_json::to_value(boundary.pending(&task)?)?),
+        Request::DecideApproval { id, decision } => Ok(serde_json::to_value(boundary.decide(&id, decision)?)?),
+        Request::Grants { task } => Ok(serde_json::to_value(boundary.grants(&task)?)?),
+        Request::RevokeGrant { task, id } => {
+            boundary.revoke(&task, &id)?;
+            Ok(json!(null))
+        }
+        _ => unreachable!("approval is called only for approval requests"),
+    }
+}
+
+/// Stream this task's approval changes until the window goes away. The lease
+/// lives exactly as long as the connection, so a dropped window detaches.
+fn watch(
+    mut socket: UnixStream,
+    _lease: crate::approvals::Lease,
+    mut rx: futures::channel::mpsc::UnboundedReceiver<Approval>,
+    task: String,
+) -> Result<()> {
+    socket.set_nonblocking(true)?;
+    loop {
+        let mut byte = [0];
+        match socket.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(_) => bail!("a watch connection takes no further requests"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e).context("reading the watch connection"),
+        }
+        while let Ok(approval) = rx.try_recv() {
+            if approval.task == task
+                && let Err(error) = wire::write(&mut socket, &approval)
+            {
+                return match error.downcast_ref::<std::io::Error>().map(std::io::Error::kind) {
+                    Some(std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset) => Ok(()),
+                    _ => Err(error),
+                };
+            }
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 fn subscribe(mut socket: UnixStream, mut rx: futures::channel::mpsc::UnboundedReceiver<crate::Notice>) -> Result<()> {
@@ -143,10 +233,12 @@ impl Service {
             }
             Request::Stop { id } => {
                 self.runtime.stop(&id)?;
+                self.boundary.clear_task(&id)?;
                 Ok(json!(null))
             }
             Request::Destroy { id } => {
                 self.runtime.destroy(&id)?;
+                self.boundary.clear_task(&id)?;
                 Ok(json!(null))
             }
             Request::Task { id } => Ok(serde_json::to_value(self.runtime.task(&id)?)?),
@@ -156,7 +248,13 @@ impl Service {
                 self.runtime.session(&id, &session_id)?;
                 Ok(json!(null))
             }
-            Request::Subscribe => unreachable!("subscription is handled before service dispatch"),
+            Request::Subscribe
+            | Request::Watch { .. }
+            | Request::Approval { .. }
+            | Request::Approvals { .. }
+            | Request::DecideApproval { .. }
+            | Request::Grants { .. }
+            | Request::RevokeGrant { .. } => unreachable!("handled before service dispatch"),
         }
     }
 
@@ -176,6 +274,9 @@ impl Service {
     }
 
     fn launch(&mut self, id: &str, resume: bool) -> Result<()> {
+        // A run starts with no items or grants from an earlier one; project
+        // rules are the user's and live outside the task.
+        self.boundary.clear_task(id)?;
         if resume {
             self.runtime.resume(id)?;
         } else {

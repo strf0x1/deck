@@ -1,6 +1,7 @@
 //! Private daemon control grammar. Bound each line before parsing so an
 //! incomplete or oversized request cannot grow a control worker indefinitely.
 
+use crate::approvals::{Ask, Decision};
 use crate::{Spec, Task};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -11,15 +12,57 @@ pub(crate) const LIMIT: usize = 1024 * 1024;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum Request {
-    Create { spec: Spec },
-    Start { id: String },
-    Resume { id: String },
-    Stop { id: String },
-    Destroy { id: String },
-    Task { id: String },
+    Create {
+        spec: Spec,
+    },
+    Start {
+        id: String,
+    },
+    Resume {
+        id: String,
+    },
+    Stop {
+        id: String,
+    },
+    Destroy {
+        id: String,
+    },
+    Task {
+        id: String,
+    },
     Tasks,
-    Run { spec: Spec },
-    Session { id: String, session_id: String },
+    Run {
+        spec: Spec,
+    },
+    Session {
+        id: String,
+        session_id: String,
+    },
+    /// The gateway asks for a scope; `deckd` may hold until a window decides.
+    Approval {
+        task: String,
+        #[serde(flatten)]
+        ask: Ask,
+    },
+    /// Pending items for a task.
+    Approvals {
+        task: String,
+    },
+    DecideApproval {
+        id: String,
+        decision: Decision,
+    },
+    Grants {
+        task: String,
+    },
+    RevokeGrant {
+        task: String,
+        id: String,
+    },
+    /// A capable window attaches to this task for the connection's lifetime.
+    Watch {
+        task: String,
+    },
     Subscribe,
 }
 
@@ -31,16 +74,34 @@ impl Request {
             | Self::Stop { id }
             | Self::Destroy { id }
             | Self::Task { id }
-            | Self::Session { id, .. } => Some(id),
+            | Self::Session { id, .. }
+            | Self::Approval { task: id, .. }
+            | Self::Approvals { task: id }
+            | Self::Grants { task: id }
+            | Self::RevokeGrant { task: id, .. }
+            | Self::Watch { task: id } => Some(id),
             _ => None,
         };
         if let Some(id) = id
-            && (id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+            && !valid(id)
         {
             bail!("invalid task id");
         }
+        let approval = match self {
+            Self::DecideApproval { id, .. } | Self::RevokeGrant { id, .. } => Some(id),
+            _ => None,
+        };
+        if let Some(id) = approval
+            && !valid(id)
+        {
+            bail!("invalid approval id");
+        }
         Ok(())
     }
+}
+
+fn valid(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

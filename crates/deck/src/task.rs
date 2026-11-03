@@ -3,7 +3,8 @@
 
 use anyhow::Result;
 use deck_acp::{Client, Inbound};
-use deck_runtime::{DaemonClient, Spec, State};
+use deck_runtime::approvals::{Approval, Decision};
+use deck_runtime::{DaemonClient, Spec, State, Watch};
 use futures::channel::mpsc;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +41,16 @@ impl WindowTask {
     /// Persist a pointer to the conversation in the agent's own journal.
     pub fn record_session(&self, session_id: &str) -> Result<()> {
         self.daemon.session(&self.id, session_id)
+    }
+
+    /// Attach this window's boundary card to its task. The lease ends when
+    /// the receiver (and so the daemon connection) is dropped.
+    pub fn watch(&self) -> Result<(Watch, mpsc::UnboundedReceiver<Approval>)> {
+        self.daemon.watch(&self.id)
+    }
+
+    pub fn decide(&self, id: &str, decision: Decision) -> Result<Approval> {
+        self.daemon.decide(id, decision)
     }
 
     /// Stop and start the agent, then rebuild its conversation by loading

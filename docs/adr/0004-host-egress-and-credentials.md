@@ -1,6 +1,6 @@
 # 0004 — Host gateways enforce guest egress, credentials, and approvals
 
-Status: accepted, 2026-11-03; first slice landed 2026-11-03. Answers #9; the input is
+Status: accepted, 2026-11-03; first and second slices landed 2026-11-03. Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
 operations; #12 compares runtimes.
 
@@ -367,13 +367,14 @@ items are ephemeral across a `deckd` restart: the in-flight request already
 failed, and the guest's retry creates a fresh item. Saved rules and task
 grants are persisted.
 
-Control surface: the daemon control protocol is additive. Approvals appear in
-the existing notice subscription; Deck gets `approvals` (pending items for a
-task), `decide_approval`, `grants` and `revoke_grant`. The gateway is a
-long-lived control client and uses `decide_approval` for the queue and a
-`credential` request that returns one value; neither request nor reply is
-logged. The task record keeps grant events and audit entries, not pending
-items.
+Control surface: the daemon control protocol is additive. A window opens a
+`watch {task}` connection, which is both its notice stream for that task and
+its attachment lease; Deck gets `approvals` (pending items for a task),
+`decide_approval`, `grants` and `revoke_grant` on ordinary control requests.
+The gateway asks `approval` with the observed request and the daemon holds
+that call; a future `credential` request returns one value. Neither request
+nor reply is logged. Task grants are `tasks/<id>/grants.json`, project rules
+are `approvals/projects.json`, and pending items are memory only.
 
 The UI adds a boundary card and a per-task access panel:
 
@@ -632,7 +633,8 @@ The implementation is not done until these have tests where practical.
    the guest cannot reach the host's model port directly.
 4. Add the approval queue with the bounded hold (the gateway learns from
    `deckd` whether a window is attached to the task), model-gateway
-   budget/model checks and the boundary card.
+   budget/model checks and the boundary card. Queue, lease, hold and card
+   landed 2026-11-03; budgets are still open.
 5. Add the boundary status kind on the extension port and its relay
    listener, the card's waiting/moved-on state, and `_deck/boundary` in
    Deck; teach `deck-fake-agent` the note, the three tools and the
@@ -718,3 +720,16 @@ The implementation is not done until these have tests where practical.
   key is still the daemon's environment), the boundary status kind and
   `_deck/boundary`, and the web/package gateway. No security validation
   against the bypass cases beyond TSI being off.
+- Second slice (2026-11-03): `crates/deck-runtime/src/approvals.rs` (pending
+  items, dedup, expiry, once/task/project grants, attachment leases and the
+  bounded hold), the daemon's `watch`/`approval`/`approvals`/
+  `decide_approval`/`grants`/`revoke_grant` control operations, the gateway's
+  `control` client (a disallowed model asks and returns the bounded `403`
+  with `approval_id` and `X-Deck-Approval`), the VMM passing the daemon
+  socket and task to the gateway, and the window's boundary card and
+  decision keys. Verified by approval unit tests, the real daemon over its
+  control socket (lease hold, fail-fast without a lease, durable task and
+  project grants, stop clearing task grants), the gateway against a fake
+  queue (pending/allowed/denied/unreachable, and waiting for a held reply),
+  and the window answering a live daemon approval by key. Budget enforcement
+  remains unimplemented.

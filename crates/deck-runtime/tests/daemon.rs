@@ -538,3 +538,126 @@ fn stop_still_terminates_an_agent_with_a_blocked_acp_input_writer() {
     drop(client);
     assert!(daemon.wait_exit().success());
 }
+
+fn ask(destination: &str) -> deck_runtime::approvals::Ask {
+    deck_runtime::approvals::Ask {
+        gateway: "model".into(),
+        operation: "chat_completions".into(),
+        destination: destination.into(),
+        credential: Some("OPENAI_API_KEY".into()),
+        details: deck_runtime::approvals::Details::default(),
+        reason: None,
+    }
+}
+
+#[test]
+fn a_watch_lease_holds_the_request_for_the_window_decision() {
+    use deck_runtime::approvals::{Decision, Scope, State};
+    let (mut daemon, client) = Daemon::new("approval-hold");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let _watch = client.watch(&task.id).unwrap();
+    let holder = daemon.connect();
+    let decider = daemon.connect();
+    let asked = {
+        let id = task.id.clone();
+        std::thread::spawn(move || holder.request_approval(&id, ask("other")))
+    };
+    eventually(|| client.approvals(&task.id).unwrap().len() == 1);
+    let item = client.approvals(&task.id).unwrap().remove(0);
+    let decided = decider.decide(&item.id, Decision::Task).unwrap();
+    assert_eq!(decided.state, State::Allowed(Scope::Task));
+    assert_eq!(asked.join().unwrap().unwrap().state, State::Allowed(Scope::Task));
+    let again = client.request_approval(&task.id, ask("other")).unwrap();
+    assert_eq!(again.state, State::Allowed(Scope::Task));
+    client.stop(&task.id).unwrap();
+    assert!(client.grants(&task.id).unwrap().is_empty(), "stopping the task ends its grants");
+}
+
+#[test]
+fn without_a_lease_a_new_scope_is_answered_without_waiting() {
+    use deck_runtime::approvals::{Decision, Scope, State};
+    let (mut daemon, client) = Daemon::new("approval-fail-fast");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let decider = daemon.connect();
+    let started = Instant::now();
+    let item = client.request_approval(&task.id, ask("other")).unwrap();
+    assert_eq!(item.state, State::Pending);
+    assert!(started.elapsed() < Duration::from_secs(2), "no window is attached, so there is nothing to hold for");
+    decider.decide(&item.id, Decision::Once).unwrap();
+    assert_eq!(client.request_approval(&task.id, ask("other")).unwrap().state, State::Allowed(Scope::Once));
+    assert_eq!(client.request_approval(&task.id, ask("other")).unwrap().state, State::Pending);
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn task_grants_survive_a_daemon_restart_and_do_not_widen_other_tasks() {
+    use deck_runtime::approvals::{Decision, Scope, State};
+    let (mut daemon, client) = Daemon::new("approval-durable");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let item = client.request_approval(&task.id, ask("other")).unwrap();
+    client.decide(&item.id, Decision::Task).unwrap();
+    assert!(daemon.data.join("tasks").join(&task.id).join("grants.json").exists());
+    // The running task keeps the daemon alive, so crash it rather than
+    // waiting for idle shutdown; the holder and its grant must survive.
+    drop(client);
+    daemon.child.kill().unwrap();
+    daemon.wait_exit();
+    let client = daemon.restart();
+    assert_eq!(client.grants(&task.id).unwrap().len(), 1, "the running task keeps its grant across a daemon restart");
+    assert_eq!(client.request_approval(&task.id, ask("other")).unwrap().state, State::Allowed(Scope::Task));
+    let other = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&other.id).unwrap();
+    assert_eq!(client.request_approval(&other.id, ask("other")).unwrap().state, State::Pending);
+    client.stop(&other.id).unwrap();
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn a_project_rule_outlives_the_task_and_the_daemon() {
+    use deck_runtime::approvals::{Decision, Scope, State};
+    let (mut daemon, client) = Daemon::new("approval-project");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let item = client.request_approval(&task.id, ask("other")).unwrap();
+    client.decide(&item.id, Decision::Project).unwrap();
+    client.stop(&task.id).unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    let client = daemon.restart();
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    assert_eq!(client.request_approval(&task.id, ask("other")).unwrap().state, State::Allowed(Scope::Project));
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn the_gateways_approval_request_shape_is_accepted() {
+    let (daemon, client) = Daemon::new("gateway-wire");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let line = serde_json::json!({
+        "op": "approval",
+        "task": task.id,
+        "gateway": "model",
+        "operation": "chat_completions",
+        "destination": "other",
+        "credential": "OPENAI_API_KEY",
+        "details": { "method": "POST", "path": "/v1/chat/completions", "size": 42 }
+    });
+    let mut socket = UnixStream::connect(daemon.paths.control()).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(socket, "{line}").unwrap();
+    let mut reply = String::new();
+    BufReader::new(socket).read_line(&mut reply).unwrap();
+    let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    let approval = &reply["ok"];
+    assert_eq!(approval["destination"], "other");
+    assert_eq!(approval["state"], "pending");
+    assert_eq!(approval["details"]["size"], 42, "the gateway's details object is the queue's");
+    assert_eq!(approval["credential"], "OPENAI_API_KEY");
+    assert!(client.approvals(&task.id).unwrap().iter().any(|item| item.id == approval["id"]));
+    client.stop(&task.id).unwrap();
+}

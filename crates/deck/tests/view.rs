@@ -7,6 +7,7 @@ use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
 use deck::ui::session::{Entry, Status};
 use deck_acp::{Inbound, PermissionOption};
+use deck_runtime::approvals::{Approval, Details};
 use gpui::{AppContext as _, Focusable as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use serde_json::json;
 
@@ -119,6 +120,41 @@ fn reattached_turn_state_controls_typing_and_permission_keys(cx: &mut TestAppCon
             d.session().entries,
             vec![Entry::You("go".into()), Entry::Agent("partial continued".into()), Entry::You("hi".into())]
         );
+    });
+}
+
+fn approval(id: &str) -> Approval {
+    Approval {
+        id: id.into(),
+        task: "t".into(),
+        project: "/w".into(),
+        session: None,
+        gateway: "model".into(),
+        operation: "chat_completions".into(),
+        destination: "other".into(),
+        credential: Some("OPENAI_API_KEY".into()),
+        details: Details { method: Some("POST".into()), path: Some("/v1/chat/completions".into()), size: Some(0) },
+        reason: None,
+        created_ms: 0,
+        expires_ms: 0,
+        policy: 0,
+        state: deck_runtime::approvals::State::Pending,
+    }
+}
+
+#[gpui::test]
+fn a_boundary_card_takes_the_decision_keys_instead_of_the_prompt(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| d.on_boundary(approval("a1"), cx));
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.boundary().pending().map(|item| item.destination.as_str()), Some("other"));
+    });
+    // No task is attached in this view, so the decision goes nowhere; the
+    // point is that the keys never become prompt text.
+    cx.simulate_keystrokes("2 h i");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.draft(), "");
+        assert!(d.boundary().pending().is_some(), "a failed decision leaves the card open");
     });
 }
 
@@ -276,4 +312,61 @@ fn cleanup_daemon(data: &std::path::Path) {
     }
     let _ = std::fs::remove_dir_all(data);
     let _ = std::fs::remove_dir_all(paths.directory);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContext) {
+    use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
+    use deck_runtime::{DaemonClient, State};
+    // The watch connection and the held request wake the UI from real threads.
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-boundary-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, std::env::temp_dir(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let id = deck.read_with(&vcx, |d, _| {
+        d.task_id().map(str::to_owned).unwrap_or_else(|| panic!("the window runs no task: {:?}", d.session().status))
+    });
+
+    let watcher = DaemonClient::connect_or_start(&data).unwrap();
+    let holder = DaemonClient::connect(&data).unwrap();
+    let ask = Ask {
+        gateway: "model".into(),
+        operation: "chat_completions".into(),
+        destination: "other".into(),
+        credential: Some("OPENAI_API_KEY".into()),
+        details: Default::default(),
+        reason: None,
+    };
+    let asked = id.clone();
+    let approved = std::thread::spawn(move || holder.request_approval(&asked, ask));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        vcx.run_until_parked();
+        let shown = deck.read_with(&vcx, |d, _| d.boundary().pending().is_some());
+        if shown {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the window never saw the approval");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    vcx.simulate_keystrokes("2");
+    vcx.run_until_parked();
+    let outcome = approved.join().unwrap().unwrap();
+    assert_eq!(outcome.state, ApprovalState::Allowed(Scope::Task));
+    deck.read_with(&vcx, |d, _| assert!(d.boundary().pending().is_none(), "the decision closes the card"));
+    assert_eq!(watcher.grants(&id).unwrap().len(), 1);
+
+    cx.quit();
+    watcher.stop(&id).unwrap();
+    assert!(matches!(watcher.task(&id).unwrap().state, State::Stopped { .. }));
+    drop(watcher);
+    cleanup_daemon(&data);
 }

@@ -10,6 +10,7 @@
 //! speaks over, and closing it stops nothing. This crate has no UI
 //! dependency, and must never gain one.
 
+pub mod approvals;
 pub mod backend;
 pub mod boundary;
 pub mod child;
@@ -31,7 +32,7 @@ pub mod vmm;
 mod wire;
 
 pub use backend::{Backend, Exited, Instance, Stream};
-pub use daemon_client::{DaemonClient, RunResult};
+pub use daemon_client::{DaemonClient, RunResult, Watch};
 pub use lifecycle::{Event, Failure, Spec, State, Task};
 pub use local::Local;
 pub use runtime::{GRACE, Notice, Runtime};
