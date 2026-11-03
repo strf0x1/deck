@@ -294,10 +294,11 @@ The hold matters most for CONNECT. Most clients report a refused tunnel as
 "CONNECT failed: 403" and never show the body, so the agent cannot see the
 approval id or know that a retry would now pass; the boundary card is the
 only place the decision is visible. When the hold expires, the denial in the
-transcript (below) is what tells the user a retry is needed. Model access for the task's selected provider
-and model is authorized by the task's own model choice, so a first turn does
-not fail merely because a model gateway exists; switching model or provider
-asks.
+transcript (below) tells the user a retry is needed, and §6 tells the agent.
+
+Model access for the task's selected provider and model is authorized by the
+task's own model choice, so a first turn does not fail merely because a model
+gateway exists; switching model or provider asks.
 
 Pending items are deduplicated within a short window and expire (five minutes
 by default). A late decision reports `expired`; the guest may retry. Pending
@@ -316,13 +317,98 @@ items.
 The UI adds a boundary card and a per-task access panel:
 
 - the card shows task, gateway, destination/model, credential name, the
-  reason, and the options above — never a secret;
+  reason, whether the agent is waiting or has moved on (§6), and the options
+  above — never a secret;
 - the panel lists active grants with their scope and expiry, pending items,
   and a revoke control;
 - a denial appears in the transcript with the approval id and a retry hint,
   not as an opaque tool failure.
 
-### 6. Grants and revocation
+### 6. The agent is told why it was blocked, and may wait
+
+A blocked connection looks like a network failure to the tool that made it:
+cargo, git and pip report "CONNECT failed" or "connection refused" and drop
+the `403` body. An agent that reads that as an outage goes looking for
+another mirror, vendors the dependency, or concludes the package does not
+exist — wasted turns at best, a workaround at worst. The agent needs three
+facts: this is policy, not an outage; a human has been asked; and, later,
+what they decided. Construct is the agent this is designed for; another ACP
+agent gets the hold and the `403` and nothing more until it implements the
+same contract.
+
+**Boundary status kind.** The gateway serves a read-mostly status endpoint
+as the first kind on the extension port (§1), which also exercises that port
+from v1. `deck-egress` exposes it on guest loopback as plain HTTP:
+
+- `GET /events?after=<seq>` — boundary events for this task: sequence
+  number, approval id, gateway, destination, state (`pending`, `allowed`,
+  `denied`, `expired`, `withdrawn`), scope if decided.
+- `GET /approvals/<id>?wait=<s>` — the item's state, long-polling up to `s`
+  seconds for a decision; the host caps the wait (300 s).
+- `POST /approvals/<id>/withdraw` — drop a pending item.
+
+The sequence is the gateway's counter, not a guest clock. The endpoint sees
+only its own task's items, since the VM has only its own map. Nothing on it
+can allow anything: withdraw only removes a pending item, and the decision
+path stays host-side. Requests are rate-limited like any gateway traffic.
+
+**In the tool result.** Construct takes the current sequence before a tool
+runs and asks for `/events` after it exits. If anything was blocked, it
+appends a note to the tool result the model is about to read:
+
+```text
+[deck boundary] blocked while this ran: index.crates.io:443 (approval a1f3,
+pending with the user). This is the user's policy, not a network failure;
+do not look for another route to the same resource. Call boundary_wait if
+the task needs it, or carry on and boundary_withdraw if it does not.
+```
+
+"While this ran" is literal: with concurrent tools or delegated children the
+note can include another process's block. It is attribution by time, stated
+as such, not proof of which process asked.
+
+**Agent tools.** Construct offers three ordinary tools, so waiting is the
+agent's choice rather than forced on it — a casual lookup can be dropped, a
+build that needs the crate can wait:
+
+- `boundary_wait(id, timeout_s?)` — blocks until a decision or the timeout;
+  returns `allowed` (with scope), `denied`, `expired`, `withdrawn` or
+  `timeout`. ACP `session/cancel` interrupts it like any tool.
+- `boundary_status(id)` — the same answer at once, for an agent that keeps
+  working and checks back.
+- `boundary_withdraw(id)` — the agent no longer needs it; the card closes
+  and the audit records the withdrawal as the agent's.
+
+Their descriptions carry the guidance the model needs at the point of
+choice: wait if the task needs the destination, otherwise continue or
+withdraw, and never try another route to the same resource. An `allowed`
+result is the cue to retry; `denied` means choose another approach, not
+retry.
+
+**Back to the user.** The gateway knows when a wait is open on an item and
+reports it to `deckd`, so the boundary card says **agent is waiting** or
+**agent moved on**. A withdrawn item leaves the queue. That tells the user
+which decisions are holding up work and keeps an exploration burst from
+leaving a stack of stale cards.
+
+**Pushed over ACP.** When the user decides after the hold has expired and
+nobody is waiting, the agent would otherwise never learn the path is open.
+Deck, the ACP client that showed the card, sends an extension notification
+`_deck/boundary` (`{approval_id, destination, outcome, scope}`) to the agent
+if the agent advertised it in its `initialize` capabilities `_meta`.
+Construct queues it as a short note on its next model request, within the
+current turn or the next, and skips it for an id the agent already saw
+resolve through `boundary_wait` or `boundary_status`. The notification
+informs; it grants nothing and the agent cannot answer it with a decision.
+
+The model gateway's own denials (a model or provider switch) reach Construct
+directly as a readable `403`; Construct puts them through the same note and
+tools rather than a separate path. The gateway does not inject boundary
+notes into model requests itself: it would work for any agent, but it would
+change the conversation behind the agent's back, and the agent's transcript
+would no longer be what the model saw.
+
+### 7. Grants and revocation
 
 A grant is `(task, gateway, operation, destination, credential_name?)` with a
 scope (once/task) or a persisted project rule. Revocation:
@@ -338,7 +424,7 @@ Closing Deck does not widen anything. Pending items stay in the daemon and
 expire; saved rules and task grants keep their documented expiry; new scopes
 cannot be approved without the UI and fail closed.
 
-### 7. Threat model
+### 8. Threat model
 
 **Trusted:** the host runtime (`deckd`, gateway, VMM) as software, the OS
 credential store, and the human decision. **Untrusted:** everything in the
@@ -350,7 +436,9 @@ filesystem beyond its config, log, resolver and system trust store, a small
 environment, resource limits, and a parser that treats every request as
 hostile.
 
-In scope: bypass through TSI, host loopback, private networks, DNS, raw IP,
+In scope: the boundary status endpoint used to read another task's items,
+to approve anything, or to flood the queue with withdrawals; bypass through
+TSI, host loopback, private networks, DNS, raw IP,
 UDP/QUIC, IPv6, alternate ports, redirects, proxy environment changes,
 `/etc/hosts`, direct vsock-port access, cross-task addressing, credential
 theft from the guest, parser crashes, grant abuse, and audit tampering.
@@ -361,7 +449,7 @@ side channels, and data-loss prevention. **Approved egress can exfiltrate
 project content** — a model provider or an allowed repository receives what
 the agent sends. An allowlist is not DLP, and the UI must not imply it is.
 
-### 8. Acceptance cases
+### 9. Acceptance cases
 
 The implementation is not done until these have tests where practical.
 
@@ -424,28 +512,53 @@ The implementation is not done until these have tests where practical.
 3. A denied request injects nothing.
 4. A guest-supplied credential header is stripped, not merged.
 
-### 9. Construct and ACP follow-ups
+**Agent feedback**
+
+1. A shell command whose CONNECT is blocked returns a tool result with the
+   boundary note naming the destination and approval id, although the tool's
+   own output only says the tunnel failed.
+2. `boundary_wait` returns `allowed` with its scope when the user allows
+   during the wait, `timeout` at its own timeout, and never exceeds the host
+   cap; `session/cancel` ends it.
+3. While a wait is open the card shows the agent waiting; after
+   `boundary_withdraw` the item leaves the queue and the audit names the
+   agent.
+4. A decision made after the hold expired, with no wait open, reaches the
+   agent as `_deck/boundary` and appears once on its next model request; an
+   id it already saw resolve is not repeated.
+5. No call on the status endpoint can allow an item or read another task's.
+6. An agent that did not advertise `_deck/boundary` receives no
+   notification and still gets the hold and the `403`.
+
+### 10. Construct and ACP follow-ups
 
 - **Construct:** surface a gateway denial as a distinct, retryable error that
   includes the approval id and the requested scope; bound model retries so a
   denied call does not spin. The model client already has `Endpoint`
   metadata for a readable prefix; extend it rather than adding a second error
   path.
+- **Construct:** the boundary note on tool results, the `boundary_wait`,
+  `boundary_status` and `boundary_withdraw` tools, the `_deck/boundary`
+  capability and its queued note (§6). Their tool descriptions are part of
+  the contract: they are what keeps the model from routing around a block.
 - **Construct:** keep secretspec environment-first; Deck supplies placeholders.
   `construct secrets set` inside the guest is not a supported path. A guest
   keyring warning is noise, not a working store.
 - **Construct:** audit the optional `web_search` and router providers before
   enabling them in a guest. A key in the guest environment is not acceptable,
   even an optional one.
-- **ACP:** no new method for boundary decisions. ACP permissions remain
-  cooperative; the runtime approval is a Deck/runtime event. #13's forwarding
+- **ACP:** no ACP method carries a boundary *decision*; the decision stays
+  host-side. The one addition is the informational `_deck/boundary`
+  extension notification from Deck to an agent that advertises it, which
+  grants nothing. ACP permissions remain cooperative; the runtime approval
+  is a Deck/runtime event. #13's forwarding
   is the separate cooperative fix and does not replace this boundary.
 - **#8** owns the GitHub operation schema, repository/ref rules, PR state and
   the GitHub App credential; **#10** owns private registries and package
   mirrors; **#12** evaluates an IP-networking backend if the vsock-only
   compatibility cost is too high.
 
-### 10. First implementation slice
+### 11. First implementation slice
 
 1. Add `crates/deck-gateway/` with a pure policy core and a model gateway;
    add `deck-egress` to the guest image (loopback relay, model listener).
@@ -454,11 +567,17 @@ The implementation is not done until these have tests where practical.
 3. Add the `krun_disable_implicit_vsock` and `krun_add_vsock(ctx, 0)` wrappers
    in `krun.rs`, call both in `vmm.rs`, and map the model gateway's vsock
    port and the reserved extension port (which answers every kind as
-   unsupported until one ships); verify the VM prompt test still passes and the guest cannot reach
-   the host's model port directly.
+   unsupported until one ships); verify the VM prompt test still passes and
+   the guest cannot reach the host's model port directly.
 4. Add the approval queue with the bounded hold (the gateway learns from
    `deckd` whether a window is attached to the task), model-gateway
-   budget/model checks and the boundary card. Then add the web/package profiles; then hand the transport to #8.
+   budget/model checks and the boundary card.
+5. Add the boundary status kind on the extension port and its relay
+   listener, the card's waiting/moved-on state, and `_deck/boundary` in
+   Deck; teach `deck-fake-agent` the note, the three tools and the
+   notification (ADR 0002 keeps it in step with Construct), then land the
+   Construct side.
+6. Add the web/package profiles; then hand the transport to #8.
 
 ## Deferred
 
@@ -475,6 +594,9 @@ The implementation is not done until these have tests where practical.
 - An OS service for gateways when no Deck process is ever opened (ADR 0001's
   deferred item).
 - Per-destination data-loss controls; approved channels can carry data.
+- Boundary feedback for ACP agents other than Construct. The status
+  endpoint and `_deck/boundary` are written as a contract so another agent
+  can implement them; until one does, it gets the hold and the `403` only.
 
 ## Consequences
 
@@ -489,9 +611,11 @@ The implementation is not done until these have tests where practical.
   existing TSI shortcut and its VM tests must change in the same slice.
 - A gateway crash is a task failure, not a silent loss of egress; the runtime
   must report it as such.
-- The first prompt after a new destination is a denial plus a human decision,
-  not a hanging request. The agent must cope with a retry; Construct's error
-  path is the follow-up that makes that pleasant.
+- The first request to a new destination waits briefly for a human
+  decision, then fails rather than hanging. Construct is told why and
+  chooses whether to wait (§6); other ACP agents see only the failure.
+- Construct gains three boundary tools and a capability Deck relies on, so
+  the two must move together and `deck-fake-agent` must track them.
 - Revisit if: an IP backend is needed for compatibility (#12); the gateway
   parser grows enough to justify a separate service; private registries
   become a first-flow requirement; or a provider needs operation-level
@@ -514,4 +638,4 @@ The implementation is not done until these have tests where practical.
 - `docs/vm-spike.md`: the current `http://127.0.0.1:<port>/v1` measurement
   path and the TSI note in Limitations.
 - No implementation or security validation has been run for this design yet;
-  the acceptance cases in §8 are the first tests.
+  the acceptance cases in §9 are the first tests.
