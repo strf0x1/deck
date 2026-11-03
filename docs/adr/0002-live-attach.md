@@ -55,8 +55,10 @@ A crash is still recovered, recorded as interrupted, and never repeated
 ### 2. The live-attach contract (Construct)
 
 Advertised in the `initialize` result as
-`agentCapabilities._meta.construct.liveAttach: true`. Without it, Deck does
-not attempt a live attach (Decision 4).
+`agentCapabilities._meta["com.sprawlcommons/construct"].liveAttach: true`
+(ADR 0005); the bare `_meta.construct.liveAttach` a released Construct sends
+still counts. Without either, Deck does not attempt a live attach
+(Decision 4).
 
 - **An attachment** is everything after an `initialize`. A repeated
   `initialize` on the same connection starts a new attachment and supersedes
@@ -74,15 +76,17 @@ not attempt a live attach (Decision 4).
   meanwhile follow it, without gaps or duplicates. Deck rebuilds its view
   from the replay; it never merges it into what it had.
 - **Turn state is explicit.** Construct sends
-  `_construct/turn { sessionId, turn, state, stopReason? }` whenever a
-  turn's state changes (`working`, `waiting` for permission, `idle` with the
-  stop reason), on every attachment, and includes the current state in the
-  attach response as `_meta.construct.turn`. A turn that finished while no
-  one was attached shows as `idle` with its stop reason.
+  `_com.sprawlcommons/construct/turn { sessionId, turn, state, stopReason? }`
+  (the bare `_construct/turn` from a released Construct) whenever a turn's
+  state changes (`working`, `waiting` for permission, `idle` with the stop
+  reason), on every attachment, and includes the current state in the attach
+  response as `_meta["com.sprawlcommons/construct"].turn` (or the bare
+  `_meta.construct.turn`). A turn that finished while no one was attached
+  shows as `idle` with its stop reason.
 - **No responses across attachments.** Construct never sends a response to
   a request made in an earlier attachment; a superseded `session/prompt`
-  ends with `_construct/turn` alone. So an old response never collides with
-  a new request id.
+  ends with the turn notification alone. So an old response never collides
+  with a new request id.
 - **The newest attachment owns the questions.** Each unanswered question is
   asked again with a new request id; the old id is retired, and a response
   to a retired id is ignored. A question answered before the new
@@ -153,7 +157,7 @@ otherwise; run it before merging anything that touches attach.
   `session/load` refuses a session already loaded on the connection and goes
   through `Writer::resume`), `acp/ask.rs` (questions kept as reply channels),
   `acp/map.rs` (`_construct/event` and `_meta.construct`, the namespace this
-  contract extends).
+  contract extends; renamed by ADR 0005).
 - [ACP session setup](https://agentclientprotocol.com/protocol/session-setup):
   `session/load` replays history before answering; `session/resume` does not.
 - ADR 0001; construct#153 and its PR #154 (`session/load`, `resume`,

@@ -7,6 +7,7 @@ mod support;
 
 use deck::ui::session::{Entry, Status};
 use deck_acp::ToolStatus;
+use deck_acp::names::{CONSTRUCT_META, LEGACY_CONSTRUCT_META, LEGACY_TURN_METHOD, TURN_METHOD};
 use deck_runtime::State;
 use serde_json::json;
 use support::{Fixture, eventually, journal_finished};
@@ -220,7 +221,10 @@ fn raw_retired_reply_is_ignored(mut f: Fixture) {
             fresh = Some(value.clone());
         }
         if value["id"] == "raw-load" {
-            assert_eq!(value["result"]["_meta"]["construct"]["turn"]["state"], "waiting");
+            let meta = &value["result"]["_meta"];
+            let snapshot = &meta[CONSTRUCT_META]["turn"];
+            let snapshot = if snapshot.is_null() { &meta[LEGACY_CONSTRUCT_META]["turn"] } else { snapshot };
+            assert_eq!(snapshot["state"], "waiting");
             break;
         }
     }
@@ -235,7 +239,8 @@ fn raw_retired_reply_is_ignored(mut f: Fixture) {
     loop {
         let value = read();
         assert!(value.get("method").is_some(), "an old prompt response crossed attachments: {value}");
-        if value["method"] == "_construct/turn" && value["params"]["state"] == "idle" {
+        let turn = value["method"] == TURN_METHOD || value["method"] == LEGACY_TURN_METHOD;
+        if turn && value["params"]["state"] == "idle" {
             break;
         }
     }

@@ -164,7 +164,7 @@ fn vm_prompt_and_permission_round_trip() {
                 println!("permission asked and answered: {:?}", prompted.elapsed());
             }
             // Construct advertises liveAttach, so the turn's end is the
-            // authoritative `_construct/turn` state, not a prompt response.
+            // authoritative turn notification, not a prompt response.
             Inbound::Turn { state: TurnState::Idle { stop_reason }, .. } => {
                 println!("prompt round trip: {:?} ({stop_reason:?})", prompted.elapsed());
                 break;

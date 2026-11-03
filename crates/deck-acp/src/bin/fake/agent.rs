@@ -29,10 +29,18 @@ pub struct Agent<W> {
     /// The turn method this client asked for: the reverse-DNS name when it
     /// named the namespace, otherwise the bare one (deck#36).
     turn_method: &'static str,
+    /// The namespaces this process advertises and accepts, like a particular
+    /// Construct release: a released one speaks only the bare names, the next
+    /// release both, and the release after that only the reverse-DNS names.
+    /// `DECK_FAKE_NAMES=legacy|reverse` pins one; unset (or `both`) is the
+    /// transition.
+    legacy_names: bool,
+    reverse_names: bool,
 }
 
 impl<W: Write> Agent<W> {
     pub fn new(out: W) -> Self {
+        let names = std::env::var("DECK_FAKE_NAMES").unwrap_or_default();
         Self {
             out,
             journal: Journal::new(),
@@ -46,7 +54,15 @@ impl<W: Write> Agent<W> {
             stop: None,
             boundary: std::env::var_os("DECK_BOUNDARY_URL").is_some_and(|value| !value.is_empty()),
             turn_method: LEGACY_TURN_METHOD,
+            legacy_names: names != "reverse",
+            reverse_names: names != "legacy",
         }
+    }
+
+    /// Whether this release understands the boundary method as sent. A
+    /// released Construct ignores a method it never advertised.
+    fn accepts_boundary(&self, method: &str) -> bool {
+        (self.legacy_names && method == LEGACY_BOUNDARY_METHOD) || (self.reverse_names && method == BOUNDARY_METHOD)
     }
 
     pub fn serve(self, input: impl BufRead + Send + 'static, delay: Duration) {
@@ -148,14 +164,27 @@ impl<W: Write> Agent<W> {
                 }
                 let requested = &msg["params"]["clientCapabilities"]["_meta"];
                 self.turn_method =
-                    if requested[CONSTRUCT_META]["turn"] == true { TURN_METHOD } else { LEGACY_TURN_METHOD };
-                let mut meta = json!({
-                    LEGACY_CONSTRUCT_META: { "liveAttach": true },
-                    CONSTRUCT_META: { "liveAttach": true },
-                });
+                    if self.reverse_names && (requested[CONSTRUCT_META]["turn"] == true || !self.legacy_names) {
+                        TURN_METHOD
+                    } else {
+                        LEGACY_TURN_METHOD
+                    };
+                // This release speaks the turn method it knows; a released
+                // Construct cannot be taught the new one by the client.
+                let mut meta = json!({});
+                if self.legacy_names {
+                    meta[LEGACY_CONSTRUCT_META] = json!({ "liveAttach": true });
+                }
+                if self.reverse_names {
+                    meta[CONSTRUCT_META] = json!({ "liveAttach": true });
+                }
                 if self.boundary {
-                    meta[LEGACY_DECK_META] = json!({ "boundary": true });
-                    meta[DECK_META] = json!({ "boundary": true });
+                    if self.legacy_names {
+                        meta[LEGACY_DECK_META] = json!({ "boundary": true });
+                    }
+                    if self.reverse_names {
+                        meta[DECK_META] = json!({ "boundary": true });
+                    }
                 }
                 self.reply(
                     id,
@@ -195,7 +224,7 @@ impl<W: Write> Agent<W> {
                 self.reply(id, Ok(json!({})));
             }
             Some("session/cancel") => self.finish("cancelled"),
-            Some(method) if method == BOUNDARY_METHOD || method == LEGACY_BOUNDARY_METHOD => {
+            Some(method) if self.accepts_boundary(method) => {
                 // Construct queues this for its next model request; the fake
                 // has no model, so it puts the same note in the transcript.
                 self.chunk("agent_message_chunk", &format!("\n{}", boundary_note(&msg["params"])));
@@ -254,8 +283,12 @@ impl<W: Write> Agent<W> {
             self.notice();
             let turn = self.snapshot();
             let mut meta = json!({});
-            meta[LEGACY_CONSTRUCT_META] = json!({ "turn": turn.clone() });
-            meta[CONSTRUCT_META] = json!({ "turn": turn });
+            if self.legacy_names {
+                meta[LEGACY_CONSTRUCT_META] = json!({ "turn": turn.clone() });
+            }
+            if self.reverse_names {
+                meta[CONSTRUCT_META] = json!({ "turn": turn });
+            }
             Ok(json!({ "_meta": meta }))
         } else {
             Ok(json!({}))

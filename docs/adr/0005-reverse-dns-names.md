@@ -66,5 +66,10 @@ constants are removed together with Construct's.
 - `crates/deck-acp/src/conn.rs` unit tests: new-only capability uses the new
   boundary method; both capabilities prefer the new one; both turn methods
   and both snapshot keys are accepted; the old-only fallback is unchanged.
-- `crates/deck-acp/tests/acp.rs` and `crates/deck/tests/{reattach,view}.rs`
-  against the fake agent, which now negotiates like Construct.
+- `crates/deck-acp/tests/acp.rs` runs the same turn, late boundary note and
+  live load against a fake limited to one namespace
+  (`DECK_FAKE_NAMES=legacy|reverse`), so the fallback and the new-only path
+  are proven end to end rather than only in the state machine.
+- `crates/deck/tests/reattach.rs` accepts either turn-method name and either
+  snapshot key, so the real-Construct case keeps working across its rename;
+  `crates/deck/tests/view.rs` checks the late decision through the window.

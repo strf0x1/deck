@@ -8,6 +8,9 @@
 //! at end of input, which is what closing the stream looks like from here.
 //!
 //! `DECK_FAKE_DELAY_MS` paces the stream (default 35).
+//! `DECK_FAKE_NAMES=legacy|reverse` makes it speak only the bare or only the
+//! reverse-DNS extension names, like a particular Construct release; unset
+//! advertises and accepts both (deck#36).
 //!
 //! Sessions outlive the process the way construct's do, so the runtime's
 //! restart paths have something to restart: with `DECK_FAKE_STATE` naming a

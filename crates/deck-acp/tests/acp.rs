@@ -5,7 +5,7 @@
 
 use deck_acp::{Client, Inbound, ToolStatus, TurnState};
 use futures::StreamExt as _;
-use futures::channel::mpsc::UnboundedReceiver;
+use futures::channel::mpsc::{TryRecvError, UnboundedReceiver};
 use futures::executor::block_on;
 use std::time::Duration;
 
@@ -21,6 +21,19 @@ fn hang_guard() {
 #[expect(clippy::expect_used, reason = "a test helper: an early close is the failure")]
 fn next(rx: &mut UnboundedReceiver<Inbound>) -> Inbound {
     block_on(rx.next()).expect("the connection closed early")
+}
+
+/// The same, but a name the wrong namespace never sends fails the test instead
+/// of hanging it.
+fn next_before(rx: &mut UnboundedReceiver<Inbound>, what: &str) -> Inbound {
+    for _ in 0..500 {
+        match rx.try_recv() {
+            Ok(event) => return event,
+            Err(TryRecvError::Closed) => panic!("the agent closed before {what}"),
+            Err(TryRecvError::Empty) => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+    panic!("no {what} from the agent");
 }
 
 #[expect(clippy::unwrap_used, reason = "a test helper: a rejected write is the failure")]
@@ -437,4 +450,90 @@ fn an_agent_without_the_capability_is_never_sent_a_boundary_notice() {
     assert!(!text.contains("[deck boundary]"), "{text}");
     drop(client);
     assert!(child.wait().unwrap().success());
+}
+
+/// One namespace at a time, like a released Construct or the next release:
+/// the turn method, the load snapshot and the boundary method must all follow
+/// what that agent advertised (deck#36).
+#[expect(clippy::unwrap_used, reason = "protocol setup and observations must succeed")]
+fn one_namespace(names: &str) {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+
+    hang_guard();
+    let state = std::env::temp_dir().join(format!("deck-fake-names-{names}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let spawn = || {
+        Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+            .env("DECK_FAKE_DELAY_MS", "0")
+            .env("DECK_FAKE_NAMES", names)
+            .env("DECK_FAKE_STATE", &state)
+            .env("DECK_BOUNDARY_URL", "http://127.0.0.1:9")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+
+    let mut first = spawn();
+    let input = BufReader::new(first.stdout.take().unwrap());
+    let output = first.stdin.take().unwrap();
+    let (client, mut rx) = Client::over(std::env::temp_dir(), input, output).unwrap();
+    let Inbound::Ready { session_id, .. } = next(&mut rx) else { panic!("{names}: expected Ready") };
+
+    client.prompt("ship it").unwrap();
+    loop {
+        match next_before(&mut rx, &format!("{names} turn completion")) {
+            Inbound::Permission { request, .. } => client.answer(&request, Some("allow")).unwrap(),
+            Inbound::Turn { state: TurnState::Idle { .. }, .. } | Inbound::TurnEnded(_) => break,
+            Inbound::Failed(error) => panic!("{names}: {error}"),
+            _ => {}
+        }
+    }
+    client
+        .boundary_notice(&serde_json::json!({
+            "approval_id": "a1f3",
+            "destination": "index.crates.io:443",
+            "outcome": "allowed",
+            "scope": "task",
+        }))
+        .unwrap();
+    loop {
+        match next_before(&mut rx, &format!("{names} boundary note")) {
+            Inbound::Message(text) if text.contains("[deck boundary]") => {
+                assert!(text.contains("index.crates.io:443"), "{names}: {text}");
+                break;
+            }
+            Inbound::Failed(error) => panic!("{names}: {error}"),
+            _ => {}
+        }
+    }
+    drop(client);
+    assert!(first.wait().unwrap().success());
+
+    let mut second = spawn();
+    let input = BufReader::new(second.stdout.take().unwrap());
+    let output = second.stdin.take().unwrap();
+    let (client, mut rx) = Client::load(std::env::temp_dir(), input, output, session_id).unwrap();
+    loop {
+        match next_before(&mut rx, &format!("{names} load snapshot")) {
+            Inbound::Ready { turn: Some(TurnState::Idle { .. }), .. } => break,
+            Inbound::Ready { turn, .. } => panic!("{names}: load lost the idle snapshot: {turn:?}"),
+            Inbound::Failed(error) => panic!("{names}: {error}"),
+            _ => {}
+        }
+    }
+    drop(client);
+    assert!(second.wait().unwrap().success());
+    std::fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+fn a_released_construct_keeps_the_bare_names_working() {
+    one_namespace("legacy");
+}
+
+#[test]
+fn a_reverse_dns_only_construct_works_without_the_bare_names() {
+    one_namespace("reverse");
 }
