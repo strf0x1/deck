@@ -425,7 +425,11 @@ impl Boundary {
             operation: item.operation.clone(),
             destination: item.destination.clone(),
             scope,
-            expires_ms: (scope == Scope::Once).then(|| now + millis(self.settings.once)),
+            expires_ms: match scope {
+                Scope::Once => Some(now + millis(self.settings.once)),
+                Scope::Task => Some(now + millis(self.settings.task)),
+                Scope::Project => None,
+            },
         };
         match scope {
             Scope::Project => {
@@ -442,6 +446,58 @@ impl Boundary {
             }
         }
         Ok(())
+    }
+
+    /// Approve or revoke a whole web profile for a project. Each destination
+    /// becomes a project rule (`web`/`connect` on `host:port`), so a profile
+    /// the task did not start with is approved once rather than asked per
+    /// package. A destination already granted by this project keeps its rule,
+    /// so approving again changes nothing; revoking removes exactly the named
+    /// destinations and nothing else.
+    pub fn profile(&self, project: Option<&str>, destinations: &[String], revoke: bool) -> Result<usize> {
+        let Some(project) = project.map(str::to_owned).filter(|project| !project.is_empty()) else {
+            bail!("a profile decision names the project it applies to");
+        };
+        let mut inner = self.lock();
+        let now = now_ms();
+        let mut changed = 0;
+        if revoke {
+            let before = inner.projects.len();
+            inner.projects.retain(|rule| {
+                !(rule.project.as_deref() == Some(project.as_str()) && destinations.contains(&rule.destination))
+            });
+            changed += before - inner.projects.len();
+        }
+        if !revoke {
+            for destination in destinations {
+                let exists = inner.projects.iter().any(|rule| {
+                    rule.gateway == "web"
+                        && rule.operation == "connect"
+                        && rule.destination == *destination
+                        && rule.project.as_deref() == Some(project.as_str())
+                });
+                if exists {
+                    continue;
+                }
+                inner.seq += 1;
+                let id = format!("{:x}-p{:x}", now, inner.seq);
+                inner.projects.push(Grant {
+                    id,
+                    task: None,
+                    project: Some(project.clone()),
+                    gateway: "web".into(),
+                    operation: "connect".into(),
+                    destination: destination.clone(),
+                    scope: Scope::Project,
+                    expires_ms: None,
+                });
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            save_projects(&self.data, &inner.projects, inner.version)?;
+        }
+        Ok(changed)
     }
 }
 

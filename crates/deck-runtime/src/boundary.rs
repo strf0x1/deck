@@ -1,5 +1,5 @@
-//! The names that cross the guest boundary (ADR 0004): one loopback TCP port
-//! the guest relay owns, one vsock port per host gateway kind, and the
+//! The names that cross the guest boundary (ADR 0004): the loopback TCP ports
+//! the guest relays own, one vsock port per host gateway kind, and the
 //! placeholder credential the guest receives.
 //!
 //! The design choice: the numbers live here, not in the guest image alone.
@@ -13,13 +13,28 @@ pub const RELAY_PORT: u16 = 8080;
 /// The boundary status relay's guest loopback listener, which Construct
 /// reads as `DECK_BOUNDARY_URL`.
 pub const BOUNDARY_PORT: u16 = 8081;
+/// The web and package gateway's guest loopback listener. The task's proxy
+/// environment points here, so a package manager or git reaches the mirror
+/// policy without knowing about vsock.
+pub const WEB_PORT: u16 = 8082;
+/// The plain-HTTP mirror listener, beside the proxy one: a client that reads
+/// `http_proxy` gets both forms through the same relay, and one that was told
+/// only about plain HTTP still reaches a declared mirror.
+pub const MIRROR_PORT: u16 = 8083;
 /// The model gateway's guest vsock port.
 pub const MODEL_PORT: u32 = 1026;
+/// The web and package gateway's guest vsock port. It has its own port rather
+/// than the extension port because a client's proxy setting cannot send the
+/// framed kind header.
+pub const WEB_VSOCK_PORT: u32 = 1028;
 /// The reserved extension port. The boundary status kind is served here; a
 /// later gateway kind is added without restarting running tasks.
 pub const EXTENSION_PORT: u32 = 1027;
 /// The framed kind the guest relay names on the extension port.
 pub const BOUNDARY_KIND: &str = "boundary";
+/// The framed kind the web gateway answers on the extension port, beside the
+/// dedicated port.
+pub const WEB_KIND: &str = "web";
 /// ACP keeps the port the guest already opens.
 pub const ACP_PORT: u32 = 1024;
 

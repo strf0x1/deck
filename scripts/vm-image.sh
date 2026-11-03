@@ -121,12 +121,30 @@ model_port=${DECK_MODEL_PORT:-1026}
 boundary_port=${DECK_BOUNDARY_PORT:-8081}
 extension_port=${DECK_EXTENSION_PORT:-1027}
 boundary_kind=${DECK_BOUNDARY_KIND:-boundary}
+web_port=${DECK_WEB_PORT:-8082}
+mirror_port=${DECK_MIRROR_PORT:-8083}
+web_vsock_port=${DECK_WEB_VSOCK_PORT:-1028}
 mark "egress relay port=$model_port"
 /usr/local/bin/deck-egress --listen "127.0.0.1:${relay_port}" --vsock "2:${model_port}" &
 # The boundary status kind: plain HTTP on guest loopback, framed with the kind
 # name before the host extension port carries it. Construct reads the base URL
 # from the environment and advertises _meta.deck.boundary only when it is set.
 /usr/local/bin/deck-egress --listen "127.0.0.1:${boundary_port}" --vsock "2:${extension_port}" --kind "${boundary_kind}" &
+# The web and package gateway: one plain-HTTP relay for a program that reads
+# `http_proxy`, and one for a mirror list. They are byte carriers like the
+# model relay; the host gateway resolves, checks addresses and asks for a
+# scope. A task without a web gateway gets neither relay and no proxy
+# variable, because a proxy pointing at a closed port is worse than none.
+if [ "${DECK_WEB_ENABLED:-0}" = "1" ]; then
+  /usr/local/bin/deck-egress --listen "127.0.0.1:${web_port}" --vsock "2:${web_vsock_port}" &
+  /usr/local/bin/deck-egress --listen "127.0.0.1:${mirror_port}" --vsock "2:${web_vsock_port}" &
+  export http_proxy="http://127.0.0.1:${web_port}"
+  export https_proxy="http://127.0.0.1:${web_port}"
+  export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy"
+  export no_proxy="127.0.0.1,localhost"
+  export NO_PROXY="$no_proxy"
+  export DECK_WEB_URL="http://127.0.0.1:${mirror_port}"
+fi
 export CONSTRUCT_BASE_URL="http://127.0.0.1:${relay_port}/v1"
 export DECK_BOUNDARY_URL="http://127.0.0.1:${boundary_port}"
 cd /workspace || cd /

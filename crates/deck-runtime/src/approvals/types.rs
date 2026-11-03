@@ -13,6 +13,10 @@ pub const HOLD: Duration = Duration::from_secs(20);
 pub const PENDING: Duration = Duration::from_secs(5 * 60);
 /// How long an allow-once grant may be used by a retry.
 pub const ONCE: Duration = Duration::from_secs(60);
+/// How long an allow-for-task grant lives. A task grant is not unbounded
+/// (ADR 0004 §5): a long build may outlive the run that asked for it, but a
+/// destination approved once is not approved forever.
+pub const TASK: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// What a guest request is asking to do across the boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,10 +206,11 @@ pub struct Settings {
     pub hold: Duration,
     pub pending: Duration,
     pub once: Duration,
+    pub task: Duration,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hold: HOLD, pending: PENDING, once: ONCE }
+        Self { hold: HOLD, pending: PENDING, once: ONCE, task: TASK }
     }
 }

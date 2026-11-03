@@ -102,6 +102,41 @@ file before each admission, so the next request uses the new limits without
 restarting the VM. The model allowlist is still fixed when the gateway
 starts.
 
+## The web and package gateway
+
+A VM task's second gateway kind (ADR 0004 §3) is a proxy: CONNECT tunnels to
+any destination the host validated and the task was given, and plain HTTP for
+declared mirrors. It has its own vsock port (1028) and answers the `web` kind on
+the extension port. The guest image starts two `deck-egress` relays over it —
+`127.0.0.1:8082` for `http_proxy`/`https_proxy` and `127.0.0.1:8083` for a
+mirror list — but only when the task has a web gateway; a proxy pointing at a
+closed port is worse for a package manager than no proxy.
+
+`deckd` passes the policy, never the guest: `--web-profile` for each profile
+(`repo`, `registry`, `package-mirrors`, `os-mirrors`, `docs`; the table is
+compiled into the binary), `--web-grants` for the task's `grants.json` and the
+project's `approvals/projects.json` (re-read when their size or mtime change),
+and no policy that the guest can name. `DECK_WEB_PROFILES` in `deckd`'s
+environment selects the profiles (default `repo,registry,package-mirrors,docs`;
+`none` starts no web gateway). An undeclared profile refuses to start the
+gateway.
+
+Every request is resolved on the host and refused without asking if any
+address is loopback, private, link-local, shared, documentation, multicast or
+unspecified — on any port, grant or not. A destination the task holds (a
+profile entry, a live grant) is dialled; otherwise the gateway asks the
+approval queue with `gateway: "web"` and `operation: "connect"` or `"fetch"`.
+A plain-HTTP redirect is a new destination and is checked (and asked for) the
+same way. `web_profile {task, project?, destinations, revoke}` approves or
+revokes a whole profile: the daemon writes one project rule (`web`/`connect`)
+per destination, from the host's expansion, so a profile the task did not start
+with is one decision and a package install does not ask per package. Task grants
+carry a 12-hour expiry; project rules do not.
+
+The gateway's boundary events reach the agent through the status endpoint's
+`/events` beside the model gateway's, with `gateway: "web"`, so a blocked
+package fetch is explained in the tool result rather than read as an outage.
+
 ## Daemon death and reuse
 
 `deckd` starts each holder with `setsid` and transfers an already-held task lock

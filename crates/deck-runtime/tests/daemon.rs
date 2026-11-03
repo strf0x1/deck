@@ -752,3 +752,37 @@ fn model_usage_and_a_live_budget_are_recorded_on_the_task() {
     drop(client);
     assert!(daemon.wait_exit().success());
 }
+
+#[test]
+fn a_profile_decision_becomes_project_rules_the_gateway_re_reads() {
+    let (daemon, client) = Daemon::new("web-profile");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let project = task.spec.cwd.to_string_lossy().into_owned();
+    let destinations = vec!["deb.debian.org:443".to_string(), "security.debian.org:443".to_string()];
+    assert_eq!(client.web_profile(&task.id, None, "os-mirrors", &destinations, false).unwrap(), 2);
+    assert_eq!(
+        client.web_profile(&task.id, None, "os-mirrors", &destinations, false).unwrap(),
+        0,
+        "approving twice changes nothing"
+    );
+    // The rules are the file the running web gateway re-reads: web/connect on
+    // each destination, for this task's project, with no expiry.
+    let rules = std::fs::read_to_string(daemon.data.join("approvals").join("projects.json")).unwrap();
+    let rules: serde_json::Value = serde_json::from_str(&rules).unwrap();
+    let rules = rules["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2, "{rules:?}");
+    for rule in rules {
+        assert_eq!(rule["gateway"], "web");
+        assert_eq!(rule["operation"], "connect");
+        assert_eq!(rule["scope"], "project");
+        assert_eq!(rule["project"], project.as_str());
+        assert!(rule.get("expires_ms").is_none(), "a project rule has no expiry: {rule}");
+    }
+    // Revoking removes exactly the named destination and leaves its sibling.
+    assert_eq!(client.web_profile(&task.id, Some(&project), "os-mirrors", &destinations[..1], true).unwrap(), 1);
+    let rules = std::fs::read_to_string(daemon.data.join("approvals").join("projects.json")).unwrap();
+    assert!(rules.contains("security.debian.org:443"), "the sibling stays: {rules}");
+    assert!(!rules.contains("deb.debian.org:443"), "the revoked destination is gone: {rules}");
+    client.stop(&task.id).unwrap();
+}

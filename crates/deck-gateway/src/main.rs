@@ -4,17 +4,20 @@
 //!
 //! The design choice: the provider key comes from the host environment (the
 //! daemon's, never the guest's) until deckd's credential broker owns it. The
-//! gateway prints one JSON line, then never writes a secret anywhere.
+//! gateway prints one JSON line, then never writes a secret anywhere. The
+//! web gateway's policy — its profiles, its grant files, its optional pinned
+//! hosts — is all given as arguments by the VMM, so nothing in the guest can
+//! widen it.
 
 use anyhow::{Context as _, Result, bail};
 use deck_gateway::control::Control;
 use deck_gateway::policy::{Budget, Usage};
-use deck_gateway::server::{self, Config};
+use deck_gateway::server::{self, Config, WebSettings};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-hosts PATH] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -60,6 +63,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     let mut budget_file = None;
     let mut control = None;
     let mut task = None;
+    let mut web_socket = None;
+    let mut web_profiles = Vec::new();
+    let mut web_grants = Vec::new();
+    let mut web_hosts = None;
+    let mut web_test_connect = None;
     let mut watch_stdin = false;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -76,6 +84,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             "--budget-file" => budget_file = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--control" => control = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--task" => task = Some(value(&mut args, &flag)?),
+            "--web-socket" => web_socket = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--web-profile" => web_profiles.push(value(&mut args, &flag)?),
+            "--web-grants" => web_grants.push(PathBuf::from(value(&mut args, &flag)?)),
+            "--web-hosts" => web_hosts = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--web-test-connect" => {
+                let address = value(&mut args, &flag)?;
+                web_test_connect = Some(address.parse().with_context(|| format!("--web-test-connect: {address:?}"))?);
+            }
             "--exit-on-stdin-eof" => watch_stdin = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -98,6 +114,21 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         (None, None) => None,
         _ => bail!("--control and --task are given together or not at all"),
     };
+    let web = match web_socket {
+        Some(socket) => Some(WebSettings {
+            socket,
+            profiles: web_profiles,
+            grants: web_grants,
+            hosts: web_hosts,
+            test_connect: web_test_connect,
+        }),
+        None => {
+            if !web_profiles.is_empty() || !web_grants.is_empty() || web_hosts.is_some() || web_test_connect.is_some() {
+                bail!("--web-profile, --web-grants and --web-hosts need --web-socket");
+            }
+            None
+        }
+    };
     Ok((
         Config {
             upstream,
@@ -110,6 +141,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             budget_file,
             model_socket: model_socket.context(USAGE)?,
             extension_socket: extension_socket.context(USAGE)?,
+            web,
         },
         secret,
         watch_stdin,
