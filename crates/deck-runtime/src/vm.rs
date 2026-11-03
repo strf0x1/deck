@@ -13,6 +13,7 @@
 //! local run.
 
 use crate::backend::{Backend, Exited, Instance, Stream};
+use crate::boundary;
 use crate::holder::{Identity, Reply, Request, WAIT};
 use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
@@ -52,6 +53,9 @@ const RAM_ENV: &str = "DECK_VM_RAM_MIB";
 /// The `deckd` binary that implements `--vmm`. Defaults to the running
 /// executable, which is right for the daemon and wrong for a test harness.
 pub const EXECUTABLE_ENV: &str = "DECK_VM_EXECUTABLE";
+/// The egress gateway binary. Defaults to `deck-gateway` beside the `deckd`
+/// named above (ADR 0004).
+pub const GATEWAY_ENV: &str = "DECK_GATEWAY_EXECUTABLE";
 
 pub struct Vm {
     data: PathBuf,
@@ -62,8 +66,12 @@ pub struct Vm {
     guest: String,
     vcpus: u8,
     ram_mib: u32,
-    guest_env: Vec<String>,
     executable: PathBuf,
+    gateway: PathBuf,
+    /// The provider endpoint and model this task may use. They are host
+    /// configuration: the guest gets the relay URL and a placeholder key.
+    upstream: String,
+    model: String,
 }
 
 impl Vm {
@@ -93,12 +101,15 @@ impl Vm {
             }
             let vcpus = std::env::var(VCPUS_ENV).ok().map_or(Ok(2), |v| v.parse())?;
             let ram_mib = std::env::var(RAM_ENV).ok().map_or(Ok(2048), |v| v.parse())?;
-            let mut guest_env = Vec::new();
-            for key in ["CONSTRUCT_BASE_URL", "CONSTRUCT_MODEL", "CONSTRUCT_SANDBOX", "OPENAI_API_KEY"] {
-                if let Ok(value) = std::env::var(key) {
-                    guest_env.push(format!("{key}={value}"));
-                }
+            let executable = path(EXECUTABLE_ENV).map_or_else(std::env::current_exe, Ok)?;
+            let gateway = match path(GATEWAY_ENV) {
+                Some(path) => path,
+                None => executable.with_file_name("deck-gateway"),
+            };
+            if !gateway.is_file() {
+                bail!("{GATEWAY_ENV} names the egress gateway; {} does not exist", gateway.display());
             }
+            let host = |key: &str| std::env::var(key).ok().filter(|value| !value.is_empty());
             Ok(Self {
                 data: data.to_owned(),
                 paths,
@@ -108,8 +119,10 @@ impl Vm {
                 guest: std::env::var(GUEST_ENV).unwrap_or_else(|_| "/usr/local/bin/deck-guest".into()),
                 vcpus,
                 ram_mib,
-                guest_env,
-                executable: path(EXECUTABLE_ENV).map_or_else(std::env::current_exe, Ok)?,
+                executable,
+                gateway,
+                upstream: host("CONSTRUCT_BASE_URL").unwrap_or_else(|| boundary::DEFAULT_UPSTREAM.into()),
+                model: host("CONSTRUCT_MODEL").unwrap_or_else(|| boundary::DEFAULT_MODEL.into()),
             })
         }
     }
@@ -160,9 +173,21 @@ impl Backend for Vm {
         }
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let mut env = self.guest_env.clone();
+        let mut env = Vec::new();
         env.push(format!("DECK_AGENT={guest}"));
         env.push(format!("DECK_ARGS={}", quote(args)));
+        // The guest gets the relay's address and a non-empty placeholder, so
+        // Construct's environment-first secretspec never reaches for a keyring
+        // (there is none) and never sees a real value. The host gateway adds
+        // the provider key after discarding this one.
+        env.push(format!("CONSTRUCT_MODEL={}", self.model));
+        // The VM is the sandbox: Construct's process sandbox is off, and its
+        // value is host policy, never the guest's writable config. The local
+        // backend does not override it.
+        env.push(format!("CONSTRUCT_SANDBOX={}", boundary::GUEST_SANDBOX));
+        env.push(format!("OPENAI_API_KEY={}", boundary::PLACEHOLDER_KEY));
+        env.push(format!("DECK_RELAY_PORT={}", boundary::RELAY_PORT));
+        env.push(format!("DECK_MODEL_PORT={}", boundary::MODEL_PORT));
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -178,12 +203,22 @@ impl Backend for Vm {
             guest: self.guest.clone(),
             // libkrun's exec argv is everything after the executable path;
             // the guest script reads the vsock port as $1.
-            argv: vec!["1024".into()],
+            argv: vec![boundary::ACP_PORT.to_string()],
             env,
             vcpus: self.vcpus,
             ram_mib: self.ram_mib,
-            port: 1024,
+            port: boundary::ACP_PORT,
             library: self.library.clone(),
+            gateway: vmm::Gateway {
+                executable: self.gateway.clone(),
+                model_socket: socket.with_extension("model"),
+                extension_socket: socket.with_extension("extension"),
+                model_port: boundary::MODEL_PORT,
+                extension_port: boundary::EXTENSION_PORT,
+                upstream: self.upstream.clone(),
+                models: vec![self.model.clone()],
+                secret: boundary::SECRET.into(),
+            },
         };
         write_atomic(&self.config(&task.id), &serde_json::to_vec(&config)?)?;
 
@@ -424,8 +459,9 @@ fn released(data: &Path, id: &str, within: Duration) -> Result<()> {
 
 fn cleanup(paths: &Paths, id: &str) {
     let socket = paths.task(id);
-    let _ = std::fs::remove_file(socket.with_extension("holder"));
-    let _ = std::fs::remove_file(socket.with_extension("vsock"));
+    for extension in ["holder", "vsock", "model", "extension"] {
+        let _ = std::fs::remove_file(socket.with_extension(extension));
+    }
     let _ = std::fs::remove_file(socket);
 }
 

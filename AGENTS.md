@@ -20,7 +20,9 @@ settle.
 | `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `inbound.rs` typed events and payload decoding, `shutdown.rs` the bounded close-only exchange, `client.rs` the connection over any reader/writer pair and its reader thread. The UI only sees `Inbound`. |
 | `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. |
 |`crates/deck-runtime/src/daemon.rs`, `daemon_client.rs`, `relay.rs`|The daemon authority, its control client, and the JSON-agnostic line relay. `holder.rs` owns each task independently; `detached.rs` launches and adopts it. `child.rs` ties agent process groups to holder lifetime. See `docs/deckd.md`.|
-|`crates/deck-runtime/src/vm.rs`, `vmm.rs`, `krun.rs`|The libkrun backend: `vm.rs` is the `Backend`/`Instance`, `vmm.rs` is the detached holder (`deckd --vmm`) that owns the microVM, and `krun.rs` loads the pinned 1.x C API. The guest opens the ACP stream out to the VMM's forward listener at boot, so that connection is both readiness and the stream; there is no polling or fixed delay. Decisions and measurements: `docs/adr/0003-vm-backend.md`, `docs/vm-spike.md`.|
+|`crates/deck-runtime/src/vm.rs`, `vmm.rs`, `krun.rs`|The libkrun backend: `vm.rs` is the `Backend`/`Instance`, `vmm.rs` is the detached holder (`deckd --vmm`) that owns the microVM, and `krun.rs` loads the pinned 1.x C API. The guest opens the ACP stream out to the VMM's forward listener at boot, so that connection is both readiness and the stream; there is no polling or fixed delay. The VMM starts the task's egress gateway, maps its sockets, and disables libkrun's implicit vsock, so the guest has no IP route (ADR 0004). Decisions and measurements: `docs/adr/0003-vm-backend.md`, `docs/adr/0004-host-egress-and-credentials.md`, `docs/vm-spike.md`.|
+|`crates/deck-gateway/`|The host-side egress gateway: a pure policy core, a bounded HTTP/1.1 carrier, the OpenAI-compatible model gateway, and the reserved extension port (answered as unsupported in v1). It listens only on Unix sockets the VMM maps from guest vsock ports, strips guest credential headers, and injects the host key. Its binary is named by `DECK_GATEWAY_EXECUTABLE`, defaulting beside `deckd`.|
+|`crates/deck-egress/`|The guest relay: loopback TCP to a host vsock port. Built for the guest image by `scripts/vm-image.sh`; it is a byte carrier, so bypassing it does not widen the boundary. The host build exists so the workspace checks cover it.|
 |`crates/deck-runtime/tests/vm.rs`|The same lifecycle contract against a real guest; skipped unless `DECK_VM_*` names an image, journal, libkrun and a `deckd` that can run `--vmm` (signed on macOS). The ignored 20-launch test prints the launch → ACP-ready stages.|
 |`scripts/vm-image.sh`, `vm-sign.sh`|Build the hand-made Debian guest image for the host architecture with Docker (its `deck-guest` entry connects ACP out to the host and marks boot stages from `/proc/uptime`), and codesign a `deckd` with the Hypervisor entitlement (macOS).|
 | `crates/deck-runtime/tests/daemon.rs` | The real daemon binary: locking, idle shutdown, detached survival, holder adoption after daemon death, holder-crash cleanup, and concurrent control clients. |
@@ -65,8 +67,12 @@ cargo run --bin deck                                     # construct acp in the 
 ```
 
 construct without spending tokens: start its scripted model (see
-construct's AGENTS.md, `scripts/mock.sh`), then
+construct's AGENTS.md, `scripts/mock.sh`). The local backend takes the
+endpoint from its own environment:
 `deck -- env CONSTRUCT_HOME=… CONSTRUCT_BASE_URL=http://127.0.0.1:$port/v1 OPENAI_API_KEY=x construct acp`.
+With `DECK_VM_*` set, the same `CONSTRUCT_BASE_URL`, `CONSTRUCT_MODEL` and
+`OPENAI_API_KEY` configure the task's host gateway instead; the guest gets the
+relay URL and a non-empty placeholder, never the key.
 
 ### The libkrun backend (macOS/arm64, Linux/x86_64)
 
@@ -79,6 +85,13 @@ export DECK_VM_IMAGE=target/vm/base.img DECK_VM_JOURNAL=target/vm/journal.img
 export DECK_VM_KRUN=$HOME/src/libkrun/target/release/libkrun.1.19.7.dylib
 cargo run --bin deck                           # construct acp in a VM
 ```
+
+`DECK_GATEWAY_EXECUTABLE` defaults to `deck-gateway` beside the `deckd` the
+runtime runs, so `cargo build` is enough for `cargo run`. A test harness that
+points `DECK_VM_EXECUTABLE` at a copy elsewhere must name the gateway too.
+The VM backend sets `CONSTRUCT_SANDBOX=off` for the guest: the VM is the
+sandbox and the host gateways are the external boundary (ADR 0004 §2.1). The
+local backend leaves Construct's configured sandbox alone.
 
 On Linux/x86_64 the same variables point at the host-arch image and
 `libkrun.so.1.19.7`; no signing step, but `/dev/kvm` must be accessible and
@@ -95,8 +108,8 @@ cargo run --bin deck
 copied into the guest's writable disk on first start; it is not a host
 mount. The lifecycle contract runs with
 `cargo test -p deck-runtime --test vm` when the same variables plus
-`DECK_VM_EXECUTABLE` (a `deckd` binary) are set. A bare `EINVAL` at VM start
-on macOS is almost always an unsigned daemon.
+`DECK_VM_EXECUTABLE` (a `deckd` binary) and `DECK_GATEWAY_EXECUTABLE` are set.
+A bare `EINVAL` at VM start on macOS is almost always an unsigned daemon.
 
 ### Driving the live window (agents)
 

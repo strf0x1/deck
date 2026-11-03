@@ -20,6 +20,8 @@ type SetVmConfig = unsafe extern "C" fn(u32, u8, u32) -> i32;
 type AddDisk3 = unsafe extern "C" fn(u32, *const c_char, *const c_char, u32, bool, bool, u32) -> i32;
 type SetRootDiskRemount = unsafe extern "C" fn(u32, *const c_char, *const c_char, *const c_char) -> i32;
 type AddVirtiofs3 = unsafe extern "C" fn(u32, *const c_char, *const c_char, u64, bool) -> i32;
+type DisableImplicitVsock = unsafe extern "C" fn(u32) -> i32;
+type AddVsock = unsafe extern "C" fn(u32, u32) -> i32;
 type AddVsockPort2 = unsafe extern "C" fn(u32, u32, *const c_char, bool) -> i32;
 type SetWorkdir = unsafe extern "C" fn(u32, *const c_char) -> i32;
 type SetExec = unsafe extern "C" fn(u32, *const c_char, *const *const c_char, *const *const c_char) -> i32;
@@ -44,6 +46,8 @@ pub struct Krun {
     add_disk3: AddDisk3,
     set_root_disk_remount: SetRootDiskRemount,
     add_virtiofs3: AddVirtiofs3,
+    disable_implicit_vsock: DisableImplicitVsock,
+    add_vsock: AddVsock,
     add_vsock_port2: AddVsockPort2,
     set_workdir: SetWorkdir,
     set_exec: SetExec,
@@ -73,6 +77,8 @@ impl Krun {
                 add_disk3: symbol!(b"krun_add_disk3", AddDisk3),
                 set_root_disk_remount: symbol!(b"krun_set_root_disk_remount", SetRootDiskRemount),
                 add_virtiofs3: symbol!(b"krun_add_virtiofs3", AddVirtiofs3),
+                disable_implicit_vsock: symbol!(b"krun_disable_implicit_vsock", DisableImplicitVsock),
+                add_vsock: symbol!(b"krun_add_vsock", AddVsock),
                 add_vsock_port2: symbol!(b"krun_add_vsock_port2", AddVsockPort2),
                 set_workdir: symbol!(b"krun_set_workdir", SetWorkdir),
                 set_exec: symbol!(b"krun_set_exec", SetExec),
@@ -120,6 +126,24 @@ impl Krun {
         let tag = cstring(tag)?;
         let path = cstring(&path.to_string_lossy())?;
         self.rc(unsafe { (self.add_virtiofs3)(ctx, tag.as_ptr(), path.as_ptr(), 0, true) })?;
+        Ok(())
+    }
+
+    /// Turn off libkrun's implicit vsock device. The default is implicit, and
+    /// its implicit mode enables TSI's `HIJACK_INET` when the VM has no network
+    /// device, which proxies the guest's AF_INET sockets through the host. Must
+    /// be called before [`Krun::add_vsock`].
+    pub fn disable_implicit_vsock(&self, ctx: u32) -> Result<()> {
+        self.rc(unsafe { (self.disable_implicit_vsock)(ctx) })?;
+        Ok(())
+    }
+
+    /// Add an explicit vsock device. `tsi_features` 0 means no transparent
+    /// socket interception: the guest keeps AF_VSOCK and mapped ports, and has
+    /// no IP egress. Call after [`Krun::disable_implicit_vsock`]; libkrun
+    /// refuses while the context still has an implicit device.
+    pub fn add_vsock(&self, ctx: u32, tsi_features: u32) -> Result<()> {
+        self.rc(unsafe { (self.add_vsock)(ctx, tsi_features) })?;
         Ok(())
     }
 

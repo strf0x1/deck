@@ -23,6 +23,7 @@ use std::io::{BufRead, BufReader, Read, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicI32, Ordering},
@@ -63,6 +64,24 @@ pub struct Config {
     pub port: u32,
     /// The pinned libkrun dylib.
     pub library: PathBuf,
+    /// The per-task egress gateway, started before boot (ADR 0004).
+    pub gateway: Gateway,
+}
+
+/// The host-side gateway process and the sockets libkrun maps to guest vsock
+/// ports. The upstream URL and model names are not secrets; the credential
+/// value is never in this config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Gateway {
+    pub executable: PathBuf,
+    pub model_socket: PathBuf,
+    pub extension_socket: PathBuf,
+    pub model_port: u32,
+    pub extension_port: u32,
+    pub upstream: String,
+    pub models: Vec<String>,
+    /// The environment variable the gateway reads the host key from.
+    pub secret: String,
 }
 
 fn default_port() -> u32 {
@@ -71,17 +90,30 @@ fn default_port() -> u32 {
 
 const START: Duration = Duration::from_secs(30);
 const GUEST_DEATH: Duration = Duration::from_secs(2);
+/// The gateway binds two sockets and prints one line; this is generous for a
+/// cold exec on macOS and still fails a wedged binary.
+const GATEWAY_START: Duration = Duration::from_secs(10);
 
 static SHUTDOWN_FD: AtomicI32 = AtomicI32::new(-1);
 static EXITED: AtomicBool = AtomicBool::new(false);
 static TERMINATED: AtomicBool = AtomicBool::new(false);
+/// Set once the runtime has been told the task is ready. Before that, a
+/// gateway death is reported through the startup pipe; after it, the VMM
+/// exits and the runtime sees the task fail.
+static READY: AtomicBool = AtomicBool::new(false);
 
 /// Read the config, boot the guest, and serve until stopped.
 pub fn run(config: &Path) -> Result<()> {
     let started = Instant::now();
     let bytes = std::fs::read(config).with_context(|| format!("reading {}", config.display()))?;
     let config: Config = serde_json::from_slice(&bytes).context("parsing the VMM configuration")?;
-    let _sockets = Sockets(vec![config.socket.clone(), config.forward.clone(), control(&config.socket)]);
+    let _sockets = Sockets(vec![
+        config.socket.clone(),
+        config.forward.clone(),
+        control(&config.socket),
+        config.gateway.model_socket.clone(),
+        config.gateway.extension_socket.clone(),
+    ]);
     let _lock = inherited_lock(config.lock_fd)?;
 
     for path in [&config.socket, &config.forward] {
@@ -95,9 +127,18 @@ pub fn run(config: &Path) -> Result<()> {
     // request, so a missing listener would refuse the agent's only stream.
     let forward = UnixListener::bind(&config.forward)?;
 
+    // The gateway must be listening before libkrun maps its sockets: the
+    // guest may connect as soon as it boots. Its stdin stays open for the
+    // VMM's lifetime, so the gateway exits if the VMM dies without signalling.
+    let _gateway_stdin = start_gateway(&config.gateway)?;
+
     let krun = Krun::load(&config.library)?;
     krun.init_log()?;
     let ctx = krun.create()?;
+    // No implicit vsock means no TSI: the guest's AF_INET sockets are not
+    // proxied through the host. Only the mapped ports below cross.
+    krun.disable_implicit_vsock(ctx).context("disabling libkrun's implicit vsock (TSI)")?;
+    krun.add_vsock(ctx, 0).context("adding an explicit vsock device")?;
     krun.vm_config(ctx, config.vcpus, config.ram_mib).context("configuring vCPUs and RAM")?;
     krun.disk(ctx, "root", &config.disk, false, SYNC_RELAXED).context("adding the root disk")?;
     krun.root_disk(ctx, "/dev/vda", "ext4").context("mounting the root disk")?;
@@ -107,6 +148,10 @@ pub fn run(config: &Path) -> Result<()> {
     }
     krun.console(ctx, &config.console).context("setting the guest console")?;
     krun.guest_vsock_port(ctx, config.port, &config.forward).context("forwarding the guest's ACP port")?;
+    krun.guest_vsock_port(ctx, config.gateway.model_port, &config.gateway.model_socket)
+        .context("forwarding the model gateway port")?;
+    krun.guest_vsock_port(ctx, config.gateway.extension_port, &config.gateway.extension_socket)
+        .context("forwarding the extension port")?;
     krun.workdir(ctx, "/workspace")?;
     krun.exec(ctx, &config.guest, &config.argv, &guest_env(&config)).context("configuring the guest command")?;
     let shutdown = krun.shutdown_eventfd(ctx).context("enabling guest shutdown")?;
@@ -201,6 +246,7 @@ fn serve(config: &Config, forward: UnixListener, eof: mpsc::Sender<()>, started:
         Stream { reader: Box::new(EofReader { inner: reader, eof }), writer: Box::new(stream) },
     )?;
     let identity = Identity { holder: Holder { pid: std::process::id(), socket: config.socket.clone() }, agent: None };
+    READY.store(true, Ordering::Release);
     report(Ok(identity))?;
     eprintln!("vmm: relay ready at {} ms", started.elapsed().as_millis());
     // The relay owns the reader and writer; hold it until the process ends.
@@ -208,6 +254,92 @@ fn serve(config: &Config, forward: UnixListener, eof: mpsc::Sender<()>, started:
     loop {
         std::thread::park();
     }
+}
+
+/// Start the gateway, wait for its readiness line, and watch it for the rest
+/// of the task's life. The returned stdin handle must stay alive: closing it
+/// is how the gateway learns the VMM is gone.
+fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
+    let mut command = Command::new(&gateway.executable);
+    command
+        .arg("--model-socket")
+        .arg(&gateway.model_socket)
+        .arg("--extension-socket")
+        .arg(&gateway.extension_socket)
+        .arg("--upstream")
+        .arg(&gateway.upstream)
+        .arg("--secret")
+        .arg(&gateway.secret)
+        .arg("--exit-on-stdin-eof")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    for model in &gateway.models {
+        command.args(["--model", model]);
+    }
+    let mut child =
+        command.spawn().with_context(|| format!("starting the egress gateway {}", gateway.executable.display()))?;
+    let stdin = child.stdin.take().context("gateway stdin")?;
+    let stdout = child.stdout.take().context("gateway stdout")?;
+    let (line_tx, line_rx) = mpsc::channel();
+    std::thread::Builder::new().name("vmm-gateway-ready".into()).spawn(move || {
+        let mut line = String::new();
+        let outcome = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+        let _ = line_tx.send(outcome);
+    })?;
+    let line = match line_rx.recv_timeout(GATEWAY_START) {
+        Ok(Ok(line)) if !line.trim().is_empty() => line,
+        Ok(Ok(_)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("the egress gateway exited before it was ready");
+        }
+        Ok(Err(error)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("reading the egress gateway's readiness line");
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("the egress gateway did not report readiness within {} s", GATEWAY_START.as_secs());
+        }
+    };
+    if let Err(error) = check_ready(&line, gateway) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    std::thread::Builder::new().name("vmm-gateway".into()).spawn(move || {
+        let status = child.wait();
+        if EXITED.load(Ordering::Acquire) {
+            return;
+        }
+        let why = match status {
+            Ok(status) => format!("exited with {status}"),
+            Err(error) => format!("could not be waited for: {error}"),
+        };
+        if !READY.load(Ordering::Acquire) {
+            let _ = report(Err(format!("the egress gateway {why} before the guest connected")));
+        }
+        eprintln!("vmm: egress gateway {why}; failing the task closed");
+        std::process::exit(1);
+    })?;
+    Ok(stdin)
+}
+
+/// The gateway's readiness line must name this task's sockets. A binary that
+/// reports another task's paths would be mapped into this VM, so it is
+/// refused rather than trusted.
+fn check_ready(line: &str, gateway: &Gateway) -> Result<()> {
+    let ready: serde_json::Value = serde_json::from_str(line.trim()).context("parsing the gateway readiness line")?;
+    let named = |key: &str| ready.get(key).and_then(|value| value.as_str()).map(Path::new);
+    if named("model") != Some(gateway.model_socket.as_path())
+        || named("extension") != Some(gateway.extension_socket.as_path())
+    {
+        bail!("the egress gateway reported sockets that are not this task's");
+    }
+    Ok(())
 }
 
 /// Wait for the guest's first vsock connection with poll(2), so the accept
@@ -422,6 +554,28 @@ mod tests {
         assert_eq!(line, "hello\n");
         peer.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn gateway() -> Gateway {
+        Gateway {
+            executable: PathBuf::from("/bin/true"),
+            model_socket: PathBuf::from("/tmp/task.model"),
+            extension_socket: PathBuf::from("/tmp/task.extension"),
+            model_port: 1026,
+            extension_port: 1027,
+            upstream: "http://127.0.0.1:1/v1".into(),
+            models: vec!["m".into()],
+            secret: "KEY".into(),
+        }
+    }
+
+    #[test]
+    fn readiness_must_name_this_tasks_sockets() {
+        let gateway = gateway();
+        check_ready(r#"{"model":"/tmp/task.model","extension":"/tmp/task.extension"}"#, &gateway).unwrap();
+        assert!(check_ready(r#"{"model":"/tmp/other.model","extension":"/tmp/task.extension"}"#, &gateway).is_err());
+        assert!(check_ready(r#"{"model":"/tmp/task.model"}"#, &gateway).is_err());
+        assert!(check_ready("not json", &gateway).is_err());
     }
 
     #[test]

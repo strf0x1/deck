@@ -48,7 +48,12 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
         eprintln!("skipping: {} is not set", deck_runtime::vm::IMAGE_ENV);
         return;
     };
-    for key in [deck_runtime::vm::JOURNAL_ENV, deck_runtime::vm::KRUN_ENV, deck_runtime::vm::EXECUTABLE_ENV] {
+    for key in [
+        deck_runtime::vm::JOURNAL_ENV,
+        deck_runtime::vm::KRUN_ENV,
+        deck_runtime::vm::EXECUTABLE_ENV,
+        deck_runtime::vm::GATEWAY_ENV,
+    ] {
         assert!(std::env::var_os(key).is_some(), "the VM test needs {key}");
     }
 
@@ -92,8 +97,9 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
 
 /// Run a prompt that needs a tool and a permission answer, and print the
 /// timings #16 records. Skipped unless a model endpoint is configured:
-/// `CONSTRUCT_BASE_URL` must point at construct-dev's scripted server in the
-/// test process.
+/// `CONSTRUCT_BASE_URL` names the provider the host gateway proxies for the
+/// task (construct-dev's scripted server in the test process), and
+/// `OPENAI_API_KEY` is the host key the gateway injects.
 #[test]
 #[ignore = "needs a scripted model endpoint; set DECK_VM_MOCK=1"]
 fn vm_prompt_and_permission_round_trip() {
@@ -106,6 +112,7 @@ fn vm_prompt_and_permission_round_trip() {
         deck_runtime::vm::JOURNAL_ENV,
         deck_runtime::vm::KRUN_ENV,
         deck_runtime::vm::EXECUTABLE_ENV,
+        deck_runtime::vm::GATEWAY_ENV,
         "CONSTRUCT_BASE_URL",
         "OPENAI_API_KEY",
     ] {
