@@ -64,10 +64,16 @@ another task's socket.
 That is a configuration boundary, not a policy boundary. One mapped port
 accepts many concurrent connections, each becoming its own host Unix stream,
 and the gateway applies its current policy to every new connection or parsed
-request. A new destination or rule needs no new port; a new *gateway kind*
-needs a port reserved at boot (or a VM restart). If that becomes common, one
-reserved control port can carry framed gateway requests instead of adding a
-port per service.
+request. A new destination, port or rule needs no new port; a new *gateway
+kind* needs a port reserved at boot (or a VM restart).
+
+So every VM boots with one more mapped port than v1 uses: a reserved
+**extension port** whose first bytes name the gateway kind the connection
+wants (a short framed header, then the stream). The gateway rejects a kind
+it does not implement. A later kind — an SSH agent, a service gateway for
+`web_search` — ships as a gateway update served on that port, and running
+tasks gain it without a restart. The dedicated v1 ports stay; the extension
+port is what keeps the next kind from costing every running task a restart.
 
 Guest relays (`deck-egress`, part of the curated image) expose TCP endpoints
 on `127.0.0.1` for clients that cannot speak AF_VSOCK — Construct's HTTP
@@ -78,9 +84,13 @@ does not widen the boundary.
 
 Consequences:
 
-- No DNS, raw IP, UDP, QUIC, IPv6, alternate ports, redirects to a new host,
-  or host/private-network destination has a route. Those attempts fail
-  closed rather than reaching a host proxy to be logged and approved.
+- No DNS, raw IP, UDP, QUIC, IPv6, direct connection on any port, redirect
+  to a new host, or host/private-network destination has a route. Those
+  attempts fail closed rather than reaching a host proxy to be logged and
+  approved. A port other than 443 is reachable only as an approved CONNECT
+  through the gateway.
+- Adding a gateway kind later does not restart running tasks: it is served
+  on the reserved extension port.
 - The only reachable host endpoints are the mapped gateway ports.
 - Tools that insist on direct sockets or their own DNS do not work in the
   guest. That is a compatibility decision, not a bug; #12 can evaluate a
@@ -158,10 +168,17 @@ way that avoids the gateway, because the gateway is the only route.
 
 An HTTP proxy with two modes:
 
-- **CONNECT**, only to port 443. The host resolves the name, rejects
+- **CONNECT**, to port 443 by default. The host resolves the name, rejects
   loopback, private, link-local, multicast and unspecified addresses, and
   dials the validated address. The TLS stream is opaque: this is
-  destination-level control, not URL-level.
+  destination-level control, not URL-level. Another port is a policy
+  decision, not a new route: a CONNECT to `host:port` outside the profiles
+  asks like any new destination, and the grant names the port, so
+  `example.com:22` allowed does not allow `example.com:2222`. The address
+  checks apply whatever the port. This is how SSH reaches a server
+  (`ProxyCommand` or git's `core.sshCommand` through the relay); it gets
+  network reachability only, and SSH credentials are a separate question
+  (below).
 - **Plain HTTP**, only for declared mirrors. The gateway parses the
   absolute-URI request, applies the same destination checks, and re-checks
   every redirect.
@@ -177,6 +194,14 @@ resolver and no route for one.
 Path-level and credential-bearing package traffic is not solved by CONNECT.
 A private registry needs a TLS-terminating gateway or a host mirror, which is
 #10/#8 work; v1 does not put registry credentials in the guest.
+
+SSH keys follow the same rule: v1 puts no private key in the guest. A
+tunnel to `host:22` is useful for host-key checks and keys the agent was
+given for that server alone; it does not carry the user's identity. Pushes
+to GitHub go through the operation gateway below. Signing in to other SSH
+servers with the user's key is a later SSH-agent kind on the extension port:
+the host's agent signs, per approved destination, and the key never leaves
+the host.
 
 #### GitHub operation gateway
 
@@ -244,8 +269,9 @@ deduplication key, and the agent's untrusted reason.
 
 Options:
 
-- **Allow once** — one retry of the exact request fingerprint within a short
-  window (for example 60 s).
+- **Allow once** — the held request continues; if it already failed, one
+  retry of the exact request fingerprint within a short window (for example
+  60 s).
 - **Allow for this task** — matching operations until the task stops or the
   grant expires.
 - **Always allow for this project** — a persisted project rule. Rules live
@@ -253,11 +279,22 @@ Options:
   the guest cannot edit its own policy.
 - **Deny** — the operation fails; the agent sees a structured error.
 
-The gateway **fails fast** rather than holding an arbitrary socket. It
-returns `403` with a JSON body such as
+The gateway **holds briefly, then fails**. While a Deck window is attached
+to the task, a request that needs a new scope waits up to a short hold
+window (20 s by default) for the decision: Allow continues the same request
+or tunnel, so `cargo fetch` simply succeeds after the click. Deny, expiry of
+the hold, or no attached window returns `403` with a JSON body such as
 `{"error":"deck_boundary_denied","approval_id":"…","retryable":true}` and an
-`X-Deck-Approval` header. The agent reports the denial; after a decision the
-next attempt is a new request. Model access for the task's selected provider
+`X-Deck-Approval` header; the item stays pending until its own expiry and a
+later decision applies to the next attempt. The hold is bounded so a socket
+never waits on a human indefinitely, and it is per request, so a slow
+decision cannot stall unrelated traffic.
+
+The hold matters most for CONNECT. Most clients report a refused tunnel as
+"CONNECT failed: 403" and never show the body, so the agent cannot see the
+approval id or know that a retry would now pass; the boundary card is the
+only place the decision is visible. When the hold expires, the denial in the
+transcript (below) is what tells the user a retry is needed. Model access for the task's selected provider
 and model is authorized by the task's own model choice, so a first turn does
 not fail merely because a model gateway exists; switching model or provider
 asks.
@@ -337,7 +374,9 @@ The implementation is not done until these have tests where practical.
 3. Direct DNS and a direct connection to an allowed host fail without the
    relay/proxy; with the proxy, the same host prompts or follows its profile.
 4. UDP/QUIC and IPv6 have no route.
-5. CONNECT to port 8443 is denied; only 443 is accepted.
+5. CONNECT to `host:8443` with no grant asks rather than passing; after
+   Allow, `host:8443` passes and `host:8444` still asks. CONNECT to a
+   private or loopback address is denied on any port, with no prompt.
 6. A redirect from an allowed host to a denied host is denied (plain HTTP)
    or the client's new CONNECT is denied (TLS).
 7. Changing proxy environment variables, `/etc/hosts`, or guest firewall
@@ -364,11 +403,16 @@ The implementation is not done until these have tests where practical.
 
 **Retry**
 
-1. A denied model request reports the approval id; Allow once lets exactly
-   one matching retry through; a second retry prompts again.
-2. Allow for task lets matching requests through until stop or expiry.
-3. An expired approval is a denial; a later retry creates a new item.
-4. A retried shell script is not replayed by Deck; side effects may repeat
+1. With a window attached, a request needing a new scope is held; Allow
+   within the hold completes that same request (a CONNECT tunnel included)
+   without a retry.
+2. A hold that expires, or a request with no window attached, gets the
+   `403` with the approval id; Allow once then lets exactly one matching
+   retry through; a second retry prompts again.
+3. A held request does not delay other requests on the same port.
+4. Allow for task lets matching requests through until stop or expiry.
+5. An expired approval is a denial; a later retry creates a new item.
+6. A retried shell script is not replayed by Deck; side effects may repeat
    and the transcript shows both attempts.
 
 **Credentials**
@@ -409,10 +453,12 @@ The implementation is not done until these have tests where practical.
    gateway injects the scripted provider's key.
 3. Add the `krun_disable_implicit_vsock` and `krun_add_vsock(ctx, 0)` wrappers
    in `krun.rs`, call both in `vmm.rs`, and map the model gateway's vsock
-   port; verify the VM prompt test still passes and the guest cannot reach
+   port and the reserved extension port (which answers every kind as
+   unsupported until one ships); verify the VM prompt test still passes and the guest cannot reach
    the host's model port directly.
-4. Add the approval queue, model-gateway budget/model checks and the boundary
-   card. Then add the web/package profiles; then hand the transport to #8.
+4. Add the approval queue with the bounded hold (the gateway learns from
+   `deckd` whether a window is attached to the task), model-gateway
+   budget/model checks and the boundary card. Then add the web/package profiles; then hand the transport to #8.
 
 ## Deferred
 
@@ -424,6 +470,8 @@ The implementation is not done until these have tests where practical.
   gateway or host mirror; #10).
 - Persisting pending approvals across a daemon restart (the request already
   failed; the guest retries).
+- The SSH-agent kind on the extension port: host-side signing for approved
+  SSH destinations, so the user's key never enters the guest.
 - An OS service for gateways when no Deck process is ever opened (ADR 0001's
   deferred item).
 - Per-destination data-loss controls; approved channels can carry data.
@@ -431,8 +479,10 @@ The implementation is not done until these have tests where practical.
 ## Consequences
 
 - The guest loses general networking. Package managers and HTTPS git work
-  only through the proxy/relay; tools with their own resolver, raw sockets,
-  or Git-over-SSH fail. This is the price of a boundary that does not depend
+  only through the proxy/relay; tools with their own resolver or raw
+  sockets fail. SSH works only through the proxy (`ProxyCommand`) to an
+  approved `host:port`, and without the user's keys until the SSH-agent
+  kind exists. This is the price of a boundary that does not depend
   on the agent.
 - A new host process per task and a guest relay to build and keep updated.
 - Construct's guest configuration must use placeholders and the relay; the
