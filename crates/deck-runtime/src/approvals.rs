@@ -49,7 +49,7 @@ struct Inner {
     loaded: HashSet<String>,
     projects: Vec<Grant>,
     leases: HashMap<String, usize>,
-    waiters: HashMap<String, usize>,
+    holds: HashMap<String, usize>,
     subscribers: Vec<mpsc::UnboundedSender<Approval>>,
     version: u64,
     seq: u64,
@@ -78,7 +78,7 @@ impl Boundary {
                 loaded: HashSet::new(),
                 projects,
                 leases: HashMap::new(),
-                waiters: HashMap::new(),
+                holds: HashMap::new(),
                 subscribers: vec![],
                 version,
                 seq: 0,
@@ -130,6 +130,7 @@ impl Boundary {
                     expires_ms: now + millis(self.settings.pending),
                     policy: inner.version,
                     state: State::Pending,
+                    waiters: 0,
                 };
                 self.notify(&mut inner, &item);
                 inner.items.insert(id.clone(), item);
@@ -140,7 +141,7 @@ impl Boundary {
             return Ok(inner.items[&id].clone());
         }
         let deadline = now + millis(self.settings.hold);
-        *inner.waiters.entry(id.clone()).or_default() += 1;
+        *inner.holds.entry(id.clone()).or_default() += 1;
         let item = loop {
             let item = inner.items[&id].clone();
             if !item.state.pending() || item.expires_ms <= now {
@@ -156,10 +157,10 @@ impl Boundary {
             inner = guard;
             self.prune(&mut inner, now_ms());
         };
-        if let Some(count) = inner.waiters.get_mut(&id) {
+        if let Some(count) = inner.holds.get_mut(&id) {
             *count = count.saturating_sub(1);
             if *count == 0 {
-                inner.waiters.remove(&id);
+                inner.holds.remove(&id);
             }
         }
         Ok(item)
@@ -176,19 +177,22 @@ impl Boundary {
         }
         if item.expires_ms <= now {
             item.state = State::Expired;
+            item.waiters = 0;
             self.notify(&mut inner, &item);
             inner.items.insert(id.to_owned(), item.clone());
             self.wake.notify_all();
             return Ok(item);
         }
         let Some(scope) = decision.scope() else {
+            // Keep the waiter count for the decision reply: it tells a window
+            // whether the agent is already learning this through its own wait.
             item.state = State::Denied;
             self.notify(&mut inner, &item);
             inner.items.insert(id.to_owned(), item.clone());
             self.wake.notify_all();
             return Ok(item);
         };
-        let waiting = inner.waiters.get(id).copied().unwrap_or(0) > 0;
+        let waiting = inner.holds.get(id).copied().unwrap_or(0) > 0;
         if scope != Scope::Once || !waiting {
             self.remember(&mut inner, &item, scope, now)?;
         }
@@ -218,6 +222,79 @@ impl Boundary {
         Ok(inner.grants.get(task).cloned().unwrap_or_default())
     }
 
+    /// One item's state for the gateway's status endpoint. A decided item
+    /// stays readable for as long as the queue keeps it.
+    pub fn status(&self, task: &str, id: &str) -> Result<Option<Approval>> {
+        let mut inner = self.lock();
+        self.prune(&mut inner, now_ms());
+        Ok(inner.items.get(id).filter(|item| item.task == task).cloned())
+    }
+
+    /// Wait up to `wait` for an item's decision, as the guest's status
+    /// endpoint's long poll. The queue owns the wait, so the gateway makes one
+    /// bounded control call instead of polling. `waiters` is visible to
+    /// attached windows through the item's watch updates.
+    pub fn wait(&self, task: &str, id: &str, wait: Duration) -> Result<Approval> {
+        let mut inner = self.lock();
+        let now = now_ms();
+        self.prune(&mut inner, now);
+        let Some(item) = inner.items.get(id).filter(|item| item.task == task).cloned() else {
+            bail!("unknown approval {id:?} for task {task:?}");
+        };
+        if !item.state.pending() {
+            return Ok(item);
+        }
+        let mut item = item;
+        item.waiters = item.waiters.saturating_add(1);
+        self.notify(&mut inner, &item);
+        inner.items.insert(id.to_owned(), item);
+
+        let deadline = now.saturating_add(millis(wait));
+        loop {
+            let now = now_ms();
+            let Some(current) = inner.items.get(id) else { break };
+            if !current.state.pending() || current.expires_ms <= now || now >= deadline {
+                break;
+            }
+            let left = deadline.saturating_sub(now).min(current.expires_ms.saturating_sub(now)).max(1);
+            let (guard, _) =
+                self.wake.wait_timeout(inner, Duration::from_millis(left)).unwrap_or_else(|e| e.into_inner());
+            inner = guard;
+            self.prune(&mut inner, now_ms());
+        }
+        let Some(mut current) = inner.items.get(id).cloned() else {
+            bail!("approval {id:?} was cleared while the agent waited");
+        };
+        if current.state.pending() {
+            current.waiters = current.waiters.saturating_sub(1);
+        } else {
+            current.waiters = 0;
+        }
+        self.notify(&mut inner, &current);
+        inner.items.insert(id.to_owned(), current.clone());
+        Ok(current)
+    }
+
+    /// The agent no longer needs a pending item. Withdrawal grants nothing;
+    /// the next matching request asks again.
+    pub fn withdraw(&self, task: &str, id: &str) -> Result<Approval> {
+        let mut inner = self.lock();
+        self.prune(&mut inner, now_ms());
+        let Some(item) = inner.items.get(id).filter(|item| item.task == task).cloned() else {
+            bail!("unknown approval {id:?} for task {task:?}");
+        };
+        if !item.state.pending() {
+            return Ok(item);
+        }
+        let mut item = item;
+        item.state = State::Withdrawn;
+        item.waiters = 0;
+        self.notify(&mut inner, &item);
+        inner.items.insert(id.to_owned(), item.clone());
+        self.wake.notify_all();
+        Ok(item)
+    }
+
     /// Drop a task grant. The next matching request asks again.
     pub fn revoke(&self, task: &str, id: &str) -> Result<()> {
         let mut inner = self.lock();
@@ -239,7 +316,7 @@ impl Boundary {
         let removed: Vec<Approval> = inner.items.values().filter(|item| item.task == task).cloned().collect();
         inner.items.retain(|_, item| item.task != task);
         let remaining: HashSet<String> = inner.items.keys().cloned().collect();
-        inner.waiters.retain(|id, _| remaining.contains(id));
+        inner.holds.retain(|id, _| remaining.contains(id));
         inner.grants.remove(task);
         inner.loaded.remove(task);
         let path = task_grants(&self.data, task);
@@ -258,6 +335,11 @@ impl Boundary {
     pub fn watch(self: &Arc<Self>, task: &str) -> (Lease, mpsc::UnboundedReceiver<Approval>) {
         let (tx, rx) = mpsc::unbounded();
         let mut inner = self.lock();
+        // A window that attaches while an item is already pending must see it
+        // before the next change, or the card would be invisible until then.
+        for item in inner.items.values().filter(|item| item.task == task && item.state.pending()) {
+            let _ = tx.unbounded_send(item.clone());
+        }
         inner.subscribers.push(tx);
         *inner.leases.entry(task.to_owned()).or_default() += 1;
         (Lease { boundary: self.clone(), task: task.to_owned() }, rx)
@@ -272,6 +354,7 @@ impl Boundary {
         for item in inner.items.values_mut() {
             if item.state.pending() && item.expires_ms <= now {
                 item.state = State::Expired;
+                item.waiters = 0;
                 expired.push(item.clone());
             }
         }
@@ -378,6 +461,7 @@ fn resolved(request: &Incoming, now: u64, policy: u64, scope: Scope) -> Approval
         expires_ms: now,
         policy,
         state: State::Allowed(scope),
+        waiters: 0,
     }
 }
 

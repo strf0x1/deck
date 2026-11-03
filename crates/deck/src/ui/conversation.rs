@@ -233,6 +233,11 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .as_ref()
                 .map(|reason| div().text_size(px(12.)).text_color(Tokens::text_dim()).child(reason.clone())),
         )
+        .child(div().text_size(px(11.5)).text_color(Tokens::text_faint()).child(if item.waiters > 0 {
+            "the agent is waiting for this decision"
+        } else {
+            "the agent has moved on"
+        }))
         .child(div().flex().flex_wrap().gap(px(8.)).children(buttons))
         .into_any_element()
 }

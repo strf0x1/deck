@@ -222,6 +222,7 @@ pub fn state(d: &Deck) -> Value {
             "destination": item.destination,
             "credential": item.credential,
             "state": format!("{:?}", item.state).to_lowercase(),
+            "waiting": item.waiters > 0,
         })),
         "draft": d.draft(),
         "animating": d.animating(),

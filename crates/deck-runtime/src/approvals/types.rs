@@ -34,6 +34,17 @@ pub enum Scope {
     Project,
 }
 
+impl Scope {
+    /// The wire name used by the boundary status endpoint and notifications.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Task => "task",
+            Self::Project => "project",
+        }
+    }
+}
+
 /// What the human chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +104,11 @@ pub struct Approval {
     pub expires_ms: u64,
     pub policy: u64,
     pub state: State,
+    /// How many agents are long-polling this item through the guest's
+    /// boundary status endpoint. The card says the agent is waiting while
+    /// this is non-zero and that it has moved on otherwise.
+    #[serde(default)]
+    pub waiters: u32,
 }
 
 impl Approval {

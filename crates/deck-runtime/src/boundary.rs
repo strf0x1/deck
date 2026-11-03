@@ -10,11 +10,16 @@
 /// The guest relay's loopback listener. Construct's `CONSTRUCT_BASE_URL`
 /// points here; it is not an external route.
 pub const RELAY_PORT: u16 = 8080;
+/// The boundary status relay's guest loopback listener, which Construct
+/// reads as `DECK_BOUNDARY_URL`.
+pub const BOUNDARY_PORT: u16 = 8081;
 /// The model gateway's guest vsock port.
 pub const MODEL_PORT: u32 = 1026;
-/// The reserved extension port. v1 answers every kind as unsupported; a later
-/// gateway kind is served here without restarting running tasks.
+/// The reserved extension port. The boundary status kind is served here; a
+/// later gateway kind is added without restarting running tasks.
 pub const EXTENSION_PORT: u32 = 1027;
+/// The framed kind the guest relay names on the extension port.
+pub const BOUNDARY_KIND: &str = "boundary";
 /// ACP keeps the port the guest already opens.
 pub const ACP_PORT: u32 = 1024;
 

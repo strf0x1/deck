@@ -9,8 +9,10 @@
 use crate::control::{Answer, Ask, Control};
 use crate::http::{self, ReadError, Request};
 use crate::policy::{self, Models};
+use crate::status::Status;
 use std::io::{self, BufReader, Read as _};
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The paths Construct uses. Anything else is a policy denial, not a proxy.
@@ -24,6 +26,7 @@ pub struct Model {
     key: Option<String>,
     secret: String,
     control: Option<Control>,
+    status: Arc<Status>,
     agent: ureq::Agent,
 }
 
@@ -38,6 +41,7 @@ impl Model {
         key: Option<String>,
         secret: String,
         control: Option<Control>,
+        status: Arc<Status>,
     ) -> Self {
         let config = ureq::Agent::config_builder()
             // The gateway decides what a non-2xx means; it is not an ureq error.
@@ -55,6 +59,7 @@ impl Model {
             key,
             secret,
             control,
+            status,
             agent: config.new_agent(),
         }
     }
@@ -99,8 +104,11 @@ impl Model {
                     size: Some(request.body.len() as u64),
                 };
                 match control.ask(&ask) {
-                    Answer::Allowed => {}
+                    // A hold that allowed the request never produced a
+                    // failure, so it is not a boundary note for the agent.
+                    Answer::Allowed(_) => {}
                     Answer::Pending(id) => {
+                        self.status.observe(&id, &model, "pending", None);
                         return http::write_denied(
                             &mut stream,
                             Some(&id),
@@ -108,7 +116,8 @@ impl Model {
                             &format!("model {model:?} needs the user's approval; retry after they decide"),
                         );
                     }
-                    Answer::Denied(id) => {
+                    Answer::Denied(id, state) => {
+                        self.status.observe(&id, &model, &state, None);
                         let id = (!id.is_empty()).then_some(id.as_str());
                         return http::write_denied(
                             &mut stream,

@@ -118,9 +118,17 @@ fi
 # gateway on the vsock port.
 relay_port=${DECK_RELAY_PORT:-8080}
 model_port=${DECK_MODEL_PORT:-1026}
+boundary_port=${DECK_BOUNDARY_PORT:-8081}
+extension_port=${DECK_EXTENSION_PORT:-1027}
+boundary_kind=${DECK_BOUNDARY_KIND:-boundary}
 mark "egress relay port=$model_port"
 /usr/local/bin/deck-egress --listen "127.0.0.1:${relay_port}" --vsock "2:${model_port}" &
+# The boundary status kind: plain HTTP on guest loopback, framed with the kind
+# name before the host extension port carries it. Construct reads the base URL
+# from the environment and advertises _meta.deck.boundary only when it is set.
+/usr/local/bin/deck-egress --listen "127.0.0.1:${boundary_port}" --vsock "2:${extension_port}" --kind "${boundary_kind}" &
 export CONSTRUCT_BASE_URL="http://127.0.0.1:${relay_port}/v1"
+export DECK_BOUNDARY_URL="http://127.0.0.1:${boundary_port}"
 cd /workspace || cd /
 # The guest opens the ACP stream to the host, so the connection itself is the
 # readiness signal: no listener race, no fixed delay, and the agent starts

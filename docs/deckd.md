@@ -52,10 +52,22 @@ the daemon adds the task's project and session, deduplicates, and holds the
 call only while a capable window is attached and only for 20 s. A window
 attaches by opening a `watch {task}` control connection: it confirms with
 `{"ok":null}`, then receives one JSON approval per line for as long as the
-connection lives. Dropping the connection ends the lease. Windows decide with
+connection lives. The snapshot sent on attach includes items that were already
+pending, and a waiting change is an update like any other. Dropping the
+connection ends the lease. Windows decide with
 `decide_approval {id, decision}` where decision is `once`, `task`, `project`
 or `deny`; `approvals {task}` lists pending items, `grants {task}` lists
-task-scoped grants, and `revoke_grant {task,id}` removes one. Task grants are
+task-scoped grants, and `revoke_grant {task,id}` removes one.
+
+The gateway reads and updates one item over the same socket:
+`approval_status {task,id}` returns it (or null once forgotten),
+`approval_wait {task,id,wait_ms}` holds a long poll for its decision (capped
+at 300 s) and marks the item as waited on while it does, so the card says the
+agent is waiting or has moved on, and `withdraw_approval {task,id}` closes a
+pending item without granting anything. The status endpoint on the gateway's extension
+port is the guest-facing half: `GET /events?after=<seq>`, `GET
+/approvals/<id>?wait=<s>` (capped at 300 s) and `POST
+/approvals/<id>/withdraw`; none of them can allow anything. Task grants are
 written to `tasks/<id>/grants.json` before the decision is reported; project
 rules are in `approvals/projects.json`; pending items and leases never touch
 disk. A new run of a task clears its items and grants. If the daemon cannot

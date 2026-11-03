@@ -661,3 +661,70 @@ fn the_gateways_approval_request_shape_is_accepted() {
     assert!(client.approvals(&task.id).unwrap().iter().any(|item| item.id == approval["id"]));
     client.stop(&task.id).unwrap();
 }
+
+#[test]
+fn a_status_wait_and_withdrawal_cross_the_control_socket() {
+    let (daemon, client) = Daemon::new("approval-status");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let item = client.request_approval(&task.id, ask("other")).unwrap();
+
+    // A window that attaches after the item exists still sees it.
+    let (_watch, mut rx) = client.watch(&task.id).unwrap();
+    let snapshot = loop {
+        match rx.try_recv() {
+            Ok(item) => break item,
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    assert_eq!((snapshot.id.as_str(), snapshot.waiters), (item.id.as_str(), 0));
+
+    // The gateway's long poll is one control call that the daemon holds.
+    let control = daemon.paths.control();
+    let (asked_task, asked_id) = (task.id.clone(), item.id.clone());
+    let waited = std::thread::spawn(move || {
+        let mut socket = UnixStream::connect(control).unwrap();
+        socket.set_read_timeout(Some(WAIT)).unwrap();
+        writeln!(
+            socket,
+            "{}",
+            serde_json::json!({
+                "op": "approval_wait", "task": asked_task, "id": asked_id, "wait_ms": 5000
+            })
+        )
+        .unwrap();
+        let mut reply = String::new();
+        BufReader::new(socket).read_line(&mut reply).unwrap();
+        serde_json::from_str::<serde_json::Value>(&reply).unwrap()
+    });
+    let heard = Instant::now() + WAIT;
+    loop {
+        if client.approval_status(&task.id, &item.id).unwrap().unwrap().waiters == 1 {
+            break;
+        }
+        assert!(Instant::now() < heard, "the wait was never visible");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let heard = Instant::now() + WAIT;
+    loop {
+        match rx.try_recv() {
+            Ok(update) if update.waiters == 1 => break,
+            Ok(_) => {}
+            Err(_) => {}
+        }
+        assert!(Instant::now() < heard, "the card hears the wait");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let withdrawn = client.withdraw(&task.id, &item.id).unwrap();
+    assert_eq!(withdrawn.state, deck_runtime::approvals::State::Withdrawn);
+    assert_eq!(withdrawn.waiters, 0);
+    let outcome = waited.join().unwrap();
+    assert_eq!(outcome["ok"]["state"], "withdrawn");
+    assert_eq!(outcome["ok"]["waiters"], 0);
+    let status = client.approval_status(&task.id, &item.id).unwrap().unwrap();
+    assert_eq!(status.state, deck_runtime::approvals::State::Withdrawn);
+    assert!(client.approvals(&task.id).unwrap().is_empty());
+    assert!(client.grants(&task.id).unwrap().is_empty());
+    client.stop(&task.id).unwrap();
+}
