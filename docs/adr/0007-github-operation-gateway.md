@@ -173,6 +173,27 @@ The tool is the path, and its description says so, because a model that reads a
 failed `git push` and then looks for another remote is the failure mode this
 whole design exists to prevent.
 
+### 7. Every refusal says what the agent should do next
+
+A failure is sorted by what the agent can do about it, and the kind alone sets
+the status, the code and `retryable`. Every body has the boundary denials'
+shape — `error.{message,type,code}` and `retryable` — plus `current` when the
+branch's commit is the reason.
+
+| Kind | Status | Code | Retryable | Meaning |
+|---|---|---|---|---|
+| Refused | 403 | `deck_github_refused` | no | Policy: a branch, base or pull request the task may not touch, or a publish that would rewrite the branch (`current` names the commit to build on). |
+| Conflict | 409 | `deck_github_conflict` | yes | The branch moved during the publish; `current` is where it is now. Rebuild, then retry. |
+| Invalid | 400 | `deck_bad_request` | no | The request or bundle is malformed, or its prerequisites are not on the branch. |
+| Not found | 404 | `deck_github_not_found` | no | GitHub has no such pull request. |
+| Rejected | GitHub's (409, 422) | `deck_github_rejected` | no | GitHub refused it, e.g. a pull request already exists or a protected-branch hook declined the push; GitHub's reason is the message. |
+| Credential | 502 | `deck_github_credential` | no | GitHub refused the host's token. The user's to fix, not the agent's. |
+| Unavailable | 502 | `deck_github_failed` | yes | GitHub or git could not be reached or answer, or a rate limit. |
+
+The approval denials (`deck_boundary_denied`) and a missing token
+(`deck_credential_missing`, 503) keep their own shapes. GitHub's and git's text
+is passed through for its reason, bounded and with the token redacted.
+
 ## Consequences
 
 - Publication is one branch per task, reviewed and merged on GitHub. Deck never

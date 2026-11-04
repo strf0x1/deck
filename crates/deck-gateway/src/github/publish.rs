@@ -13,6 +13,7 @@
 //! a time, because they share the scratch repository.
 
 use crate::github::policy::{Policy, branch_name};
+use crate::github::problem::{Kind, Problem};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -66,32 +67,6 @@ impl Commit {
     }
 }
 
-/// Why a publish did not happen. Every variant is a denial the agent can read;
-/// none is a partial publish, because the push is the last step.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refused {
-    /// The bundle names more than the one allowed branch.
-    Bundle(String),
-    /// The remote branch moved since it was read: a rewritten history or a
-    /// concurrent publish, and not something this task may force.
-    NotFastForward { previous: Option<String> },
-    /// The scratch repository or the remote could not be read.
-    Failed(String),
-}
-
-impl Refused {
-    pub fn message(&self) -> String {
-        match self {
-            Self::Bundle(why) => format!("the bundle cannot be published: {why}"),
-            Self::NotFastForward { previous: Some(previous) } => format!(
-                "{previous} is not a commit this task may build on; a publish only extends a branch, never rewrites it"
-            ),
-            Self::NotFastForward { previous: None } => "the branch is not where it was read; retry".to_string(),
-            Self::Failed(why) => format!("the host could not publish: {why}"),
-        }
-    }
-}
-
 /// The remote is the GitHub repository; `remote_url` is the pinned clone URL
 /// the policy built, never a guest string.
 pub struct Publisher {
@@ -131,36 +106,37 @@ impl Publisher {
     /// `git ls-remote --exit-code` reports an absent ref as status 2: every
     /// first publish starts there, so 2 is an answer and only other statuses
     /// are failures.
-    pub fn remote(&self, branch: &str) -> Result<Remote, Refused> {
-        branch_name(branch).ok_or_else(|| Refused::Bundle(format!("{branch:?} is not a branch name")))?;
+    pub fn remote(&self, branch: &str) -> Result<Remote, Problem> {
+        branch_name(branch).ok_or_else(|| Problem::invalid(format!("{branch:?} is not a branch name")))?;
         let reference = format!("refs/heads/{branch}");
-        let output = self.run(&["ls-remote", "--exit-code", self.remote_url(), &reference]).map_err(Refused::Failed)?;
+        let output =
+            self.run(&["ls-remote", "--exit-code", self.remote_url(), &reference]).map_err(Problem::unavailable)?;
         match output.status.code() {
             Some(0) => {}
             Some(2) => return Ok(Remote::Absent),
-            _ => return Err(Refused::Failed(stderr(&output, self.token.as_deref()))),
+            _ => return Err(transport(stderr(&output, self.token.as_deref()))),
         }
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
         let Some(line) = text.lines().next() else { return Ok(Remote::Absent) };
         let Some((commit, name)) = line.split_once('\t') else {
-            return Err(Refused::Failed(format!("unexpected ls-remote output: {line:?}")));
+            return Err(Problem::unavailable(format!("unexpected ls-remote output: {line:?}")));
         };
         if name != reference {
-            return Err(Refused::Failed(format!("the remote answered about {name}")));
+            return Err(Problem::unavailable(format!("the remote answered about {name}")));
         }
-        let commit = Commit::parse(commit).ok_or_else(|| Refused::Failed("the remote named no commit".into()))?;
+        let commit = Commit::parse(commit).ok_or_else(|| Problem::unavailable("the remote named no commit"))?;
         Ok(Remote::At(commit))
     }
 
     /// Publish one bundle to one branch. The bundle was already checked by
     /// [`crate::github::bundle::Bundle::branch`]; this repeats the refspec so
     /// a bundle that lies about its contents cannot publish another ref.
-    pub fn publish(&self, branch: &str, bytes: &[u8]) -> Result<Published, Refused> {
+    pub fn publish(&self, branch: &str, bytes: &[u8]) -> Result<Published, Problem> {
         if !self.policy.writable(branch, &self.task) {
-            return Err(Refused::Bundle(format!("{branch} is not a branch this task may write")));
+            return Err(Problem::refused(format!("{branch} is not a branch this task may write")));
         }
         if self.token.is_none() {
-            return Err(Refused::Failed("the host has no GitHub credential".into()));
+            return Err(Problem::credential("the host has no GitHub credential"));
         }
         // The scratch repository is what every command runs in, `ls-remote`
         // included, so it exists before the first one.
@@ -168,7 +144,7 @@ impl Publisher {
         let remote = self.remote(branch)?;
         let repository = self.repository()?;
         let bundle = repository.join("incoming.bundle");
-        std::fs::write(&bundle, bytes).map_err(|error| Refused::Failed(format!("storing the bundle: {error}")))?;
+        std::fs::write(&bundle, bytes).map_err(|error| Problem::unavailable(format!("storing the bundle: {error}")))?;
         let bundle = bundle.to_string_lossy().into_owned();
         let reference = format!("refs/heads/{branch}");
         // The remote's tip is fetched first, so an incremental bundle's
@@ -180,14 +156,22 @@ impl Publisher {
         }
         // The bundle's one allowed ref lands on a ref this module owns, so the
         // commit under test is exactly what this fetch brought in.
-        self.fetch(&bundle, &format!("+{reference}:{INCOMING_REF}"))?;
+        // A bundle git cannot fetch (a prerequisite the branch does not have)
+        // is the agent's to rebuild, not an outage.
+        self.fetch(&bundle, &format!("+{reference}:{INCOMING_REF}"))
+            .map_err(|problem| Problem::invalid(format!("the bundle cannot be fetched: {}", problem.message)))?;
         let commit = self.rev_parse(INCOMING_REF)?;
         if let Remote::At(previous) = remote
             && !self.ancestor(&previous.hex(), &commit.hex())?
         {
             // The remote must be an ancestor, so this is a fast-forward. A
             // bundle built on another commit is a rewrite in disguise.
-            return Err(Refused::NotFastForward { previous: Some(previous.hex()) });
+            let previous = previous.hex();
+            return Err(Problem::refused(format!(
+                "{branch} is at {previous}, which the bundle does not build on; a publish only extends a \
+                 branch, never rewrites it, so rebuild on {previous} and publish again"
+            ))
+            .at(previous));
         }
         let lease = match remote {
             Remote::Absent => format!("--force-with-lease={reference}:{}", zero()),
@@ -196,15 +180,20 @@ impl Publisher {
         let refspec = format!("{}:{reference}", commit.hex());
         let pushed = self
             .run(&["push", "--quiet", "--no-verify", &lease, self.remote_url(), &refspec])
-            .map_err(Refused::Failed)?;
+            .map_err(Problem::unavailable)?;
         if !pushed.status.success() {
             return Err(match self.remote(branch) {
                 // A lease failure means the branch moved between the read and
                 // the push; say so instead of reporting a transport error.
-                Ok(Remote::At(now)) if remote != Remote::At(now) => {
-                    Refused::NotFastForward { previous: Some(now.hex()) }
-                }
-                _ => Refused::Failed(format!("push: {}", stderr(&pushed, self.token.as_deref()))),
+                Ok(Remote::At(now)) if remote != Remote::At(now) => Problem::new(
+                    Kind::Conflict,
+                    format!(
+                        "{branch} moved to {} while this publish ran; read it again, rebuild on it and publish again",
+                        now.hex()
+                    ),
+                )
+                .at(now.hex()),
+                _ => transport(format!("push: {}", stderr(&pushed, self.token.as_deref()))),
             });
         }
         Ok(Published {
@@ -221,25 +210,25 @@ impl Publisher {
     /// first fetch and is never the caller's working directory: a git command
     /// without an explicit repository would otherwise read whatever repository
     /// the gateway happened to be started from.
-    fn repository(&self) -> Result<PathBuf, Refused> {
+    fn repository(&self) -> Result<PathBuf, Problem> {
         if self.scratch.as_os_str().is_empty() {
-            return Err(Refused::Failed("no scratch directory".into()));
+            return Err(Problem::unavailable("no scratch directory"));
         }
         Ok(self.scratch.join(SCRATCH))
     }
 
-    fn prepare(&self) -> Result<(), Refused> {
+    fn prepare(&self) -> Result<(), Problem> {
         let repository = self.repository()?;
         // `git init --bare` creates the repository directory itself, so only
         // the root the gateway owns is made here.
         std::fs::create_dir_all(&self.scratch)
-            .map_err(|error| Refused::Failed(format!("preparing the scratch directory: {error}")))?;
+            .map_err(|error| Problem::unavailable(format!("preparing the scratch directory: {error}")))?;
         if repository.join("HEAD").is_file() {
             return Ok(());
         }
-        let init = self.run_in(&self.scratch, &["init", "--quiet", "--bare", SCRATCH]).map_err(Refused::Failed)?;
+        let init = self.run_in(&self.scratch, &["init", "--quiet", "--bare", SCRATCH]).map_err(Problem::unavailable)?;
         if !init.status.success() {
-            return Err(Refused::Failed(stderr(&init, self.token.as_deref())));
+            return Err(Problem::unavailable(stderr(&init, self.token.as_deref())));
         }
         Ok(())
     }
@@ -247,37 +236,38 @@ impl Publisher {
     /// Whether `ancestor` is reachable from `descendant`. `git merge-base
     /// --is-ancestor` reports "no" as exit status 1, so a failed status is an
     /// answer and only other statuses are an outage.
-    fn ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, Refused> {
-        let output = self.run(&["merge-base", "--is-ancestor", ancestor, descendant]).map_err(Refused::Failed)?;
+    fn ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, Problem> {
+        let output = self.run(&["merge-base", "--is-ancestor", ancestor, descendant]).map_err(Problem::unavailable)?;
         match output.status.code() {
             Some(0) => Ok(true),
             // Exit 1 is git's "no". Anything else is an outage, and the
             // caller must not read it as a rewrite.
             Some(1) => Ok(false),
-            _ => {
-                Err(Refused::Failed(format!("merge-base could not answer: {}", stderr(&output, self.token.as_deref()))))
-            }
+            _ => Err(Problem::unavailable(format!(
+                "merge-base could not answer: {}",
+                stderr(&output, self.token.as_deref())
+            ))),
         }
     }
 
     /// Fetch one refspec into the scratch repository.
-    fn fetch(&self, source: &str, refspec: &str) -> Result<(), Refused> {
+    fn fetch(&self, source: &str, refspec: &str) -> Result<(), Problem> {
         let fetched = self
             .run(&["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", source, refspec])
-            .map_err(Refused::Failed)?;
+            .map_err(Problem::unavailable)?;
         if !fetched.status.success() {
-            return Err(Refused::Failed(format!("fetch: {}", stderr(&fetched, self.token.as_deref()))));
+            return Err(transport(format!("fetch: {}", stderr(&fetched, self.token.as_deref()))));
         }
         Ok(())
     }
 
-    fn rev_parse(&self, reference: &str) -> Result<Commit, Refused> {
-        let output = self.run(&["rev-parse", "--verify", reference]).map_err(Refused::Failed)?;
+    fn rev_parse(&self, reference: &str) -> Result<Commit, Problem> {
+        let output = self.run(&["rev-parse", "--verify", reference]).map_err(Problem::unavailable)?;
         if !output.status.success() {
-            return Err(Refused::Failed(format!("rev-parse: {}", stderr(&output, self.token.as_deref()))));
+            return Err(Problem::unavailable(format!("rev-parse: {}", stderr(&output, self.token.as_deref()))));
         }
         let text = String::from_utf8_lossy(&output.stdout);
-        Commit::parse(&text).ok_or_else(|| Refused::Failed(format!("git named no commit for {reference}")))
+        Commit::parse(&text).ok_or_else(|| Problem::unavailable(format!("git named no commit for {reference}")))
     }
 
     /// The one clone URL the policy builds: the repository from the host's
@@ -374,6 +364,11 @@ fn stderr(output: &std::process::Output, token: Option<&str>) -> String {
     if reason.is_empty() { format!("git exited with {}", output.status) } else { reason }
 }
 
+/// A failed command that talked to GitHub, sorted by what its stderr says.
+fn transport(reason: String) -> Problem {
+    Problem::new(Kind::of_git(&reason), reason)
+}
+
 /// The `git` the gateway runs: the first one on the host's `PATH`, resolved to
 /// an absolute path, because the children start with a cleared environment and
 /// a relative name would depend on the `PATH` they were given.
@@ -448,19 +443,16 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_what_the_agent_has_to_do() {
-        assert!(Refused::NotFastForward { previous: Some("a".repeat(40)) }.message().contains("never rewrites it"));
-        assert!(Refused::Bundle("two refs".into()).message().contains("two refs"));
-    }
-
-    #[test]
     fn the_publisher_refuses_a_branch_the_task_cannot_write() {
         let policy = Policy::new("o/r", "main", Vec::new()).unwrap();
         let publisher =
             Publisher::new(policy, "t-1".into(), "https://github.com/o/r".into(), PathBuf::from("/nonexistent"));
-        assert!(publisher.publish("main", b"").unwrap_err().message().contains("may write"));
-        assert!(publisher.publish("deck/t-2", b"").unwrap_err().message().contains("may write"));
+        for branch in ["main", "deck/t-2"] {
+            let problem = publisher.publish(branch, b"").unwrap_err();
+            assert_eq!(problem.kind, Kind::Refused);
+            assert!(problem.message.contains("may write"), "{problem:?}");
+        }
         // Its own branch reaches the credential check, not the ref rule.
-        assert!(publisher.publish("deck/t-1", b"").unwrap_err().message().contains("credential"));
+        assert_eq!(publisher.publish("deck/t-1", b"").unwrap_err().kind, Kind::Credential);
     }
 }

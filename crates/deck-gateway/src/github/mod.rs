@@ -12,6 +12,7 @@ pub mod bundle;
 pub mod client;
 pub mod control;
 pub mod policy;
+pub mod problem;
 pub mod publish;
 pub mod status;
 
@@ -152,9 +153,9 @@ impl GitHub {
         // An update may only touch a pull request this task opened from a
         // branch it may write; that is checked before anyone is asked.
         if let (Operation::UpdatePullRequest, Some(number)) = (operation, ask.number)
-            && let Err(why) = self.client.owns_pull_request(number)
+            && let Err(problem) = self.client.owns_pull_request(number)
         {
-            return Err(Failure::error(403, "deck_github_refused", &why));
+            return Err(self.failed(&domain, problem));
         }
         self.decide(operation, &domain, &reason(ask, operation))?;
         let result = match operation {
@@ -187,10 +188,14 @@ impl GitHub {
                 self.client.review(number)
             }
         };
-        result.map(|body| (domain.clone(), body)).map_err(|message| {
-            self.status.observe("", &domain, "failed", None, Some(&message));
-            Failure::error(502, "deck_github_failed", &message)
-        })
+        result.map(|body| (domain.clone(), body)).map_err(|problem| self.failed(&domain, problem))
+    }
+
+    /// Record a failure for the agent's event feed and turn it into a reply;
+    /// [`problem::Kind`] is the one place a failure gets its status and code.
+    fn failed(&self, domain: &str, problem: problem::Problem) -> Failure {
+        self.status.observe("", domain, "failed", None, Some(&problem.message));
+        Failure { status: problem.kind.status(), body: problem.body() }
     }
 
     fn decide(&self, operation: Operation, destination: &str, reason: &str) -> Result<(), Failure> {

@@ -938,8 +938,13 @@ fn api(
                 let Ok(Some(request)) = http::read(&mut reader) else { return };
                 let body = (assert)(&request);
                 log.lock().unwrap().push(request);
+                // `!<status> <body>` answers with that status instead of 200.
+                let (status, body) = match body.strip_prefix('!').and_then(|rest| rest.split_once(' ')) {
+                    Some((status, rest)) => (status.to_string(), rest.to_string()),
+                    None => ("200".to_string(), body),
+                };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = stream.write_all(reply.as_bytes());
@@ -1191,8 +1196,13 @@ fn a_second_publish_extends_the_branch_and_a_rewrite_is_refused() {
     let unrelated = scratch("gh-extend-unrelated");
     let rewrite = bundle(&unrelated, "deck/t-1", "fork", &unrelated.join("none"));
     let response = publish(&github, "deck/t-1", &rewrite);
-    assert!(response.starts_with("HTTP/1.1 5"), "{response}");
-    assert!(response.contains("never rewrites it"), "{response}");
+    // A rewrite is the policy's no, and the reply names the commit to build on.
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(response.contains("deck_github_refused") && response.contains("never rewrites it"), "{response}");
+    assert!(response.contains(r#""retryable":false"#), "{response}");
+    let tip = Command::new("git").arg("--git-dir").arg(&remote).args(["rev-parse", "deck/t-1"]).output().unwrap();
+    let tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+    assert!(response.contains(&format!(r#""current":"{tip}""#)), "{response}");
     let count =
         Command::new("git").arg("--git-dir").arg(&remote).args(["rev-list", "--count", "deck/t-1"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2", "the rewrite did not land");
@@ -1207,8 +1217,8 @@ fn a_bundle_for_another_branch_or_two_refs_never_publishes() {
     let github = gateway.ready.github.clone().unwrap();
     let other = bundle(&dir, "main", "main", &dir.join("none"));
     let response = publish(&github, "deck/t-1", &other);
-    assert!(response.starts_with("HTTP/1.1 5"), "{response}");
-    assert!(response.contains("not refs/heads/deck/t-1"), "{response}");
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    assert!(response.contains("deck_bad_request") && response.contains("not refs/heads/deck/t-1"), "{response}");
     let outs = Command::new("git").arg("--git-dir").arg(&remote).arg("branch").arg("--list").output().unwrap();
     assert_eq!(String::from_utf8_lossy(&outs.stdout).trim(), "", "nothing landed");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -1476,4 +1486,42 @@ fn an_update_touches_only_the_tasks_own_pull_request_and_review_reports_checks()
     assert!(review.starts_with("HTTP/1.1 200 OK"), "{review}");
     assert!(review.contains(r#""conclusion":"success""#), "{review}");
     assert!(!review.contains("long"), "only the run's verdict returns: {review}");
+}
+
+#[test]
+fn githubs_own_refusals_reach_the_agent_by_kind() {
+    let (_, remote) = bare("gh-kinds");
+    let (api, _, _) = api(|request| {
+        match (request.method.as_str(), request.target.as_str()) {
+        ("POST", t) if t.ends_with("/pulls") => {
+            r#"!422 {"message":"Validation Failed","errors":[{"message":"A pull request already exists for owner:deck/t-1."}]}"#.into()
+        }
+        ("GET", t) if t.ends_with("/pulls/404") => r#"!404 {"message":"Not Found"}"#.into(),
+        ("GET", t) if t.ends_with("/pulls/401") => r#"!401 {"message":"Bad credentials"}"#.into(),
+        ("GET", t) if t.ends_with("/pulls/503") => "!503 <html>unavailable</html>".into(),
+        _ => "{}".into(),
+    }
+    });
+    let gateway =
+        with_github("gh-kinds-gw", &api, &url(&remote), Some((&agreement("gh-kinds-queue"), "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let post = |path: &str, ask: &str| {
+        send(&github, &format!("POST {path} HTTP/1.1\r\ncontent-length: {}\r\n\r\n{ask}", ask.len()))
+    };
+    let exists =
+        post("/operations/pull_request", r#"{"operation":"create_pr","head":"deck/t-1","base":"main","title":"t"}"#);
+    assert!(exists.starts_with("HTTP/1.1 422"), "{exists}");
+    assert!(exists.contains("deck_github_rejected") && exists.contains("already exists"), "{exists}");
+    let missing = post("/operations/pull_request/update", r#"{"operation":"update_pr","number":404,"title":"x"}"#);
+    assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+    assert!(missing.contains("deck_github_not_found"), "{missing}");
+    let review = |number: u16| {
+        post("/operations/pull_request/review", &format!(r#"{{"operation":"review","number":{number}}}"#))
+    };
+    let credential = review(401);
+    assert!(credential.starts_with("HTTP/1.1 502"), "{credential}");
+    assert!(credential.contains("deck_github_credential") && credential.contains(r#""retryable":false"#));
+    let outage = review(503);
+    assert!(outage.starts_with("HTTP/1.1 502"), "{outage}");
+    assert!(outage.contains("deck_github_failed") && outage.contains(r#""retryable":true"#), "{outage}");
 }

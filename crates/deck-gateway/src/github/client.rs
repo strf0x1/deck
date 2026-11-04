@@ -10,7 +10,8 @@
 
 use crate::github::bundle::{Bundle, is_sha};
 use crate::github::policy::{API_HOST, API_PREFIX, Policy};
-use crate::github::publish::{Publisher, Refused};
+use crate::github::problem::{Kind, Problem};
+use crate::github::publish::Publisher;
 use serde_json::{Value, json};
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -24,6 +25,8 @@ pub const MAX_TEXT: usize = 64 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 /// The `User-Agent` GitHub requires on every request.
 const AGENT: &str = "deck-gateway";
+/// Shorter than any GitHub token, so never worth redacting.
+const MIN_TOKEN: usize = 8;
 /// The prefix a `matching-refs/heads/` reply puts in front of each short name.
 const HEADS: &str = "refs/heads/";
 
@@ -81,9 +84,10 @@ impl Client {
     }
 
     /// Push one bundle to one branch, after the ref rules were applied.
-    pub fn publish(&self, branch: &str, bytes: &[u8]) -> Result<String, String> {
-        let bundle = Bundle::parse(bytes).map_err(|why| Refused::Bundle(why).message())?;
-        bundle.branch(branch).map_err(|why| Refused::Bundle(why).message())?;
+    pub fn publish(&self, branch: &str, bytes: &[u8]) -> Result<String, Problem> {
+        let bundle =
+            Bundle::parse(bytes).map_err(|why| Problem::invalid(format!("the bundle cannot be published: {why}")))?;
+        bundle.branch(branch).map_err(|why| Problem::invalid(format!("the bundle cannot be published: {why}")))?;
         let mut publisher = Publisher::new(
             self.settings.policy.clone(),
             self.settings.task.clone(),
@@ -96,7 +100,7 @@ impl Client {
         }
         let published = {
             let _turn = self.publishing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            publisher.publish(branch, bytes).map_err(|refused| refused.message())?
+            publisher.publish(branch, bytes)?
         };
         Ok(json!({
             "repository": self.settings.policy.repository(),
@@ -109,10 +113,10 @@ impl Client {
     }
 
     /// Branches, and which of them is this task's. A read: no approval.
-    pub fn refs(&self) -> Result<String, String> {
+    pub fn refs(&self) -> Result<String, Problem> {
         let path = format!("{}git/matching-refs/heads/", self.prefix());
         let reply = self.call("GET", &path, None)?;
-        let list = reply.as_array().ok_or("the branches reply is not a list")?;
+        let list = reply.as_array().ok_or_else(|| Problem::unavailable("the branches reply is not a list"))?;
         let task_branch = Policy::task_branch(&self.settings.task);
         let mut branches = Vec::new();
         for item in list {
@@ -130,15 +134,22 @@ impl Client {
 
     /// Create a pull request from the task's branch (or a listed one) to the
     /// configured base.
-    pub fn pull_request(&self, head: &str, base: &str, title: &str, body: &str, draft: bool) -> Result<String, String> {
+    pub fn pull_request(
+        &self,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> Result<String, Problem> {
         if !self.settings.policy.writable(head, &self.settings.task) {
-            return Err(format!("{head:?} is not a branch this task may open a pull request from"));
+            return Err(Problem::refused(format!("{head:?} is not a branch this task may open a pull request from")));
         }
         if !self.settings.policy.accepts_base(base) {
-            return Err(format!(
+            return Err(Problem::refused(format!(
                 "{base:?} is not a base this task may target (only {:?})",
                 self.settings.policy.base()
-            ));
+            )));
         }
         check_text(title, body)?;
         let path = format!("{}pulls", self.prefix());
@@ -156,11 +167,11 @@ impl Client {
         title: Option<&str>,
         body: Option<&str>,
         draft: Option<bool>,
-    ) -> Result<String, String> {
+    ) -> Result<String, Problem> {
         if let Some(base) = base
             && !self.settings.policy.accepts_base(base)
         {
-            return Err(format!("{base:?} is not a base this task may target"));
+            return Err(Problem::refused(format!("{base:?} is not a base this task may target")));
         }
         if title.is_some() || body.is_some() {
             check_text(title.unwrap_or("-"), body.unwrap_or_default())?;
@@ -179,7 +190,7 @@ impl Client {
             request.insert("draft".into(), json!(draft));
         }
         if request.is_empty() {
-            return Err("an update names a title, a body, a base or the draft state".to_string());
+            return Err(Problem::invalid("an update names a title, a body, a base or the draft state"));
         }
         let path = format!("{}pulls/{number}", self.prefix());
         let reply = self.call("PATCH", &path, Some(&Value::Object(request)))?;
@@ -190,23 +201,28 @@ impl Client {
     /// a branch the task may write, in this repository rather than a fork.
     /// Asked before the approval card, so the user is never asked about a pull
     /// request the gateway would refuse anyway.
-    pub fn owns_pull_request(&self, number: u64) -> Result<(), String> {
+    pub fn owns_pull_request(&self, number: u64) -> Result<(), Problem> {
         let path = format!("{}pulls/{number}", self.prefix());
         let reply = self.call("GET", &path, None)?;
         let head = reply.pointer("/head/ref").and_then(Value::as_str).unwrap_or_default();
         let repository = reply.pointer("/head/repo/full_name").and_then(Value::as_str).unwrap_or_default();
         if !repository.eq_ignore_ascii_case(self.settings.policy.repository()) {
-            return Err(format!("pull request {number} is not from a branch of {}", self.settings.policy.repository()));
+            return Err(Problem::refused(format!(
+                "pull request {number} is not from a branch of {}",
+                self.settings.policy.repository()
+            )));
         }
         if !self.settings.policy.writable(head, &self.settings.task) {
-            return Err(format!("pull request {number} is from {head:?}, not a branch this task may write"));
+            return Err(Problem::refused(format!(
+                "pull request {number} is from {head:?}, not a branch this task may write"
+            )));
         }
         Ok(())
     }
 
     /// A pull request's state: head commit, draft, mergeability, and the
     /// check runs on its head commit (`null` when it names no head commit).
-    pub fn review(&self, number: u64) -> Result<String, String> {
+    pub fn review(&self, number: u64) -> Result<String, Problem> {
         let path = format!("{}pulls/{number}", self.prefix());
         let reply = self.call("GET", &path, None)?;
         let mut out = summary(&reply);
@@ -219,7 +235,7 @@ impl Client {
 
     /// The check runs on one commit, reduced to what an agent decides on:
     /// each run's name, status and conclusion. One page of 100 is the bound.
-    fn checks(&self, sha: &str) -> Result<Value, String> {
+    fn checks(&self, sha: &str) -> Result<Value, Problem> {
         let path = format!("{}commits/{sha}/check-runs?per_page=100", self.prefix());
         let reply = self.call("GET", &path, None)?;
         let runs: Vec<Value> = reply
@@ -246,9 +262,9 @@ impl Client {
 
     /// One API call with the host's credential. The guest contributed the
     /// path only through arguments this module already validated.
-    pub(crate) fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    pub(crate) fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, Problem> {
         let Some(token) = self.settings.token.as_ref().filter(|token| !token.is_empty()) else {
-            return Err("the host has no GitHub credential".to_string());
+            return Err(Problem::credential("the host has no GitHub credential"));
         };
         let headers: [(&str, String); 4] = [
             ("accept", "application/vnd.github+json".into()),
@@ -279,12 +295,14 @@ impl Client {
                 }
                 builder.send(payload.as_bytes())
             }
-            other => return Err(format!("{other} is not a GitHub method this gateway makes")),
+            other => return Err(Problem::unavailable(format!("{other} is not a GitHub method this gateway makes"))),
         };
         let mut response = match response {
             Ok(response) => response,
-            Err(ureq::Error::StatusCode(status)) => return Err(format!("github answered {status}")),
-            Err(error) => return Err(format!("reaching {API_HOST}: {error}")),
+            Err(ureq::Error::StatusCode(status)) => {
+                return Err(Problem::new(Kind::of_status(status), format!("github answered {status}")));
+            }
+            Err(error) => return Err(Problem::unavailable(format!("reaching {API_HOST}: {error}"))),
         };
         let status = response.status().as_u16();
         let mut bytes = Vec::new();
@@ -293,30 +311,56 @@ impl Client {
             .as_reader()
             .take(MAX_RESPONSE as u64)
             .read_to_end(&mut bytes)
-            .map_err(|error| format!("reading github's reply: {error}"))?;
+            .map_err(|error| Problem::unavailable(format!("reading github's reply: {error}")))?;
         let text = String::from_utf8_lossy(&bytes);
         if !(200..300).contains(&status) {
-            let message = serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| value.get("message").and_then(Value::as_str).map(str::to_owned))
-                .unwrap_or_else(|| format!("github answered {status}"));
-            return Err(message);
+            let reason = github_reason(status, &text, token);
+            // GitHub reports a rate limit as 403 too; that one passes.
+            let kind = match Kind::of_status(status) {
+                Kind::Credential if reason.to_ascii_lowercase().contains("rate limit") => Kind::Unavailable,
+                kind => kind,
+            };
+            return Err(Problem::new(kind, reason));
         }
         if bytes.is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_slice(&bytes).map_err(|_| "github's reply is not JSON".to_string())
+        serde_json::from_slice(&bytes).map_err(|_| Problem::unavailable("github's reply is not JSON"))
     }
 }
 
-fn check_text(title: &str, body: &str) -> Result<(), String> {
+fn check_text(title: &str, body: &str) -> Result<(), Problem> {
     if title.trim().is_empty() {
-        return Err("a pull request needs a title".to_string());
+        return Err(Problem::invalid("a pull request needs a title"));
     }
     if title.len() + body.len() > MAX_TEXT {
-        return Err(format!("the title and body exceed {MAX_TEXT} bytes"));
+        return Err(Problem::invalid(format!("the title and body exceed {MAX_TEXT} bytes")));
     }
     Ok(())
+}
+
+/// GitHub's reason for a refusal: its `message`, then the first entry of
+/// `errors` (where a 422 says what was wrong), with the token never echoed.
+fn github_reason(status: u16, text: &str, token: &str) -> String {
+    let value = serde_json::from_str::<Value>(text).ok();
+    let message = value.as_ref().and_then(|value| value.get("message")).and_then(Value::as_str);
+    let detail = value.as_ref().and_then(|value| value.pointer("/errors/0")).and_then(|error| {
+        error.get("message").and_then(Value::as_str).map(str::to_owned).or_else(|| {
+            error.get("code").and_then(Value::as_str).map(|code| {
+                let field = error.get("field").and_then(Value::as_str).unwrap_or("request");
+                format!("{field} {code}")
+            })
+        })
+    });
+    let reason = match (message, detail) {
+        (Some(message), Some(detail)) => format!("github answered {status}: {message}: {detail}"),
+        (Some(message), None) => format!("github answered {status}: {message}"),
+        (None, Some(detail)) => format!("github answered {status}: {detail}"),
+        (None, None) => format!("github answered {status}"),
+    };
+    // A GitHub token is never this short; replacing a one-letter test token
+    // would only garble GitHub's sentence.
+    if token.len() < MIN_TOKEN { reason } else { reason.replace(token, "***") }
 }
 
 /// The fields an agent reads from a pull request, and nothing more.
@@ -362,12 +406,32 @@ mod tests {
     #[test]
     fn a_pull_request_from_or_to_a_branch_outside_the_policy_is_refused_first() {
         let client = client();
-        assert!(client.pull_request("main", "main", "t", "", false).unwrap_err().contains("may open"));
-        assert!(client.pull_request("deck/t-1", "release", "t", "", false).unwrap_err().contains("may target"));
-        assert!(client.pull_request("deck/t-1", "main", "", "", false).unwrap_err().contains("needs a title"));
-        assert!(client.pull_request("deck/t-1", "main", "t", "", false).unwrap_err().contains("credential"));
-        assert!(client.update_pull_request(1, Some("release"), None, None, None).is_err());
-        assert!(client.update_pull_request(1, None, None, None, None).unwrap_err().contains("names a title"));
+        let refused = |result: Result<String, Problem>, text: &str, kind: Kind| {
+            let problem = result.unwrap_err();
+            assert_eq!(problem.kind, kind, "{problem:?}");
+            assert!(problem.message.contains(text), "{problem:?}");
+        };
+        refused(client.pull_request("main", "main", "t", "", false), "may open", Kind::Refused);
+        refused(client.pull_request("deck/t-1", "release", "t", "", false), "may target", Kind::Refused);
+        refused(client.pull_request("deck/t-1", "main", "", "", false), "needs a title", Kind::Invalid);
+        refused(client.pull_request("deck/t-1", "main", "t", "", false), "credential", Kind::Credential);
+        refused(client.update_pull_request(1, Some("release"), None, None, None), "may target", Kind::Refused);
+        refused(client.update_pull_request(1, None, None, None, None), "names a title", Kind::Invalid);
+    }
+
+    #[test]
+    fn githubs_reason_names_what_was_wrong_and_never_the_token() {
+        let reply =
+            r#"{"message":"Validation Failed","errors":[{"message":"A pull request already exists for o:deck/t-1."}]}"#;
+        assert_eq!(
+            github_reason(422, reply, "ghp_token"),
+            "github answered 422: Validation Failed: A pull request already exists for o:deck/t-1."
+        );
+        let coded =
+            r#"{"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"base","code":"invalid"}]}"#;
+        assert_eq!(github_reason(422, coded, "ghp_token"), "github answered 422: Validation Failed: base invalid");
+        assert_eq!(github_reason(401, r#"{"message":"bad ghp_token"}"#, "ghp_token"), "github answered 401: bad ***");
+        assert_eq!(github_reason(500, "<html>", "ghp_token"), "github answered 500");
     }
 
     #[test]
