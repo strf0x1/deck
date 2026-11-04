@@ -1,4 +1,5 @@
-//! Argument parsing for the host daemon, detached holder, and child lifeline.
+//! Argument parsing for the host daemon, detached holder, child lifeline, and
+//! the credential commands.
 
 use anyhow::{Context as _, Result, bail};
 use deck_runtime::{daemon, paths::Paths};
@@ -37,6 +38,11 @@ fn run() -> Result<()> {
                 }
                 return deck_runtime::vmm::run(&config);
             }
+            "credential" => {
+                let rest: Vec<String> = args.collect();
+                let data = data.map_or_else(deck_runtime::data_root, Ok)?;
+                return deck_runtime::credentials::cli::run(&data, &rest);
+            }
             "--child" => {
                 let mut argv: Vec<_> = args.collect();
                 if argv.first().is_some_and(|a| a == "--") {
@@ -44,7 +50,10 @@ fn run() -> Result<()> {
                 }
                 return deck_runtime::child::run(&argv);
             }
-            _ => bail!("unknown argument {arg}; usage: deckd [--data path] [--idle-ms n]"),
+            _ => bail!(
+                "unknown argument {arg}; usage: deckd [--data path] [--idle-ms n]\n       {}",
+                deck_runtime::credentials::cli::USAGE
+            ),
         }
     }
     let data = data.map_or_else(deck_runtime::data_root, Ok)?;

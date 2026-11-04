@@ -3,10 +3,13 @@
 //! The design choice: the guest request is rebuilt, not forwarded. Only the
 //! listed paths are served, only allowlisted headers survive, the model field
 //! is checked on the host, and the real provider key is added after every
-//! guest header was discarded. Responses stream back with chunked encoding, so
-//! an SSE turn is not buffered until it ends.
+//! guest header was discarded. The key is fetched from `deckd` for this one
+//! request, after policy and the budget admitted it, and is dropped with the
+//! response. Responses stream back with chunked encoding, so an SSE turn is
+//! not buffered until it ends; revoking the key mid-stream shuts it.
 
 use crate::control::{Answer, Ask, Control};
+use crate::credential::{Broker, Credential};
 use crate::http::{self, ReadError, Request};
 use crate::policy::{self, Budget, Ledger, Models, Usage};
 use crate::status::Status;
@@ -14,8 +17,17 @@ use crate::usage::Meter;
 use std::io::{self, BufReader, Read as _};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Where one request stands, so a revocation knows whether to answer the
+/// guest itself (no response yet) or only shut the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Waiting,
+    Streaming,
+    Revoked,
+}
 
 /// The paths Construct uses. Anything else is a policy denial, not a proxy.
 fn allowed(method: &str, target: &str) -> bool {
@@ -28,7 +40,10 @@ fn allowed(method: &str, target: &str) -> bool {
 pub struct Settings {
     pub upstream: String,
     pub models: Models,
-    pub key: Option<String>,
+    /// Fetches the provider key per request and closes requests whose key
+    /// was revoked.
+    pub credentials: Arc<Broker>,
+    /// The credential name the key is stored under.
     pub secret: String,
     pub control: Option<Control>,
     pub status: Arc<Status>,
@@ -40,7 +55,7 @@ pub struct Settings {
 pub struct Model {
     upstream: String,
     models: Models,
-    key: Option<String>,
+    credentials: Arc<Broker>,
     secret: String,
     control: Option<Control>,
     status: Arc<Status>,
@@ -51,9 +66,8 @@ pub struct Model {
 
 impl Model {
     /// `upstream` is the provider base URL including its version segment
-    /// (`https://openrouter.ai/api/v1`); `key` is the host-side credential for
-    /// that provider. A missing key denies instead of forwarding the guest's
-    /// placeholder.
+    /// (`https://openrouter.ai/api/v1`). A key `deckd` cannot supply denies
+    /// instead of forwarding the guest's placeholder.
     pub fn new(settings: Settings) -> Self {
         let config = ureq::Agent::config_builder()
             // The gateway decides what a non-2xx means; it is not an ureq error.
@@ -68,7 +82,7 @@ impl Model {
         Self {
             upstream: settings.upstream.trim_end_matches('/').to_string(),
             models: settings.models,
-            key: settings.key,
+            credentials: settings.credentials,
             secret: settings.secret,
             control: settings.control,
             status: settings.status,
@@ -101,17 +115,6 @@ impl Model {
                 &format!("{} is not served by this task's model gateway", request.target),
             );
         }
-
-        // A missing host key is a gateway misconfiguration, not a request
-        // that reaches the provider; fail before it consumes budget.
-        let Some(key) = &self.key else {
-            return http::write_error(
-                &mut stream,
-                503,
-                "deck_credential_missing",
-                &format!("the host has no value for {}; the guest placeholder is never forwarded", self.secret),
-            );
-        };
 
         if request.method == "POST" {
             let Some(model) = requested_model(&request) else {
@@ -169,10 +172,28 @@ impl Model {
                 );
             }
             self.refresh_budget();
-            if let Err(spent) = self.ledger.admit() {
+            if let Err(spent) = self.ledger.check() {
                 return http::write_error(&mut stream, 429, "deck_budget_exhausted", &spent.message());
             }
         }
+
+        // Policy and the budget admitted the request: only now is the key
+        // fetched, so a denied or pending request fetches nothing.
+        let credential = match self.credentials.fetch(&self.secret) {
+            Ok(credential) => credential,
+            Err(refusal) => return refusal.write(&mut stream),
+        };
+        let phase = Arc::new(Mutex::new(Phase::Waiting));
+        let _registration = match self.credentials.register(&credential, revoke(&credential, &stream, &phase)?) {
+            Ok(registration) => registration,
+            Err(refusal) => return refusal.write(&mut stream),
+        };
+        if request.method == "POST"
+            && let Err(spent) = self.ledger.admit()
+        {
+            return http::write_error(&mut stream, 429, "deck_budget_exhausted", &spent.message());
+        }
+        let key = credential.value();
 
         let suffix = request.target.strip_prefix("/v1").unwrap_or_default();
         let url = format!("{}{}", self.upstream, suffix);
@@ -212,13 +233,28 @@ impl Model {
         let content_type =
             parts.headers.get("content-type").and_then(|value| value.to_str().ok()).unwrap_or("application/json");
         let mut meter = Meter::new(content_type);
-        if let Err(error) = http::write_stream_head(&mut stream, status, content_type) {
-            self.report_usage();
-            return Err(error);
+        {
+            // The head is written under the phase lock, so a revocation
+            // either answers the guest before it or shuts the stream after.
+            let mut current = phase.lock().unwrap_or_else(|e| e.into_inner());
+            if *current == Phase::Revoked {
+                self.report_usage();
+                return Ok(());
+            }
+            if let Err(error) = http::write_stream_head(&mut stream, status, content_type) {
+                self.report_usage();
+                return Err(error);
+            }
+            *current = Phase::Streaming;
         }
         let mut reader = body.into_reader();
         let mut buffer = [0u8; 16 * 1024];
         let outcome = loop {
+            if *phase.lock().unwrap_or_else(|e| e.into_inner()) == Phase::Revoked {
+                // Returning drops the provider's reader, which closes the
+                // upstream connection; the guest's was shut by the revocation.
+                break Err(io::Error::other(format!("{} was revoked mid-response", self.secret)));
+            }
             let read = match reader.read(&mut buffer) {
                 Ok(read) => read,
                 Err(error) => break Err(error),
@@ -263,6 +299,27 @@ impl Model {
             }
         });
     }
+}
+
+/// What a revocation does to one request: before the response starts, answer
+/// the guest `deck_credential_revoked` and close; while it streams, shut the
+/// guest connection so the copy loop stops at its next chunk.
+fn revoke(
+    credential: &Credential,
+    stream: &UnixStream,
+    phase: &Arc<Mutex<Phase>>,
+) -> io::Result<impl Fn() + Send + Sync + 'static> {
+    let guest = stream.try_clone()?;
+    let phase = phase.clone();
+    let refusal = credential.revoked();
+    Ok(move || {
+        let mut current = phase.lock().unwrap_or_else(|e| e.into_inner());
+        if *current == Phase::Waiting {
+            let _ = refusal.write(&mut &guest);
+        }
+        *current = Phase::Revoked;
+        let _ = guest.shutdown(std::net::Shutdown::Both);
+    })
 }
 
 /// The model field from a parsed JSON body. A body that is not a JSON object

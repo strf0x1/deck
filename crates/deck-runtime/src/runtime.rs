@@ -153,6 +153,13 @@ impl Runtime {
         inner.store.append(&mut task, Event::Usage { requests, tokens })
     }
 
+    /// Record the first use of a credential value by a run's gateway.
+    pub fn credential_used(&self, id: &str, name: &str, fingerprint: &str) -> Result<()> {
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        inner.store.append(&mut task, Event::CredentialUsed { name: name.into(), fingerprint: fingerprint.into() })
+    }
+
     /// Write a task's live model budget; its gateway reads the file before
     /// the next admission, so no restart is involved. `None` is unlimited.
     pub fn set_budget(&self, id: &str, requests: Option<u64>, tokens: Option<u64>) -> Result<()> {

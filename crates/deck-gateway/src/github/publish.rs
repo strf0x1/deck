@@ -14,8 +14,11 @@
 
 use crate::github::policy::{Policy, branch_name};
 use crate::github::problem::{Kind, Problem};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// The commands the gateway runs. A git that cannot report in this window is
@@ -75,17 +78,25 @@ pub struct Publisher {
     remote_url: String,
     scratch: PathBuf,
     git: PathBuf,
-    /// The host token, held in memory for this process only.
+    /// The host token, held in memory for this operation only.
     token: Option<String>,
+    /// Set by a revocation of the token: the running `git` and its children
+    /// are killed as a process group.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Publisher {
     pub fn new(policy: Policy, task: String, remote_url: String, scratch: PathBuf) -> Self {
-        Self { policy, task, remote_url, scratch, git: git(), token: None }
+        Self { policy, task, remote_url, scratch, git: git(), token: None, cancel: None }
     }
 
     pub fn with_token(mut self, token: Option<String>) -> Self {
         self.token = token.filter(|value| !value.is_empty());
+        self
+    }
+
+    pub fn with_cancel(mut self, cancel: Option<Arc<AtomicBool>>) -> Self {
+        self.cancel = cancel;
         self
     }
 
@@ -332,14 +343,29 @@ impl Publisher {
             command.arg(arg);
         }
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Its own process group, so `git push`'s transport helper dies with it.
+        command.process_group(0);
         let mut child = command.spawn().map_err(|error| format!("running {:?}: {error}", self.git))?;
         let started = std::time::Instant::now();
+        let kill = |child: &mut std::process::Child| {
+            if let Ok(pid) = i32::try_from(child.id()) {
+                // SAFETY: signals the group this child leads; no pointers.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        };
         loop {
             match child.try_wait().map_err(|error| error.to_string())? {
                 Some(_) => return child.wait_with_output().map_err(|error| error.to_string()),
+                None if self.cancel.as_ref().is_some_and(|cancel| cancel.load(Ordering::Acquire)) => {
+                    kill(&mut child);
+                    return Err(format!("{:?} was stopped: its credential was revoked", args.first().unwrap_or(&"")));
+                }
                 None if started.elapsed() > LIMIT => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill(&mut child);
                     return Err(format!(
                         "{:?} did not finish within {} s",
                         args.first().unwrap_or(&""),

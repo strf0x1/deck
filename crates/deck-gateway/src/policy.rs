@@ -130,6 +130,25 @@ impl Ledger {
         *self.used.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Whether a request would be admitted now, without counting it. The
+    /// model gateway asks before it fetches a credential, so a request the
+    /// budget refuses fetches nothing.
+    pub fn check(&self) -> Result<(), Exhausted> {
+        let budget = self.budget();
+        let used = self.usage();
+        if let Some(limit) = budget.requests
+            && used.requests >= limit
+        {
+            return Err(Exhausted::Requests { used: used.requests, limit });
+        }
+        if let Some(limit) = budget.tokens
+            && used.tokens >= limit
+        {
+            return Err(Exhausted::Tokens { used: used.tokens, limit });
+        }
+        Ok(())
+    }
+
     /// Count one admitted request. A spent request or token budget denies it
     /// before the provider is contacted and leaves the counters unchanged.
     pub fn admit(&self) -> Result<Usage, Exhausted> {

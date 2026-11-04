@@ -18,10 +18,10 @@ settle.
 | Path | What |
 |---|---|
 | `crates/deck-acp/` | The ACP client, no UI. `rpc.rs` line framing (mirrors construct's), `conn.rs` the pure protocol state machine, `inbound.rs` typed events and payload decoding, `shutdown.rs` the bounded close-only exchange, `client.rs` the connection over any reader/writer pair and its reader thread. The UI only sees `Inbound`. |
-| `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. `approvals.rs` the host approval queue: pending items, once/task/project grants, attachment leases and the bounded hold (ADR 0004 §5). |
+| `crates/deck-runtime/` | Tasks, no UI (ADR 0001). `lifecycle.rs` the pure state machine folded from lifecycle events, `record.rs` task records under the data root (`events.jsonl`, `task.json`, the liveness `lock`), `backend.rs` the backend contract, `local.rs` the backend that runs the agent as a child, `runtime.rs` create/start/attach/stop/resume/destroy and the notice stream. `approvals.rs` the host approval queue: pending items, once/task/project grants, attachment leases and the bounded hold (ADR 0004 §5). `credentials/` the one credential store (a 0600 `DECK_CREDENTIALS` file, or Keychain / Secret Service), the bounded read, revoked fingerprints and the `deckd credential` commands; `broker.rs` who may fetch what and the revocation push (ADR 0004 §4). |
 |`crates/deck-runtime/src/daemon.rs`, `daemon_client.rs`, `relay.rs`|The daemon authority, its control client, and the JSON-agnostic line relay. `holder.rs` owns each task independently; `detached.rs` launches and adopts it. `child.rs` ties agent process groups to holder lifetime. See `docs/deckd.md`.|
 |`crates/deck-runtime/src/vm.rs`, `vmm.rs`, `krun.rs`|The libkrun backend: `vm.rs` is the `Backend`/`Instance`, `vmm.rs` is the detached holder (`deckd --vmm`) that owns the microVM, and `krun.rs` loads the pinned 1.x C API. The guest opens the ACP stream out to the VMM's forward listener at boot, so that connection is both readiness and the stream; there is no polling or fixed delay. The VMM starts the task's egress gateway, maps its sockets, and disables libkrun's implicit vsock, so the guest has no IP route (ADR 0004). Decisions and measurements: `docs/adr/0003-vm-backend.md`, `docs/adr/0004-host-egress-and-credentials.md`, `docs/vm-spike.md`.|
-|`crates/deck-gateway/`|The host-side egress gateway: a pure policy core, a bounded HTTP/1.1 carrier, the OpenAI-compatible model gateway, the daemon approval-queue client, and the extension port's `boundary` kind (`/events`, long-polled `/approvals/<id>`, agent withdrawal). `github/` is the publication gateway (ADR 0007): a closed operation set on its own vsock port (1029), a git-bundle publish with host-side ref rules, and `github_profile` project rules. It listens only on Unix sockets the VMM maps from guest vsock ports, strips guest credential headers, and injects the host key; a model the task was not configured with asks `deckd` and reports the approval id in a bounded 403. Its binary is named by `DECK_GATEWAY_EXECUTABLE`, defaulting beside `deckd`.|
+|`crates/deck-gateway/`|The host-side egress gateway: a pure policy core, a bounded HTTP/1.1 carrier, the OpenAI-compatible model gateway, the daemon approval-queue client, and the extension port's `boundary` kind (`/events`, long-polled `/approvals/<id>`, agent withdrawal). `github/` is the publication gateway (ADR 0007): a closed operation set on its own vsock port (1029), a git-bundle publish with host-side ref rules, and `github_profile` project rules. It listens only on Unix sockets the VMM maps from guest vsock ports, strips guest credential headers, and injects a host value it fetches from `deckd` per operation (`credential.rs`, which also closes operations whose value is revoked); a model the task was not configured with asks `deckd` and reports the approval id in a bounded 403. Its binary is named by `DECK_GATEWAY_EXECUTABLE`, defaulting beside `deckd`.|
 |`crates/deck-egress/`|The guest relay: loopback TCP to a host vsock port, with `--kind` naming the gateway before the stream for the extension port. Built for the guest image by `scripts/vm-image.sh`; it is a byte carrier, so bypassing it does not widen the boundary. The host build exists so the workspace checks cover it.|
 |`crates/deck-runtime/tests/vm.rs`|The same lifecycle contract against a real guest; skipped unless `DECK_VM_*` names an image, journal, libkrun and a `deckd` that can run `--vmm` (signed on macOS). The ignored 20-launch test prints the launch → ACP-ready stages.|
 |`scripts/vm-image.sh`, `vm-sign.sh`|Build the hand-made Debian guest image for the host architecture with Docker (its `deck-guest` entry connects ACP out to the host and marks boot stages from `/proc/uptime`), and codesign a `deckd` with the Hypervisor entitlement (macOS).|
@@ -70,9 +70,24 @@ construct without spending tokens: start its scripted model (see
 construct's AGENTS.md, `scripts/mock.sh`). The local backend takes the
 endpoint from its own environment:
 `deck -- env CONSTRUCT_HOME=… CONSTRUCT_BASE_URL=http://127.0.0.1:$port/v1 OPENAI_API_KEY=x construct acp`.
-With `DECK_VM_*` set, the same `CONSTRUCT_BASE_URL`, `CONSTRUCT_MODEL` and
-`OPENAI_API_KEY` configure the task's host gateway instead; the guest gets the
-relay URL and a non-empty placeholder, never the key.
+With `DECK_VM_*` set, `CONSTRUCT_BASE_URL` and `CONSTRUCT_MODEL` configure the
+task's host gateway instead, and the key is a stored credential, never an
+environment variable: `deckd` reads it per request from one store (ADR 0004
+§4) and strips the name from the VMM's and gateway's environment. The guest
+gets the relay URL and a non-empty placeholder, never the key.
+
+```sh
+export DECK_CREDENTIALS=$PWD/target/credentials.json   # the file store; omit for Keychain / Secret Service
+echo x | target/debug/deckd credential set OPENAI_API_KEY   # value on stdin, file written at 0600
+target/debug/deckd credential list                          # names and fingerprints, never values
+target/debug/deckd credential revoke OPENAI_API_KEY         # closes running requests that used it
+```
+
+Without `DECK_CREDENTIALS`, `deckd` uses the macOS Keychain or the Secret
+Service (`secret-tool`) under `com.sprawlcommons.deck`. A rebuilt, ad-hoc
+signed `deckd` meets a Keychain access dialog once per item, so development
+and CI use the file store. `deckd` refuses to start on a credential file with
+group or other permission bits.
 
 ### The libkrun backend (macOS/arm64, Linux/x86_64)
 

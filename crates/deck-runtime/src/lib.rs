@@ -13,7 +13,9 @@
 pub mod approvals;
 pub mod backend;
 pub mod boundary;
+pub mod broker;
 pub mod child;
+pub mod credentials;
 pub mod daemon;
 pub mod daemon_client;
 mod detached;

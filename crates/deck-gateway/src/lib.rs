@@ -6,7 +6,9 @@
 //! host state. Nothing here opens an IP listener, and nothing here writes a
 //! secret to a file, a log or the guest.
 //!
-//! [`policy`] is pure and unit-tested without sockets. [`http`] is the
+//! [`credential`] fetches a value from `deckd` per operation and closes the
+//! operations whose value is revoked. [`policy`] is pure and unit-tested
+//! without sockets. [`http`] is the
 //! bounded HTTP/1.1 carrier. [`usage`] reads provider token counts.
 //! [`model`] is the OpenAI-compatible reverse proxy. [`status`] is the
 //! boundary status kind on the extension port. [`web`] is the CONNECT and
@@ -15,6 +17,7 @@
 //! the sockets and dispatches.
 
 pub mod control;
+pub mod credential;
 pub mod github;
 pub mod http;
 pub mod model;

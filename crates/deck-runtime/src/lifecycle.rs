@@ -84,6 +84,13 @@ pub enum Event {
         requests: u64,
         tokens: u64,
     },
+    /// The first time a run's gateway used a credential value: the name and
+    /// its fingerprint, never the value (ADR 0004 §4.4). Accounting, not a
+    /// lifecycle transition.
+    CredentialUsed {
+        name: String,
+        fingerprint: String,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -157,6 +164,12 @@ impl Task {
             }
             return Ok(());
         }
+        if let Event::CredentialUsed { .. } = ev {
+            if self.state != State::Running {
+                bail!("task {}: `credential_used` cannot follow {}", self.id, describe(&self.state));
+            }
+            return Ok(());
+        }
         let next = match (&self.state, ev) {
             (
                 State::Created | State::Stopped { .. } | State::Failed { failure: Failure::StartFailed(_) },
@@ -209,6 +222,7 @@ fn name(ev: &Event) -> &'static str {
         Event::Adopted => "adopted",
         Event::Session { .. } => "session",
         Event::Usage { .. } => "usage",
+        Event::CredentialUsed { .. } => "credential_used",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -252,6 +266,14 @@ mod tests {
             t.apply(e)?;
         }
         Ok(t)
+    }
+
+    #[test]
+    fn a_credential_use_is_recorded_only_while_running() {
+        let used = Event::CredentialUsed { name: "OPENAI_API_KEY".into(), fingerprint: "sha256:aaaaaaaaaaaa".into() };
+        let t = fold(&[created(), started(), used.clone()]).unwrap();
+        assert_eq!(t.state, State::Running, "accounting changes no state");
+        assert!(fold(&[created(), used]).is_err());
     }
 
     #[test]

@@ -354,10 +354,10 @@ could do it.
   gateway under the same task policy; it cannot read the host credential.
 
 The rest of this section is `deckd`'s credential broker (amended
-2026-11-04). Until it lands, the model key and `DECK_GITHUB_TOKEN` come from
-the daemon's environment, which the VMM and gateway inherit, and the gateway
-reads them once at start (ADR 0007 §4). The broker replaces that source in
-the same slice; there is no period where both are read.
+2026-11-04). Before it, the model key and `DECK_GITHUB_TOKEN` came from the
+daemon's environment, which the VMM and gateway inherited, and the gateway
+read them once at start (ADR 0007 §4). The broker replaced that source in one
+slice (§11 item 7); there was no period where both were read.
 
 #### 4.1 Names and fingerprints
 
@@ -963,6 +963,32 @@ The implementation is not done until these have tests where practical.
    move from `OPENAI_API_KEY` in the environment to a `DECK_CREDENTIALS`
    file in the same change. CI covers the file store. The Keychain and
    Secret Service paths are verified by hand, like the VM tests.
+
+   Landed 2026-11-04. `deck-runtime`'s `credentials` module is the store
+   (`file`, `os` over the Security framework on macOS and `secret-tool` on
+   Linux, the 5 s single-flight read, `revoked`) and the `deckd credential`
+   commands; `broker` checks the task's `vmm.json` set before any read,
+   refuses revoked fingerprints after it, records `credential_used` once per
+   run, and pushes revocations to each gateway's watch. The gateway's
+   `credential` module fetches per operation after policy (and after the
+   budget check), registers each running operation, and on revocation
+   answers a model request that has not started with
+   `deck_credential_revoked`, shuts one that is streaming, and kills a
+   GitHub operation's `git` process group. Verified by store, broker and
+   gateway unit tests; the real daemon (served only to a running task that
+   names the credential, refused otherwise without a read, `credential_used`
+   once, a watch snapshot and push, revoked then restored by a new value, a
+   group-readable file refusing start, the CLI taking values on stdin and
+   listing only fingerprints); and the real gateway behind a fake daemon
+   (rotation per request with a decoy value in its own environment, nothing
+   fetched for a denied or budget-refused request, unavailable with `deckd`
+   down and recovered without a restart, a stream shut by revocation and the
+   next request refused, a revoked GitHub token refused before GitHub and
+   restored by a new value). The VM prompt test runs under its own `deckd`
+   with a `DECK_CREDENTIALS` file and asserts that a key exported to that
+   daemon is absent from the VMM's and gateway's environment. Not covered in
+   CI: the Keychain and Secret Service stores and the VM tests, which are run
+   by hand.
 
 ## Deferred
 

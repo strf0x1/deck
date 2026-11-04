@@ -18,6 +18,7 @@
 //! VMM treats the gateway's exit as the task's failure.
 
 use crate::control::Control;
+use crate::credential::Broker;
 use crate::github::GitHub;
 use crate::github::status::Events as GitHubEvents;
 use crate::http;
@@ -57,9 +58,8 @@ pub struct Config {
     /// Provider base URL including `/v1`, e.g. `https://openrouter.ai/api/v1`.
     pub upstream: String,
     pub models: Vec<String>,
-    /// The host-side key for `upstream`. Never written anywhere.
-    pub key: Option<String>,
-    /// The name the key came from, for a denial message.
+    /// The credential name the provider key is fetched under, per request,
+    /// from `deckd` (ADR 0004 §4.4).
     pub secret: String,
     /// The daemon queue that decides a model the task was not configured with.
     pub control: Option<Control>,
@@ -94,8 +94,8 @@ pub struct GitHubSettings {
     /// The task this gateway serves. Every branch rule is derived from it, so
     /// it is required even when no approval queue is configured.
     pub task: String,
-    /// The environment variable the token comes from, read by the gateway at
-    /// start from the daemon's environment and never written anywhere.
+    /// The credential name the token is fetched under, once per operation,
+    /// from `deckd`. Never written anywhere.
     pub secret: String,
     /// The gateway's own scratch directory for the bundle it fetches.
     pub scratch: PathBuf,
@@ -163,11 +163,15 @@ pub fn serve(config: Config) -> Result<()> {
     let web = web_settings(config.web.as_ref(), config.control.clone())?;
     let events = Arc::new(WebEvents::new());
     let web = web.map(|connector| Arc::new(connector.with_events(events.clone())));
-    let github = github_settings(config.github.as_ref(), config.control.clone());
+    // One broker for the process: the model and GitHub operations register
+    // with it, and its watch closes the ones whose value is revoked.
+    let credentials = Broker::new(config.control.clone());
+    credentials.watch().context("starting the credential watch")?;
+    let github = github_settings(config.github.as_ref(), config.control.clone(), credentials.clone());
     let model = Arc::new(Model::new(Settings {
         upstream: config.upstream,
         models: Models::new(config.models),
-        key: config.key,
+        credentials,
         secret: config.secret,
         control: config.control,
         status: status.clone(),
@@ -255,24 +259,30 @@ fn web_settings(settings: Option<&WebSettings>, control: Option<Control>) -> Res
 }
 
 /// The GitHub gateway's host state, or `None` when the task's project names no
-/// repository. A read of the token happens here, once: the value is never
-/// stored in this struct, and a missing one is not a startup error — every
-/// operation refuses with `deck_credential_missing` instead.
-fn github_settings(settings: Option<&GitHubSettings>, control: Option<Control>) -> Option<Arc<GitHub>> {
+/// repository. No token is read here: each operation fetches one from `deckd`
+/// after its policy check, and one `deckd` cannot supply refuses that
+/// operation instead of the gateway's start.
+fn github_settings(
+    settings: Option<&GitHubSettings>,
+    control: Option<Control>,
+    credentials: Arc<Broker>,
+) -> Option<Arc<GitHub>> {
     let settings = settings?;
     let control =
         control.map(|control| crate::github::Control::new(control.socket().to_owned(), control.task().to_owned()));
-    let token = std::env::var(&settings.secret).ok().filter(|value| !value.is_empty());
     let client = crate::github::Client::new(crate::github::client::Settings {
         api: settings.api.clone(),
         policy: settings.policy.clone(),
         task: settings.task.clone(),
         repository_url: settings.repository_url.clone(),
-        token,
+        token: None,
         scratch: settings.scratch.clone(),
         git: settings.git.clone(),
     });
-    Some(Arc::new(GitHub::new(client, control, Arc::new(GitHubEvents::new()))))
+    Some(Arc::new(
+        GitHub::new(client, control, Arc::new(GitHubEvents::new()))
+            .with_credentials(credentials, settings.secret.clone()),
+    ))
 }
 
 fn bind(path: &Path) -> Result<UnixListener> {

@@ -3,6 +3,8 @@
 //! interpret JSON. The kernel data lock is held for the daemon's whole life.
 
 use crate::approvals::{Approval, Boundary};
+use crate::broker::{Broker, Refusal};
+use crate::credentials::{Store, revoked::Revocation};
 use crate::detached::Detached;
 use crate::paths::Paths;
 use crate::wire::{self, Reply, Request, RunResult};
@@ -29,13 +31,18 @@ pub struct Options {
 }
 
 struct Service {
+    data: PathBuf,
     runtime: Runtime,
     boundary: Arc<Boundary>,
+    broker: Arc<Broker>,
 }
 
 /// Run until there are no running tasks and no control clients for `idle`.
 pub fn serve(options: Options) -> Result<()> {
     std::fs::create_dir_all(&options.data)?;
+    // A credential file that other users can read is refused before anything
+    // else starts (ADR 0004 §4.2), so the daemon never serves from it.
+    let store = Store::from_env()?;
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(options.data.join("deckd.lock"))?;
     lock.try_lock().context("deckd is already running for this data root")?;
     let _lock = crate::record::RecordLock::held(lock);
@@ -55,7 +62,14 @@ pub fn serve(options: Options) -> Result<()> {
         Runtime::open(&options.data, backend)?
     };
     let boundary = Boundary::open(&options.data)?;
-    let service = Arc::new(Mutex::new(Service { runtime, boundary: boundary.clone() }));
+    let broker = Arc::new(Broker::open(&options.data, store)?);
+    eprintln!("deckd: credentials come from the {}", broker.describe());
+    let service = Arc::new(Mutex::new(Service {
+        data: options.data.clone(),
+        runtime,
+        boundary: boundary.clone(),
+        broker: broker.clone(),
+    }));
     let clients = Arc::new(AtomicUsize::new(0));
     let mut idle_since = Instant::now();
     loop {
@@ -65,9 +79,10 @@ pub fn serve(options: Options) -> Result<()> {
                 let client_count = clients.clone();
                 let service = service.clone();
                 let boundary = boundary.clone();
+                let broker = broker.clone();
                 std::thread::spawn(move || {
                     let _connected = Connected(client_count);
-                    if let Err(e) = connection(socket, service, boundary) {
+                    if let Err(e) = connection(socket, service, boundary, broker) {
                         eprintln!("deckd: client: {e:#}");
                     }
                 });
@@ -89,7 +104,12 @@ pub fn serve(options: Options) -> Result<()> {
     Ok(())
 }
 
-fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>, boundary: Arc<Boundary>) -> Result<()> {
+fn connection(
+    mut socket: UnixStream,
+    service: Arc<Mutex<Service>>,
+    boundary: Arc<Boundary>,
+    broker: Arc<Broker>,
+) -> Result<()> {
     socket.set_nonblocking(false)?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut input = BufReader::new(socket.try_clone()?);
@@ -110,6 +130,37 @@ fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>, boundary: Ar
                 let (lease, rx) = boundary.watch(&task);
                 wire::write(&mut socket, &Reply { ok: Some(json!(null)), error: None })?;
                 return watch(socket, lease, rx, task);
+            }
+            // A credential read may wait on the store (a Keychain dialog), so
+            // it holds the service lock only to read the task, never across
+            // the read.
+            Ok(request @ Request::Credential { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::Credential { task, name } => credential(&service, &broker, &task, &name),
+                    _ => unreachable!("matched a credential request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
+            Ok(request @ Request::CredentialWatch { .. }) => {
+                if let Err(error) = request.validate() {
+                    wire::write(&mut socket, &failed(error))?;
+                    continue;
+                }
+                let Request::CredentialWatch { task } = request else { unreachable!("matched a watch request") };
+                let names = {
+                    let service = service.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::vm::credential_set(&service.data, &task).unwrap_or_default()
+                };
+                let (snapshot, rx) = broker.watch(names);
+                wire::write(&mut socket, &Reply { ok: Some(json!({ "revoked": snapshot })), error: None })?;
+                return credential_watch(socket, rx);
+            }
+            Ok(request @ Request::RevokeCredential { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::RevokeCredential { name } => Ok(serde_json::to_value(broker.revoke(&name)?)?),
+                    _ => unreachable!("matched a revoke request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
             }
             Ok(request)
                 if matches!(
@@ -207,6 +258,69 @@ fn approval(service: &Mutex<Service>, boundary: &Arc<Boundary>, request: Request
             Ok(json!(null))
         }
         _ => unreachable!("approval is called only for approval requests"),
+    }
+}
+
+/// One credential value for one gateway operation. The task must be running
+/// and the name in its `vmm.json` set; the store is read without the service
+/// lock. The reply carries the value and is never logged; the log line names
+/// the task, the credential and the fingerprint.
+fn credential(service: &Mutex<Service>, broker: &Broker, task: &str, name: &str) -> Result<Value> {
+    let allowed = {
+        let service = service.lock().unwrap_or_else(|e| e.into_inner());
+        match service.runtime.task(task) {
+            Ok(record) if record.state == State::Running => {
+                crate::vm::credential_set(&service.data, task).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    };
+    match broker.fetch(task, name, &allowed) {
+        Ok(fetched) => {
+            eprintln!("deckd: credential {name} {} for task {task}", fetched.fingerprint);
+            if fetched.first_use {
+                let service = service.lock().unwrap_or_else(|e| e.into_inner());
+                if let Err(error) = service.runtime.credential_used(task, name, &fetched.fingerprint) {
+                    eprintln!("deckd: recording credential use for task {task}: {error:#}");
+                }
+            }
+            Ok(json!({ "value": fetched.value, "fingerprint": fetched.fingerprint }))
+        }
+        Err(refusal) => {
+            if let Refusal::Revoked(fingerprint) = &refusal {
+                eprintln!("deckd: credential {name} {fingerprint} for task {task}: revoked");
+            } else {
+                eprintln!("deckd: credential {name} for task {task}: {}", refusal.code());
+            }
+            bail!(refusal.reply(name))
+        }
+    }
+}
+
+/// Push each revocation to a gateway until it goes away. The gateway reopens
+/// the watch after a daemon restart and gets the snapshot again.
+fn credential_watch(
+    mut socket: UnixStream,
+    mut rx: futures::channel::mpsc::UnboundedReceiver<Revocation>,
+) -> Result<()> {
+    socket.set_nonblocking(true)?;
+    loop {
+        let mut byte = [0];
+        match socket.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(_) => bail!("a credential watch takes no further requests"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e).context("reading the credential watch"),
+        }
+        while let Ok(revocation) = rx.try_recv() {
+            if let Err(error) = wire::write(&mut socket, &revocation) {
+                return match error.downcast_ref::<std::io::Error>().map(std::io::Error::kind) {
+                    Some(std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset) => Ok(()),
+                    _ => Err(error),
+                };
+            }
+        }
+        std::thread::sleep(POLL);
     }
 }
 
@@ -311,7 +425,10 @@ impl Service {
             | Request::WithdrawApproval { .. }
             | Request::DecideApproval { .. }
             | Request::Grants { .. }
-            | Request::RevokeGrant { .. } => unreachable!("handled before service dispatch"),
+            | Request::RevokeGrant { .. }
+            | Request::Credential { .. }
+            | Request::CredentialWatch { .. }
+            | Request::RevokeCredential { .. } => unreachable!("handled before service dispatch"),
         }
     }
 
@@ -334,6 +451,7 @@ impl Service {
         // A run starts with no items or grants from an earlier one; project
         // rules are the user's and live outside the task.
         self.boundary.clear_task(id)?;
+        self.broker.forget_task(id);
         if resume {
             self.runtime.resume(id)?;
         } else {

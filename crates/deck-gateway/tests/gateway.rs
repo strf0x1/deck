@@ -1,7 +1,9 @@
 //! The real gateway binary against a fake provider on host loopback. These
 //! exercise the boundary the guest sees: a Unix socket, a guest request with
 //! its own credential headers, and a host-side key added only after they were
-//! discarded.
+//! discarded. Every gateway runs behind a fake `deckd` ([`Deckd`]) that hands
+//! out credential values the way the broker does; the gateway's own
+//! environment carries a decoy value that must never be used.
 
 #![expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
 
@@ -15,6 +17,144 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// The decoy every gateway's environment carries under each credential name.
+/// A request that ever carries it read the environment, which ADR 0004 §4.2
+/// forbids.
+const DECOY: &str = "env-value-must-not-be-used";
+
+/// A fake `deckd` in front of a test's own queue fixture: it answers
+/// `credential` and `credential_watch` as the broker does, and forwards every
+/// other line to `upstream`, so each fixture stays one concern.
+#[derive(Clone)]
+struct Deckd {
+    socket: PathBuf,
+    keys: Arc<Mutex<Keys>>,
+}
+
+#[derive(Default)]
+struct Keys {
+    values: std::collections::HashMap<String, String>,
+    revoked: Vec<(String, String)>,
+    watchers: Vec<UnixStream>,
+    fetched: Vec<String>,
+    down: bool,
+}
+
+/// An opaque stand-in for the broker's fingerprint; the gateway never looks
+/// inside one.
+fn fingerprint(value: &str) -> String {
+    let hash = value.bytes().fold(0xcbf29ce484222325u64, |n, b| (n ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    format!("sha256:{:012x}", hash & 0xffff_ffff_ffff)
+}
+
+impl Deckd {
+    fn start(dir: &Path, values: &[(&str, &str)], upstream: Option<&Path>) -> Self {
+        let socket = dir.join("front.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).unwrap();
+        let keys = Arc::new(Mutex::new(Keys {
+            values: values.iter().map(|(name, value)| ((*name).to_string(), (*value).to_string())).collect(),
+            ..Keys::default()
+        }));
+        let upstream = upstream.map(Path::to_path_buf);
+        let shared = keys.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let keys = shared.clone();
+                let upstream = upstream.clone();
+                std::thread::spawn(move || serve_front(stream, &keys, upstream.as_deref()));
+            }
+        });
+        Self { socket, keys }
+    }
+
+    fn set(&self, name: &str, value: &str) {
+        self.keys.lock().unwrap().values.insert(name.into(), value.into());
+    }
+
+    /// Revoke `name`'s current value and push it to every watching gateway.
+    fn revoke(&self, name: &str) -> String {
+        let mut keys = self.keys.lock().unwrap();
+        let fingerprint = fingerprint(&keys.values[name]);
+        keys.revoked.push((name.into(), fingerprint.clone()));
+        let line = format!("{}\n", serde_json::json!({ "name": name, "fingerprint": fingerprint, "at": 0 }));
+        keys.watchers.retain_mut(|watcher| watcher.write_all(line.as_bytes()).is_ok());
+        fingerprint
+    }
+
+    fn fetched(&self) -> Vec<String> {
+        self.keys.lock().unwrap().fetched.clone()
+    }
+
+    /// Close every connection at once from now on, as a stopped daemon would.
+    fn stop(&self) {
+        let mut keys = self.keys.lock().unwrap();
+        keys.down = true;
+        for watcher in keys.watchers.drain(..) {
+            let _ = watcher.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    fn resume(&self) {
+        self.keys.lock().unwrap().down = false;
+    }
+
+    /// The `--control` arguments that put this fake in front of the gateway.
+    fn args(&self, command: &mut Command, task: &str) {
+        command.arg("--control").arg(&self.socket).arg("--task").arg(task);
+    }
+}
+
+fn serve_front(mut stream: UnixStream, keys: &Mutex<Keys>, upstream: Option<&Path>) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    if keys.lock().unwrap().down || reader.read_line(&mut line).unwrap_or(0) == 0 {
+        return;
+    }
+    let Ok(request) = serde_json::from_str::<Value>(&line) else { return };
+    let reply = match request["op"].as_str() {
+        Some("credential") => {
+            let name = request["name"].as_str().unwrap_or_default().to_string();
+            let mut keys = keys.lock().unwrap();
+            keys.fetched.push(name.clone());
+            match keys.values.get(&name) {
+                None => {
+                    serde_json::json!({ "error": format!("deck_credential_missing: the host has no value for {name}") })
+                }
+                Some(value) if keys.revoked.iter().any(|(_, revoked)| *revoked == fingerprint(value)) => {
+                    serde_json::json!({ "error": format!("deck_credential_revoked: {name} was revoked") })
+                }
+                Some(value) => serde_json::json!({ "ok": { "value": value, "fingerprint": fingerprint(value) } }),
+            }
+        }
+        Some("credential_watch") => {
+            let mut keys = keys.lock().unwrap();
+            let revoked: Vec<Value> = keys
+                .revoked
+                .iter()
+                .map(|(name, fingerprint)| serde_json::json!({ "name": name, "fingerprint": fingerprint, "at": 0 }))
+                .collect();
+            let _ = writeln!(stream, "{}", serde_json::json!({ "ok": { "revoked": revoked } }));
+            keys.watchers.push(stream);
+            return;
+        }
+        _ => match upstream.and_then(|path| UnixStream::connect(path).ok()) {
+            Some(mut queue) => {
+                let _ = queue.write_all(line.as_bytes());
+                let mut answer = String::new();
+                let _ = BufReader::new(queue).read_line(&mut answer);
+                if answer.is_empty() {
+                    return;
+                }
+                let _ = stream.write_all(answer.as_bytes());
+                return;
+            }
+            None => serde_json::json!({ "error": "the approval queue is unreachable: no queue in this test" }),
+        },
+    };
+    let _ = writeln!(stream, "{reply}");
+}
 
 impl Drop for Gateway {
     fn drop(&mut self) {
@@ -62,6 +202,8 @@ fn start_full(
     budget_file: Option<&Path>,
 ) -> Gateway {
     let dir = scratch(name);
+    let values: Vec<(&str, &str)> = key.map(|key| ("DECK_GATEWAY_TEST_KEY", key)).into_iter().collect();
+    let deckd = Deckd::start(&dir, &values, control.map(|(socket, _)| socket));
     let mut command = Command::new(env!("CARGO_BIN_EXE_deck-gateway"));
     command
         .arg("--model-socket")
@@ -92,14 +234,8 @@ fn start_full(
     if let Some(path) = budget_file {
         command.arg("--budget-file").arg(path);
     }
-    if let Some((socket, task)) = control {
-        command.arg("--control").arg(socket).arg("--task").arg(task);
-    }
-    if let Some(key) = key {
-        command.env("DECK_GATEWAY_TEST_KEY", key);
-    } else {
-        command.env_remove("DECK_GATEWAY_TEST_KEY");
-    }
+    deckd.args(&mut command, control.map_or("task-1", |(_, task)| task));
+    command.env("DECK_GATEWAY_TEST_KEY", DECOY);
     let mut child = command.spawn().unwrap();
     let stdin = child.stdin.take().unwrap();
     let mut line = String::new();
@@ -108,12 +244,13 @@ fn start_full(
     // The gateway runs with `--exit-on-stdin-eof`, so the handle is leaked on
     // purpose: dropping it here would stop the process mid-test.
     std::mem::forget(stdin);
-    Gateway { child, ready }
+    Gateway { child, ready, deckd }
 }
 
 struct Gateway {
     child: Child,
     ready: Ready,
+    deckd: Deckd,
 }
 
 /// One connection to the fake provider. `assert` runs against the request the
@@ -706,10 +843,9 @@ fn with_web(
         command.arg("--web-hosts").arg(hosts);
     }
     command.arg("--web-test-connect").arg("127.0.0.1");
-    if let Some((socket, task)) = control {
-        command.arg("--control").arg(socket).arg("--task").arg(task);
-    }
-    command.env("DECK_GATEWAY_TEST_KEY", "host-key");
+    let deckd = Deckd::start(&dir, &[("DECK_GATEWAY_TEST_KEY", "host-key")], control.map(|(socket, _)| socket));
+    deckd.args(&mut command, control.map_or("t", |(_, task)| task));
+    command.env("DECK_GATEWAY_TEST_KEY", DECOY);
     let mut child = command.spawn().unwrap();
     let stdin = child.stdin.take().unwrap();
     let mut line = String::new();
@@ -719,7 +855,7 @@ fn with_web(
     // The gateway runs with `--exit-on-stdin-eof`, so the handle is leaked on
     // purpose: dropping it here would stop the process mid-test.
     std::mem::forget(stdin);
-    Gateway { child, ready }
+    Gateway { child, ready, deckd }
 }
 
 /// A tunnel to a name the host file pins, with a grant file for the port.
@@ -987,17 +1123,13 @@ fn with_github(name: &str, api: &str, remote: &str, control: Option<(&Path, &str
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    if let Some((socket, task)) = control {
-        command.arg("--control").arg(socket).arg("--task").arg(task);
+    let mut values = vec![("DECK_GATEWAY_TEST_KEY", "host-key")];
+    if let Some(token) = token {
+        values.push(("DECK_GATEWAY_TEST_GITHUB", token));
     }
-    match token {
-        Some(token) => {
-            command.env("DECK_GATEWAY_TEST_GITHUB", token);
-        }
-        None => {
-            command.env_remove("DECK_GATEWAY_TEST_GITHUB");
-        }
-    }
+    let deckd = Deckd::start(&dir, &values, control.map(|(socket, _)| socket));
+    deckd.args(&mut command, control.map_or("t-1", |(_, task)| task));
+    command.env("DECK_GATEWAY_TEST_GITHUB", DECOY);
     let mut child = command.spawn().unwrap();
     let stdin = child.stdin.take().unwrap();
     let mut line = String::new();
@@ -1007,7 +1139,7 @@ fn with_github(name: &str, api: &str, remote: &str, control: Option<(&Path, &str
     // The gateway runs with `--exit-on-stdin-eof`, so the handle is leaked on
     // purpose: dropping it here would stop the process mid-test.
     std::mem::forget(stdin);
-    Gateway { child, ready }
+    Gateway { child, ready, deckd }
 }
 
 /// A bare repository on host loopback stands in for GitHub: `git push` and
@@ -1524,4 +1656,136 @@ fn githubs_own_refusals_reach_the_agent_by_kind() {
     let outage = review(503);
     assert!(outage.starts_with("HTTP/1.1 502"), "{outage}");
     assert!(outage.contains("deck_github_failed") && outage.contains(r#""retryable":true"#), "{outage}");
+}
+
+/// A provider that answers `count` connections in turn and records the
+/// `authorization` each one carried.
+fn provider_seq(count: usize) -> (u16, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    std::thread::spawn(move || {
+        for _ in 0..count {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let request = http::read(&mut BufReader::new(&stream)).unwrap().unwrap();
+            recorded.lock().unwrap().push(request.header("authorization").unwrap_or_default().to_string());
+            let body = r#"{"id":"chatcmpl-1","choices":[]}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (port, seen)
+}
+
+#[test]
+fn every_request_fetches_the_key_so_a_rotation_serves_the_next_one() {
+    let (port, seen) = provider_seq(2);
+    let gateway = start("rotate", &format!("http://127.0.0.1:{port}/v1"), &["allowed"], Some("key-one"));
+    assert!(send(&gateway.ready.model, &chat("allowed")).starts_with("HTTP/1.1 200 OK"));
+    gateway.deckd.set("DECK_GATEWAY_TEST_KEY", "key-two");
+    assert!(send(&gateway.ready.model, &chat("allowed")).starts_with("HTTP/1.1 200 OK"));
+    eventually(|| seen.lock().unwrap().len() == 2);
+    assert_eq!(*seen.lock().unwrap(), ["Bearer key-one", "Bearer key-two"], "never the environment's decoy");
+    assert_eq!(gateway.deckd.fetched(), ["DECK_GATEWAY_TEST_KEY", "DECK_GATEWAY_TEST_KEY"]);
+}
+
+#[test]
+fn a_denied_or_budget_refused_request_fetches_nothing() {
+    let limits = Limits { requests: Some(1), used_requests: 1, ..Limits::default() };
+    let gateway = start_full("no-fetch", "http://127.0.0.1:9/v1", &["allowed"], Some("key"), None, limits, None);
+    assert!(send(&gateway.ready.model, "POST /v1/embeddings HTTP/1.1\r\ncontent-length: 0\r\n\r\n").contains("403"));
+    assert!(send(&gateway.ready.model, &chat("other")).contains("deck_boundary_denied"));
+    assert!(send(&gateway.ready.model, &chat("allowed")).contains("deck_budget_exhausted"));
+    assert!(gateway.deckd.fetched().is_empty(), "{:?}", gateway.deckd.fetched());
+}
+
+#[test]
+fn with_deckd_down_a_request_is_unavailable_and_reaches_no_provider_until_it_returns() {
+    let (port, seen) = provider_seq(1);
+    let gateway = start("deckd-down", &format!("http://127.0.0.1:{port}/v1"), &["allowed"], Some("host-key"));
+    gateway.deckd.stop();
+    let refused = send(&gateway.ready.model, &chat("allowed"));
+    assert!(refused.starts_with("HTTP/1.1 503"), "{refused}");
+    assert!(refused.contains("deck_credential_unavailable") && refused.contains(r#""retryable":true"#), "{refused}");
+    assert!(seen.lock().unwrap().is_empty(), "nothing reached the provider");
+    gateway.deckd.resume();
+    let served = send(&gateway.ready.model, &chat("allowed"));
+    assert!(served.starts_with("HTTP/1.1 200 OK"), "no restart is needed: {served}");
+    eventually(|| seen.lock().unwrap().len() == 1);
+}
+
+#[test]
+fn revoking_mid_stream_shuts_the_response_and_refuses_the_next_request() {
+    // A provider that sends its head and one chunk, then stalls until the
+    // test is over, as a long streamed turn does.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = http::read(&mut BufReader::new(&stream)).unwrap();
+        let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n";
+        write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n")
+            .unwrap();
+        write!(stream, "{:x}\r\n{chunk}\r\n", chunk.len()).unwrap();
+        stream.flush().unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(30));
+    });
+    let gateway = start("revoke-stream", &format!("http://127.0.0.1:{port}/v1"), &["allowed"], Some("leaked"));
+    // The watch is opened at start; give it a moment to register.
+    eventually(|| !gateway.deckd.keys.lock().unwrap().watchers.is_empty());
+
+    let mut stream = UnixStream::connect(&gateway.ready.model).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(chat("allowed").as_bytes()).unwrap();
+    let mut seen = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while !String::from_utf8_lossy(&seen).contains("first") {
+        let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0, "the stream ended before its first chunk");
+        seen.extend_from_slice(&buffer[..read]);
+    }
+    let started = Instant::now();
+    gateway.deckd.revoke("DECK_GATEWAY_TEST_KEY");
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+    assert!(started.elapsed() < Duration::from_secs(5), "the revocation shut the stream");
+
+    let refused = send(&gateway.ready.model, &chat("allowed"));
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    assert!(refused.contains("deck_credential_revoked"), "{refused}");
+    let _ = release.send(());
+}
+
+#[test]
+fn a_revoked_github_token_refuses_the_next_operation_before_github() {
+    let (_, remote) = bare("gh-revoke-remote");
+    let (api, seen, _) = api(|_| r#"[]"#.into());
+    let gateway = with_github("gh-revoke-gw", &api, &url(&remote), None, Some("ghp-token"));
+    eventually(|| !gateway.deckd.keys.lock().unwrap().watchers.is_empty());
+    let github = gateway.ready.github.clone().unwrap();
+    let refs = || {
+        send(
+            &github,
+            &format!(
+                "POST /operations/refs HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+                r#"{"operation":"refs"}"#.len(),
+                r#"{"operation":"refs"}"#
+            ),
+        )
+    };
+    assert!(refs().starts_with("HTTP/1.1 200 OK"));
+    let before = seen.lock().unwrap().len();
+    gateway.deckd.revoke("DECK_GATEWAY_TEST_GITHUB");
+    let refused = refs();
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    assert!(refused.contains("deck_credential_revoked") && refused.contains(r#""retryable":false"#), "{refused}");
+    assert_eq!(seen.lock().unwrap().len(), before, "nothing reached GitHub");
+    gateway.deckd.set("DECK_GATEWAY_TEST_GITHUB", "ghp-new");
+    assert!(refs().starts_with("HTTP/1.1 200 OK"), "a new value restores service");
 }

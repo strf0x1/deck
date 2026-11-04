@@ -155,7 +155,9 @@ impl Control {
         self.call_within(request, REPLY)
     }
 
-    fn call_within(&self, request: &Value, within: Duration) -> Result<Value, String> {
+    /// One request and its one reply line. The credential broker shares it:
+    /// it is the same socket and the same framing.
+    pub(crate) fn call_within(&self, request: &Value, within: Duration) -> Result<Value, String> {
         let mut stream =
             UnixStream::connect(&self.socket).map_err(|error| format!("the approval queue is unreachable: {error}"))?;
         stream.set_read_timeout(Some(within)).map_err(|error| error.to_string())?;
@@ -184,7 +186,7 @@ struct Reply {
 }
 
 /// One bounded reply line. The daemon writes exactly one JSON object.
-fn read_line(reader: &mut impl std::io::BufRead) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_line(reader: &mut impl std::io::BufRead) -> std::io::Result<Vec<u8>> {
     const LIMIT: usize = 1024 * 1024;
     let mut line = Vec::new();
     loop {

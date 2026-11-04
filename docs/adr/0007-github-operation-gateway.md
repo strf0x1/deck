@@ -140,11 +140,13 @@ the operation set, and the credential broker ADR 0004 §4 defers is the right
 place to put it. A missing token makes the gateway refuse every operation with
 `deck_credential_missing` instead of starting without one.
 
-ADR 0004 §4 (amended 2026-11-04) settles the broker. `DECK_GITHUB_TOKEN`
-becomes a stored credential name fetched once per operation, and the
-broker's `deck_credential_unavailable`, `deck_credential_refused` and
-`deck_credential_revoked` join this ADR's error table. App tokens remain
-that ADR's §4.6 follow-up.
+ADR 0004 §4 (amended 2026-11-04) settles the broker, and it has landed.
+`DECK_GITHUB_TOKEN` is a stored credential name fetched once per operation
+(after the queue admits a write; before the ownership check for `update_pr`,
+which already needs it), and the broker's `deck_credential_unavailable`,
+`deck_credential_refused` and `deck_credential_revoked` join this ADR's error
+table. A revocation kills the operation's `git` process group and discards
+its API result. App tokens remain that ADR's §4.6 follow-up.
 
 The guest never receives a token. `git push` inside the task fails, and so does
 `gh`; the agent's tools call the gateway, which is the point.
@@ -196,8 +198,11 @@ branch's commit is the reason.
 | Credential | 502 | `deck_github_credential` | no | GitHub refused the host's token. The user's to fix, not the agent's. |
 | Unavailable | 502 | `deck_github_failed` | yes | GitHub or git could not be reached or answer, or a rate limit. |
 
-The approval denials (`deck_boundary_denied`) and a missing token
-(`deck_credential_missing`, 503) keep their own shapes. GitHub's and git's text
+The approval denials (`deck_boundary_denied`) keep their own shape, and so
+do the broker's refusals (ADR 0004 §4.4), each with `retryable`:
+`deck_credential_missing` (503, no), `deck_credential_unavailable` (503,
+yes), `deck_credential_refused` (403, no) and `deck_credential_revoked`
+(403, no). GitHub's and git's text
 is passed through for its reason, bounded and with the token redacted.
 
 ## Consequences

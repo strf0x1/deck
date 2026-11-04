@@ -69,8 +69,8 @@ pub struct Config {
 }
 
 /// The host-side gateway process and the sockets libkrun maps to guest vsock
-/// ports. The upstream URL and model names are not secrets; the credential
-/// value is never in this config.
+/// ports. The upstream URL and model names are not secrets; credential names
+/// are configuration and their values are never in this config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gateway {
     pub executable: PathBuf,
@@ -103,8 +103,8 @@ pub struct Gateway {
     pub github_base: String,
     #[serde(default)]
     pub github_branches: Vec<String>,
-    /// The environment variable the host token comes from. Its value is never
-    /// in this config.
+    /// The credential name the GitHub token is fetched under. Its value is
+    /// never in this config.
     #[serde(default)]
     pub github_token: String,
     /// The gateway's scratch directory, where a publish fetches its bundle.
@@ -121,8 +121,12 @@ pub struct Gateway {
     pub usage: Usage,
     /// The live budget file the gateway re-reads before each admission.
     pub budget_file: PathBuf,
-    /// The environment variable the gateway reads the host key from.
+    /// The credential name the model gateway fetches the provider key under.
     pub secret: String,
+    /// Every credential name this task's gateway may fetch (ADR 0004 §4.3).
+    /// `deckd` refuses any other name without reading the store.
+    #[serde(default)]
+    pub credentials: Vec<String>,
     /// The daemon's control socket and this task, so a model the task was not
     /// configured with can ask the approval queue (ADR 0004 §5).
     pub control: PathBuf,
@@ -373,6 +377,14 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
     if let Some(limit) = gateway.token_budget {
         command.arg("--token-budget").arg(limit.to_string());
     }
+    // The gateway fetches every value from deckd per operation; none reaches
+    // it through the environment, even one the runtime failed to strip.
+    for name in gateway.credentials.iter().chain([&gateway.secret, &gateway.github_token]) {
+        if !name.is_empty() {
+            command.env_remove(name);
+        }
+    }
+    command.env_remove(crate::credentials::FILE_ENV);
     let mut child =
         command.spawn().with_context(|| format!("starting the egress gateway {}", gateway.executable.display()))?;
     let stdin = child.stdin.take().context("gateway stdin")?;
@@ -679,6 +691,7 @@ mod tests {
             usage: Usage::default(),
             budget_file: PathBuf::from("/tmp/task.budget.json"),
             secret: "KEY".into(),
+            credentials: vec!["KEY".into()],
             control: PathBuf::from("/tmp/task.control"),
             task: "task".into(),
         }
