@@ -140,6 +140,12 @@ the operation set, and the credential broker ADR 0004 §4 defers is the right
 place to put it. A missing token makes the gateway refuse every operation with
 `deck_credential_missing` instead of starting without one.
 
+ADR 0004 §4 (amended 2026-11-04) settles the broker. `DECK_GITHUB_TOKEN`
+becomes a stored credential name fetched once per operation, and the
+broker's `deck_credential_unavailable`, `deck_credential_refused` and
+`deck_credential_revoked` join this ADR's error table. App tokens remain
+that ADR's §4.6 follow-up.
+
 The guest never receives a token. `git push` inside the task fails, and so does
 `gh`; the agent's tools call the gateway, which is the point.
 

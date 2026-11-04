@@ -1,6 +1,7 @@
 # 0004 — Host gateways enforce guest egress, credentials, and approvals
 
-Status: accepted, 2026-11-03; first and second slices landed 2026-11-03. Answers #9; the input is
+Status: accepted, 2026-11-03; first and second slices landed 2026-11-03;
+§4's credential broker amendment proposed 2026-11-04. Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
 operations; #12 compares runtimes. Its extension names are superseded in
 part by ADR 0005.
@@ -117,8 +118,9 @@ gateway and exits on its death, which fails the task closed.
 The gateway evaluates every request against the policy snapshot and cached
 task grants without a daemon round trip. A new scope asks `deckd` over the
 control socket; a credential request asks `deckd` for the value. If `deckd`
-is unreachable, cached grants continue to their expiry and every new scope is
-denied. If the gateway dies, the VMM fails the task closed rather than leave
+is unreachable, cached grants continue to their expiry, every new scope is
+denied, and every credential fetch fails as unavailable (§4.4), so nothing
+new leaves with a host credential. If the gateway dies, the VMM fails the task closed rather than leave
 an agent running with half a boundary.
 
 Policy is live. `deckd` pushes a changed project rule or task grant to the
@@ -327,7 +329,7 @@ could do it.
   in the OS credential store (macOS Keychain, Linux Secret Service) under a
   Deck-owned service name. A headless fallback is an explicitly configured
   file with mode 0600; it is not the default and is never inside the guest
-  image or an exported task disk.
+  image or an exported task disk. §4.2 settles both.
 - **Guest values.** The guest receives a non-empty placeholder for each
   secret Construct requires, so secretspec resolves it from the environment
   and skips the keyring. `CONSTRUCT_BASE_URL` points at the guest relay;
@@ -336,6 +338,7 @@ could do it.
 - **Injection.** `deckd` hands the gateway a credential value over the host
   control socket for one operation. The gateway keeps it in memory for that
   request and never writes it. The guest's own `Authorization` is discarded.
+  §4.3 and §4.4 settle who may ask and how.
 - **Headers from Construct.** Construct sends `[headers]` with every model
   request. The guest config is agent-writable, so the gateway treats those
   headers as untrusted: only the attribution allowlist is forwarded; every
@@ -344,10 +347,171 @@ could do it.
   affects the next request. Revoking a credential closes open tunnels and
   in-flight operations that used it and records the revocation. Task records
   and project rules store credential *names* and fingerprints, never values.
+  §4.1 and §4.5 settle both.
 - **Delegated children.** Construct hands a child only the environment its
   agent definition names (`env_key`). Deck supplies placeholders to the
   parent, so a child that asks for a different provider still reaches the
   gateway under the same task policy; it cannot read the host credential.
+
+The rest of this section is `deckd`'s credential broker (amended
+2026-11-04). Until it lands, the model key and `DECK_GITHUB_TOKEN` come from
+the daemon's environment, which the VMM and gateway inherit, and the gateway
+reads them once at start (ADR 0007 §4). The broker replaces that source in
+the same slice; there is no period where both are read.
+
+#### 4.1 Names and fingerprints
+
+A credential is addressed by a name, `[A-Z][A-Z0-9_]{0,63}`: the same shape
+as the environment variables it replaces (`OPENAI_API_KEY`,
+`DECK_GITHUB_TOKEN`). A name is configuration. It may appear in `vmm.json`,
+arguments, logs, grants, task events and the UI.
+
+A value exists only in the store, in `deckd`'s memory while it answers one
+request, in the gateway's memory for one operation, and on that operation's
+outbound request. Any record that must tell two values apart uses the
+fingerprint: `sha256:` and the first 12 hex digits of SHA-256 over the value.
+That distinguishes machine-generated keys and tokens without saying anything
+useful about them. It is not a verifier, and a value a person could guess (a
+password) is not something Deck stores.
+
+Grants and project rules name a credential and never a fingerprint, so
+rotation keeps them (§7). Fingerprints appear in task events, revocation
+records and the access panel.
+
+#### 4.2 Storage
+
+`deckd` uses exactly one store, chosen when it starts:
+
+- **A file**, when `DECK_CREDENTIALS` names one: a JSON object of name to
+  value. `deckd` refuses a path that is not a regular file owned by the user
+  with mode 0600 (no group or other bits), and logs why. While the variable
+  is set, the file is the only store. It is never merged with the OS store,
+  so "which source won" has one answer. This is the headless, CI and test
+  path.
+- **The OS store** otherwise: a macOS Keychain generic password (service
+  `com.sprawlcommons.deck`, account = the name), or a Linux Secret Service
+  item in the default collection (attributes `service=com.sprawlcommons.deck`,
+  `name=<name>`).
+
+`deckd` never reads a credential value from its own environment. The runtime
+removes every name in the task's credential set (§4.3) from the environment
+it hands the VMM and the gateway. A stray `export OPENAI_API_KEY=…` in the
+shell that started the daemon therefore cannot reach a holder.
+
+A store read is bounded at 5 s. The bound is needed because Keychain may show
+an access dialog: an ad-hoc signed `deckd` is a new application to Keychain
+after every rebuild, because its designated requirement is its cdhash.
+Secret Service may ask to unlock a collection, or have no session bus when
+the daemon outlived the session that started it. A read that misses the
+bound, or a store that cannot be reached, is *unavailable*, not *missing*.
+At most one read per name is outstanding: later requests wait on it within
+their own bound, and an answered dialog serves whoever asks next.
+
+The store is managed from the `deckd` binary, so the Keychain access list
+names the same application that reads the item:
+
+```text
+deckd credential set NAME      # value on stdin, never an argument; no echo on a tty
+deckd credential delete NAME
+deckd credential list          # names, fingerprints, store, revoked state; never values
+deckd credential revoke NAME   # a control request to the running daemon (§4.5)
+```
+
+`set` on the file store rewrites the file atomically at 0600. Deck's access
+panel lists names and fingerprints and offers revoke. Entering a value in
+the UI is deferred.
+
+#### 4.3 Which task may use which credential
+
+When the runtime starts a VMM, it writes the task's credential set into
+`vmm.json` as `gateway.credentials` (names only): the model key's name, and
+the GitHub token's name when the project names a repository. `deckd` answers
+a `credential` request only for a name in the requesting task's set, and only
+while that task has a live holder. Any other request is refused and recorded,
+and the store is not read.
+
+This gives least privilege and protects against a confused gateway. It is
+not isolation from a compromised one. The gateway runs as the user, so until
+it runs confined as §8 describes, a gateway taken over through its parser has
+the user's file access, including the file store and other tasks' records.
+This slice claims no more than that.
+
+#### 4.4 Injection
+
+The gateway sends `{"op":"credential","task":…,"name":…}` on the control
+socket after policy has admitted the operation and just before the outbound
+request. A denied or pending request therefore fetches nothing. The reply is
+`{"value":…,"fingerprint":…}`, with room for an `expires_at` that a minted
+token will use (§4.6).
+
+The value serves one operation and is then dropped. An operation is one
+model request including its streamed response, or one GitHub operation (a
+publish's `git push` and its API calls share one fetch). Neither side logs
+the reply. `deckd` logs the task, the name and the fingerprint.
+
+Nothing is cached, neither in the gateway nor in `deckd`: every operation
+reads the store. That is why rotation needs no extra machinery, and a
+Keychain or file read is small next to a provider round trip. Add a cache
+checked against the fingerprint only if a measurement shows the read
+matters.
+
+Each failure injects nothing and reaches the guest in the gateway's existing
+bounded error shape. ADR 0007's GitHub table gains the same rows.
+
+| Case | Status | Code | Retryable by the agent |
+|---|---|---|---|
+| The store has no value under the name | 503 | `deck_credential_missing` | no; the user's to fix |
+| `deckd` or the store unreachable, or the read timed out | 503 | `deck_credential_unavailable` | yes |
+| The name is not in the task's set | 403 | `deck_credential_refused` | no |
+| The current value's fingerprint is revoked | 403 | `deck_credential_revoked` | no; the user's to fix |
+
+The first time a gateway process uses a fingerprint, `deckd` appends
+`credential_used {name, fingerprint}` to the task's events. The task record
+then says which value the task ran under, without an event per request.
+
+#### 4.5 Rotation and revocation
+
+Rotating means replacing the value, with `deckd credential set` or by
+editing the item in Keychain Access. The next operation reads the new value.
+Operations already running keep the value they started with.
+
+Revoking is for a value that must stop being used now, because it leaked or
+was withdrawn at the provider. `revoke_credential {name}`, from the CLI or
+the access panel, revokes the name's *current fingerprint*:
+
+1. `deckd` appends the revocation (name, fingerprint, time) to
+   `credentials/revoked.json` under the data root and to the audit record
+   before it replies.
+2. Every later `credential` request whose current value has a revoked
+   fingerprint is refused with `deck_credential_revoked`. The name comes back
+   when a new value is set. A fingerprint cannot be un-revoked.
+3. Each running gateway holds a `credential_watch {task}` control connection,
+   opened at start and reopened with backoff. It opens with the revoked
+   fingerprints for the task's set, and `deckd` pushes each new revocation on
+   it. The gateway registers every in-flight operation by (name,
+   fingerprint) and closes the matching ones. A model request whose response
+   has not started is answered `deck_credential_revoked`. One that is
+   streaming has its upstream and guest connections shut down. A GitHub
+   operation's `git` process group is killed and its API call abandoned. A
+   ref already pushed or a response already delivered is not retracted, and
+   the UI says so (§7).
+4. While the watch is down, `deckd` is down, so no new fetch succeeds.
+   Operations already in flight finish. On reconnect, the snapshot catches
+   anything revoked in the gap.
+
+Revoking does not delete the stored value (`delete` does that) and revokes
+nothing at the provider. The UI tells the user to rotate it there.
+
+#### 4.6 Not in this slice
+
+- **GitHub App installation tokens** (ADR 0007 §4). The broker would mint
+  them from the App's private key, itself a stored credential, and cache
+  each until its hourly expiry. The reply's `expires_at` is the hook. Until
+  then, `DECK_GITHUB_TOKEN` is an ordinary stored credential.
+- **Registry tokens and the SSH-agent kind** (Deferred) use the same names,
+  fetch and revocation when they arrive.
+- **The local backend** is unchanged: Construct resolves its own secrets
+  there, and the broker serves gateways only.
 
 ### 5. Approvals are host decisions, distinct from ACP permissions
 
@@ -420,8 +584,10 @@ Control surface: the daemon control protocol is additive. A window opens a
 its attachment lease; Deck gets `approvals` (pending items for a task),
 `decide_approval`, `grants` and `revoke_grant` on ordinary control requests.
 The gateway asks `approval` with the observed request and the daemon holds
-that call; a future `credential` request returns one value. Neither request
-nor reply is logged. Task grants are `tasks/<id>/grants.json`, project rules
+that call. The gateway's `credential` request returns one value for one
+operation, and its `credential_watch` connection carries revocations
+(§4.4, §4.5). The CLI and the access panel send `revoke_credential`.
+Neither a `credential` request nor its reply is logged. Task grants are `tasks/<id>/grants.json`, project rules
 are `approvals/projects.json`, and pending items are memory only.
 
 The UI adds a boundary card and a per-task access panel:
@@ -524,7 +690,9 @@ would no longer be what the model saw.
 ### 7. Grants and revocation
 
 A grant is `(task, gateway, operation, destination, credential_name?)` with a
-scope (once/task) or a persisted project rule. Revocation:
+scope (once/task) or a persisted project rule. It names a credential, never a
+fingerprint, so rotating the value keeps the grant. Revoking a credential is
+§4.5 and is separate from revoking a grant. Revoking a grant:
 
 - stops new matching requests immediately;
 - closes existing matching tunnels and streams; a response already returned
@@ -653,6 +821,18 @@ The implementation is not done until these have tests where practical.
    restart is needed.
 3. A denied request injects nothing.
 4. A guest-supplied credential header is stripped, not merged.
+5. With the credential exported in the shell that starts `deckd`, it is
+   absent from the VMM's and the gateway's environment
+   (`/proc/<pid>/environ`, `ps eww`), and the task still works from the store.
+6. A gateway asking for a name outside its task's set gets
+   `deck_credential_refused`, and the store is not read.
+7. With `deckd` stopped, a model request returns
+   `deck_credential_unavailable` and reaches no provider. After a restart,
+   the next request succeeds with no task restart.
+8. Revoking during a streamed model response shuts that stream, refuses the
+   next request with `deck_credential_revoked`, and records the name and
+   fingerprint. Setting a new value restores service.
+9. A file store with group or other permission bits is refused at start.
 
 **Agent feedback**
 
@@ -773,6 +953,16 @@ The implementation is not done until these have tests where practical.
    admitted the resolved address; the binary never passes it. Not covered: a
    real TLS CONNECT to a public host, and SSH through the relay, which need a
    live VM and a network the CI host does not have.
+7. Add the credential broker (§4.1–§4.5): the store module in
+   `deck-runtime` (file and OS store, the bounded read), the `deckd
+   credential` commands, the daemon's `credential`, `credential_watch` and
+   `revoke_credential` requests, `gateway.credentials` in `vmm.json`, and
+   credential names stripped from the VMM's environment. The gateway then
+   fetches per operation instead of reading its environment, and keeps an
+   in-flight registry that revocation closes. The VM tests and `AGENTS.md`
+   move from `OPENAI_API_KEY` in the environment to a `DECK_CREDENTIALS`
+   file in the same change. CI covers the file store. The Keychain and
+   Secret Service paths are verified by hand, like the VM tests.
 
 ## Deferred
 
@@ -814,6 +1004,13 @@ The implementation is not done until these have tests where practical.
 - The first request to a new destination waits briefly for a human
   decision, then fails rather than hanging. Construct is told why and
   chooses whether to wait (§6); other ACP agents see only the failure.
+- Credentials leave the environment. A value is set once with `deckd
+  credential set` (or a 0600 file for headless hosts and CI) instead of
+  exported, and every model request or GitHub operation costs a control
+  round trip and a store read. A rebuilt, ad-hoc signed `deckd` meets a
+  Keychain access dialog once per item; development use takes the file
+  store. Until the gateway runs confined, the broker limits each task to its
+  own names but cannot keep a compromised gateway from the user's files.
 - Construct gains three boundary tools and a capability Deck relies on, so
   the two must move together and `deck-fake-agent` must track them.
 - Revisit if: an IP backend is needed for compatibility (#12); the gateway
