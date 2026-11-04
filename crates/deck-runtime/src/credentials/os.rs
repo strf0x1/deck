@@ -120,7 +120,7 @@ mod imp {
     }
 
     pub fn delete(name: &str) -> Result<bool> {
-        let present = matches!(read(name), Ok(_));
+        let present = read(name).is_ok();
         let output =
             tool().args(["clear", "service", SERVICE, "name", name]).output().context("running secret-tool")?;
         if !output.status.success() && present {
