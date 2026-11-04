@@ -121,6 +121,11 @@ pub(crate) enum Request {
     CredentialWatch {
         task: String,
     },
+    /// The names in a task's credential set with their fingerprints and
+    /// revoked state, for the access panel. Never a value (§4.2).
+    Credentials {
+        task: String,
+    },
     /// Revoke a credential's current value, from the CLI or the access panel.
     RevokeCredential {
         name: String,
@@ -154,6 +159,7 @@ impl Request {
             | Self::RevokeGrant { task: id, .. }
             | Self::Credential { task: id, .. }
             | Self::CredentialWatch { task: id }
+            | Self::Credentials { task: id }
             | Self::Watch { task: id } => Some(id),
             _ => None,
         };

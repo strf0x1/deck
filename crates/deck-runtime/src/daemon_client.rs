@@ -123,6 +123,12 @@ impl DaemonClient {
         self.request(Request::SetBudget { task: id.into(), requests, tokens })
     }
 
+    /// The names in a task's credential set with fingerprints and revoked
+    /// state; never a value, so a window needs none (ADR 0004 §4.2).
+    pub fn credentials(&self, task: &str) -> Result<Vec<crate::broker::Listed>> {
+        self.request(Request::Credentials { task: task.into() })
+    }
+
     /// Revoke a credential's current value. Running gateways close the
     /// operations that used it before their next read of the store.
     pub fn revoke_credential(&self, name: &str) -> Result<crate::credentials::revoked::Revocation> {

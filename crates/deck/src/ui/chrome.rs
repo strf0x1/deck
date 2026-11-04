@@ -12,7 +12,7 @@ use super::rail::{COLLAPSED, ITEM_H, ITEMS, Item};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, tint};
 use gpui::{
-    AnyElement, BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, point, px,
 };
 
@@ -196,7 +196,7 @@ impl PinExt for gpui::Stateful<gpui::Div> {
     }
 }
 
-pub fn header(deck: &Deck) -> impl IntoElement {
+pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     let live = deck.board.cards().iter().find(|c| c.lane.id == super::root::LIVE).map(|c| c.lane.state);
     let dot = live.map_or(Tokens::text_faint().into(), state_color);
     div()
@@ -237,6 +237,7 @@ pub fn header(deck: &Deck) -> impl IntoElement {
                 .child(div().font_family(MONO).text_size(px(11.)).child(agent_label(&deck.agent_cmd))),
         )
         .child(icon_button("hdr-bell", icon::BELL))
+        .child(icon_button("hdr-access", icon::SHIELD).on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))))
         .child(
             div()
                 .id("hdr-new")
@@ -256,7 +257,7 @@ pub fn header(deck: &Deck) -> impl IntoElement {
         )
 }
 
-pub fn icon_button(id: &'static str, g: &'static str) -> AnyElement {
+pub fn icon_button(id: &'static str, g: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .size(px(32.))
@@ -268,7 +269,6 @@ pub fn icon_button(id: &'static str, g: &'static str) -> AnyElement {
         .cursor_pointer()
         .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text()))
         .child(glyph(g, 13.))
-        .into_any_element()
 }
 
 pub fn kbd(keys: &'static str) -> impl IntoElement {

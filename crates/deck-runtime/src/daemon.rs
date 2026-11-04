@@ -155,6 +155,19 @@ fn connection(
                 wire::write(&mut socket, &Reply { ok: Some(json!({ "revoked": snapshot })), error: None })?;
                 return credential_watch(socket, rx);
             }
+            Ok(request @ Request::Credentials { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::Credentials { task } => {
+                        let names = {
+                            let service = service.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::vm::credential_set(&service.data, &task).unwrap_or_default()
+                        };
+                        Ok(serde_json::to_value(broker.list_names(&names))?)
+                    }
+                    _ => unreachable!("matched a credentials request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request @ Request::RevokeCredential { .. }) => {
                 let result = request.validate().and_then(|()| match request {
                     Request::RevokeCredential { name } => Ok(serde_json::to_value(broker.revoke(&name)?)?),
@@ -428,6 +441,7 @@ impl Service {
             | Request::RevokeGrant { .. }
             | Request::Credential { .. }
             | Request::CredentialWatch { .. }
+            | Request::Credentials { .. }
             | Request::RevokeCredential { .. } => unreachable!("handled before service dispatch"),
         }
     }
