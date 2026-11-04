@@ -11,9 +11,11 @@
 //! [`model`] is the OpenAI-compatible reverse proxy. [`status`] is the
 //! boundary status kind on the extension port. [`web`] is the CONNECT and
 //! plain-mirror proxy, served on its own socket and on the extension port.
-//! [`server`] binds the sockets and dispatches.
+//! [`github`] is the bounded publication gateway, likewise. [`server`] binds
+//! the sockets and dispatches.
 
 pub mod control;
+pub mod github;
 pub mod http;
 pub mod model;
 pub mod policy;

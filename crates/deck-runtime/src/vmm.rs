@@ -89,6 +89,29 @@ pub struct Gateway {
     pub web_profiles: Vec<String>,
     #[serde(default)]
     pub web_grants: Vec<PathBuf>,
+    /// The GitHub operation gateway's socket and port. `None` serves no
+    /// publication: the task's project names no repository.
+    #[serde(default)]
+    pub github_socket: Option<PathBuf>,
+    #[serde(default)]
+    pub github_port: Option<u32>,
+    /// `owner/name`, the base a pull request targets, and any branch the
+    /// project allows a task to write beyond its own.
+    #[serde(default)]
+    pub github_repository: Option<String>,
+    #[serde(default)]
+    pub github_base: String,
+    #[serde(default)]
+    pub github_branches: Vec<String>,
+    /// The environment variable the host token comes from. Its value is never
+    /// in this config.
+    #[serde(default)]
+    pub github_token: String,
+    /// The project rule file the gateway re-reads on change.
+    #[serde(default)]
+    pub github_rules: Vec<PathBuf>,
+    /// The gateway's scratch directory, where a publish fetches its bundle.
+    pub github_scratch: PathBuf,
     pub upstream: String,
     pub models: Vec<String>,
     /// Process-start model limits; the task's budget file overrides them.
@@ -142,6 +165,7 @@ pub fn run(config: &Path) -> Result<()> {
         ]
         .into_iter()
         .chain(config.gateway.web_socket.iter().cloned())
+        .chain(config.gateway.github_socket.iter().cloned())
         .collect::<Vec<_>>(),
     );
     let _lock = inherited_lock(config.lock_fd)?;
@@ -184,6 +208,9 @@ pub fn run(config: &Path) -> Result<()> {
         .context("forwarding the extension port")?;
     if let (Some(port), Some(socket)) = (config.gateway.web_port, &config.gateway.web_socket) {
         krun.guest_vsock_port(ctx, port, socket).context("forwarding the web gateway port")?;
+    }
+    if let (Some(port), Some(socket)) = (config.gateway.github_port, &config.gateway.github_socket) {
+        krun.guest_vsock_port(ctx, port, socket).context("forwarding the GitHub gateway port")?;
     }
     krun.workdir(ctx, "/workspace")?;
     krun.exec(ctx, &config.guest, &config.argv, &guest_env(&config)).context("configuring the guest command")?;
@@ -320,6 +347,23 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
     for model in &gateway.models {
         command.args(["--model", model]);
     }
+    if let Some(socket) = &gateway.github_socket {
+        command.arg("--github-socket").arg(socket);
+        if let Some(repository) = &gateway.github_repository {
+            command.arg("--github-repository").arg(repository);
+        }
+        command.arg("--github-scratch").arg(&gateway.github_scratch);
+        command.arg("--github-token").arg(&gateway.github_token);
+        if !gateway.github_base.is_empty() {
+            command.arg("--github-base").arg(&gateway.github_base);
+        }
+        for branch in &gateway.github_branches {
+            command.args(["--github-branch", branch]);
+        }
+        for rule in &gateway.github_rules {
+            command.arg("--github-rule").arg(rule);
+        }
+    }
     if let Some(socket) = &gateway.web_socket {
         command.arg("--web-socket").arg(socket);
         for profile in &gateway.web_profiles {
@@ -395,6 +439,7 @@ fn check_ready(line: &str, gateway: &Gateway) -> Result<()> {
     if named("model") != Some(gateway.model_socket.as_path())
         || named("extension") != Some(gateway.extension_socket.as_path())
         || named("web") != gateway.web_socket.as_deref()
+        || named("github") != gateway.github_socket.as_deref()
     {
         bail!("the egress gateway reported sockets that are not this task's");
     }
@@ -626,6 +671,14 @@ mod tests {
             web_port: None,
             web_profiles: Vec::new(),
             web_grants: Vec::new(),
+            github_socket: None,
+            github_port: None,
+            github_repository: None,
+            github_base: String::new(),
+            github_branches: Vec::new(),
+            github_token: String::new(),
+            github_rules: Vec::new(),
+            github_scratch: PathBuf::from("/tmp/task.github"),
             upstream: "http://127.0.0.1:1/v1".into(),
             models: vec!["m".into()],
             request_budget: None,

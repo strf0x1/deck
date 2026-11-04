@@ -177,6 +177,26 @@ impl DaemonClient {
         Ok(reply.get("changed").and_then(serde_json::Value::as_u64).unwrap_or(0))
     }
 
+    /// Always-allow (`revoke = false`) or revoke the GitHub operations for a
+    /// project. Returns how many rules changed.
+    pub fn github_profile(
+        &self,
+        task: &str,
+        project: Option<&str>,
+        repository: &str,
+        operations: &[String],
+        revoke: bool,
+    ) -> Result<u64> {
+        let reply: serde_json::Value = self.request(Request::GitHubProfile {
+            task: task.into(),
+            project: project.map(str::to_owned),
+            repository: repository.into(),
+            operations: operations.to_vec(),
+            revoke,
+        })?;
+        Ok(reply.get("changed").and_then(serde_json::Value::as_u64).unwrap_or(0))
+    }
+
     pub fn attach(&self, id: &str) -> Result<Stream> {
         Request::Task { id: id.into() }.validate()?;
         let socket = UnixStream::connect(self.paths.task(id))?;

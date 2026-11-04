@@ -66,6 +66,30 @@ pub const TOKEN_BUDGET_ENV: &str = "DECK_MODEL_TOKEN_BUDGET";
 /// has a web gateway with no pre-approved destination, which is the closed
 /// default; `none` disables it entirely.
 pub const WEB_PROFILES_ENV: &str = "DECK_WEB_PROFILES";
+/// The project's GitHub repository (`owner/name`). Absent starts no GitHub
+/// gateway, which is the closed default: a task publishes only when its
+/// project names where.
+pub const GITHUB_REPOSITORY_ENV: &str = "DECK_GITHUB_REPOSITORY";
+/// The branch a pull request targets. `main` when absent.
+pub const GITHUB_BASE_ENV: &str = "DECK_GITHUB_BASE";
+/// Branches beyond `deck/<task>` this project lets a task write.
+pub const GITHUB_BRANCHES_ENV: &str = "DECK_GITHUB_BRANCHES";
+/// The environment variable the GitHub token is read from; the value never
+/// enters `vmm.json` or the guest (ADR 0007 §4).
+pub const GITHUB_TOKEN_ENV: &str = "DECK_GITHUB_TOKEN_SECRET";
+/// The default variable the gateway reads the token from.
+pub const GITHUB_TOKEN: &str = "DECK_GITHUB_TOKEN";
+
+/// The GitHub operation gateway's host policy (ADR 0007): the repository, the
+/// base, and the branches a task may also write. The token's value is never
+/// here; only the name of the environment variable it comes from.
+#[derive(Debug, Clone)]
+pub struct GitHub {
+    pub repository: String,
+    pub base: String,
+    pub branches: Vec<String>,
+    pub token: String,
+}
 
 pub struct Vm {
     data: PathBuf,
@@ -84,6 +108,9 @@ pub struct Vm {
     model: String,
     /// The web and package profiles; `None` disables the web gateway.
     web_profiles: Option<Vec<String>>,
+    /// The project's GitHub destination. `None` starts no GitHub gateway:
+    /// a task whose project names no repository has no route to publish.
+    github: Option<GitHub>,
     request_budget: Option<u64>,
     token_budget: Option<u64>,
 }
@@ -148,6 +175,20 @@ impl Vm {
                 request_budget: number(REQUEST_BUDGET_ENV)?,
                 token_budget: number(TOKEN_BUDGET_ENV)?,
                 web_profiles: web_profiles(host(WEB_PROFILES_ENV))?,
+                github: host(GITHUB_REPOSITORY_ENV).map(|repository| GitHub {
+                    repository,
+                    base: host(GITHUB_BASE_ENV).unwrap_or_else(|| "main".into()),
+                    branches: host(GITHUB_BRANCHES_ENV)
+                        .map(|value| {
+                            value
+                                .split(|c: char| c == ',' || c.is_whitespace())
+                                .filter(|branch| !branch.is_empty())
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    token: host(GITHUB_TOKEN_ENV).unwrap_or_else(|| GITHUB_TOKEN.into()),
+                }),
             })
         }
     }
@@ -198,7 +239,7 @@ impl Backend for Vm {
         }
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some());
+        let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some(), self.github.is_some());
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -233,6 +274,14 @@ impl Backend for Vm {
                     self.dir(&task.id).join("grants.json"),
                     self.data.join("approvals").join("projects.json"),
                 ],
+                github_socket: self.github.as_ref().map(|_| socket.with_extension("github")),
+                github_port: self.github.as_ref().map(|_| boundary::GITHUB_VSOCK_PORT),
+                github_repository: self.github.as_ref().map(|github| github.repository.clone()),
+                github_base: self.github.as_ref().map(|github| github.base.clone()).unwrap_or_default(),
+                github_branches: self.github.as_ref().map(|github| github.branches.clone()).unwrap_or_default(),
+                github_token: self.github.as_ref().map(|github| github.token.clone()).unwrap_or_default(),
+                github_rules: vec![self.data.join("approvals").join("github.json")],
+                github_scratch: self.dir(&task.id).join("github"),
                 upstream: self.upstream.clone(),
                 models: vec![self.model.clone()],
                 request_budget: self.request_budget,
@@ -580,7 +629,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// writable config: the VM is the sandbox, the gateway owns the provider key,
 /// and `DECK_MANAGED` tells Construct every credential is host-owned. The
 /// local backend does not set any of this.
-fn guest_environment(guest: &str, args: &[String], model: &str, web: bool) -> Vec<String> {
+fn guest_environment(guest: &str, args: &[String], model: &str, web: bool, github: bool) -> Vec<String> {
     // The guest gets the relay's address and a non-empty placeholder, so
     // Construct's environment-first secretspec never reaches for a keyring
     // (there is none) and never sees a real value. The host gateway adds the
@@ -605,6 +654,11 @@ fn guest_environment(guest: &str, args: &[String], model: &str, web: bool) -> Ve
     // gateway; without them a proxy variable would point at a closed port,
     // which is worse for a package manager than no proxy at all.
     env.push(format!("DECK_WEB_ENABLED={}", u8::from(web)));
+    // The GitHub relays exist only for a task whose project named a
+    // repository; a URL pointing at a closed port would be worse than none.
+    env.push(format!("DECK_GITHUB_ENABLED={}", u8::from(github)));
+    env.push(format!("DECK_GITHUB_PORT={}", boundary::GITHUB_PORT));
+    env.push(format!("DECK_GITHUB_VSOCK_PORT={}", boundary::GITHUB_VSOCK_PORT));
     env
 }
 
@@ -655,7 +709,7 @@ mod tests {
 
     #[test]
     fn the_guest_environment_marks_the_task_managed() {
-        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free", true);
+        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free", true, true);
         let has = |line: &str| env.iter().any(|e| e == line);
         assert!(has("DECK_MANAGED=1"), "a VM task's credentials are host-owned: {env:?}");
         assert!(has("OPENAI_API_KEY=deck-placeholder"), "the guest never gets a real key: {env:?}");
@@ -665,12 +719,15 @@ mod tests {
         assert!(has("DECK_ARGS='acp'"));
         assert!(has("DECK_WEB_ENABLED=1"), "the relay is started for a task with a web gateway: {env:?}");
         assert!(has("DECK_WEB_PORT=8082") && has("DECK_MIRROR_PORT=8083"));
+        assert!(has("DECK_GITHUB_ENABLED=1"), "the GitHub relays start for a project with a repository: {env:?}");
+        assert!(has("DECK_GITHUB_PORT=8084") && has("DECK_GITHUB_VSOCK_PORT=1029"));
     }
 
     #[test]
     fn a_task_without_a_web_gateway_starts_no_relay() {
-        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free", false);
+        let env = guest_environment("/usr/local/bin/construct", &["acp".into()], "openrouter/free", false, false);
         assert!(env.iter().any(|line| line == "DECK_WEB_ENABLED=0"), "{env:?}");
+        assert!(env.iter().any(|line| line == "DECK_GITHUB_ENABLED=0"), "{env:?}");
     }
 
     #[test]

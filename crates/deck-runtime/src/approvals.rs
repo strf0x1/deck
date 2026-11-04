@@ -455,44 +455,107 @@ impl Boundary {
     /// so approving again changes nothing; revoking removes exactly the named
     /// destinations and nothing else.
     pub fn profile(&self, project: Option<&str>, destinations: &[String], revoke: bool) -> Result<usize> {
+        let operations: Vec<String> = if revoke { Vec::new() } else { vec!["connect".to_string()] };
+        self.rules(project, "web", &operations, destinations, revoke)
+    }
+
+    /// Always-allow a GitHub operation for a project (ADR 0007 §3). The
+    /// operations are the gateway's closed set, so a project rule names one of
+    /// `publish`, `create_pr` or `update_pr`; a read needs no rule.
+    pub fn github_profile(
+        &self,
+        project: Option<&str>,
+        repository: &str,
+        operations: &[String],
+        revoke: bool,
+    ) -> Result<usize> {
+        let operations: Vec<String> = operations
+            .iter()
+            .filter(|operation| matches!(operation.as_str(), "publish" | "create_pr" | "update_pr"))
+            .cloned()
+            .collect();
+        if operations.is_empty() {
+            bail!("a GitHub profile names publish, create_pr or update_pr");
+        }
+        self.rules_for(project, "github", &operations, repository, revoke)
+    }
+
+    /// The shared body of a whole-profile decision: one project rule per
+    /// gateway operation on one destination, idempotent, and a revoke that
+    /// removes exactly the named ones.
+    fn rules(
+        &self,
+        project: Option<&str>,
+        gateway: &str,
+        operations: &[String],
+        destinations: &[String],
+        revoke: bool,
+    ) -> Result<usize> {
+        // A rule belongs to a project, whether or not there is a destination
+        // to write it on.
+        if project.is_none_or(str::is_empty) {
+            bail!("a profile decision names the project it applies to");
+        }
+        let mut changed = 0;
+        for destination in destinations {
+            changed += self.rules_for(project, gateway, operations, destination, revoke)?;
+        }
+        Ok(changed)
+    }
+
+    fn rules_for(
+        &self,
+        project: Option<&str>,
+        gateway: &str,
+        operations: &[String],
+        destination: &str,
+        revoke: bool,
+    ) -> Result<usize> {
         let Some(project) = project.map(str::to_owned).filter(|project| !project.is_empty()) else {
             bail!("a profile decision names the project it applies to");
         };
         let mut inner = self.lock();
         let now = now_ms();
-        let mut changed = 0;
         if revoke {
+            // A revoke removes the named operations in this gateway; a
+            // decision that names none removes every rule for the project on
+            // the destination, which is how a web profile revokes.
             let before = inner.projects.len();
             inner.projects.retain(|rule| {
-                !(rule.project.as_deref() == Some(project.as_str()) && destinations.contains(&rule.destination))
+                let same = rule.project.as_deref() == Some(project.as_str()) && rule.destination == destination;
+                let scoped = operations.is_empty() || (rule.gateway == gateway && operations.contains(&rule.operation));
+                !(same && scoped)
             });
-            changed += before - inner.projects.len();
-        }
-        if !revoke {
-            for destination in destinations {
-                let exists = inner.projects.iter().any(|rule| {
-                    rule.gateway == "web"
-                        && rule.operation == "connect"
-                        && rule.destination == *destination
-                        && rule.project.as_deref() == Some(project.as_str())
-                });
-                if exists {
-                    continue;
-                }
-                inner.seq += 1;
-                let id = format!("{:x}-p{:x}", now, inner.seq);
-                inner.projects.push(Grant {
-                    id,
-                    task: None,
-                    project: Some(project.clone()),
-                    gateway: "web".into(),
-                    operation: "connect".into(),
-                    destination: destination.clone(),
-                    scope: Scope::Project,
-                    expires_ms: None,
-                });
-                changed += 1;
+            let changed = before - inner.projects.len();
+            if changed > 0 {
+                save_projects(&self.data, &inner.projects, inner.version)?;
             }
+            return Ok(changed);
+        }
+        let mut changed = 0;
+        for operation in operations {
+            let exists = inner.projects.iter().any(|rule| {
+                rule.gateway == gateway
+                    && rule.operation == *operation
+                    && rule.destination == destination
+                    && rule.project.as_deref() == Some(project.as_str())
+            });
+            if exists {
+                continue;
+            }
+            inner.seq += 1;
+            let id = format!("{:x}-p{:x}", now, inner.seq);
+            inner.projects.push(Grant {
+                id,
+                task: None,
+                project: Some(project.clone()),
+                gateway: gateway.into(),
+                operation: operation.clone(),
+                destination: destination.to_string(),
+                scope: Scope::Project,
+                expires_ms: None,
+            });
+            changed += 1;
         }
         if changed > 0 {
             save_projects(&self.data, &inner.projects, inner.version)?;

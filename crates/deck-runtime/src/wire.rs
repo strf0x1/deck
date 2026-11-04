@@ -81,6 +81,17 @@ pub(crate) enum Request {
         #[serde(default)]
         revoke: bool,
     },
+    /// Always-allow the GitHub operations for a project: one decision instead
+    /// of one per publish (ADR 0007 §3).
+    GitHubProfile {
+        task: String,
+        #[serde(default)]
+        project: Option<String>,
+        repository: String,
+        operations: Vec<String>,
+        #[serde(default)]
+        revoke: bool,
+    },
     /// Replace a task's live model budget; the gateway re-reads the file.
     SetBudget {
         task: String,
@@ -121,6 +132,7 @@ impl Request {
             | Self::WithdrawApproval { task: id, .. }
             | Self::ModelUsage { task: id, .. }
             | Self::WebProfile { task: id, .. }
+            | Self::GitHubProfile { task: id, .. }
             | Self::SetBudget { task: id, .. }
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }

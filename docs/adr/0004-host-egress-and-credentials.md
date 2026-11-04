@@ -739,6 +739,12 @@ The implementation is not done until these have tests where practical.
    note are Construct's side, merged in its `deck/boundary-feedback` work.
 6. Add the web/package profiles; then hand the transport to #8.
 
+   Handed over. ADR 0007 settles #8's slice: a bounded GitHub operation
+   gateway on its own vsock port (1029) and the `github` extension kind, a git
+   bundle publish with the ref rules enforced on the host, the five-operation
+   set with merge refused by name, and `github_profile` for a whole-profile
+   decision.
+
    Landed 2026-11-03. `deck-gateway`'s `web` module is the address policy
    (`policy`), bounded host resolution (`resolve`), the opaque CONNECT tunnel
    (`connect`), the plain-mirror proxy with a checked redirect chain

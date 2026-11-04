@@ -12,15 +12,9 @@ use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-struct Gateway {
-    child: Child,
-    _stdin: ChildStdin,
-    ready: Ready,
-}
 
 impl Drop for Gateway {
     fn drop(&mut self) {
@@ -111,7 +105,15 @@ fn start_full(
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
     let ready: Ready = serde_json::from_str(line.trim()).unwrap_or_else(|error| panic!("{error}: {line:?}"));
-    Gateway { child, _stdin: stdin, ready }
+    // The gateway runs with `--exit-on-stdin-eof`, so the handle is leaked on
+    // purpose: dropping it here would stop the process mid-test.
+    std::mem::forget(stdin);
+    Gateway { child, ready }
+}
+
+struct Gateway {
+    child: Child,
+    ready: Ready,
 }
 
 /// One connection to the fake provider. `assert` runs against the request the
@@ -714,7 +716,10 @@ fn with_web(
     BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
     let ready: Ready = serde_json::from_str(line.trim()).unwrap_or_else(|error| panic!("{error}: {line:?}"));
     assert_eq!(ready.web.as_deref(), Some(dir.join("web.sock").as_path()), "the readiness line names the web socket");
-    Gateway { child, _stdin: stdin, ready }
+    // The gateway runs with `--exit-on-stdin-eof`, so the handle is leaked on
+    // purpose: dropping it here would stop the process mid-test.
+    std::mem::forget(stdin);
+    Gateway { child, ready }
 }
 
 /// A tunnel to a name the host file pins, with a grant file for the port.
@@ -906,4 +911,433 @@ fn a_web_denial_reaches_the_agent_through_the_boundary_status_events() {
     assert!(events.contains(r#""approval_id":"w1""#), "the agent learns why it was blocked: {events}");
     assert!(events.contains(r#""gateway":"web""#), "{events}");
     assert!(events.contains(r#""state":"pending""#), "{events}");
+}
+
+// ---- The GitHub operation gateway (ADR 0007) --------------------------------
+
+/// A fake `api.github.com`: the connection carries one request, which it
+/// records and answers with `reply`. Every known API call is counted.
+fn api(
+    assert: impl Fn(&Request) -> String + Send + Sync + 'static,
+) -> (String, Arc<Mutex<Vec<Request>>>, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let assert = Arc::new(assert);
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let log = log.clone();
+            let count = count.clone();
+            let assert = assert.clone();
+            std::thread::spawn(move || {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let Ok(Some(request)) = http::read(&mut reader) else { return };
+                let body = (assert)(&request);
+                log.lock().unwrap().push(request);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes());
+            });
+        }
+    });
+    (base, seen, calls)
+}
+
+/// A gateway with a GitHub socket and whatever policy the case needs.
+fn with_github(name: &str, api: &str, remote: &str, control: Option<(&Path, &str)>, token: Option<&str>) -> Gateway {
+    let dir = scratch(name);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deck-gateway"));
+    command
+        .arg("--model-socket")
+        .arg(dir.join("model.sock"))
+        .arg("--extension-socket")
+        .arg(dir.join("extension.sock"))
+        .arg("--github-socket")
+        .arg(dir.join("github.sock"))
+        .arg("--github-repository")
+        .arg("owner/repo")
+        .arg("--github-api")
+        .arg(api)
+        .arg("--github-remote")
+        .arg(remote)
+        .arg("--github-scratch")
+        .arg(dir.join("scratch"))
+        .arg("--github-token")
+        .arg("DECK_GATEWAY_TEST_GITHUB")
+        .arg("--task")
+        .arg("t-1")
+        .arg("--upstream")
+        .arg("http://127.0.0.1:9/v1")
+        .arg("--model")
+        .arg("allowed")
+        .arg("--secret")
+        .arg("DECK_GATEWAY_TEST_KEY")
+        .arg("--exit-on-stdin-eof")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    if let Some((socket, task)) = control {
+        command.arg("--control").arg(socket).arg("--task").arg(task);
+    }
+    match token {
+        Some(token) => {
+            command.env("DECK_GATEWAY_TEST_GITHUB", token);
+        }
+        None => {
+            command.env_remove("DECK_GATEWAY_TEST_GITHUB");
+        }
+    }
+    let mut child = command.spawn().unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let ready: Ready = serde_json::from_str(line.trim()).unwrap_or_else(|error| panic!("{error}: {line:?}"));
+    assert_eq!(ready.github.as_deref(), Some(dir.join("github.sock").as_path()));
+    // The gateway runs with `--exit-on-stdin-eof`, so the handle is leaked on
+    // purpose: dropping it here would stop the process mid-test.
+    std::mem::forget(stdin);
+    Gateway { child, ready }
+}
+
+/// A bare repository on host loopback stands in for GitHub: `git push` and
+/// `git ls-remote` work against it with no credential.
+fn bare(name: &str) -> (PathBuf, PathBuf) {
+    let dir = scratch(name);
+    let repo = dir.join("owner").join("repo.git");
+    std::fs::create_dir_all(&repo).unwrap();
+    let status = Command::new("git").args(["init", "--bare", "--quiet"]).arg(&repo).status().unwrap();
+    assert!(status.success());
+    (dir, repo)
+}
+
+/// The clone URL for a bare repository a case just made.
+fn url(repo: &Path) -> String {
+    format!("file://{}", repo.display())
+}
+
+/// A commit made by "the guest": a normal repository whose one commit is
+/// turned into a bundle for `refs/heads/<branch>`.
+fn bundle(dir: &Path, branch: &str, name: &str, history: &Path) -> Vec<u8> {
+    let work = dir.join(name);
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(["-c", "user.name=deck", "-c", "user.email=d@e"])
+            .args(["-c", "commit.gpgsign=false"])
+            .arg("-C")
+            .arg(&work)
+            .args(args)
+            .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    if !work.join(".git").exists() {
+        std::fs::create_dir_all(&work).unwrap();
+        let status = Command::new("git").arg("init").arg("--quiet").arg(&work).status().unwrap();
+        assert!(status.success());
+        if history.is_dir() {
+            // Start from the published history, so a second publish extends it.
+            // A bare repository keeps the branch under its own ref; a normal
+            // checkout of it (the second publish's history) keeps it under
+            // `refs/remotes/origin/`.
+            let bare = Command::new("git")
+                .arg("-C")
+                .arg(history)
+                .args(["rev-parse", "--is-bare-repository"])
+                .output()
+                .unwrap();
+            let source = if String::from_utf8_lossy(&bare.stdout).trim() == "true" {
+                format!("refs/heads/{branch}")
+            } else {
+                format!("refs/remotes/origin/{branch}")
+            };
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .arg("fetch")
+                .arg("--quiet")
+                .arg(history)
+                .arg(format!("{source}:refs/remotes/published/{branch}"))
+                .status()
+                .unwrap();
+            assert!(status.success(), "fetch {source} from {}", history.display());
+            git(&["reset", "--hard", &format!("refs/remotes/published/{branch}")]);
+        }
+    }
+    std::fs::write(work.join("file.txt"), name).unwrap();
+    git(&["add", "file.txt"]);
+    git(&["commit", "--quiet", "-m", name]);
+    // The fixture names its branch the way the policy names it; the gateway
+    // refuses a bundle whose ref is any other. A case that builds bundles for
+    // two branches only asks for the branch's own name here.
+    git(&["checkout", "--quiet", "-B", branch]);
+    let path = work.join(format!("{name}.bundle"));
+    let create = Command::new("git")
+        .arg("-C")
+        .arg(&work)
+        .args(["bundle", "create"])
+        .arg(&path)
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .unwrap();
+    assert!(create.status.success(), "git bundle create: {}", String::from_utf8_lossy(&create.stderr));
+    std::fs::read(&path).unwrap()
+}
+
+/// One publish: JSON head, a length-framed bundle, one reply.
+fn publish(socket: &Path, branch: &str, bytes: &[u8]) -> String {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    // One body: the JSON operation, then the length-framed bundle. The
+    // content-length covers both, the way a client sends a publish.
+    let body = serde_json::json!({ "operation": "publish", "branch": branch }).to_string().into_bytes();
+    let mut payload = body;
+    payload.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_be_bytes());
+    payload.extend_from_slice(bytes);
+    let head = format!(
+        "POST /operations/publish HTTP/1.1\r\nhost: gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+        payload.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(&payload).unwrap();
+    stream.flush().unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+fn agreement(name: &str) -> PathBuf {
+    let dir = scratch(name);
+    let socket = dir.join("deckd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut line = String::new();
+            if BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["gateway"], "github", "{request}");
+            let reply = serde_json::json!({
+                "ok": { "id": "g1", "gateway": "github", "operation": request["operation"],
+                        "destination": request["destination"], "state": { "allowed": "project" } }
+            });
+            let _ = stream.write_all(format!("{reply}\n").as_bytes());
+        }
+    });
+    socket
+}
+
+#[test]
+fn a_publish_pushes_only_the_task_branch_and_a_secret_is_never_echoed() {
+    let (dir, remote) = bare("gh-publish");
+    let (api, seen, calls) = api(|_| "{}".into());
+    let gateway = with_github(
+        "gh-publish-gw",
+        &api,
+        &url(&remote),
+        Some((&agreement("gh-publish-queue"), "t-1")),
+        Some("ghp-hunter2-SECRET"),
+    );
+    let github = gateway.ready.github.clone().unwrap();
+    let bytes = bundle(&dir, "deck/t-1", "first", &dir.join("none"));
+    let response = publish(&github, "deck/t-1", &bytes);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("\"branch\":\"deck/t-1\""), "{response}");
+    assert!(!response.contains("hunter2"), "the token never reaches the guest: {response}");
+    // The remote now has the branch, and only it.
+    let out = Command::new("git").arg("--git-dir").arg(&remote).arg("branch").arg("--list").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "deck/t-1");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "a push uses git, not the API: {seen:?}");
+}
+
+#[test]
+fn a_second_publish_extends_the_branch_and_a_rewrite_is_refused() {
+    let (dir, remote) = bare("gh-extend");
+    let (api, _, _) = api(|_| "{}".into());
+    let gateway =
+        with_github("gh-extend-gw", &api, &url(&remote), Some((&agreement("gh-extend-queue"), "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let first = bundle(&dir, "deck/t-1", "one", &dir.join("none"));
+    assert!(publish(&github, "deck/t-1", &first).starts_with("HTTP/1.1 200 OK"));
+    // A clone of what landed is the published history for the second bundle.
+    let cloned = dir.join("cloned");
+    assert!(
+        Command::new("git").args(["clone", "--quiet"]).arg(url(&remote)).arg(&cloned).status().unwrap().success(),
+        "clone the remote"
+    );
+    let second = bundle(&dir, "deck/t-1", "two", &cloned);
+    let response = publish(&github, "deck/t-1", &second);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("\"created\":false"), "{response}");
+    // A bundle built on a different root is a rewrite: refused, not forced.
+    let unrelated = scratch("gh-extend-unrelated");
+    let rewrite = bundle(&unrelated, "deck/t-1", "fork", &unrelated.join("none"));
+    let response = publish(&github, "deck/t-1", &rewrite);
+    assert!(response.starts_with("HTTP/1.1 5"), "{response}");
+    assert!(response.contains("never rewrites it"), "{response}");
+    let count =
+        Command::new("git").arg("--git-dir").arg(&remote).args(["rev-list", "--count", "deck/t-1"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2", "the rewrite did not land");
+}
+
+#[test]
+fn a_bundle_for_another_branch_or_two_refs_never_publishes() {
+    let (dir, remote) = bare("gh-branch");
+    let (api, _, calls) = api(|_| "{}".into());
+    let gateway =
+        with_github("gh-branch-gw", &api, &url(&remote), Some((&agreement("gh-branch-queue"), "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let other = bundle(&dir, "main", "main", &dir.join("none"));
+    let response = publish(&github, "deck/t-1", &other);
+    assert!(response.starts_with("HTTP/1.1 5"), "{response}");
+    assert!(response.contains("not refs/heads/deck/t-1"), "{response}");
+    let outs = Command::new("git").arg("--git-dir").arg(&remote).arg("branch").arg("--list").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&outs.stdout).trim(), "", "nothing landed");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    // A tag is not a branch either, and a second ref is refused by the header.
+    let tag = bundle(&dir, "deck/t-1", "tagged", &dir.join("none"));
+    assert!(publish(&github, "deck/t-1", &tag).starts_with("HTTP/1.1 200 OK"));
+    let mut two = b"# v2 git bundle\n# object-format=sha1\n".to_vec();
+    let sha = "0".repeat(40);
+    two.extend_from_slice(format!("# ref {sha} refs/heads/deck/t-1\n# ref {sha} refs/heads/main\n\nPACK").as_bytes());
+    let response = publish(&github, "deck/t-1", &two);
+    assert!(response.contains("2 refs"), "{response}");
+}
+
+#[test]
+fn merge_is_refused_by_name_and_a_pull_request_asks_the_queue() {
+    let (dir, remote) = bare("gh-merge");
+    let (api, seen, _) = api(|request| {
+        match request.target.as_str() {
+        t if t.ends_with("/pulls") => {
+            r#"{"number":7,"title":"t","state":"open","draft":true,"head":{"ref":"deck/t-1","sha":"abc"},"base":{"ref":"main"},"mergeable":null,"html_url":"https://github.com/owner/repo/pull/7","user":{"login":"x"}}"#.into()
+        }
+        _ => "{}".into(),
+    }
+    });
+    let socket = agreement("gh-merge-queue");
+    let gateway = with_github("gh-merge-gw", &api, &url(&remote), Some((&socket, "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    // A merge is a named refusal, answered without asking anyone.
+    let merge = send(
+        &github,
+        &format!(
+            "POST /operations/pull_request/update HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+            br#"{"operation":"merge","number":7}"#.len(),
+            std::str::from_utf8(br#"{"operation":"merge","number":7}"#).unwrap()
+        ),
+    );
+    assert!(merge.starts_with("HTTP/1.1 400"), "{merge}");
+    assert!(merge.contains("not a Deck GitHub operation"), "{merge}");
+    assert!(merge.contains("may publish"), "{merge}");
+    // A pull request asks the queue first, then creates it with the host token.
+    let ask = br#"{"operation":"create_pr","head":"deck/t-1","base":"main","title":"Add the thing","body":"It works","draft":true}"#;
+    let created = send(
+        &github,
+        &format!(
+            "POST /operations/pull_request HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+            ask.len(),
+            std::str::from_utf8(ask).unwrap()
+        ),
+    );
+    assert!(created.starts_with("HTTP/1.1 200 OK"), "{created}");
+    assert!(created.contains("\"number\":7"), "{created}");
+    assert!(!created.contains("\"user\""), "only the review fields return: {created}");
+    let seen = seen.lock().unwrap();
+    let post = seen.iter().find(|request| request.method == "POST").expect("a POST reached the API");
+    assert_eq!(post.target, "/repos/owner/repo/pulls");
+    assert_eq!(post.header("authorization"), Some("Bearer t"));
+    assert!(std::str::from_utf8(&post.body).unwrap().contains("\"head\":\"deck/t-1\""));
+    let _ = dir;
+}
+
+#[test]
+fn a_denied_publish_reports_the_approval_and_never_reaches_git() {
+    let (dir, remote) = bare("gh-denied");
+    let (api, _, calls) = api(|_| "{}".into());
+    let queue = scratch("gh-denied-queue");
+    let socket = queue.join("deckd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let reply = serde_json::json!({"ok": {"id": "g9", "state": "denied"}});
+        let _ = stream.write_all(format!("{reply}\n").as_bytes());
+    });
+    let gateway = with_github("gh-denied-gw", &api, &url(&remote), Some((&socket, "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let bytes = bundle(&dir, "deck/t-1", "denied", &dir.join("none"));
+    let response = publish(&github, "deck/t-1", &bytes);
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(response.contains("\"approval_id\":\"g9\""), "{response}");
+    assert!(response.contains("x-deck-approval: g9"), "{response}");
+    assert!(response.contains("\"retryable\":false"), "{response}");
+    let branches = Command::new("git").arg("--git-dir").arg(&remote).arg("branch").arg("--list").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&branches.stdout).trim(), "", "nothing was pushed");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn reads_need_no_approval_and_a_missing_token_refuses_every_operation() {
+    let (_, remote) = bare("gh-reads");
+    let (api, seen, _) = api(|request| match () {
+        _ if request.target.ends_with("/git/matching-refs/heads/") => {
+            r#"[{"ref":"refs/heads/deck/t-1","object":{"sha":"a"}},{"ref":"refs/heads/main","object":{"sha":"b"}}]"#
+                .into()
+        }
+        _ => r#"{"number":3,"state":"open","draft":false}"#.into(),
+    });
+    let gateway = with_github("gh-reads-gw", &api, &url(&remote), None, Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let mismatched = send(
+        &github,
+        "POST /operations/pull_request/review HTTP/1.1\r\ncontent-length: 13\r\n\r\n{\"operation\":\"refs\"}",
+    );
+    assert!(mismatched.starts_with("HTTP/1.1 400"), "the review path serves only review: {mismatched}");
+    let refs = send(
+        &github,
+        &format!(
+            "POST /operations/refs HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+            r#"{"operation":"refs"}"#.len(),
+            r#"{"operation":"refs"}"#
+        ),
+    );
+    assert!(refs.starts_with("HTTP/1.1 200 OK"), "{refs}");
+    assert!(refs.contains("\"task_branch\":true"), "{refs}");
+    assert!(refs.contains("\"branch\":\"main\""), "{refs}");
+    let review = send(
+        &github,
+        &format!(
+            "POST /operations/pull_request/review HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+            r#"{"operation":"review","number":3}"#.len(),
+            r#"{"operation":"review","number":3}"#
+        ),
+    );
+    // A read reaches the API without a queue connection.
+    assert!(review.starts_with("HTTP/1.1 200 OK"), "{review}");
+    assert!(review.contains("\"number\":3"), "{review}");
+    assert!(seen.lock().unwrap().iter().all(|request| request.header("authorization") == Some("Bearer t")));
+    // Without a token nothing runs, and the guest is told why.
+    let gateway = with_github("gh-reads-nokey", &api, &url(&remote), None, None);
+    let github = gateway.ready.github.clone().unwrap();
+    let review = send(
+        &github,
+        &format!(
+            "POST /operations/pull_request/review HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+            r#"{"operation":"review","number":3}"#.len(),
+            r#"{"operation":"review","number":3}"#
+        ),
+    );
+    assert!(review.starts_with("HTTP/1.1 503"), "{review}");
+    assert!(review.contains("deck_credential_missing"), "{review}");
 }
