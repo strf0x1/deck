@@ -7,9 +7,10 @@
 //! contains. The bundle is fetched from a local path under the gateway's own
 //! scratch directory, `git push` gets `--force-with-lease=<branch>:<sha>`
 //! whose expected sha was read a moment earlier, and the credential reaches
-//! git through a header `-c` argument, never through a file, an environment
-//! variable or a remote URL that a process listing could show. The gateway's
-//! own environment is not inherited by the children.
+//! git as environment-supplied config (`GIT_CONFIG_*`), never as an argument,
+//! a file or a remote URL that a process listing could show. The gateway's
+//! own environment is not inherited by the children, and one publish runs at
+//! a time, because they share the scratch repository.
 
 use crate::github::policy::{Policy, branch_name};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,10 @@ use std::time::Duration;
 const LIMIT: Duration = Duration::from_secs(120);
 /// The directory the gateway owns for the bundle it is about to fetch.
 const SCRATCH: &str = "scratch";
+/// Where a publish keeps the remote branch's tip and the bundle's commit in
+/// the scratch repository. Outside `refs/heads/`, so no branch is implied.
+const REMOTE_REF: &str = "refs/deck/remote";
+const INCOMING_REF: &str = "refs/deck/incoming";
 
 /// One published commit and what the remote now says after it landed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,19 +171,17 @@ impl Publisher {
         std::fs::write(&bundle, bytes).map_err(|error| Refused::Failed(format!("storing the bundle: {error}")))?;
         let bundle = bundle.to_string_lossy().into_owned();
         let reference = format!("refs/heads/{branch}");
-        // The scratch repository keeps the branch a previous publish left
-        // there, and a fetch from a bundle will not move it, so the incoming
-        // commit is read from the bundle's own tip before the checks below.
-        let fetched = self
-            .run(&["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", &bundle, &reference])
-            .map_err(Refused::Failed)?;
-        if !fetched.status.success() {
-            return Err(Refused::Failed(format!("fetch: {}", stderr(&fetched, self.token.as_deref()))));
+        // The remote's tip is fetched first, so an incremental bundle's
+        // prerequisites and the ancestry check below find their objects even
+        // when the branch was last pushed by something other than this
+        // scratch repository.
+        if let Remote::At(_) = remote {
+            self.fetch(self.remote_url(), &format!("+{reference}:{REMOTE_REF}"))?;
         }
-        // The fetch leaves a stale local branch from an earlier publish in
-        // this scratch repository, so the commit under test is read back from
-        // the ref just fetched, not from whatever the branch held before.
-        let commit = self.rev_parse("FETCH_HEAD")?;
+        // The bundle's one allowed ref lands on a ref this module owns, so the
+        // commit under test is exactly what this fetch brought in.
+        self.fetch(&bundle, &format!("+{reference}:{INCOMING_REF}"))?;
+        let commit = self.rev_parse(INCOMING_REF)?;
         if let Remote::At(previous) = remote
             && !self.ancestor(&previous.hex(), &commit.hex())?
         {
@@ -257,6 +260,17 @@ impl Publisher {
         }
     }
 
+    /// Fetch one refspec into the scratch repository.
+    fn fetch(&self, source: &str, refspec: &str) -> Result<(), Refused> {
+        let fetched = self
+            .run(&["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", source, refspec])
+            .map_err(Refused::Failed)?;
+        if !fetched.status.success() {
+            return Err(Refused::Failed(format!("fetch: {}", stderr(&fetched, self.token.as_deref()))));
+        }
+        Ok(())
+    }
+
     fn rev_parse(&self, reference: &str) -> Result<Commit, Refused> {
         let output = self.run(&["rev-parse", "--verify", reference]).map_err(Refused::Failed)?;
         if !output.status.success() {
@@ -297,11 +311,16 @@ impl Publisher {
         command.env("GIT_AUTHOR_NAME", "deck");
         command.env("GIT_AUTHOR_EMAIL", "deck@localhost");
         command.env("PATH", self.path());
+        // The credential reaches git as environment-supplied config, never as
+        // an argument: a child's argv is readable by every local user, its
+        // environment only by the same user. GitHub's smart HTTP takes the
+        // token as Basic auth with the `x-access-token` user, which works for
+        // both fine-grained and classic tokens.
         if let Some(token) = &self.token {
-            command.arg("-c").arg(format!(
-                "http.https://github.com/.extraheader=Authorization: Bearer {}",
-                token.replace(['\r', '\n'], "")
-            ));
+            let credential = base64(format!("x-access-token:{}", token.replace(['\r', '\n'], "")).as_bytes());
+            command.env("GIT_CONFIG_COUNT", "1");
+            command.env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader");
+            command.env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {credential}"));
         }
         command
     }
@@ -348,7 +367,9 @@ impl Publisher {
 fn stderr(output: &std::process::Output, token: Option<&str>) -> String {
     let mut reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if let Some(token) = token.filter(|token| !token.is_empty()) {
-        reason = reason.replace(token, "***");
+        // Git could echo either form: the token, or the header it was sent in.
+        let credential = base64(format!("x-access-token:{token}").as_bytes());
+        reason = reason.replace(&credential, "***").replace(token, "***");
     }
     if reason.is_empty() { format!("git exited with {}", output.status) } else { reason }
 }
@@ -367,6 +388,22 @@ fn git() -> PathBuf {
     PathBuf::from("git")
 }
 
+/// Standard base64 with padding, for the one Basic credential git sends. Not
+/// worth a dependency for four lines.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let word =
+            chunk.iter().enumerate().fold(0u32, |word, (index, byte)| word | u32::from(*byte) << (16 - 8 * index));
+        for index in 0..4 {
+            let sextet = ((word >> (18 - 6 * index)) & 0x3f) as usize;
+            out.push(if index <= chunk.len() { char::from(ALPHABET[sextet]) } else { '=' });
+        }
+    }
+    out
+}
+
 fn zero() -> String {
     "0".repeat(40)
 }
@@ -374,6 +411,32 @@ fn zero() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_basic_credential_is_standard_base64() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"x-access-token:ghp_abc"), "eC1hY2Nlc3MtdG9rZW46Z2hwX2FiYw==");
+    }
+
+    #[test]
+    fn the_token_never_appears_in_a_childs_arguments() {
+        let policy = Policy::new("o/r", "main", Vec::new()).unwrap();
+        let publisher = Publisher::new(policy, "t-1".into(), "https://github.com/o/r".into(), PathBuf::from("/tmp/x"))
+            .with_token(Some("ghp-SECRET".into()));
+        let command = publisher.command();
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert!(!args.iter().any(|arg| arg.contains("ghp-SECRET") || arg.contains("extraheader")), "{args:?}");
+        let value = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_CONFIG_VALUE_0")
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap();
+        assert_eq!(value, format!("Authorization: Basic {}", base64(b"x-access-token:ghp-SECRET")));
+    }
 
     #[test]
     fn a_commit_is_forty_hex_digits() {

@@ -423,7 +423,10 @@ impl Boundary {
             project: (scope == Scope::Project).then(|| item.project.clone()),
             gateway: item.gateway.clone(),
             operation: item.operation.clone(),
-            destination: item.destination.clone(),
+            destination: match (scope, item.gateway.as_str()) {
+                (Scope::Project, types::GITHUB) => types::github_repository(&item.destination).to_string(),
+                _ => item.destination.clone(),
+            },
             scope,
             expires_ms: match scope {
                 Scope::Once => Some(now + millis(self.settings.once)),
@@ -477,7 +480,20 @@ impl Boundary {
         if operations.is_empty() {
             bail!("a GitHub profile names publish, create_pr or update_pr");
         }
-        self.rules_for(project, "github", &operations, repository, revoke)
+        // The gateway asks about `owner/name#…` lowercased; a rule on anything
+        // else (a URL, a branch, a different case) would never match it.
+        let repository = repository.trim().to_ascii_lowercase();
+        let parts: Vec<&str> = repository.split('/').collect();
+        let valid = parts.len() == 2
+            && parts.iter().all(|part| {
+                !part.is_empty()
+                    && !part.starts_with('.')
+                    && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+            });
+        if !valid {
+            bail!("a GitHub profile names its repository as owner/name, not {repository:?}");
+        }
+        self.rules_for(project, GITHUB, &operations, &repository, revoke)
     }
 
     /// The shared body of a whole-profile decision: one project rule per

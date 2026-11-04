@@ -280,7 +280,6 @@ impl Backend for Vm {
                 github_base: self.github.as_ref().map(|github| github.base.clone()).unwrap_or_default(),
                 github_branches: self.github.as_ref().map(|github| github.branches.clone()).unwrap_or_default(),
                 github_token: self.github.as_ref().map(|github| github.token.clone()).unwrap_or_default(),
-                github_rules: vec![self.data.join("approvals").join("github.json")],
                 github_scratch: self.dir(&task.id).join("github"),
                 upstream: self.upstream.clone(),
                 models: vec![self.model.clone()],

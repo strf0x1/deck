@@ -97,8 +97,6 @@ pub struct GitHubSettings {
     /// The environment variable the token comes from, read by the gateway at
     /// start from the daemon's environment and never written anywhere.
     pub secret: String,
-    /// The project rule file the gateway re-reads on change.
-    pub rules: Vec<PathBuf>,
     /// The gateway's own scratch directory for the bundle it fetches.
     pub scratch: PathBuf,
     /// A `git` other than the one on `PATH`.

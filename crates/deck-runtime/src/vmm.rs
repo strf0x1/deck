@@ -107,9 +107,6 @@ pub struct Gateway {
     /// in this config.
     #[serde(default)]
     pub github_token: String,
-    /// The project rule file the gateway re-reads on change.
-    #[serde(default)]
-    pub github_rules: Vec<PathBuf>,
     /// The gateway's scratch directory, where a publish fetches its bundle.
     pub github_scratch: PathBuf,
     pub upstream: String,
@@ -359,9 +356,6 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         }
         for branch in &gateway.github_branches {
             command.args(["--github-branch", branch]);
-        }
-        for rule in &gateway.github_rules {
-            command.arg("--github-rule").arg(rule);
         }
     }
     if let Some(socket) = &gateway.web_socket {
@@ -677,7 +671,6 @@ mod tests {
             github_base: String::new(),
             github_branches: Vec::new(),
             github_token: String::new(),
-            github_rules: Vec::new(),
             github_scratch: PathBuf::from("/tmp/task.github"),
             upstream: "http://127.0.0.1:1/v1".into(),
             models: vec!["m".into()],

@@ -84,9 +84,14 @@ Ref rules:
   history (force push) is refused, not truncated; recovering from a bad push
   is a host decision, not an agent one.
 - **Bundles are bounded.** `POST /operations/publish` takes a binary git
-  bundle on the same connection as its body (16 MiB), opened with the exact ref
-  name `refs/heads/<branch>`; the gateway refuses a bundle whose refs are not
-  that one, or that carries more than one ref. Work moves between guest and
+  bundle in the same body as its JSON object: the JSON, a 4-byte big-endian
+  length, then the bundle (16 MiB), all covered by one `content-length`. The
+  bundle is v2 with the exact ref name `refs/heads/<branch>`, optionally with
+  prerequisite lines (an incremental `base..branch` bundle); the gateway
+  refuses any other header line, a bundle whose refs are not that one, or one
+  that carries more than one ref. The host fetches the remote tip into its
+  scratch repository first, so prerequisites and the ancestry check resolve
+  however the branch was last pushed, and publishes run one at a time. Work moves between guest and
   host as git objects, so no filesystem is shared and no protocol frame has to
   be invented for one commit.
 - **Merge authority is GitHub's.** Nothing here can merge. GitHub's protected
@@ -100,7 +105,10 @@ Ref rules:
 destination `owner/name#branch` or `owner/name#pr`. The card therefore says
 "publish to strf0x1/deck#deck/t-123" rather than "some network write". Allow
 once retries the exact operation; Allow for this task lasts twelve hours like a
-web grant; Always allow writes a project rule.
+web grant; Always allow writes a project rule on `owner/name`, which covers
+every `owner/name#…` destination of that operation. `update_pr` is refused
+before any card unless the pull request's head is a branch the task may write
+in this repository.
 
 `refs` and `review` are reads of the task's own repository and run without an
 approval, the same way a profile-covered read does. They still use the host
@@ -120,7 +128,9 @@ says policy rather than outage.
 
 `DECK_GITHUB_TOKEN` in `deckd`'s environment is the v1 credential. It is the
 same shape as the model key: read once at gateway start, held in memory, never
-in `vmm.json`, the guest environment, a console line or a log. A personal
+in `vmm.json`, the guest environment, a console line or a log. It reaches `git`
+as environment-supplied config (`GIT_CONFIG_COUNT`/`KEY`/`VALUE`, Basic auth as
+`x-access-token`), never as an argument a process listing would show. A personal
 token (fine-grained, restricted to one repository with `contents: write` and
 `pull_requests: write`) is enough for the first prototype.
 

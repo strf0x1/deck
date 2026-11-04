@@ -8,12 +8,13 @@
 //! endpoint the operation set does not name. A redirect is not followed: an
 //! API that answers 301 to another host would be egress the policy never saw.
 
-use crate::github::bundle::Bundle;
+use crate::github::bundle::{Bundle, is_sha};
 use crate::github::policy::{API_HOST, API_PREFIX, Policy};
 use crate::github::publish::{Publisher, Refused};
 use serde_json::{Value, json};
 use std::io::Read as _;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// A pull request body is a description, not an attachment.
@@ -42,6 +43,10 @@ pub struct Settings {
 pub struct Client {
     settings: Settings,
     agent: ureq::Agent,
+    /// Every publish shares one scratch repository and its refs, and the
+    /// gateway serves each connection on its own thread, so publishes take
+    /// turns: two at once could push each other's commit.
+    publishing: Mutex<()>,
 }
 
 impl Client {
@@ -54,7 +59,7 @@ impl Client {
             .timeout_global(Some(Duration::from_secs(60)))
             .timeout_connect(Some(Duration::from_secs(20)))
             .build();
-        Self { settings, agent: config.new_agent() }
+        Self { settings, agent: config.new_agent(), publishing: Mutex::new(()) }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -89,7 +94,10 @@ impl Client {
         if let Some(git) = &self.settings.git {
             publisher = publisher.with_git(git.clone());
         }
-        let published = publisher.publish(branch, bytes).map_err(|refused| refused.message())?;
+        let published = {
+            let _turn = self.publishing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            publisher.publish(branch, bytes).map_err(|refused| refused.message())?
+        };
         Ok(json!({
             "repository": self.settings.policy.repository(),
             "branch": published.branch,
@@ -154,8 +162,8 @@ impl Client {
         {
             return Err(format!("{base:?} is not a base this task may target"));
         }
-        if let (Some(title), Some(body)) = (title, body) {
-            check_text(title, body)?;
+        if title.is_some() || body.is_some() {
+            check_text(title.unwrap_or("-"), body.unwrap_or_default())?;
         }
         let mut request = serde_json::Map::new();
         if let Some(title) = title {
@@ -178,13 +186,58 @@ impl Client {
         Ok(summary(&reply).to_string())
     }
 
-    /// A pull request's state: head commit, draft, mergeability and checks.
+    /// Whether pull request `number` is one this task may change: its head is
+    /// a branch the task may write, in this repository rather than a fork.
+    /// Asked before the approval card, so the user is never asked about a pull
+    /// request the gateway would refuse anyway.
+    pub fn owns_pull_request(&self, number: u64) -> Result<(), String> {
+        let path = format!("{}pulls/{number}", self.prefix());
+        let reply = self.call("GET", &path, None)?;
+        let head = reply.pointer("/head/ref").and_then(Value::as_str).unwrap_or_default();
+        let repository = reply.pointer("/head/repo/full_name").and_then(Value::as_str).unwrap_or_default();
+        if !repository.eq_ignore_ascii_case(self.settings.policy.repository()) {
+            return Err(format!("pull request {number} is not from a branch of {}", self.settings.policy.repository()));
+        }
+        if !self.settings.policy.writable(head, &self.settings.task) {
+            return Err(format!("pull request {number} is from {head:?}, not a branch this task may write"));
+        }
+        Ok(())
+    }
+
+    /// A pull request's state: head commit, draft, mergeability, and the
+    /// check runs on its head commit (`null` when it names no head commit).
     pub fn review(&self, number: u64) -> Result<String, String> {
         let path = format!("{}pulls/{number}", self.prefix());
         let reply = self.call("GET", &path, None)?;
         let mut out = summary(&reply);
-        out["checks"] = Value::Null;
+        out["checks"] = match reply.pointer("/head/sha").and_then(Value::as_str) {
+            Some(sha) if is_sha(sha) => self.checks(sha)?,
+            _ => Value::Null,
+        };
         Ok(out.to_string())
+    }
+
+    /// The check runs on one commit, reduced to what an agent decides on:
+    /// each run's name, status and conclusion. One page of 100 is the bound.
+    fn checks(&self, sha: &str) -> Result<Value, String> {
+        let path = format!("{}commits/{sha}/check-runs?per_page=100", self.prefix());
+        let reply = self.call("GET", &path, None)?;
+        let runs: Vec<Value> = reply
+            .get("check_runs")
+            .and_then(Value::as_array)
+            .map(|runs| {
+                runs.iter()
+                    .map(|run| {
+                        json!({
+                            "name": run.get("name").cloned().unwrap_or(Value::Null),
+                            "status": run.get("status").cloned().unwrap_or(Value::Null),
+                            "conclusion": run.get("conclusion").cloned().unwrap_or(Value::Null),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({ "total": reply.get("total_count").cloned().unwrap_or(json!(runs.len())), "runs": runs }))
     }
 
     fn prefix(&self) -> String {

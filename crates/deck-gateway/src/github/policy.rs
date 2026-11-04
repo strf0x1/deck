@@ -9,8 +9,6 @@
 //! it is not permitted instead of retrying a 404.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::sync::RwLock;
 
 /// The gateway kind approvals, grants and events carry.
 pub const GATEWAY: &str = "github";
@@ -192,96 +190,6 @@ pub fn branch_name(branch: &str) -> Option<String> {
     ok.then(|| branch.to_string())
 }
 
-/// The live project rule `deckd` writes for this gateway, re-read when it
-/// changes the way the web grants are (ADR 0004 §2). A rule names one
-/// operation and the repository; the destination is `owner/name`.
-#[derive(Debug, Default)]
-pub struct Rules {
-    file: Option<PathBuf>,
-    cached: RwLock<Cached>,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct Cached {
-    stamp: Stamp,
-    /// Bit per [`Operation`], so a rule read is a compare.
-    allowed: u8,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    modified: Option<std::time::SystemTime>,
-    length: u64,
-}
-
-impl Rules {
-    pub fn new(file: Option<PathBuf>) -> Self {
-        Self { file, cached: RwLock::default() }
-    }
-
-    /// Whether the project has an always-allow rule for this operation.
-    pub fn allows(&self, operation: Operation, repository: &str) -> bool {
-        let Some(file) = &self.file else { return false };
-        let stamp = stamp(file);
-        {
-            let cached = self.cached.read().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if cached.stamp == stamp {
-                return cached.allowed & bit(operation) != 0;
-            }
-        }
-        let allowed = rules(file, repository);
-        let mut cached = self.cached.write().unwrap_or_else(|poisoned| poisoned.into_inner());
-        cached.stamp = stamp;
-        cached.allowed = allowed;
-        allowed & bit(operation) != 0
-    }
-}
-
-fn bit(operation: Operation) -> u8 {
-    1 << (operation as u8)
-}
-
-fn stamp(path: &Path) -> Stamp {
-    match std::fs::metadata(path) {
-        Ok(meta) => Stamp { modified: meta.modified().ok(), length: meta.len() },
-        Err(_) => Stamp::default(),
-    }
-}
-
-/// The operations the project rule file names for this repository. Every
-/// grant shape shares `gateway`, `operation` and `destination`, so the same
-/// file the web gateway reads also serves this one.
-fn rules(path: &Path, repository: &str) -> u8 {
-    let Ok(bytes) = std::fs::read(path) else { return 0 };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return 0 };
-    let list = match &value {
-        serde_json::Value::Array(items) => items.clone(),
-        serde_json::Value::Object(object) => match object.get("rules").and_then(|rules| rules.as_array()) {
-            Some(rules) => rules.clone(),
-            None => return 0,
-        },
-        _ => return 0,
-    };
-    let mut allowed = 0;
-    for grant in list {
-        if grant.get("gateway").and_then(|value| value.as_str()) != Some(GATEWAY) {
-            continue;
-        }
-        if grant.get("scope").and_then(|value| value.as_str()) == Some("once") {
-            continue;
-        }
-        let destination = grant.get("destination").and_then(|value| value.as_str()).unwrap_or_default();
-        if !destination.eq_ignore_ascii_case(repository) {
-            continue;
-        }
-        let operation = grant.get("operation").and_then(|value| value.as_str()).unwrap_or_default();
-        if let Some(known) = operations().find(|candidate| candidate.name() == operation) {
-            allowed |= bit(*known);
-        }
-    }
-    allowed
-}
-
 /// Every operation, so a rule or a request can be compared to the table.
 pub fn operations() -> impl Iterator<Item = &'static Operation> {
     const ALL: [Operation; 5] =
@@ -408,34 +316,6 @@ mod tests {
             assert!(branch_name(bad).is_none(), "{bad}");
         }
         assert!(Policy::new("o/r", "not a branch", Vec::new()).is_err());
-    }
-
-    #[test]
-    fn a_rule_matches_one_operation_on_the_repository() {
-        let dir = std::env::temp_dir().join(format!("deck-github-rules-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("projects.json");
-        std::fs::write(
-            &path,
-            r#"{"rules":[
-                {"gateway":"github","operation":"publish","destination":"o/r","scope":"project"},
-                {"gateway":"github","operation":"create_pr","destination":"o/r","scope":"once"},
-                {"gateway":"github","operation":"update_pr","destination":"other/r","scope":"project"},
-                {"gateway":"web","operation":"connect","destination":"o/r","scope":"project"}
-            ]}"#,
-        )
-        .unwrap();
-        let rules = Rules::new(Some(path.clone()));
-        assert!(rules.allows(Operation::Publish, "o/r"));
-        assert!(!rules.allows(Operation::PullRequest, "o/r"), "a once grant is not a project rule");
-        assert!(!rules.allows(Operation::UpdatePullRequest, "o/r"), "another repository's rule");
-        assert!(!rules.allows(Operation::Review, "o/r"));
-        // A new file replaces the old set without a restart.
-        std::fs::write(&path, r#"[]"#).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        assert!(!rules.allows(Operation::Publish, "o/r"));
-        assert!(!Rules::new(None).allows(Operation::Publish, "o/r"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

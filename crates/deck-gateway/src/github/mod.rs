@@ -90,6 +90,13 @@ impl GitHub {
             true => split_body(request, rest),
             false => (request, rest),
         };
+        if request.body.len() > MAX_ASK {
+            return reply(
+                &mut stream,
+                413,
+                json!({ "error": format!("the operation's JSON exceeds {MAX_ASK} bytes") }),
+            );
+        }
         let (ask, parsed) = match Ask::parse(&request.body) {
             Ok(parsed) => parsed,
             Err(error) => return reply(&mut stream, 400, json!({ "error": error })),
@@ -128,8 +135,8 @@ impl GitHub {
         reply(&mut stream, response.0, response.1)
     }
 
-    /// Decide, then perform. A write asks the queue unless the project holds a
-    /// rule for it; a read never asks.
+    /// Decide, then perform. A write asks deckd's queue, which answers at once
+    /// from a project rule or a live grant; a read never asks.
     fn run(&self, ask: &Ask, operation: Operation, bundle: Option<&[u8]>) -> Result<(String, String), Failure> {
         if !self.client.has_token() {
             return Err(Failure::error(503, "deck_credential_missing", "the host has no GitHub credential"));
@@ -142,6 +149,13 @@ impl GitHub {
             Operation::Refs => String::new(),
         };
         let domain = self.client.destination(&detail);
+        // An update may only touch a pull request this task opened from a
+        // branch it may write; that is checked before anyone is asked.
+        if let (Operation::UpdatePullRequest, Some(number)) = (operation, ask.number)
+            && let Err(why) = self.client.owns_pull_request(number)
+        {
+            return Err(Failure::error(403, "deck_github_refused", &why));
+        }
         self.decide(operation, &domain, &reason(ask, operation))?;
         let result = match operation {
             Operation::Publish => {
@@ -282,11 +296,11 @@ fn drain(stream: &mut UnixStream) -> io::Result<()> {
 
 /// Read one request and keep what arrived after its head.
 ///
-/// The design choice: this reader owns the bytes after the head instead of a
-/// `BufReader`, because a publish's bundle follows the head on the same
-/// connection and a buffered read of the head would swallow it. The head is
-/// read to its `\r\n\r\n`, parsed, and everything after it — the JSON body
-/// and then the bundle — is returned unread, in order.
+/// The design choice: the head is read a byte at a time to its `\r\n\r\n`
+/// rather than through a `BufReader`, so nothing past it is consumed; the body
+/// is then exactly its content-length. For a publish that body is the JSON
+/// head, the bundle's length and the bundle, and its ceiling is sized for the
+/// bundle rather than for a JSON request.
 fn read(reader: &mut UnixStream) -> Result<Option<(Request, Vec<u8>)>, ReadError> {
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
@@ -338,12 +352,19 @@ fn read(reader: &mut UnixStream) -> Result<Option<(Request, Vec<u8>)>, ReadError
         }
         headers.push((name, value.to_string()));
     }
-    if length > MAX_ASK {
-        return Err(ReadError::Refused { status: 413, message: format!("the request body exceeds {MAX_ASK} bytes") });
+    // A publish's content-length covers its JSON head, the bundle's 4-byte
+    // length and the bundle, so its ceiling is the sum of those bounds; the
+    // JSON head alone is held to `MAX_ASK` once it is split off. Every other
+    // operation's body is only the JSON head.
+    let limit = match crate::github::policy::operations().any(|op| op.carries_bundle() && op.path() == target) {
+        true => MAX_ASK + 4 + bundle::MAX_BUNDLE,
+        false => MAX_ASK,
+    };
+    if length > limit {
+        return Err(ReadError::Refused { status: 413, message: format!("the request body exceeds {limit} bytes") });
     }
-    // The body is exactly its content-length. A publish's bundle follows it on
-    // the same connection, so what arrives after the body belongs to the
-    // caller; this read never waits for a peer to close.
+    // The body is exactly its content-length; this read never waits for a
+    // peer to close.
     let mut after = vec![0; length];
     if length > 0 {
         // A body that stops arriving is a malformed request, not a peer that

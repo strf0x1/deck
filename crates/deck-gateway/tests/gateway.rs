@@ -1024,6 +1024,12 @@ fn url(repo: &Path) -> String {
 /// A commit made by "the guest": a normal repository whose one commit is
 /// turned into a bundle for `refs/heads/<branch>`.
 fn bundle(dir: &Path, branch: &str, name: &str, history: &Path) -> Vec<u8> {
+    bundle_with(dir, branch, name, history, name.as_bytes(), None)
+}
+
+/// A bundle whose commit writes `contents`, built from `since` when one is
+/// named (`since..branch`, the incremental form with a prerequisite line).
+fn bundle_with(dir: &Path, branch: &str, name: &str, history: &Path, contents: &[u8], since: Option<&str>) -> Vec<u8> {
     let work = dir.join(name);
     let git = |args: &[&str]| {
         let status = Command::new("git")
@@ -1071,7 +1077,7 @@ fn bundle(dir: &Path, branch: &str, name: &str, history: &Path) -> Vec<u8> {
             git(&["reset", "--hard", &format!("refs/remotes/published/{branch}")]);
         }
     }
-    std::fs::write(work.join("file.txt"), name).unwrap();
+    std::fs::write(work.join("file.txt"), contents).unwrap();
     git(&["add", "file.txt"]);
     git(&["commit", "--quiet", "-m", name]);
     // The fixture names its branch the way the policy names it; the gateway
@@ -1084,7 +1090,10 @@ fn bundle(dir: &Path, branch: &str, name: &str, history: &Path) -> Vec<u8> {
         .arg(&work)
         .args(["bundle", "create"])
         .arg(&path)
-        .arg(format!("refs/heads/{branch}"))
+        .arg(match since {
+            Some(since) => format!("{since}..refs/heads/{branch}"),
+            None => format!("refs/heads/{branch}"),
+        })
         .output()
         .unwrap();
     assert!(create.status.success(), "git bundle create: {}", String::from_utf8_lossy(&create.stderr));
@@ -1206,9 +1215,9 @@ fn a_bundle_for_another_branch_or_two_refs_never_publishes() {
     // A tag is not a branch either, and a second ref is refused by the header.
     let tag = bundle(&dir, "deck/t-1", "tagged", &dir.join("none"));
     assert!(publish(&github, "deck/t-1", &tag).starts_with("HTTP/1.1 200 OK"));
-    let mut two = b"# v2 git bundle\n# object-format=sha1\n".to_vec();
+    let mut two = b"# v2 git bundle\n".to_vec();
     let sha = "0".repeat(40);
-    two.extend_from_slice(format!("# ref {sha} refs/heads/deck/t-1\n# ref {sha} refs/heads/main\n\nPACK").as_bytes());
+    two.extend_from_slice(format!("{sha} refs/heads/deck/t-1\n{sha} refs/heads/main\n\nPACK").as_bytes());
     let response = publish(&github, "deck/t-1", &two);
     assert!(response.contains("2 refs"), "{response}");
 }
@@ -1364,4 +1373,107 @@ fn reads_need_no_approval_and_a_missing_token_refuses_every_operation() {
     );
     assert!(review.starts_with("HTTP/1.1 503"), "{review}");
     assert!(review.contains("deck_credential_missing"), "{review}");
+}
+
+/// Bytes that a pack cannot compress, so the bundle's size is the file's.
+fn noise(length: usize) -> Vec<u8> {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    (0..length)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+#[test]
+fn a_bundle_larger_than_a_json_request_publishes() {
+    let (dir, remote) = bare("gh-large");
+    let (api, _, _) = api(|_| "{}".into());
+    let gateway =
+        with_github("gh-large-gw", &api, &url(&remote), Some((&agreement("gh-large-queue"), "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let bytes = bundle_with(&dir, "deck/t-1", "large", &dir.join("none"), &noise(400 * 1024), None);
+    assert!(bytes.len() > 256 * 1024, "the fixture is past the JSON ceiling: {}", bytes.len());
+    let response = publish(&github, "deck/t-1", &bytes);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+}
+
+#[test]
+fn an_incremental_bundle_publishes_from_a_fresh_scratch_repository() {
+    let (dir, remote) = bare("gh-incremental");
+    let (api, _, _) = api(|_| "{}".into());
+    let first_gateway =
+        with_github("gh-incr-gw1", &api, &url(&remote), Some((&agreement("gh-incr-queue1"), "t-1")), Some("t"));
+    let first = bundle(&dir, "deck/t-1", "one", &dir.join("none"));
+    assert!(publish(&first_gateway.ready.github.clone().unwrap(), "deck/t-1", &first).starts_with("HTTP/1.1 200 OK"));
+    // The way a guest sends a follow-up: only the new commit, with the
+    // published tip as its prerequisite. A second gateway has never seen the
+    // first commit, so it must read it from the remote to accept this.
+    let cloned = dir.join("cloned");
+    assert!(Command::new("git").args(["clone", "--quiet"]).arg(url(&remote)).arg(&cloned).status().unwrap().success());
+    let second = bundle_with(&dir, "deck/t-1", "two", &cloned, b"two", Some("refs/remotes/published/deck/t-1"));
+    assert!(std::str::from_utf8(&second[..60]).unwrap_or_default().contains("\n-"), "a prerequisite line");
+    let gateway =
+        with_github("gh-incr-gw2", &api, &url(&remote), Some((&agreement("gh-incr-queue2"), "t-1")), Some("t"));
+    let response = publish(&gateway.ready.github.clone().unwrap(), "deck/t-1", &second);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("\"created\":false"), "{response}");
+    let count =
+        Command::new("git").arg("--git-dir").arg(&remote).args(["rev-list", "--count", "deck/t-1"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+}
+
+#[test]
+fn an_update_touches_only_the_tasks_own_pull_request_and_review_reports_checks() {
+    let (_, remote) = bare("gh-update");
+    let sha = "c".repeat(40);
+    let pull = move |number: u64, head: &str, repository: &str| {
+        format!(
+            r#"{{"number":{number},"title":"t","state":"open","draft":true,"head":{{"ref":"{head}","sha":"{sha}","repo":{{"full_name":"{repository}"}}}},"base":{{"ref":"main"}}}}"#
+        )
+    };
+    let (api, seen, _) = api(move |request| {
+        match (request.method.as_str(), request.target.as_str()) {
+        ("GET", t) if t.ends_with("/pulls/7") => pull(7, "deck/t-1", "owner/repo"),
+        ("GET", t) if t.ends_with("/pulls/8") => pull(8, "someone-else", "owner/repo"),
+        ("GET", t) if t.ends_with("/pulls/9") => pull(9, "deck/t-1", "fork/repo"),
+        ("GET", t) if t.contains("/check-runs") => {
+            r#"{"total_count":1,"check_runs":[{"name":"ci","status":"completed","conclusion":"success","output":{"text":"long"}}]}"#.into()
+        }
+        ("PATCH", _) => pull(7, "deck/t-1", "owner/repo"),
+        _ => "{}".into(),
+    }
+    });
+    let gateway =
+        with_github("gh-update-gw", &api, &url(&remote), Some((&agreement("gh-update-queue"), "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let update = |number: u64| {
+        let ask = format!(r#"{{"operation":"update_pr","number":{number},"body":"new"}}"#);
+        send(
+            &github,
+            &format!("POST /operations/pull_request/update HTTP/1.1\r\ncontent-length: {}\r\n\r\n{ask}", ask.len()),
+        )
+    };
+    let own = update(7);
+    assert!(own.starts_with("HTTP/1.1 200 OK"), "{own}");
+    for (number, why) in [(8, "not a branch this task may write"), (9, "not from a branch of owner/repo")] {
+        let refused = update(number);
+        assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+        assert!(refused.contains(why), "{refused}");
+    }
+    let patches: Vec<String> =
+        seen.lock().unwrap().iter().filter(|request| request.method == "PATCH").map(|r| r.target.clone()).collect();
+    assert_eq!(patches.len(), 1, "only the task's own pull request was changed: {patches:?}");
+    assert!(patches[0].ends_with("/pulls/7"));
+    let ask = r#"{"operation":"review","number":7}"#;
+    let review = send(
+        &github,
+        &format!("POST /operations/pull_request/review HTTP/1.1\r\ncontent-length: {}\r\n\r\n{ask}", ask.len()),
+    );
+    assert!(review.starts_with("HTTP/1.1 200 OK"), "{review}");
+    assert!(review.contains(r#""conclusion":"success""#), "{review}");
+    assert!(!review.contains("long"), "only the run's verdict returns: {review}");
 }

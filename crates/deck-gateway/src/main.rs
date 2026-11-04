@@ -17,7 +17,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-rule PATH] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -76,7 +76,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     let mut github_scratch = None;
     let mut github_api = None;
     let mut github_remote = None;
-    let mut github_rules = Vec::new();
     let mut github_git = None;
     let mut watch_stdin = false;
     let mut args = args.into_iter();
@@ -110,7 +109,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             "--github-scratch" => github_scratch = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--github-api" => github_api = Some(value(&mut args, &flag)?),
             "--github-remote" => github_remote = Some(value(&mut args, &flag)?),
-            "--github-rule" => github_rules.push(PathBuf::from(value(&mut args, &flag)?)),
             "--github-git" => github_git = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--exit-on-stdin-eof" => watch_stdin = true,
             "--help" | "-h" => {
@@ -175,7 +173,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
                 policy,
                 task: task_id.clone(),
                 secret: name,
-                rules: github_rules,
                 scratch: github_scratch.context("--github-socket needs --github-scratch")?,
                 git: github_git,
             })
@@ -184,7 +181,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             if github_repository.is_some()
                 || github_token.is_some()
                 || github_scratch.is_some()
-                || !github_rules.is_empty()
                 || github_api.is_some()
                 || github_remote.is_some()
                 || github_git.is_some()
