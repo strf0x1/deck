@@ -1317,9 +1317,15 @@ fn reads_need_no_approval_and_a_missing_token_refuses_every_operation() {
     });
     let gateway = with_github("gh-reads-gw", &api, &url(&remote), None, Some("t"));
     let github = gateway.ready.github.clone().unwrap();
+    // A complete, well-formed request for the wrong path: the body names an
+    // operation that is not the one the path serves.
     let mismatched = send(
         &github,
-        "POST /operations/pull_request/review HTTP/1.1\r\ncontent-length: 13\r\n\r\n{\"operation\":\"refs\"}",
+        &format!(
+            "POST /operations/pull_request/review HTTP/1.1\r\ncontent-length: {}\r\n\r\n{}",
+            r#"{"operation":"refs"}"#.len(),
+            r#"{"operation":"refs"}"#
+        ),
     );
     assert!(mismatched.starts_with("HTTP/1.1 400"), "the review path serves only review: {mismatched}");
     let refs = send(
