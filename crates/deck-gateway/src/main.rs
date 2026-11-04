@@ -4,16 +4,20 @@
 //!
 //! The design choice: the provider key comes from the host environment (the
 //! daemon's, never the guest's) until deckd's credential broker owns it. The
-//! gateway prints one JSON line, then never writes a secret anywhere.
+//! gateway prints one JSON line, then never writes a secret anywhere. The
+//! web gateway's policy — its profiles, its grant files, its optional pinned
+//! hosts — is all given as arguments by the VMM, so nothing in the guest can
+//! widen it.
 
 use anyhow::{Context as _, Result, bail};
 use deck_gateway::control::Control;
-use deck_gateway::server::{self, Config};
+use deck_gateway::policy::{Budget, Usage};
+use deck_gateway::server::{self, Config, WebSettings};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH --upstream URL --model NAME [--model NAME] --secret NAME [--control PATH --task ID] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-hosts PATH] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -52,8 +56,18 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     let mut upstream = None;
     let mut models = Vec::new();
     let mut secret = None;
+    let mut request_budget = None;
+    let mut token_budget = None;
+    let mut used_requests = 0;
+    let mut used_tokens = 0;
+    let mut budget_file = None;
     let mut control = None;
     let mut task = None;
+    let mut web_socket = None;
+    let mut web_profiles = Vec::new();
+    let mut web_grants = Vec::new();
+    let mut web_hosts = None;
+    let mut web_test_connect = None;
     let mut watch_stdin = false;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -63,8 +77,21 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             "--upstream" => upstream = Some(value(&mut args, &flag)?),
             "--model" => models.push(value(&mut args, &flag)?),
             "--secret" => secret = Some(value(&mut args, &flag)?),
+            "--request-budget" => request_budget = Some(number(&mut args, &flag)?),
+            "--token-budget" => token_budget = Some(number(&mut args, &flag)?),
+            "--used-requests" => used_requests = number(&mut args, &flag)?,
+            "--used-tokens" => used_tokens = number(&mut args, &flag)?,
+            "--budget-file" => budget_file = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--control" => control = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--task" => task = Some(value(&mut args, &flag)?),
+            "--web-socket" => web_socket = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--web-profile" => web_profiles.push(value(&mut args, &flag)?),
+            "--web-grants" => web_grants.push(PathBuf::from(value(&mut args, &flag)?)),
+            "--web-hosts" => web_hosts = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--web-test-connect" => {
+                let address = value(&mut args, &flag)?;
+                web_test_connect = Some(address.parse().with_context(|| format!("--web-test-connect: {address:?}"))?);
+            }
             "--exit-on-stdin-eof" => watch_stdin = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -87,6 +114,21 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         (None, None) => None,
         _ => bail!("--control and --task are given together or not at all"),
     };
+    let web = match web_socket {
+        Some(socket) => Some(WebSettings {
+            socket,
+            profiles: web_profiles,
+            grants: web_grants,
+            hosts: web_hosts,
+            test_connect: web_test_connect,
+        }),
+        None => {
+            if !web_profiles.is_empty() || !web_grants.is_empty() || web_hosts.is_some() || web_test_connect.is_some() {
+                bail!("--web-profile, --web-grants and --web-hosts need --web-socket");
+            }
+            None
+        }
+    };
     Ok((
         Config {
             upstream,
@@ -94,8 +136,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             key,
             secret: secret.clone(),
             control,
+            budget: Budget { requests: request_budget, tokens: token_budget },
+            usage: Usage { requests: used_requests, tokens: used_tokens },
+            budget_file,
             model_socket: model_socket.context(USAGE)?,
             extension_socket: extension_socket.context(USAGE)?,
+            web,
         },
         secret,
         watch_stdin,
@@ -104,6 +150,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
 
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
     args.next().with_context(|| format!("{flag} needs a value"))
+}
+
+fn number(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<u64> {
+    let value = value(args, flag)?;
+    value.parse().with_context(|| format!("{flag} must be a whole number, not {value:?}"))
 }
 
 #[cfg(test)]
@@ -124,6 +175,54 @@ mod tests {
         let mut ftp = base;
         ftp.extend(args(&["--upstream", "ftp://example.com/v1", "--model", "m"]));
         assert!(parse(ftp).is_err());
+    }
+
+    #[test]
+    fn budgets_and_prior_usage_are_parsed() {
+        let (config, _, _) = parse(args(&[
+            "--model-socket",
+            "/tmp/m",
+            "--extension-socket",
+            "/tmp/e",
+            "--upstream",
+            "http://127.0.0.1:1/v1",
+            "--model",
+            "a",
+            "--secret",
+            "DECK_GATEWAY_TEST_SECRET",
+            "--request-budget",
+            "4",
+            "--token-budget",
+            "100",
+            "--used-requests",
+            "2",
+            "--used-tokens",
+            "40",
+            "--budget-file",
+            "/tmp/budget.json",
+        ]))
+        .unwrap();
+        assert_eq!(config.budget.requests, Some(4));
+        assert_eq!(config.budget.tokens, Some(100));
+        assert_eq!(config.usage.requests, 2);
+        assert_eq!(config.usage.tokens, 40);
+        assert_eq!(config.budget_file, Some(PathBuf::from("/tmp/budget.json")));
+
+        let mut bad = args(&[
+            "--model-socket",
+            "/tmp/m",
+            "--extension-socket",
+            "/tmp/e",
+            "--upstream",
+            "http://127.0.0.1:1/v1",
+            "--model",
+            "a",
+            "--secret",
+            "KEY",
+            "--request-budget",
+            "lots",
+        ]);
+        assert!(parse(bad.drain(..)).is_err());
     }
 
     #[test]

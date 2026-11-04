@@ -49,13 +49,28 @@ fn refused(status: u16, message: impl Into<String>) -> ReadError {
     ReadError::Refused { status, message: message.into() }
 }
 
-/// Read one request. `Ok(None)` is a clean EOF before any byte of a request,
-/// which a keep-alive client produces when it closes an idle connection.
+/// The request-target shape a listener accepts. The model gateway and the
+/// status endpoint serve named paths (`origin-form`); a plain-HTTP proxy
+/// request names its destination (`absolute-form`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Origin,
+    Absolute,
+}
+
+/// Read one request in [`Shape::Origin`]. `Ok(None)` is a clean EOF before any
+/// byte of a request, which a keep-alive client produces when it closes an
+/// idle connection.
 pub fn read(reader: &mut impl BufRead) -> Result<Option<Request>, ReadError> {
+    read_shape(reader, Shape::Origin)
+}
+
+/// Read one request whose target has the given shape.
+pub fn read_shape(reader: &mut impl BufRead, shape: Shape) -> Result<Option<Request>, ReadError> {
     let Some(head) = read_head(reader)? else {
         return Ok(None);
     };
-    parse(&head, reader).map(Some)
+    parse(&head, reader, shape).map(Some)
 }
 
 fn read_head(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, ReadError> {
@@ -97,7 +112,7 @@ fn take(reader: &mut impl BufRead) -> io::Result<Option<u8>> {
     Ok(Some(byte))
 }
 
-fn parse(head: &[u8], reader: &mut impl BufRead) -> Result<Request, ReadError> {
+fn parse(head: &[u8], reader: &mut impl BufRead, shape: Shape) -> Result<Request, ReadError> {
     let text = std::str::from_utf8(head).map_err(|_| refused(400, "request head is not UTF-8"))?;
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
@@ -109,8 +124,14 @@ fn parse(head: &[u8], reader: &mut impl BufRead) -> Result<Request, ReadError> {
     if !method.bytes().all(|b| b.is_ascii_uppercase()) || method.is_empty() {
         return Err(refused(400, "malformed method"));
     }
-    if !target.starts_with('/') {
-        return Err(refused(400, "only origin-form request targets are accepted"));
+    match shape {
+        Shape::Origin if !target.starts_with('/') => {
+            return Err(refused(400, "only origin-form request targets are accepted"));
+        }
+        Shape::Absolute if !target.starts_with("http://") => {
+            return Err(refused(400, "only absolute http:// request targets are accepted here"));
+        }
+        _ => {}
     }
     if version != "HTTP/1.1" && version != "HTTP/1.0" {
         return Err(refused(400, "only HTTP/1.x is accepted"));
@@ -237,6 +258,7 @@ fn reason(status: u16) -> &'static str {
         411 => "Length Required",
         413 => "Payload Too Large",
         417 => "Expectation Failed",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -287,6 +309,17 @@ mod tests {
         let mut raw = b"GET /v1/models HTTP/1.1\r\n".to_vec();
         raw.extend(std::iter::repeat_n(b'X', MAX_HEAD));
         assert!(matches!(read_from(&raw), Err(ReadError::Refused { status: 431, .. })));
+    }
+
+    #[test]
+    fn an_absolute_target_is_accepted_only_by_a_proxy_listener() {
+        let raw = b"GET http://mirror.example/pool/a.deb HTTP/1.1\r\nhost: mirror.example\r\n\r\n";
+        let request = read_shape(&mut Cursor::new(raw), Shape::Absolute).unwrap().unwrap();
+        assert_eq!(request.target, "http://mirror.example/pool/a.deb");
+        assert!(matches!(
+            read_shape(&mut Cursor::new(&b"GET /pool/a.deb HTTP/1.1\r\n\r\n"[..]), Shape::Absolute),
+            Err(ReadError::Refused { status: 400, .. })
+        ));
     }
 
     #[test]

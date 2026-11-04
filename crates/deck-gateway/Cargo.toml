@@ -1,6 +1,6 @@
 [package]
 name = "deck-gateway"
-description = "deck's host-side egress gateway for VM tasks: model gateway and the reserved extension port. No UI."
+description = "deck's host-side egress gateway for VM tasks: model, web/package and boundary status gateways. No UI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+libc.workspace = true
 
 [lints]
 workspace = true

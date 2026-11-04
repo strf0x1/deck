@@ -2,21 +2,34 @@
 //! runtime's VMM and mapped to a guest vsock port.
 //!
 //! The design choice: the listener set is fixed at process start because the
-//! VM's port map is. The reserved extension port accepts a framed kind: the
-//! boundary status endpoint is the first, and an unknown kind is refused.
-//! Adding another gateway kind later is a gateway update that running tasks
-//! pick up without a VM restart.
+//! VM's port map is. The web and package gateway gets a socket of its own,
+//! because a CONNECT has to reach a proxy on the port the task's proxy
+//! environment names; the reserved extension port accepts a framed kind, where
+//! `web` and `boundary` both answer, and an unknown kind is refused. Adding a
+//! kind later is a gateway update that running tasks pick up without a VM
+//! restart.
+//!
+//! One web socket serves both shapes a client sends: a proxy client writes
+//! `CONNECT host:port HTTP/1.1`, a mirror client writes `GET http://host/…`.
+//! The first request line decides which handler sees the connection, and the
+//! bytes read for that decision are handed to it, never read twice.
 //!
 //! The process fails closed: any listener that stops returns an error, and the
 //! VMM treats the gateway's exit as the task's failure.
 
 use crate::control::Control;
-use crate::model::Model;
-use crate::policy::Models;
+use crate::http;
+use crate::model::{Model, Settings};
+use crate::policy::{Budget, Models, Usage};
 use crate::status::Status;
+use crate::web::connect::Connector;
+use crate::web::policy::{Grants, Profiles};
+use crate::web::resolve::Resolver;
+use crate::web::status::Events as WebEvents;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read as _, Write as _};
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -32,6 +45,8 @@ const MAX_KIND: usize = 4 * 1024;
 /// The first kind on the extension port: the boundary status endpoint. The
 /// guest relay writes this name before forwarding plain HTTP.
 pub const BOUNDARY_KIND: &str = "boundary";
+/// The web and package kind, served on its own port and on the extension port.
+pub const WEB_KIND: &str = crate::web::KIND;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -44,8 +59,36 @@ pub struct Config {
     pub secret: String,
     /// The daemon queue that decides a model the task was not configured with.
     pub control: Option<Control>,
+    /// Process-start limits; `budget_file` overrides them when present.
+    pub budget: Budget,
+    /// Counts already on the task's record, so a resumed gateway continues
+    /// rather than resetting the budget.
+    pub usage: Usage,
+    /// The task's live budget, rewritten by `deckd`.
+    pub budget_file: Option<PathBuf>,
     pub model_socket: PathBuf,
     pub extension_socket: PathBuf,
+    /// The web and package gateway. `None` serves no web traffic: the task
+    /// has no proxy and no mirror read, which is the closed default.
+    pub web: Option<WebSettings>,
+}
+
+/// The web and package gateway's policy. The guest can name a profile and a
+/// destination; the table, the grant files and the daemon stay host state.
+#[derive(Debug, Clone)]
+pub struct WebSettings {
+    pub socket: PathBuf,
+    /// The profiles the task may use without asking, by name.
+    pub profiles: Vec<String>,
+    /// The project's rule files and the task's grant file, re-read on change.
+    pub grants: Vec<PathBuf>,
+    /// A reserved name for a test or a task whose destinations are pinned;
+    /// production resolution is the host's own.
+    pub hosts: Option<PathBuf>,
+    /// Where the dial goes after the policy admitted a resolved address. Only
+    /// a test sets it, so the tunnel path is provable without a route to a
+    /// public host; the binary never passes it.
+    pub test_connect: Option<std::net::IpAddr>,
 }
 
 /// The startup line the VMM waits for. It names the sockets so the VMM can
@@ -54,6 +97,10 @@ pub struct Config {
 pub struct Ready {
     pub model: PathBuf,
     pub extension: PathBuf,
+    /// Names the web socket when the task has one, so the VMM can verify the
+    /// map it installs rather than trusting the argument it passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<PathBuf>,
 }
 
 /// Bind both sockets and announce readiness, then serve until a listener
@@ -62,32 +109,61 @@ pub struct Ready {
 pub fn serve(config: Config) -> Result<()> {
     let model_listener = bind(&config.model_socket)?;
     let extension_listener = bind(&config.extension_socket)?;
-    let ready = Ready { model: config.model_socket.clone(), extension: config.extension_socket.clone() };
+    let web_listener = match &config.web {
+        Some(web) => Some(bind(&web.socket)?),
+        None => None,
+    };
+    let ready = Ready {
+        model: config.model_socket.clone(),
+        extension: config.extension_socket.clone(),
+        web: config.web.as_ref().map(|web| web.socket.clone()),
+    };
     println!("{}", serde_json::to_string(&ready)?);
     io::stdout().flush().context("announcing gateway readiness")?;
 
+    let budget = config.budget_file.as_ref().and_then(|path| Budget::load(path)).unwrap_or(config.budget);
     let status = Status::new(config.control.clone());
-    let model = Arc::new(Model::new(
-        config.upstream,
-        Models::new(config.models),
-        config.key,
-        config.secret,
-        config.control,
-        status.clone(),
-    ));
+    let web = web_settings(config.web.as_ref(), config.control.clone())?;
+    let events = Arc::new(WebEvents::new());
+    let web = web.map(|connector| Arc::new(connector.with_events(events.clone())));
+    let model = Arc::new(Model::new(Settings {
+        upstream: config.upstream,
+        models: Models::new(config.models),
+        key: config.key,
+        secret: config.secret,
+        control: config.control,
+        status: status.clone(),
+        budget,
+        usage: config.usage,
+        budget_file: config.budget_file,
+    }));
     let limits = Arc::new(Limit::new(CONNECTIONS));
     let (failed, failure) = mpsc::channel();
 
     std::thread::Builder::new().name("gateway-extension".into()).spawn({
         let failed = failed.clone();
         let limits = limits.clone();
+        let web = web.clone();
         move || {
-            let reason = accept(extension_listener, limits, move |stream| extension(stream, status.clone()))
+            let kinds = Kinds { status, web, events };
+            let reason = accept(extension_listener, limits, move |stream| kinds.extension(stream))
                 .err()
                 .map(|error| format!("{error:#}"));
             let _ = failed.send(("extension", reason));
         }
     })?;
+    if let (Some(listener), Some(connector)) = (web_listener, web.clone()) {
+        std::thread::Builder::new().name("gateway-web".into()).spawn({
+            let limits = limits.clone();
+            let failed = failed.clone();
+            move || {
+                let reason = accept(listener, limits, move |stream| Kinds::web(stream, connector.clone()))
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                let _ = failed.send(("web", reason));
+            }
+        })?;
+    }
     std::thread::Builder::new().name("gateway-model".into()).spawn({
         let limits = limits.clone();
         move || {
@@ -103,6 +179,28 @@ pub fn serve(config: Config) -> Result<()> {
         Ok((kind, None)) => bail!("the {kind} listener stopped"),
         Err(_) => bail!("both listeners stopped"),
     }
+}
+
+/// The web gateway's host state, or `None` when the task was started without
+/// one. An undeclared profile is a startup error rather than a silently
+/// narrower or wider policy.
+fn web_settings(settings: Option<&WebSettings>, control: Option<Control>) -> Result<Option<Connector>> {
+    let Some(settings) = settings else { return Ok(None) };
+    // The web gateway asks for destinations only; the model jobs (usage,
+    // waiting) are the model gateway's, so it takes the destination half.
+    let control =
+        control.map(|control| crate::web::Control::new(control.socket().to_owned(), control.task().to_owned()));
+    let profiles = Profiles::declared(settings.profiles.iter().cloned()).map_err(anyhow::Error::msg)?;
+    Ok(Some(Connector {
+        resolver: match settings.test_connect {
+            Some(address) => Resolver::at(settings.hosts.as_deref()).redirect_to(address),
+            None => Resolver::at(settings.hosts.as_deref()),
+        },
+        grants: Arc::new(Grants::new(settings.grants.clone())),
+        profiles: Arc::new(profiles),
+        control,
+        status: Arc::new(WebEvents::new()),
+    }))
 }
 
 fn bind(path: &Path) -> Result<UnixListener> {
@@ -143,28 +241,97 @@ where
     }
 }
 
-/// The extension port's dispatch: the framed kind names the gateway the
-/// connection wants. The boundary kind speaks HTTP from that point on; any
-/// other kind is refused, and no request on this port can allow anything.
-///
-/// The frame is read without a `BufReader`, because a buffered read could
-/// consume the first HTTP bytes and strand them from the status handler.
-fn extension(mut stream: UnixStream, status: Arc<Status>) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(MAX_WAIT_SECS + 5)))?;
-    let mut length = [0u8; 4];
-    (&stream).read_exact(&mut length)?;
-    let length = u32::from_be_bytes(length) as usize;
-    if length > MAX_KIND {
-        return answer(&mut stream, 0, "kind header too large");
+/// The handlers a framed connection may reach, with the state they share.
+struct Kinds {
+    status: Arc<Status>,
+    web: Option<Arc<Connector>>,
+    events: Arc<WebEvents>,
+}
+
+impl Kinds {
+    /// The extension port's dispatch: the framed kind names the gateway the
+    /// connection wants. The frame is read without a `BufReader`, because a
+    /// buffered read could consume the first HTTP bytes and strand them from
+    /// the handler.
+    fn extension(&self, mut stream: UnixStream) -> io::Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(MAX_WAIT_SECS + 5)))?;
+        let mut length = [0u8; 4];
+        (&stream).read_exact(&mut length)?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length > MAX_KIND {
+            return answer(&mut stream, 0, "kind header too large");
+        }
+        let mut kind = vec![0; length];
+        (&stream).read_exact(&mut kind)?;
+        let kind = String::from_utf8_lossy(&kind);
+        match (kind.as_ref(), &self.web) {
+            (BOUNDARY_KIND, _) => self.status.handle(stream, &self.events),
+            (WEB_KIND, Some(web)) => Kinds::web(stream, web.clone()),
+            (WEB_KIND, None) => answer(&mut stream, 1, "this task has no web gateway"),
+            _ => answer(&mut stream, 1, &format!("unsupported kind {kind:?}")),
+        }
     }
-    let mut kind = vec![0; length];
-    (&stream).read_exact(&mut kind)?;
-    let kind = String::from_utf8_lossy(&kind);
-    if kind == BOUNDARY_KIND {
-        return status.handle(stream);
+}
+
+impl Kinds {
+    /// The web socket's dispatch. A proxy client's first bytes are either
+    /// `CONNECT host:port` or an absolute-URI request (`GET http://…`); the
+    /// method alone does not tell them apart, so the peek waits for the first
+    /// space and looks at what follows. The bytes are only peeked, so
+    /// whichever handler runs reads the request once.
+    fn web(mut stream: UnixStream, web: Arc<Connector>) -> io::Result<()> {
+        match target(&stream) {
+            Some(Target::Absolute) => web.handle_plain(stream),
+            Some(Target::NotUtf8) => {
+                http::write_error(&mut stream, 400, "deck_bad_request", "the request target is not UTF-8")
+            }
+            _ => web.handle(stream),
+        }
     }
-    answer(&mut stream, 1, &format!("unsupported kind {kind:?}"))
+}
+
+/// What the first line says the connection wants.
+enum Target {
+    /// `GET http://host/path`: a mirror read.
+    Absolute,
+    /// `CONNECT host:port`, or anything the tunnel handler should refuse.
+    Tunnel,
+    /// A request line whose target is not UTF-8.
+    NotUtf8,
+}
+
+/// Whether the request line's target is an absolute `http://` URI, which only
+/// a plain-HTTP proxy request has. `None` is a closed peer; the caller then
+/// hands the stream to the tunnel handler, which reports the EOF.
+fn target(stream: &UnixStream) -> Option<Target> {
+    const LINE: usize = 96;
+    let mut buffer = [0u8; LINE];
+    let mut tries = 0;
+    while tries < 4 {
+        tries += 1;
+        // SAFETY: one initialised buffer with the length passed.
+        let read = unsafe { libc::recv(stream.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len(), libc::MSG_PEEK) };
+        if read <= 0 {
+            return None;
+        }
+        let Ok(read) = usize::try_from(read) else { return None };
+        let peeked = &buffer[..read];
+        // The first request line is one small write; before its space arrives
+        // there is no method, and guessing would misroute the connection.
+        let Some(space) = peeked.iter().position(|&byte| byte == b' ') else {
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
+        };
+        return Some(match std::str::from_utf8(&peeked[space + 1..]) {
+            Ok(rest) if rest.starts_with("http://") => Target::Absolute,
+            Ok(_) => Target::Tunnel,
+            Err(_) => Target::NotUtf8,
+        });
+    }
+    // No space within the first bytes is not a request this gateway speaks;
+    // the tunnel handler refuses it with the same bounded answer.
+    Some(Target::Tunnel)
 }
 
 /// Matches the status endpoint's host cap; the listener's write timeout must
@@ -238,7 +405,8 @@ mod tests {
             left.read_exact(&mut body).unwrap();
             String::from_utf8(body).unwrap()
         });
-        extension(right, Status::new(None)).unwrap();
+        let kinds = Kinds { status: Status::new(None), web: None, events: Arc::new(WebEvents::new()) };
+        kinds.extension(right).unwrap();
         let body = writer.join().unwrap();
         assert!(body.contains("unsupported kind"), "{body}");
     }

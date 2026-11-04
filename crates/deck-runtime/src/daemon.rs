@@ -127,6 +127,25 @@ fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>, boundary: Ar
                 let result = request.validate().and_then(|()| approval(&service, &boundary, request));
                 wire::write(&mut socket, &reply(result))?;
             }
+            // A profile decision writes the project's rule file, which the
+            // running gateways re-read; it takes the service lock only long
+            // enough to name the project, exactly as an approval does.
+            Ok(Request::WebProfile { task, project, destinations, revoke, .. }) => {
+                // The project a rule belongs to is the task's, unless the
+                // window names another (a shared data root, several windows).
+                let project = match project {
+                    Some(project) if !project.is_empty() => Some(project),
+                    _ => service
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .runtime
+                        .task(&task)
+                        .ok()
+                        .map(|record| record.spec.cwd.to_string_lossy().into_owned()),
+                };
+                let changed = boundary.profile(project.as_deref(), &destinations, revoke);
+                wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
+            }
             request => {
                 let result = request.map_err(anyhow::Error::from).and_then(|request| {
                     request.validate()?;
@@ -228,6 +247,9 @@ fn subscribe(mut socket: UnixStream, mut rx: futures::channel::mpsc::UnboundedRe
 impl Service {
     fn execute(&mut self, request: Request) -> Result<Value> {
         match request {
+            // A profile decision is handled beside the boundary, not here: it
+            // writes the project's rule file, which the gateways re-read.
+            Request::WebProfile { .. } => unreachable!("a profile decision is routed to deckd's boundary"),
             Request::Create { spec } => {
                 let id = self.runtime.create(spec)?;
                 Ok(serde_json::to_value(self.runtime.task(&id)?)?)
@@ -255,6 +277,14 @@ impl Service {
             Request::Run { spec } => Ok(serde_json::to_value(self.run(spec)?)?),
             Request::Session { id, session_id } => {
                 self.runtime.session(&id, &session_id)?;
+                Ok(json!(null))
+            }
+            Request::ModelUsage { task, requests, tokens } => {
+                self.runtime.usage(&task, requests, tokens)?;
+                Ok(json!(null))
+            }
+            Request::SetBudget { task, requests, tokens } => {
+                self.runtime.set_budget(&task, requests, tokens)?;
                 Ok(json!(null))
             }
             Request::Subscribe

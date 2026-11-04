@@ -1,0 +1,5 @@
+repo=github.com,api.github.com,codeload.github.com,raw.githubusercontent.com,objects.githubusercontent.com,uploads.github.com,avatars.githubusercontent.com,gist.githubusercontent.com,gitlab.com,bitbucket.org,npmjs.org
+registry=crates.io,static.crates.io,index.crates.io,registry.npmjs.org,pypi.org,files.pythonhosted.org,pythonhosted.org,rubygems.org,index.rubygems.org,repo.maven.apache.org,repo1.maven.org
+package-mirrors=crates.io,static.crates.io,index.crates.io,registry.npmjs.org,pypi.org,files.pythonhosted.org,pythonhosted.org,rubygems.org,index.rubygems.org,repo.maven.apache.org,repo1.maven.org,docker.io,registry-1.docker.io,ghcr.io,pkg-containers.githubusercontent.com,quay.io,gcr.io,public.ecr.aws
+os-mirrors=deb.debian.org,security.debian.org,archive.ubuntu.com,security.ubuntu.com,ports.ubuntu.com,packages.microsoft.com,dl.google.com,dl.k8s.io,apt.llvm.org,download.docker.com
+docs=docs.rs,docs.python.org,developer.mozilla.org,learn.microsoft.com,nodejs.org,doc.rust-lang.org,kubernetes.io,man7.org,www.gnu.org,devdocs.io,go.dev,pkg.go.dev

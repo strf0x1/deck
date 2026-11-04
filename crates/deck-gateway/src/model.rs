@@ -8,16 +8,33 @@
 
 use crate::control::{Answer, Ask, Control};
 use crate::http::{self, ReadError, Request};
-use crate::policy::{self, Models};
+use crate::policy::{self, Budget, Ledger, Models, Usage};
 use crate::status::Status;
+use crate::usage::Meter;
 use std::io::{self, BufReader, Read as _};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// The paths Construct uses. Anything else is a policy denial, not a proxy.
 fn allowed(method: &str, target: &str) -> bool {
     matches!((method, target), ("POST", "/v1/chat/completions") | ("GET" | "HEAD", "/v1/models"))
+}
+
+/// What the server hands one model gateway. `budget_file` is the task's live
+/// budget, rewritten by `deckd`; it overrides the process-start limits on the
+/// next admission without restarting the VM.
+pub struct Settings {
+    pub upstream: String,
+    pub models: Models,
+    pub key: Option<String>,
+    pub secret: String,
+    pub control: Option<Control>,
+    pub status: Arc<Status>,
+    pub budget: Budget,
+    pub usage: Usage,
+    pub budget_file: Option<PathBuf>,
 }
 
 pub struct Model {
@@ -27,6 +44,8 @@ pub struct Model {
     secret: String,
     control: Option<Control>,
     status: Arc<Status>,
+    ledger: Arc<Ledger>,
+    budget_file: Option<PathBuf>,
     agent: ureq::Agent,
 }
 
@@ -35,14 +54,7 @@ impl Model {
     /// (`https://openrouter.ai/api/v1`); `key` is the host-side credential for
     /// that provider. A missing key denies instead of forwarding the guest's
     /// placeholder.
-    pub fn new(
-        upstream: String,
-        models: Models,
-        key: Option<String>,
-        secret: String,
-        control: Option<Control>,
-        status: Arc<Status>,
-    ) -> Self {
+    pub fn new(settings: Settings) -> Self {
         let config = ureq::Agent::config_builder()
             // The gateway decides what a non-2xx means; it is not an ureq error.
             .http_status_as_error(false)
@@ -54,12 +66,14 @@ impl Model {
             .timeout_recv_response(Some(Duration::from_secs(120)))
             .build();
         Self {
-            upstream: upstream.trim_end_matches('/').to_string(),
-            models,
-            key,
-            secret,
-            control,
-            status,
+            upstream: settings.upstream.trim_end_matches('/').to_string(),
+            models: settings.models,
+            key: settings.key,
+            secret: settings.secret,
+            control: settings.control,
+            status: settings.status,
+            ledger: Arc::new(Ledger::new(settings.budget, settings.usage)),
+            budget_file: settings.budget_file,
             agent: config.new_agent(),
         }
     }
@@ -87,6 +101,17 @@ impl Model {
                 &format!("{} is not served by this task's model gateway", request.target),
             );
         }
+
+        // A missing host key is a gateway misconfiguration, not a request
+        // that reaches the provider; fail before it consumes budget.
+        let Some(key) = &self.key else {
+            return http::write_error(
+                &mut stream,
+                503,
+                "deck_credential_missing",
+                &format!("the host has no value for {}; the guest placeholder is never forwarded", self.secret),
+            );
+        };
 
         if request.method == "POST" {
             let Some(model) = requested_model(&request) else {
@@ -143,16 +168,11 @@ impl Model {
                     &format!("model {model:?} is not allowed for this task"),
                 );
             }
+            self.refresh_budget();
+            if let Err(spent) = self.ledger.admit() {
+                return http::write_error(&mut stream, 429, "deck_budget_exhausted", &spent.message());
+            }
         }
-
-        let Some(key) = &self.key else {
-            return http::write_error(
-                &mut stream,
-                503,
-                "deck_credential_missing",
-                &format!("the host has no value for {}; the guest placeholder is never forwarded", self.secret),
-            );
-        };
 
         let suffix = request.target.strip_prefix("/v1").unwrap_or_default();
         let url = format!("{}{}", self.upstream, suffix);
@@ -180,6 +200,9 @@ impl Model {
             Ok(response) => response,
             Err(error) => {
                 eprintln!("deck-gateway: upstream request failed: {error}");
+                // The request was admitted and therefore counted even though
+                // no provider response arrived.
+                self.report_usage();
                 return http::write_error(&mut stream, 502, "deck_upstream_failed", "the provider request failed");
             }
         };
@@ -188,17 +211,57 @@ impl Model {
         let status = parts.status.as_u16();
         let content_type =
             parts.headers.get("content-type").and_then(|value| value.to_str().ok()).unwrap_or("application/json");
-        http::write_stream_head(&mut stream, status, content_type)?;
+        let mut meter = Meter::new(content_type);
+        if let Err(error) = http::write_stream_head(&mut stream, status, content_type) {
+            self.report_usage();
+            return Err(error);
+        }
         let mut reader = body.into_reader();
         let mut buffer = [0u8; 16 * 1024];
-        loop {
-            let read = reader.read(&mut buffer)?;
+        let outcome = loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) => break Err(error),
+            };
             if read == 0 {
-                break;
+                break http::end_stream(&mut stream);
             }
-            http::write_chunk(&mut stream, &buffer[..read])?;
+            meter.observe(&buffer[..read]);
+            if let Err(error) = http::write_chunk(&mut stream, &buffer[..read]) {
+                break Err(error);
+            }
+        };
+        let tokens = meter.finish();
+        if tokens > 0 {
+            self.ledger.charge(tokens);
         }
-        http::end_stream(&mut stream)
+        // The client already has the response; a slow or missing daemon must
+        // not hold this connection open.
+        self.report_usage();
+        outcome
+    }
+
+    /// Apply a budget `deckd` rewrote while the task runs. A missing file keeps
+    /// the process-start budget; a malformed one is ignored rather than
+    /// widening the limits.
+    fn refresh_budget(&self) {
+        let Some(path) = &self.budget_file else { return };
+        match Budget::load(path) {
+            Some(budget) => self.ledger.set_budget(budget),
+            None if !path.exists() => {}
+            None => eprintln!("deck-gateway: ignoring an unreadable model budget at {}", path.display()),
+        }
+    }
+
+    fn report_usage(&self) {
+        let Some(control) = &self.control else { return };
+        let control = control.clone();
+        let usage = self.ledger.usage();
+        let _ = std::thread::Builder::new().name("gateway-usage".into()).spawn(move || {
+            if let Err(error) = control.usage(usage) {
+                eprintln!("deck-gateway: recording model usage: {error}");
+            }
+        });
     }
 }
 

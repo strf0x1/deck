@@ -101,7 +101,10 @@ impl Status {
     }
 
     /// Serve one HTTP request on a connection that already named this kind.
-    pub fn handle(&self, mut stream: UnixStream) -> io::Result<()> {
+    /// `web` carries the web gateway's boundary events, so a plain-HTTP block
+    /// is visible to the agent beside the model's; a tunnel's own events are
+    /// not here because the gateway keeps them and reports the decision.
+    pub fn handle(&self, mut stream: UnixStream, web: &super::web::Events) -> io::Result<()> {
         // Best effort: macOS refuses a timeout on a peer that already closed,
         // and the subsequent read reports that EOF anyway.
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -115,15 +118,15 @@ impl Status {
             }
             Err(http::ReadError::Io(error)) => return Err(error),
         };
-        let (status, body) = self.route(&request.method, &request.target);
+        let (status, body) = self.route(&request.method, &request.target, web);
         http::write(&mut stream, status, &[("content-type", "application/json".into())], body.as_bytes())
     }
 
-    fn route(&self, method: &str, target: &str) -> (u16, String) {
+    fn route(&self, method: &str, target: &str, web: &super::web::Events) -> (u16, String) {
         let path = target.split('?').next().unwrap_or_default();
         if method == "GET" && path == "/events" {
             let after = query(target, "after").and_then(|value| value.parse().ok()).unwrap_or(0);
-            return (200, self.events(after));
+            return (200, self.events(after, web));
         }
         if let Some(rest) = path.strip_prefix("/approvals/") {
             if let Some(id) = rest.strip_suffix("/withdraw") {
@@ -138,10 +141,17 @@ impl Status {
         (404, json!({ "error": "not found" }).to_string())
     }
 
-    fn events(&self, after: u64) -> String {
+    /// The model gateway's events and the web gateway's in one ordered list.
+    /// Each sequence starts at its own zero, so the list is by time of
+    /// observation within a kind; an agent reads both tails after a tool.
+    fn events(&self, after: u64, web: &super::web::Events) -> String {
         self.refresh();
         let inner = self.lock();
-        let events: Vec<&Event> = inner.events.iter().filter(|event| event.seq > after).collect();
+        let model = inner.events.iter().filter(|event| event.seq > after).cloned();
+        let events: Vec<serde_json::Value> = model
+            .map(|event| serde_json::to_value(event).unwrap_or_default())
+            .chain(web.since(after).into_iter().map(|event| serde_json::to_value(event).unwrap_or_default()))
+            .collect();
         serde_json::to_string(&events).unwrap_or_else(|_| "[]".into())
     }
 
@@ -254,6 +264,10 @@ fn valid(id: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn web_events() -> super::super::web::Events {
+        super::super::web::Events::new()
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("deck-status-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -266,16 +280,16 @@ mod tests {
         let status = Status::new(None);
         status.observe("a1", "other", "pending", None);
         assert_eq!(
-            status.events(0),
+            status.events(0, &web_events()),
             r#"[{"seq":1,"approval_id":"a1","gateway":"model","destination":"other","state":"pending"}]"#
         );
         status.observe("a1", "other", "allowed", Some("task"));
-        let events = status.events(0);
+        let events = status.events(0, &web_events());
         assert!(events.contains(r#""state":"allowed""#), "{events}");
         assert!(events.contains(r#""scope":"task""#), "{events}");
 
         status.observe("a2", "other", "allowed", Some("once"));
-        assert!(!status.events(0).contains("a2"), "a successful hold is not a block");
+        assert!(!status.events(0, &web_events()).contains("a2"), "a successful hold is not a block");
     }
 
     #[test]
@@ -301,7 +315,7 @@ mod tests {
         assert_eq!(inner.events.len(), EVENTS);
         assert_eq!(inner.events.last().unwrap().seq, (EVENTS + 10) as u64);
         drop(inner);
-        let events = status.events((EVENTS + 10 - 2) as u64);
+        let events = status.events((EVENTS + 10 - 2) as u64, &web_events());
         assert!(events.contains(&format!("\"seq\":{}", EVENTS + 9)), "{events}");
         assert!(!events.contains(&format!("\"seq\":{}", EVENTS + 7)), "{events}");
     }
@@ -327,7 +341,7 @@ mod tests {
             drop(stream);
         });
         let (stream, _) = listener.accept().unwrap();
-        server.handle(stream).unwrap();
+        server.handle(stream, &web_events()).unwrap();
         client.join().unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }

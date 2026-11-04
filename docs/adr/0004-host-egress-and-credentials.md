@@ -123,10 +123,14 @@ an agent running with half a boundary.
 
 Policy is live. `deckd` pushes a changed project rule or task grant to the
 running gateway, and new connections and parsed requests use it without a VM
-restart. Removal is stricter than addition: removing a destination or grant
+restart. The web gateway reads the task's grant file and the project's rule
+file itself, on every decision and only when their size or mtime changed, so a
+revoked destination stops the next attempt; an approval for the task lives in
+the daemon's queue, not in the gateway. Removal is stricter than addition: removing a destination or grant
 also closes matching open tunnels. For a CONNECT tunnel the gateway knows
 only the destination, so that is the granularity; the model gateway parses
-each request and applies a changed model or budget immediately.
+each request and applies a changed budget immediately. A model allowlist
+change takes effect on the next gateway process, not a running one.
 
 Why not put the parser in the VMM: the VMM should stay a small, constrained
 component that owns the microVM and relays bytes. Why not put it in `deckd`:
@@ -199,6 +203,18 @@ the model field, and maps it to a host-side provider entry. It rejects a
 model the task is not allowed to use, enforces per-task request/token budgets,
 streams the response, and records usage.
 
+A budget belongs to one task and is made of exact counts, not wildcards. The
+gateway counts a chat request when it admits it, before any provider request,
+and takes tokens from the provider's own `usage` (the last SSE chunk
+included). Once either limit is spent the next request gets
+`429 deck_budget_exhausted` and no provider request is made. The gateway
+reports its totals to `deckd`, which records them on the task, so a resumed
+gateway continues from the same counts. The launch limits come from
+`DECK_MODEL_REQUEST_BUDGET` and `DECK_MODEL_TOKEN_BUDGET`; a live
+`set_budget` control call rewrites `tasks/<id>/budget.json`, which the gateway
+re-reads before each admission. That is the one model policy that changes
+without a VM restart; the model allowlist stays fixed at process start.
+
 It **strips every credential-bearing header from the guest request** —
 `Authorization`, `Proxy-Authorization`, `Cookie`, `x-api-key`, `api-key`, and
 any header whose name is configured as a credential — then injects the host
@@ -229,7 +245,24 @@ An HTTP proxy with two modes:
   (below).
 - **Plain HTTP**, only for declared mirrors. The gateway parses the
   absolute-URI request, applies the same destination checks, and re-checks
-  every redirect.
+  every redirect. A redirect to a destination the task does not hold asks for
+  its own scope rather than inheriting the first one; a redirect that is not an
+  absolute `http://` URI, or one to a name with no address on the host, is
+  refused rather than guessed. The host follows at most five hops.
+
+The gateway resolves names itself and never trusts the guest's resolver or its
+`/etc/hosts`. Every address a name returns is classified before a dial: loopback,
+private, link-local, shared (`100.64/10`), documentation, multicast, broadcast
+and unspecified space is refused on every port and **without asking anyone** —
+a grant never makes a private destination reachable. IPv4-mapped and NAT64 forms
+are unwrapped first, so `::ffff:127.0.0.1` is loopback, not a public address. A
+name with any refused address is refused whole, so a decision cannot depend on
+which address connected first. The dial connects to the validated address, and
+the guest's `Proxy-Authorization`/`Proxy-Connection` are dropped from a CONNECT
+head before it is forwarded: a proxy credential belongs to the guest's proxy
+configuration, not to the tunnel's destination. A CONNECT and a plain-HTTP
+request are each one connection; a request is at most 32 MiB and a response head
+32 KiB, and one task may hold at most 64 tunnels at once.
 
 Named profiles cover repository reads (`github.com`,
 `raw.githubusercontent.com`, `codeload.github.com`), registries
@@ -238,6 +271,20 @@ Named profiles cover repository reads (`github.com`,
 project can declare profiles and add a destination through an approval that
 becomes a project rule. Hostnames are resolved on the host; the guest has no
 resolver and no route for one.
+
+The table is compiled into `deck-gateway` (`src/web/profiles.txt`): `repo`,
+`registry`, `package-mirrors`, `os-mirrors` and `docs`. The guest may name a
+profile, never define one, and an undeclared name is a gateway startup error. A
+task gets `repo`, `registry`, `package-mirrors` and `docs` by default and not
+the OS mirrors; `DECK_WEB_PROFILES` names another set, and `none` starts no web
+gateway at all. A profile entry is one name (`host`) or one port (`host:port`).
+It pre-approves a CONNECT to that name on 443 (or on the entry's own port), and
+a plain-HTTP mirror read, but never another port: `crates.io:8443` asks. A
+profile the task was not launched with is approved as a whole for the project
+(`web_profile { destinations }` on the control socket, expanded by the daemon
+from the host's table), which writes one project rule per destination, so a
+package manager does not ask once per package. Revoking that decision removes
+exactly those rules; the gateway sees the change on its next read.
 
 Path-level and credential-bearing package traffic is not solved by CONNECT.
 A private registry needs a TLS-terminating gateway or a host mirror, which is
@@ -542,6 +589,35 @@ The implementation is not done until these have tests where practical.
     request; a guest-supplied `Authorization` never reaches the provider.
 11. Malformed HTTP, oversized headers, slowloris, and fuzzed git pkt-lines
     get bounded responses; a gateway crash fails the task closed.
+12. A CONNECT or plain-HTTP destination that resolves to loopback, private,
+    link-local, shared, documentation, multicast or unspecified space is
+    refused on any port, with no item and no dial — a grant does not override
+    it. An IPv4-mapped or NAT64 form of a refused address is refused too.
+    (`deck-gateway` `web::policy`, `web::resolve`, and the real binary.)
+13. A plain-HTTP request to a mirror the task does not hold is refused or held
+    before any dial; a request to a held mirror is forwarded in origin form
+    without the guest's proxy credential. (`gateway.rs`: mirror read,
+    ungranted mirror.)
+14. A redirect is a destination of its own: to a name and port the task does
+    not hold it is refused and the second name is never contacted; a
+    non-`http://` or unresolvable redirect target is refused. (`gateway.rs`:
+    the redirect case.)
+15. A whole-profile approval writes one project rule per destination, is
+    idempotent, and revoking it removes exactly those destinations; a task
+    grant carries an expiry. (`approvals` unit tests, `tests/daemon.rs`.)
+16. A web denial reaches the agent through the boundary status endpoint's
+    `/events`, beside the model's, with `gateway: "web"`. (`gateway.rs`: the
+    boundary events case.)
+
+**Budgets**
+
+1. Each admitted chat request increments the task's request count before the
+   provider is contacted. A request over the request limit, or one made after
+   the token total reached its limit, gets `429 deck_budget_exhausted` and
+   makes no provider request. Tokens are the provider's `usage.total_tokens`
+   (or prompt plus completion), read from a JSON body or the last SSE chunk,
+   and both totals appear on the task record. Changing a task's budget applies
+   to its next request without restarting the VM.
 
 **Revocation**
 
@@ -640,15 +716,15 @@ The implementation is not done until these have tests where practical.
    the guest cannot reach the host's model port directly.
 4. Add the approval queue with the bounded hold (the gateway learns from
    `deckd` whether a window is attached to the task), model-gateway
-   budget/model checks and the boundary card. Queue, lease, hold and card
-   landed 2026-11-03; budgets are still open.
+   budget/model checks and the boundary card. Queue, lease, hold, card and
+   budgets landed 2026-11-03.
 5. Add the boundary status kind on the extension port and its relay
    listener, the card's waiting/moved-on state, and the boundary
    notification in Deck; teach `deck-fake-agent` the note, the three tools
    and the notification (ADR 0002 keeps it in step with Construct), then
    land the Construct side.
 
-   Landed 2026-11-03, without budgets. The gateway serves `boundary` on the
+   Landed 2026-11-03. The gateway serves `boundary` on the
    extension port: `/events`, long-polled `/approvals/<id>` (300 s host cap)
    and `/approvals/<id>/withdraw`. A long poll is one `approval_wait` control
    call that `deckd` holds, counting the wait on the item, so the card says
@@ -662,6 +738,35 @@ The implementation is not done until these have tests where practical.
    the note in its transcript. The three boundary tools and the tool-result
    note are Construct's side, merged in its `deck/boundary-feedback` work.
 6. Add the web/package profiles; then hand the transport to #8.
+
+   Landed 2026-11-03. `deck-gateway`'s `web` module is the address policy
+   (`policy`), bounded host resolution (`resolve`), the opaque CONNECT tunnel
+   (`connect`), the plain-mirror proxy with a checked redirect chain
+   (`mirror`), its own boundary events (`status`) and its daemon client
+   (`control`). It listens on a dedicated socket (vsock 1028, a separate port
+   because a client's proxy setting cannot send the extension port's framed
+   kind) and on the extension port as the `web` kind. The VM backend starts it
+   for every task and passes `--web-profile`, `--web-grants` (the task's
+   `grants.json`, then the project's `approvals/projects.json`) and the
+   compiled-in profile table; `DECK_WEB_PROFILES` names the profiles (default
+   `repo,registry,package-mirrors,docs`; `none` serves no web traffic). The
+   guest image starts two loopback relays over that port and exports
+   `http_proxy`/`https_proxy` for the task, only when the gateway exists.
+   Task-scoped grants now carry a 12 h expiry, and a whole-profile decision is
+   `web_profile { destinations }` on the control socket, expanded by the daemon
+   and written as project rules. Verified by policy/resolver/tunnel/mirror unit
+   tests, the real gateway binary against an echoing local listener (address
+   refusals with no dial and no item, a profile-covered CONNECT, a granted
+   tunnel carrying bytes both ways, another port refused, a mirror read
+   forwarded without the guest's proxy credential, a redirect to another name
+   denied and never contacted, a web denial visible in the boundary events,
+   an undeclared profile refusing to start), and the real daemon (profile rules
+   written, re-approval idempotent, one destination revoked leaving its
+   sibling). A public destination is reached in a test through
+   `--web-test-connect`, which redirects only the dial after the policy
+   admitted the resolved address; the binary never passes it. Not covered: a
+   real TLS CONNECT to a public host, and SSH through the relay, which need a
+   live VM and a network the CI host does not have.
 
 ## Deferred
 
@@ -738,7 +843,7 @@ The implementation is not done until these have tests where practical.
   disabled, the scripted prompt round trip through the gateway, and the
   gateway's own tests (guest credential headers stripped, host key injected,
   model/path denials, framed extension refusal). Not yet implemented: the
-  approval queue and hold, budgets, grants, `deckd`'s credential broker (the
+  approval queue and hold, grants, `deckd`'s credential broker (the
   key is still the daemon's environment), the boundary status kind and
   `_com.sprawlcommons/deck/boundary`, and the web/package gateway. No
   security validation against the bypass cases beyond TSI being off.
@@ -753,5 +858,19 @@ The implementation is not done until these have tests where practical.
   control socket (lease hold, fail-fast without a lease, durable task and
   project grants, stop clearing task grants), the gateway against a fake
   queue (pending/allowed/denied/unreachable, and waiting for a held reply),
-  and the window answering a live daemon approval by key. Budget enforcement
-  remains unimplemented.
+  and the window answering a live daemon approval by key.
+- Fourth slice (2026-11-03): the web and package gateway — CONNECT with
+  host-side resolution and address-class rejection, per-port grants, plain HTTP
+  for declared mirrors with every redirect re-checked, profiles, a dedicated
+  vsock port and the `web` extension kind, the guest's two relays and proxy
+  environment, and a whole-profile approval that writes project rules.
+- Third slice (2026-11-03): per-task model budgets in `crates/deck-gateway`
+  (`policy::Budget`, `Ledger` admission and token charge, `usage::Meter` for
+  JSON and SSE), `DECK_MODEL_REQUEST_BUDGET` / `DECK_MODEL_TOKEN_BUDGET` as
+  launch limits, and `tasks/<id>/budget.json` as the live override re-read
+  before each admission. The gateway reports totals with `model_usage`; the
+  daemon records them as a `usage` event on the task, and a resumed gateway
+  starts from those totals. Verified by ledger and meter unit tests, the real
+  gateway (request denial before the provider, SSE usage in the final chunk,
+  usage recording, a budget file change between two requests), and the real
+  daemon (`model_usage` totals, stale reports ignored, `set_budget` file).

@@ -13,7 +13,7 @@
 use crate::backend::Stream;
 use crate::holder::{Identity, Reply, Request};
 use crate::krun::{Krun, SYNC_FULL, SYNC_RELAXED};
-use crate::lifecycle::Holder;
+use crate::lifecycle::{Holder, Usage};
 use crate::relay::Relay;
 use crate::wire;
 use anyhow::{Context as _, Result, bail};
@@ -78,8 +78,29 @@ pub struct Gateway {
     pub extension_socket: PathBuf,
     pub model_port: u32,
     pub extension_port: u32,
+    /// The web and package gateway's socket and port. `None` serves no web
+    /// traffic, which is the closed default for a task with no profile.
+    #[serde(default)]
+    pub web_socket: Option<PathBuf>,
+    #[serde(default)]
+    pub web_port: Option<u32>,
+    /// The profiles the task may use and the grant files the gateway re-reads.
+    #[serde(default)]
+    pub web_profiles: Vec<String>,
+    #[serde(default)]
+    pub web_grants: Vec<PathBuf>,
     pub upstream: String,
     pub models: Vec<String>,
+    /// Process-start model limits; the task's budget file overrides them.
+    #[serde(default)]
+    pub request_budget: Option<u64>,
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    /// Totals already recorded for this task, so a resumed run continues.
+    #[serde(default)]
+    pub usage: Usage,
+    /// The live budget file the gateway re-reads before each admission.
+    pub budget_file: PathBuf,
     /// The environment variable the gateway reads the host key from.
     pub secret: String,
     /// The daemon's control socket and this task, so a model the task was not
@@ -111,13 +132,18 @@ pub fn run(config: &Path) -> Result<()> {
     let started = Instant::now();
     let bytes = std::fs::read(config).with_context(|| format!("reading {}", config.display()))?;
     let config: Config = serde_json::from_slice(&bytes).context("parsing the VMM configuration")?;
-    let _sockets = Sockets(vec![
-        config.socket.clone(),
-        config.forward.clone(),
-        control(&config.socket),
-        config.gateway.model_socket.clone(),
-        config.gateway.extension_socket.clone(),
-    ]);
+    let _sockets = Sockets(
+        vec![
+            config.socket.clone(),
+            config.forward.clone(),
+            control(&config.socket),
+            config.gateway.model_socket.clone(),
+            config.gateway.extension_socket.clone(),
+        ]
+        .into_iter()
+        .chain(config.gateway.web_socket.iter().cloned())
+        .collect::<Vec<_>>(),
+    );
     let _lock = inherited_lock(config.lock_fd)?;
 
     for path in [&config.socket, &config.forward] {
@@ -156,6 +182,9 @@ pub fn run(config: &Path) -> Result<()> {
         .context("forwarding the model gateway port")?;
     krun.guest_vsock_port(ctx, config.gateway.extension_port, &config.gateway.extension_socket)
         .context("forwarding the extension port")?;
+    if let (Some(port), Some(socket)) = (config.gateway.web_port, &config.gateway.web_socket) {
+        krun.guest_vsock_port(ctx, port, socket).context("forwarding the web gateway port")?;
+    }
     krun.workdir(ctx, "/workspace")?;
     krun.exec(ctx, &config.guest, &config.argv, &guest_env(&config)).context("configuring the guest command")?;
     let shutdown = krun.shutdown_eventfd(ctx).context("enabling guest shutdown")?;
@@ -274,6 +303,12 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         .arg(&gateway.upstream)
         .arg("--secret")
         .arg(&gateway.secret)
+        .arg("--budget-file")
+        .arg(&gateway.budget_file)
+        .arg("--used-requests")
+        .arg(gateway.usage.requests.to_string())
+        .arg("--used-tokens")
+        .arg(gateway.usage.tokens.to_string())
         .arg("--control")
         .arg(&gateway.control)
         .arg("--task")
@@ -284,6 +319,21 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         .stderr(Stdio::inherit());
     for model in &gateway.models {
         command.args(["--model", model]);
+    }
+    if let Some(socket) = &gateway.web_socket {
+        command.arg("--web-socket").arg(socket);
+        for profile in &gateway.web_profiles {
+            command.args(["--web-profile", profile]);
+        }
+        for grant in &gateway.web_grants {
+            command.arg("--web-grants").arg(grant);
+        }
+    }
+    if let Some(limit) = gateway.request_budget {
+        command.arg("--request-budget").arg(limit.to_string());
+    }
+    if let Some(limit) = gateway.token_budget {
+        command.arg("--token-budget").arg(limit.to_string());
     }
     let mut child =
         command.spawn().with_context(|| format!("starting the egress gateway {}", gateway.executable.display()))?;
@@ -344,6 +394,7 @@ fn check_ready(line: &str, gateway: &Gateway) -> Result<()> {
     let named = |key: &str| ready.get(key).and_then(|value| value.as_str()).map(Path::new);
     if named("model") != Some(gateway.model_socket.as_path())
         || named("extension") != Some(gateway.extension_socket.as_path())
+        || named("web") != gateway.web_socket.as_deref()
     {
         bail!("the egress gateway reported sockets that are not this task's");
     }
@@ -571,8 +622,16 @@ mod tests {
             extension_socket: PathBuf::from("/tmp/task.extension"),
             model_port: 1026,
             extension_port: 1027,
+            web_socket: None,
+            web_port: None,
+            web_profiles: Vec::new(),
+            web_grants: Vec::new(),
             upstream: "http://127.0.0.1:1/v1".into(),
             models: vec!["m".into()],
+            request_budget: None,
+            token_budget: None,
+            usage: Usage::default(),
+            budget_file: PathBuf::from("/tmp/task.budget.json"),
             secret: "KEY".into(),
             control: PathBuf::from("/tmp/task.control"),
             task: "task".into(),
@@ -581,11 +640,23 @@ mod tests {
 
     #[test]
     fn readiness_must_name_this_tasks_sockets() {
-        let gateway = gateway();
-        check_ready(r#"{"model":"/tmp/task.model","extension":"/tmp/task.extension"}"#, &gateway).unwrap();
-        assert!(check_ready(r#"{"model":"/tmp/other.model","extension":"/tmp/task.extension"}"#, &gateway).is_err());
-        assert!(check_ready(r#"{"model":"/tmp/task.model"}"#, &gateway).is_err());
-        assert!(check_ready("not json", &gateway).is_err());
+        let base = gateway();
+        check_ready(r#"{"model":"/tmp/task.model","extension":"/tmp/task.extension"}"#, &base).unwrap();
+        assert!(check_ready(r#"{"model":"/tmp/other.model","extension":"/tmp/task.extension"}"#, &base).is_err());
+        assert!(check_ready(r#"{"model":"/tmp/task.model"}"#, &base).is_err());
+        assert!(check_ready("not json", &base).is_err());
+        // A task without a web gateway cannot be handed a socket it did not
+        // ask for, and one with a web gateway must name it.
+        assert!(
+            check_ready(r#"{"model":"/tmp/task.model","extension":"/tmp/task.extension","web":"/tmp/x.web"}"#, &base)
+                .is_err()
+        );
+        let with_web = Gateway { web_socket: Some(PathBuf::from("/tmp/task.web")), web_port: Some(1028), ..base };
+        check_ready(
+            r#"{"model":"/tmp/task.model","extension":"/tmp/task.extension","web":"/tmp/task.web"}"#,
+            &with_web,
+        )
+        .unwrap();
     }
 
     #[test]

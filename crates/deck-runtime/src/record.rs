@@ -19,6 +19,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -141,6 +142,28 @@ impl Store {
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(out)
+    }
+
+    /// Write the task's live model budget where its gateway re-reads it.
+    /// `None` is unlimited, and the file is a complete snapshot: writing it
+    /// replaces both limits, so a missing field never silently widens one.
+    pub fn set_budget(&self, id: &str, requests: Option<u64>, tokens: Option<u64>) -> Result<()> {
+        let dir = self.tasks.join(id);
+        if !dir.join(LOG).is_file() {
+            bail!("task {id} has no record");
+        }
+        let budget = serde_json::json!({ "requests": requests, "tokens": tokens });
+        let tmp = dir.join("budget.json.tmp");
+        let mut file = File::create(&tmp)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(&serde_json::to_vec(&budget)?)?;
+        file.sync_data()?;
+        fs::rename(&tmp, dir.join("budget.json"))?;
+        // Make the new name durable; not every platform can sync a directory.
+        if let Ok(directory) = File::open(&dir) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
     }
 
     /// Take `id`'s liveness lock, or `None` if a live holder has it.

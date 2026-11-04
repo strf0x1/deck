@@ -113,6 +113,16 @@ impl DaemonClient {
         self.request(Request::Session { id: id.into(), session_id: session_id.into() })
     }
 
+    /// Record the model gateway's latest totals for a task.
+    pub fn model_usage(&self, id: &str, requests: u64, tokens: u64) -> Result<()> {
+        self.request(Request::ModelUsage { task: id.into(), requests, tokens })
+    }
+
+    /// Replace a task's live model budget; `None` is unlimited.
+    pub fn set_budget(&self, id: &str, requests: Option<u64>, tokens: Option<u64>) -> Result<()> {
+        self.request(Request::SetBudget { task: id.into(), requests, tokens })
+    }
+
     /// Ask the daemon's queue for a scope. This may hold for a decision when
     /// a capable window is attached; the gateway is the normal caller.
     pub fn request_approval(&self, task: &str, ask: Ask) -> Result<Approval> {
@@ -143,6 +153,28 @@ impl DaemonClient {
 
     pub fn revoke_grant(&self, task: &str, id: &str) -> Result<()> {
         self.request(Request::RevokeGrant { task: task.into(), id: id.into() })
+    }
+
+    /// Approve (`revoke = false`) or revoke a whole web profile for a project.
+    /// `destinations` is the profile's expansion as the host compiled it, so a
+    /// project's rule file names exactly those and the guest never defines
+    /// what a profile means. Returns how many rules changed.
+    pub fn web_profile(
+        &self,
+        task: &str,
+        project: Option<&str>,
+        profile: &str,
+        destinations: &[String],
+        revoke: bool,
+    ) -> Result<u64> {
+        let reply: serde_json::Value = self.request(Request::WebProfile {
+            task: task.into(),
+            project: project.map(str::to_owned),
+            profile: profile.into(),
+            destinations: destinations.to_vec(),
+            revoke,
+        })?;
+        Ok(reply.get("changed").and_then(serde_json::Value::as_u64).unwrap_or(0))
     }
 
     pub fn attach(&self, id: &str) -> Result<Stream> {
