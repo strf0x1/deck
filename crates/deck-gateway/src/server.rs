@@ -18,6 +18,8 @@
 //! VMM treats the gateway's exit as the task's failure.
 
 use crate::control::Control;
+use crate::github::GitHub;
+use crate::github::status::Events as GitHubEvents;
 use crate::http;
 use crate::model::{Model, Settings};
 use crate::policy::{Budget, Models, Usage};
@@ -47,6 +49,8 @@ const MAX_KIND: usize = 4 * 1024;
 pub const BOUNDARY_KIND: &str = "boundary";
 /// The web and package kind, served on its own port and on the extension port.
 pub const WEB_KIND: &str = crate::web::KIND;
+/// The GitHub operation kind, served on its own port and on the extension port.
+pub const GITHUB_KIND: &str = crate::github::KIND;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -71,6 +75,32 @@ pub struct Config {
     /// The web and package gateway. `None` serves no web traffic: the task
     /// has no proxy and no mirror read, which is the closed default.
     pub web: Option<WebSettings>,
+    /// The GitHub operation gateway. `None` serves no publication: the task's
+    /// project names no repository, and the guest gets no route.
+    pub github: Option<GitHubSettings>,
+}
+
+/// The GitHub gateway's policy: the repository, the refs and the project rule
+/// file. The guest can name an operation; the rest is host state.
+#[derive(Debug, Clone)]
+pub struct GitHubSettings {
+    pub socket: PathBuf,
+    /// The API base a test points at its own listener; production is
+    /// `https://api.github.com`.
+    pub api: String,
+    /// The clone URL a publish pushes to.
+    pub repository_url: String,
+    pub policy: crate::github::policy::Policy,
+    /// The task this gateway serves. Every branch rule is derived from it, so
+    /// it is required even when no approval queue is configured.
+    pub task: String,
+    /// The environment variable the token comes from, read by the gateway at
+    /// start from the daemon's environment and never written anywhere.
+    pub secret: String,
+    /// The gateway's own scratch directory for the bundle it fetches.
+    pub scratch: PathBuf,
+    /// A `git` other than the one on `PATH`.
+    pub git: Option<PathBuf>,
 }
 
 /// The web and package gateway's policy. The guest can name a profile and a
@@ -101,6 +131,8 @@ pub struct Ready {
     /// map it installs rather than trusting the argument it passed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<PathBuf>,
 }
 
 /// Bind both sockets and announce readiness, then serve until a listener
@@ -113,10 +145,15 @@ pub fn serve(config: Config) -> Result<()> {
         Some(web) => Some(bind(&web.socket)?),
         None => None,
     };
+    let github_listener = match &config.github {
+        Some(github) => Some(bind(&github.socket)?),
+        None => None,
+    };
     let ready = Ready {
         model: config.model_socket.clone(),
         extension: config.extension_socket.clone(),
         web: config.web.as_ref().map(|web| web.socket.clone()),
+        github: config.github.as_ref().map(|github| github.socket.clone()),
     };
     println!("{}", serde_json::to_string(&ready)?);
     io::stdout().flush().context("announcing gateway readiness")?;
@@ -126,6 +163,7 @@ pub fn serve(config: Config) -> Result<()> {
     let web = web_settings(config.web.as_ref(), config.control.clone())?;
     let events = Arc::new(WebEvents::new());
     let web = web.map(|connector| Arc::new(connector.with_events(events.clone())));
+    let github = github_settings(config.github.as_ref(), config.control.clone());
     let model = Arc::new(Model::new(Settings {
         upstream: config.upstream,
         models: Models::new(config.models),
@@ -144,8 +182,9 @@ pub fn serve(config: Config) -> Result<()> {
         let failed = failed.clone();
         let limits = limits.clone();
         let web = web.clone();
+        let github = github.clone();
         move || {
-            let kinds = Kinds { status, web, events };
+            let kinds = Kinds { status, web, events, github };
             let reason = accept(extension_listener, limits, move |stream| kinds.extension(stream))
                 .err()
                 .map(|error| format!("{error:#}"));
@@ -161,6 +200,18 @@ pub fn serve(config: Config) -> Result<()> {
                     .err()
                     .map(|error| format!("{error:#}"));
                 let _ = failed.send(("web", reason));
+            }
+        })?;
+    }
+    if let (Some(listener), Some(gateway)) = (github_listener, github.clone()) {
+        std::thread::Builder::new().name("gateway-github".into()).spawn({
+            let limits = limits.clone();
+            let failed = failed.clone();
+            move || {
+                let reason = accept(listener, limits, move |stream| gateway.handle(stream))
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                let _ = failed.send(("github", reason));
             }
         })?;
     }
@@ -201,6 +252,27 @@ fn web_settings(settings: Option<&WebSettings>, control: Option<Control>) -> Res
         control,
         status: Arc::new(WebEvents::new()),
     }))
+}
+
+/// The GitHub gateway's host state, or `None` when the task's project names no
+/// repository. A read of the token happens here, once: the value is never
+/// stored in this struct, and a missing one is not a startup error — every
+/// operation refuses with `deck_credential_missing` instead.
+fn github_settings(settings: Option<&GitHubSettings>, control: Option<Control>) -> Option<Arc<GitHub>> {
+    let settings = settings?;
+    let control =
+        control.map(|control| crate::github::Control::new(control.socket().to_owned(), control.task().to_owned()));
+    let token = std::env::var(&settings.secret).ok().filter(|value| !value.is_empty());
+    let client = crate::github::Client::new(crate::github::client::Settings {
+        api: settings.api.clone(),
+        policy: settings.policy.clone(),
+        task: settings.task.clone(),
+        repository_url: settings.repository_url.clone(),
+        token,
+        scratch: settings.scratch.clone(),
+        git: settings.git.clone(),
+    });
+    Some(Arc::new(GitHub::new(client, control, Arc::new(GitHubEvents::new()))))
 }
 
 fn bind(path: &Path) -> Result<UnixListener> {
@@ -246,6 +318,7 @@ struct Kinds {
     status: Arc<Status>,
     web: Option<Arc<Connector>>,
     events: Arc<WebEvents>,
+    github: Option<Arc<GitHub>>,
 }
 
 impl Kinds {
@@ -265,10 +338,12 @@ impl Kinds {
         let mut kind = vec![0; length];
         (&stream).read_exact(&mut kind)?;
         let kind = String::from_utf8_lossy(&kind);
-        match (kind.as_ref(), &self.web) {
-            (BOUNDARY_KIND, _) => self.status.handle(stream, &self.events),
-            (WEB_KIND, Some(web)) => Kinds::web(stream, web.clone()),
-            (WEB_KIND, None) => answer(&mut stream, 1, "this task has no web gateway"),
+        match (kind.as_ref(), &self.web, &self.github) {
+            (BOUNDARY_KIND, ..) => self.status.handle(stream, &self.events),
+            (WEB_KIND, Some(web), _) => Kinds::web(stream, web.clone()),
+            (WEB_KIND, None, _) => answer(&mut stream, 1, "this task has no web gateway"),
+            (GITHUB_KIND, _, Some(github)) => github.handle(stream),
+            (GITHUB_KIND, _, None) => answer(&mut stream, 1, "this task's project names no GitHub repository"),
             _ => answer(&mut stream, 1, &format!("unsupported kind {kind:?}")),
         }
     }
@@ -405,7 +480,7 @@ mod tests {
             left.read_exact(&mut body).unwrap();
             String::from_utf8(body).unwrap()
         });
-        let kinds = Kinds { status: Status::new(None), web: None, events: Arc::new(WebEvents::new()) };
+        let kinds = Kinds { status: Status::new(None), web: None, events: Arc::new(WebEvents::new()), github: None };
         kinds.extension(right).unwrap();
         let body = writer.join().unwrap();
         assert!(body.contains("unsupported kind"), "{body}");

@@ -137,6 +137,44 @@ The gateway's boundary events reach the agent through the status endpoint's
 `/events` beside the model gateway's, with `gateway: "web"`, so a blocked
 package fetch is explained in the tool result rather than read as an outage.
 
+## The GitHub operation gateway
+
+A VM task's third gateway kind (ADR 0007) publishes to the project's GitHub
+repository and nothing else. It has its own vsock port (1029), answers the
+`github` kind on the extension port, and the guest image starts one
+`deck-egress` relay at `127.0.0.1:8084`, exported as `DECK_GITHUB_URL` — only
+when the project named a repository, because a URL pointing at a closed port
+is worse than none.
+
+The gateway exists only when `DECK_GITHUB_REPOSITORY` (`owner/name`) is set in
+`deckd`'s environment. `DECK_GITHUB_BASE` (default `main`) is the only base a
+pull request may target, and `DECK_GITHUB_BRANCHES` lists branches beyond
+`deck/<task>` a task may also write. The token comes from the variable named by
+`DECK_GITHUB_TOKEN_SECRET` (default `DECK_GITHUB_TOKEN`); its value is never in
+`vmm.json`, the guest environment, a log or a response.
+
+Five operations, and no relay:
+
+| Path | Operation | Asks |
+|---|---|---|
+| `POST /operations/publish` | push a git bundle to one allowed branch | yes |
+| `POST /operations/pull_request` | open a pull request to the allowed base | yes |
+| `POST /operations/pull_request/update` | title, body, draft, base | yes |
+| `POST /operations/refs` | list branches | no |
+| `POST /operations/pull_request/review` | read a pull request | no |
+
+`merge`, `close`, `delete`, `tag`, `release`, `force_push`, `workflow` and
+`settings` are refused by name so an agent learns the set instead of retrying
+a 404. A publish carries one git bundle after its JSON body; the gateway reads
+the header itself and refuses a bundle with more than one ref or a ref that is
+not the allowed branch, then fetches and pushes exactly that refspec. A push
+is fast-forward only (`--force-with-lease` against the sha read a moment
+before), so a task cannot rewrite its branch.
+
+A whole GitHub profile is one decision: `github_profile {task, project?,
+repository, operations, revoke}` writes one durable project rule per operation
+for the repository, and a revoke removes exactly those.
+
 ## Daemon death and reuse
 
 `deckd` starts each holder with `setsid` and transfers an already-held task lock

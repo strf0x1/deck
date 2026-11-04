@@ -277,3 +277,50 @@ fn an_allow_for_task_has_an_expiry_while_a_project_rule_does_not() {
     assert!(!file.contains("expires_ms"), "a project rule has no expiry: {file}");
     fs::remove_dir_all(dir).unwrap();
 }
+
+fn github(task: &str, operation: &str, destination: &str) -> Incoming {
+    Incoming {
+        gateway: "github".into(),
+        operation: operation.into(),
+        credential: None,
+        details: Details::default(),
+        ..incoming(task, "/w", destination)
+    }
+}
+
+#[test]
+fn a_github_profile_covers_every_branch_and_pull_request_of_its_repository() {
+    let dir = scratch("github-profile");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let operations = vec!["publish".to_string(), "update_pr".to_string()];
+    assert_eq!(boundary.github_profile(Some("/w"), "Strf0x1/Deck", &operations, false).unwrap(), 2);
+    let allowed = |task, operation, destination| boundary.submit(github(task, operation, destination)).unwrap().state;
+    assert_eq!(allowed("t-1", "publish", "strf0x1/deck#deck/t-1"), State::Allowed(Scope::Project));
+    assert_eq!(allowed("t-2", "update_pr", "strf0x1/deck#pr12"), State::Allowed(Scope::Project));
+    // Another operation, another repository, or a repository that merely
+    // shares the prefix are not covered.
+    assert_eq!(allowed("t-1", "create_pr", "strf0x1/deck#deck/t-1"), State::Pending);
+    assert_eq!(allowed("t-1", "publish", "strf0x1/deck-other#deck/t-1"), State::Pending);
+    assert_eq!(allowed("t-1", "publish", "other/deck#deck/t-1"), State::Pending);
+    for invalid in ["deck", "https://github.com/o/r", "o/r#main", "o/../r"] {
+        assert!(boundary.github_profile(Some("/w"), invalid, &operations, false).is_err(), "{invalid}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn always_allow_on_a_github_card_trusts_the_repository() {
+    let dir = scratch("github-always");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let item = boundary.submit(github("t-1", "publish", "o/r#deck/t-1")).unwrap();
+    boundary.decide(&item.id, Decision::Project).unwrap();
+    assert_eq!(
+        boundary.submit(github("t-2", "publish", "o/r#deck/t-2")).unwrap().state,
+        State::Allowed(Scope::Project)
+    );
+    // A task grant stays as narrow as the card it answered.
+    let item = boundary.submit(github("t-1", "create_pr", "o/r#deck/t-1")).unwrap();
+    boundary.decide(&item.id, Decision::Task).unwrap();
+    assert_eq!(boundary.submit(github("t-1", "create_pr", "o/r#other")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}

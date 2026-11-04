@@ -193,11 +193,29 @@ pub struct Grant {
 }
 
 impl Grant {
+    /// A GitHub project rule names the repository (`owner/name`) and covers
+    /// every `owner/name#branch` or `owner/name#pr<N>` the gateway asks about
+    /// (ADR 0007 §3); every other grant matches its destination exactly.
     pub(super) fn matches(&self, request: &Incoming) -> bool {
-        self.gateway == request.gateway
-            && self.operation == request.operation
-            && self.destination == request.destination
+        let destination = self.destination == request.destination
+            || (self.gateway == GITHUB
+                && self.scope == Scope::Project
+                && request
+                    .destination
+                    .strip_prefix(self.destination.as_str())
+                    .is_some_and(|detail| detail.starts_with('#')));
+        self.gateway == request.gateway && self.operation == request.operation && destination
     }
+}
+
+/// The GitHub gateway's name in approvals and grants.
+pub(super) const GITHUB: &str = "github";
+
+/// The destination a GitHub project rule is written on: the repository part
+/// of `owner/name#detail`, so Always allow trusts the repository rather than
+/// one branch or pull request.
+pub(super) fn github_repository(destination: &str) -> &str {
+    destination.split_once('#').map_or(destination, |(repository, _)| repository)
 }
 
 /// Timing knobs, fixed in production and shortened in tests.

@@ -27,6 +27,15 @@ pub const MODEL_PORT: u32 = 1026;
 /// than the extension port because a client's proxy setting cannot send the
 /// framed kind header.
 pub const WEB_VSOCK_PORT: u32 = 1028;
+/// The GitHub operation gateway's guest vsock port. Its own port, like the
+/// web gateway's, because the guest's tool reaches it as an HTTP endpoint
+/// rather than through the extension port's framed kind (ADR 0007 §5).
+pub const GITHUB_VSOCK_PORT: u32 = 1029;
+/// The GitHub gateway's guest loopback listener, which the task reads as
+/// `DECK_GITHUB_URL`.
+pub const GITHUB_PORT: u16 = 8084;
+/// The framed kind the GitHub gateway answers on the extension port.
+pub const GITHUB_KIND: &str = "github";
 /// The reserved extension port. The boundary status kind is served here; a
 /// later gateway kind is added without restarting running tasks.
 pub const EXTENSION_PORT: u32 = 1027;

@@ -146,6 +146,20 @@ fn connection(mut socket: UnixStream, service: Arc<Mutex<Service>>, boundary: Ar
                 let changed = boundary.profile(project.as_deref(), &destinations, revoke);
                 wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
             }
+            Ok(Request::GitHubProfile { task, project, repository, operations, revoke }) => {
+                let project = match project {
+                    Some(project) if !project.is_empty() => Some(project),
+                    _ => service
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .runtime
+                        .task(&task)
+                        .ok()
+                        .map(|record| record.spec.cwd.to_string_lossy().into_owned()),
+                };
+                let changed = boundary.github_profile(project.as_deref(), &repository, &operations, revoke);
+                wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
+            }
             request => {
                 let result = request.map_err(anyhow::Error::from).and_then(|request| {
                     request.validate()?;
@@ -250,6 +264,7 @@ impl Service {
             // A profile decision is handled beside the boundary, not here: it
             // writes the project's rule file, which the gateways re-read.
             Request::WebProfile { .. } => unreachable!("a profile decision is routed to deckd's boundary"),
+            Request::GitHubProfile { .. } => unreachable!("a GitHub profile decision is routed to deckd's boundary"),
             Request::Create { spec } => {
                 let id = self.runtime.create(spec)?;
                 Ok(serde_json::to_value(self.runtime.task(&id)?)?)

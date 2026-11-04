@@ -12,12 +12,12 @@
 use anyhow::{Context as _, Result, bail};
 use deck_gateway::control::Control;
 use deck_gateway::policy::{Budget, Usage};
-use deck_gateway::server::{self, Config, WebSettings};
+use deck_gateway::server::{self, Config, GitHubSettings, WebSettings};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-hosts PATH] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -68,6 +68,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     let mut web_grants = Vec::new();
     let mut web_hosts = None;
     let mut web_test_connect = None;
+    let mut github_socket = None;
+    let mut github_repository = None;
+    let mut github_base = None;
+    let mut github_branches = Vec::new();
+    let mut github_token = None;
+    let mut github_scratch = None;
+    let mut github_api = None;
+    let mut github_remote = None;
+    let mut github_git = None;
     let mut watch_stdin = false;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -92,6 +101,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
                 let address = value(&mut args, &flag)?;
                 web_test_connect = Some(address.parse().with_context(|| format!("--web-test-connect: {address:?}"))?);
             }
+            "--github-socket" => github_socket = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--github-repository" => github_repository = Some(value(&mut args, &flag)?),
+            "--github-base" => github_base = Some(value(&mut args, &flag)?),
+            "--github-branch" => github_branches.push(value(&mut args, &flag)?),
+            "--github-token" => github_token = Some(value(&mut args, &flag)?),
+            "--github-scratch" => github_scratch = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--github-api" => github_api = Some(value(&mut args, &flag)?),
+            "--github-remote" => github_remote = Some(value(&mut args, &flag)?),
+            "--github-git" => github_git = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--exit-on-stdin-eof" => watch_stdin = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -109,10 +127,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         bail!("--model names at least one model the task may use");
     }
     let key = std::env::var(&secret).ok().filter(|value| !value.is_empty());
-    let control = match (control, task) {
-        (Some(socket), Some(task)) => Some(Control::new(socket, task)),
-        (None, None) => None,
-        _ => bail!("--control and --task are given together or not at all"),
+    // `--task` names the task whose branch rules this gateway applies, with
+    // or without a queue; `--control` needs it because a decision is per task.
+    let control = match &control {
+        Some(socket) => {
+            let task = task.clone().context("--control needs --task")?;
+            Some(Control::new(socket.clone(), task))
+        }
+        None => None,
     };
     let web = match web_socket {
         Some(socket) => Some(WebSettings {
@@ -125,6 +147,47 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         None => {
             if !web_profiles.is_empty() || !web_grants.is_empty() || web_hosts.is_some() || web_test_connect.is_some() {
                 bail!("--web-profile, --web-grants and --web-hosts need --web-socket");
+            }
+            None
+        }
+    };
+    let task_id = task.clone().unwrap_or_default();
+    let github = match github_socket {
+        Some(socket) => {
+            let repository = github_repository.context("--github-socket needs --github-repository")?;
+            let policy = deck_gateway::github::policy::Policy::new(
+                &repository,
+                github_base.as_deref().unwrap_or("main"),
+                github_branches,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let name = github_token.unwrap_or_else(|| "DECK_GITHUB_TOKEN".to_string());
+            if task_id.is_empty() {
+                bail!("--github-socket needs --task: every branch rule is derived from it");
+            }
+            let repository_name = policy.repository().to_string();
+            Some(GitHubSettings {
+                socket,
+                api: github_api.unwrap_or_else(|| "https://api.github.com".into()),
+                repository_url: github_remote.unwrap_or_else(|| format!("https://github.com/{repository_name}")),
+                policy,
+                task: task_id.clone(),
+                secret: name,
+                scratch: github_scratch.context("--github-socket needs --github-scratch")?,
+                git: github_git,
+            })
+        }
+        None => {
+            if github_repository.is_some()
+                || github_token.is_some()
+                || github_scratch.is_some()
+                || github_api.is_some()
+                || github_remote.is_some()
+                || github_git.is_some()
+                || !github_branches.is_empty()
+                || github_base.is_some()
+            {
+                bail!("the --github-* flags need --github-socket");
             }
             None
         }
@@ -142,6 +205,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             model_socket: model_socket.context(USAGE)?,
             extension_socket: extension_socket.context(USAGE)?,
             web,
+            github,
         },
         secret,
         watch_stdin,

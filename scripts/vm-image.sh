@@ -145,6 +145,16 @@ if [ "${DECK_WEB_ENABLED:-0}" = "1" ]; then
   export NO_PROXY="$no_proxy"
   export DECK_WEB_URL="http://127.0.0.1:${mirror_port}"
 fi
+# The GitHub operation gateway: a loopback relay the task's tool calls as
+# DECK_GITHUB_URL. Like every relay it is a byte carrier; the host gateway
+# enforces the repository and ref rules. A project with no repository gets no
+# relay and no URL.
+github_port=${DECK_GITHUB_PORT:-8084}
+github_vsock_port=${DECK_GITHUB_VSOCK_PORT:-1029}
+if [ "${DECK_GITHUB_ENABLED:-0}" = "1" ]; then
+  /usr/local/bin/deck-egress --listen "127.0.0.1:${github_port}" --vsock "2:${github_vsock_port}" &
+  export DECK_GITHUB_URL="http://127.0.0.1:${github_port}"
+fi
 export CONSTRUCT_BASE_URL="http://127.0.0.1:${relay_port}/v1"
 export DECK_BOUNDARY_URL="http://127.0.0.1:${boundary_port}"
 cd /workspace || cd /

@@ -786,3 +786,43 @@ fn a_profile_decision_becomes_project_rules_the_gateway_re_reads() {
     assert!(!rules.contains("deb.debian.org:443"), "the revoked destination is gone: {rules}");
     client.stop(&task.id).unwrap();
 }
+
+#[test]
+fn a_github_profile_writes_one_rule_per_operation_and_revokes_exactly_them() {
+    let (daemon, client) = Daemon::new("github-profile");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let project = task.spec.cwd.to_string_lossy().into_owned();
+    let operations = ["publish".to_string(), "create_pr".into()];
+    assert_eq!(client.github_profile(&task.id, None, "strf0x1/deck", &operations, false).unwrap(), 2);
+    assert_eq!(
+        client.github_profile(&task.id, None, "strf0x1/deck", &operations, false).unwrap(),
+        0,
+        "approving twice changes nothing"
+    );
+    let rules = std::fs::read_to_string(daemon.data.join("approvals").join("projects.json")).unwrap();
+    let rules: serde_json::Value = serde_json::from_str(&rules).unwrap();
+    let rules = rules["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2, "{rules:?}");
+    for rule in rules {
+        assert_eq!(rule["gateway"], "github");
+        assert_eq!(rule["destination"], "strf0x1/deck");
+        assert_eq!(rule["scope"], "project");
+        assert_eq!(rule["project"], project.as_str());
+        assert!(rule.get("expires_ms").is_none(), "a project rule has no expiry: {rule}");
+    }
+    // A merge is not an operation this gateway performs, so no rule for it.
+    assert_eq!(
+        client.github_profile(&task.id, None, "strf0x1/deck", &["merge".to_string()], false).unwrap_err().to_string(),
+        "a GitHub profile names publish, create_pr or update_pr"
+    );
+    // Revoking one operation leaves the other.
+    assert_eq!(
+        client.github_profile(&task.id, Some(&project), "strf0x1/deck", &["publish".to_string()], true).unwrap(),
+        1
+    );
+    let rules = std::fs::read_to_string(daemon.data.join("approvals").join("projects.json")).unwrap();
+    assert!(rules.contains("create_pr"), "the sibling stays: {rules}");
+    assert!(!rules.contains("\"publish\""), "the revoked operation is gone: {rules}");
+    client.stop(&task.id).unwrap();
+}
