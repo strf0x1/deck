@@ -60,6 +60,7 @@ impl GitHub {
                 Ok(Some(request)) => request,
                 Ok(None) => return Ok(()),
                 Err(ReadError::Refused { status, message }) => {
+                    let _ = drain(&mut stream);
                     return reply(&mut stream, status, json!({ "error": message }));
                 }
                 Err(ReadError::Io(error)) => return Err(error),
@@ -100,20 +101,27 @@ impl GitHub {
             true => match bundle(rest) {
                 Ok(bytes) => Some(bytes),
                 Err(ReadError::Refused { status, message }) => {
+                    let _ = drain(&mut stream);
                     return reply(&mut stream, status, json!({ "error": message }));
                 }
                 Err(ReadError::Io(error)) => return Err(error),
             },
             false => None,
         };
-        match self.run(&ask, operation, bundle.as_deref()) {
+        let response = match self.run(&ask, operation, bundle.as_deref()) {
             Ok((domain, body)) => {
                 let mut response = serde_json::from_str::<serde_json::Value>(&body).unwrap_or_else(|_| json!(body));
                 response["domain"] = json!(domain);
-                reply(&mut stream, 200, response)
+                (200, response)
             }
-            Err(failure) => reply(&mut stream, failure.status, failure.body),
-        }
+            Err(failure) => (failure.status, failure.body),
+        };
+        // A refusal closes the connection with a request the peer may not have
+        // finished writing. Reading those bytes first is what keeps the close
+        // a FIN rather than a RST, which Linux delivers to the client as a
+        // lost response.
+        let _ = drain(&mut stream);
+        reply(&mut stream, response.0, response.1)
     }
 
     /// Decide, then perform. A write asks the queue unless the project holds a
@@ -236,6 +244,21 @@ impl Failure {
 
     fn error(status: u16, code: &str, message: &str) -> Self {
         Self { status, body: json!({ "error": { "message": message, "type": code, "code": code } }) }
+    }
+}
+
+/// Read whatever the peer still has to send, briefly. A request that ended
+/// early is the common case here: the gateway answers it and closes.
+fn drain(stream: &mut UnixStream) -> io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_millis(50)))?;
+    let mut scratch = [0u8; 4096];
+    loop {
+        match stream.read(&mut scratch) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Ok(()),
+        }
     }
 }
 
