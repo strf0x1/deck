@@ -1288,6 +1288,24 @@ fn a_denied_publish_reports_the_approval_and_never_reaches_git() {
 }
 
 #[test]
+fn a_body_that_stops_before_its_content_length_is_refused_not_dropped() {
+    // A peer that declares more than it sends must get an answer: on Linux a
+    // close with unread bytes still queued becomes a RST, and the client sees
+    // a connection reset instead of the refusal.
+    let (_, remote) = bare("gh-short-body");
+    let (api, _, _) = api(|_| "{}".into());
+    let gateway = with_github("gh-short-body-gw", &api, &url(&remote), None, Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let mut stream = UnixStream::connect(&github).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    stream.write_all(b"POST /operations/refs HTTP/1.1\r\ncontent-length: 99\r\n\r\n{\"operation\":\"refs\"}").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    assert!(response.contains("stopped before its content-length"), "{response}");
+}
+
+#[test]
 fn reads_need_no_approval_and_a_missing_token_refuses_every_operation() {
     let (_, remote) = bare("gh-reads");
     let (api, seen, _) = api(|request| match () {

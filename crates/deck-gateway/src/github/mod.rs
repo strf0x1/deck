@@ -39,6 +39,10 @@ const MAX_ASK: usize = 64 * 1024;
 /// The gateway answers one request per connection; a publish is the slow one.
 const READ: Duration = Duration::from_secs(60);
 const WRITE: Duration = Duration::from_secs(180);
+/// The wait for the remainder of a body the peer declared. A publish's bundle
+/// arrives on the same connection; anything slower than this is a peer that
+/// stopped writing.
+const BODY: Duration = Duration::from_secs(10);
 
 pub struct GitHub {
     client: Client,
@@ -247,6 +251,20 @@ impl Failure {
     }
 }
 
+/// Fill a body of a declared length from a peer that is still writing it.
+///
+/// The design choice: the wait for the rest of the body is short. A guest that
+/// declared a length and stopped sending is a malformed request, and holding
+/// the connection for the listener's whole read timeout buys nothing — the
+/// answer is a refusal either way.
+fn read_body(reader: &mut UnixStream, body: &mut [u8]) -> io::Result<()> {
+    let previous = reader.read_timeout()?;
+    reader.set_read_timeout(Some(BODY))?;
+    let result = reader.read_exact(body);
+    reader.set_read_timeout(previous)?;
+    result
+}
+
 /// Read whatever the peer still has to send, briefly. A request that ended
 /// early is the common case here: the gateway answers it and closes.
 fn drain(stream: &mut UnixStream) -> io::Result<()> {
@@ -269,7 +287,7 @@ fn drain(stream: &mut UnixStream) -> io::Result<()> {
 /// connection and a buffered read of the head would swallow it. The head is
 /// read to its `\r\n\r\n`, parsed, and everything after it — the JSON body
 /// and then the bundle — is returned unread, in order.
-fn read(reader: &mut impl io::Read) -> Result<Option<(Request, Vec<u8>)>, ReadError> {
+fn read(reader: &mut UnixStream) -> Result<Option<(Request, Vec<u8>)>, ReadError> {
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -328,9 +346,15 @@ fn read(reader: &mut impl io::Read) -> Result<Option<(Request, Vec<u8>)>, ReadEr
     // caller; this read never waits for a peer to close.
     let mut after = vec![0; length];
     if length > 0 {
-        reader.read_exact(&mut after).map_err(|error| match error.kind() {
+        // A body that stops arriving is a malformed request, not a peer that
+        // went away: answer it and close, rather than dropping the connection
+        // with nothing said.
+        read_body(reader, &mut after).map_err(|error| match error.kind() {
             io::ErrorKind::UnexpectedEof => {
                 ReadError::Refused { status: 400, message: "connection closed in the request body".into() }
+            }
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                ReadError::Refused { status: 400, message: "the request body stopped before its content-length".into() }
             }
             _ => ReadError::Io(error),
         })?;
