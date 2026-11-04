@@ -22,11 +22,17 @@ struct Daemon {
     data: PathBuf,
     paths: Paths,
     child: Child,
+    /// The `DECK_CREDENTIALS` file this daemon reads, if any.
+    credentials: Option<PathBuf>,
 }
 
 #[expect(clippy::unwrap_used, reason = "test fixture setup and process observation must succeed")]
 impl Daemon {
     fn new(name: &str) -> (Self, DaemonClient) {
+        Self::with_credentials(name, None)
+    }
+
+    fn data(name: &str) -> PathBuf {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let data = std::env::temp_dir().join(format!(
             "deck-daemon-{name}-{}-{}",
@@ -34,24 +40,36 @@ impl Daemon {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
+        data
+    }
+
+    /// A daemon whose only credential store is `credentials`, a file the
+    /// caller wrote at 0600.
+    fn with_credentials(name: &str, credentials: Option<PathBuf>) -> (Self, DaemonClient) {
+        let data = Self::data(name);
         let paths = Paths::for_data(&data).unwrap();
-        let child = Self::spawn(&data);
-        let mut daemon = Self { data, paths, child };
+        let child = Self::spawn(&data, credentials.as_deref());
+        let mut daemon = Self { data, paths, child, credentials };
         let client = daemon.connect();
         (daemon, client)
     }
 
-    fn spawn(data: &std::path::Path) -> Child {
-        Command::new(env!("CARGO_BIN_EXE_deckd"))
+    fn spawn(data: &std::path::Path, credentials: Option<&std::path::Path>) -> Child {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_deckd"));
+        command
             .arg("--data")
             .arg(data)
             .arg("--idle-ms")
             .arg(IDLE.as_millis().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap()
+            .stderr(Stdio::inherit());
+        match credentials {
+            Some(file) => command.env("DECK_CREDENTIALS", file),
+            // Never the developer's own store from the test's environment.
+            None => command.env("DECK_CREDENTIALS", data.join("no-credentials.json")),
+        };
+        command.spawn().unwrap()
     }
 
     fn connect(&mut self) -> DaemonClient {
@@ -82,7 +100,7 @@ impl Daemon {
     }
 
     fn restart(&mut self) -> DaemonClient {
-        self.child = Self::spawn(&self.data);
+        self.child = Self::spawn(&self.data, self.credentials.as_deref());
         self.connect()
     }
 }
@@ -825,4 +843,167 @@ fn a_github_profile_writes_one_rule_per_operation_and_revokes_exactly_them() {
     assert!(rules.contains("create_pr"), "the sibling stays: {rules}");
     assert!(!rules.contains("\"publish\""), "the revoked operation is gone: {rules}");
     client.stop(&task.id).unwrap();
+}
+
+/// A 0600 credential file holding `pairs`, beside a test's data root.
+#[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
+fn credential_file(name: &str, pairs: &[(&str, &str)]) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = Daemon::data(&format!("{name}-store"));
+    let file = dir.join("credentials.json");
+    let map: serde_json::Map<String, serde_json::Value> =
+        pairs.iter().map(|(name, value)| ((*name).to_string(), serde_json::json!(value))).collect();
+    std::fs::write(&file, serde_json::to_vec(&map).unwrap()).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    file
+}
+
+/// What a VM run writes: a `vmm.json` naming the task's credential set. A
+/// local task stands in for the VMM here; the daemon reads only the set.
+#[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
+fn credential_set(daemon: &Daemon, task: &str, names: &[&str]) {
+    let config = serde_json::json!({
+        "task": task, "data": daemon.data, "lock_fd": -1, "disk": "/dev/null", "journal": "/dev/null",
+        "socket": "/tmp/x", "forward": "/tmp/x", "console": "/tmp/x", "guest": "/bin/true", "argv": [],
+        "env": [], "vcpus": 1, "ram_mib": 64, "library": "/dev/null",
+        "gateway": {
+            "executable": "/bin/true", "model_socket": "/tmp/x", "extension_socket": "/tmp/x",
+            "model_port": 1026, "extension_port": 1027, "github_scratch": "/tmp/x",
+            "upstream": "http://127.0.0.1:1/v1", "models": ["m"], "budget_file": "/tmp/x",
+            "secret": "OPENAI_API_KEY", "credentials": names, "control": "/tmp/x", "task": task
+        }
+    });
+    let dir = daemon.data.join("tasks").join(task);
+    std::fs::write(dir.join("vmm.json"), serde_json::to_vec(&config).unwrap()).unwrap();
+}
+
+/// One raw control line, as the gateway sends it.
+#[expect(clippy::unwrap_used, reason = "test process observation must succeed")]
+fn control(daemon: &Daemon, line: serde_json::Value) -> serde_json::Value {
+    let mut socket = UnixStream::connect(daemon.paths.control()).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    writeln!(socket, "{line}").unwrap();
+    let mut reply = String::new();
+    BufReader::new(socket).read_line(&mut reply).unwrap();
+    serde_json::from_str(&reply).unwrap()
+}
+
+fn fetch(daemon: &Daemon, task: &str, name: &str) -> serde_json::Value {
+    control(daemon, serde_json::json!({ "op": "credential", "task": task, "name": name }))
+}
+
+fn code(reply: &serde_json::Value) -> &str {
+    reply["error"].as_str().and_then(|error| error.split(':').next()).unwrap_or("")
+}
+
+#[test]
+fn a_credential_is_served_per_request_only_to_a_running_task_that_names_it() {
+    let file = credential_file("broker", &[("OPENAI_API_KEY", "sk-one")]);
+    let (daemon, client) = Daemon::with_credentials("broker", Some(file.clone()));
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+
+    // No VMM config: this task has no credential set at all.
+    assert_eq!(code(&fetch(&daemon, &task.id, "OPENAI_API_KEY")), "deck_credential_refused");
+    credential_set(&daemon, &task.id, &["OPENAI_API_KEY"]);
+    let served = fetch(&daemon, &task.id, "OPENAI_API_KEY");
+    assert_eq!(served["ok"]["value"], "sk-one");
+    let fingerprint = served["ok"]["fingerprint"].as_str().unwrap().to_string();
+    assert!(fingerprint.starts_with("sha256:") && fingerprint.len() == 19, "{fingerprint}");
+    assert_eq!(fetch(&daemon, &task.id, "OPENAI_API_KEY")["ok"]["value"], "sk-one");
+    assert_eq!(code(&fetch(&daemon, &task.id, "DECK_GITHUB_TOKEN")), "deck_credential_refused");
+    assert_eq!(code(&fetch(&daemon, &task.id, "lowercase")), "invalid credential name");
+
+    // The record names the value once per run, never the value itself.
+    let events = std::fs::read_to_string(daemon.data.join("tasks").join(&task.id).join("events.jsonl")).unwrap();
+    assert_eq!(events.matches("credential_used").count(), 1, "{events}");
+    assert!(events.contains(&fingerprint) && !events.contains("sk-one"), "{events}");
+
+    // A gateway's watch opens with what is already revoked, then hears more.
+    let mut watch = UnixStream::connect(daemon.paths.control()).unwrap();
+    watch.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    writeln!(watch, "{}", serde_json::json!({ "op": "credential_watch", "task": task.id })).unwrap();
+    let mut watch = BufReader::new(watch);
+    let mut line = String::new();
+    watch.read_line(&mut line).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["ok"]["revoked"], serde_json::json!([]));
+
+    let revocation = client.revoke_credential("OPENAI_API_KEY").unwrap();
+    assert_eq!(revocation.fingerprint, fingerprint);
+    line.clear();
+    watch.read_line(&mut line).unwrap();
+    let pushed: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        (pushed["name"].as_str(), pushed["fingerprint"].as_str()),
+        (Some("OPENAI_API_KEY"), Some(&*fingerprint))
+    );
+    assert_eq!(code(&fetch(&daemon, &task.id, "OPENAI_API_KEY")), "deck_credential_revoked");
+
+    // Rotation: a new value serves at once; the old one stays revoked.
+    let rotated = credential_file("broker-rotated", &[("OPENAI_API_KEY", "sk-two")]);
+    std::fs::rename(&rotated, &file).unwrap();
+    assert_eq!(fetch(&daemon, &task.id, "OPENAI_API_KEY")["ok"]["value"], "sk-two");
+    let revoked = std::fs::read_to_string(daemon.data.join("credentials/revoked.json")).unwrap();
+    assert!(revoked.contains(&fingerprint) && !revoked.contains("sk-"), "{revoked}");
+
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(code(&fetch(&daemon, &task.id, "OPENAI_API_KEY")), "deck_credential_missing");
+    client.stop(&task.id).unwrap();
+    std::fs::rename(&rotated, &file).ok();
+    assert_eq!(code(&fetch(&daemon, &task.id, "OPENAI_API_KEY")), "deck_credential_refused", "a stopped task");
+}
+
+#[test]
+fn a_credential_file_other_users_can_read_stops_deckd_at_start() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let file = credential_file("mode", &[("OPENAI_API_KEY", "sk-one")]);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let data = Daemon::data("mode");
+    let output = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .arg("--data")
+        .arg(&data)
+        .env("DECK_CREDENTIALS", &file)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("chmod 600") && !stderr.contains("sk-one"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn the_credential_commands_take_values_on_stdin_and_list_only_fingerprints() {
+    let data = Daemon::data("cli");
+    let file = data.join("credentials.json");
+    let deckd = |args: &[&str], stdin: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deckd"))
+            .arg("--data")
+            .arg(&data)
+            .args(args)
+            .env("DECK_CREDENTIALS", &file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(deckd(&["credential", "set", "OPENAI_API_KEY"], "sk-from-stdin\n").status.success());
+    assert!(deckd(&["credential", "set", "DECK_GITHUB_TOKEN"], "ghp-token").status.success());
+    assert!(!deckd(&["credential", "set", "lower"], "x").status.success());
+    assert!(!deckd(&["credential", "set", "EMPTY"], "\n").status.success());
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(stored["OPENAI_API_KEY"], "sk-from-stdin", "one trailing newline is not part of the value");
+
+    let list = deckd(&["credential", "list"], "");
+    let text = String::from_utf8(list.stdout).unwrap();
+    assert!(text.contains("OPENAI_API_KEY\tsha256:") && text.contains("DECK_GITHUB_TOKEN\tsha256:"), "{text}");
+    assert!(!text.contains("sk-from-stdin") && !text.contains("ghp-token"), "{text}");
+
+    assert!(deckd(&["credential", "delete", "DECK_GITHUB_TOKEN"], "").status.success());
+    let text = String::from_utf8(deckd(&["credential", "list"], "").stdout).unwrap();
+    assert!(!text.contains("DECK_GITHUB_TOKEN"), "{text}");
+    let _ = std::fs::remove_dir_all(&data);
 }

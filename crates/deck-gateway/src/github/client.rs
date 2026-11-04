@@ -15,7 +15,8 @@ use crate::github::publish::Publisher;
 use serde_json::{Value, json};
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A pull request body is a description, not an attachment.
@@ -30,6 +31,7 @@ const MIN_TOKEN: usize = 8;
 /// The prefix a `matching-refs/heads/` reply puts in front of each short name.
 const HEADS: &str = "refs/heads/";
 
+#[derive(Clone)]
 pub struct Settings {
     /// `https://api.github.com`, or a test's own listener.
     pub api: String,
@@ -37,7 +39,9 @@ pub struct Settings {
     pub task: String,
     /// The pinned clone URL (`https://github.com/owner/name`), or a test's.
     pub repository_url: String,
-    /// The host token. Never written, never returned.
+    /// The host token for one operation. `None` on the gateway's shared
+    /// client; [`Client::authorized`] makes the per-operation one. Never
+    /// written, never returned.
     pub token: Option<String>,
     pub scratch: PathBuf,
     pub git: Option<PathBuf>,
@@ -48,8 +52,12 @@ pub struct Client {
     agent: ureq::Agent,
     /// Every publish shares one scratch repository and its refs, and the
     /// gateway serves each connection on its own thread, so publishes take
-    /// turns: two at once could push each other's commit.
-    publishing: Mutex<()>,
+    /// turns: two at once could push each other's commit. Shared with every
+    /// per-operation client.
+    publishing: Arc<Mutex<()>>,
+    /// Set when the operation's token is revoked: a running `git` is killed
+    /// with its process group, and the operation's result is discarded.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Client {
@@ -62,7 +70,18 @@ impl Client {
             .timeout_global(Some(Duration::from_secs(60)))
             .timeout_connect(Some(Duration::from_secs(20)))
             .build();
-        Self { settings, agent: config.new_agent(), publishing: Mutex::new(()) }
+        Self { settings, agent: config.new_agent(), publishing: Arc::new(Mutex::new(())), cancel: None }
+    }
+
+    /// This client for one operation: `token` is the value `deckd` handed out
+    /// for it, and `cancel` is what a revocation sets.
+    pub fn authorized(&self, token: &str, cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            settings: Settings { token: Some(token.to_string()), ..self.settings.clone() },
+            agent: self.agent.clone(),
+            publishing: self.publishing.clone(),
+            cancel: Some(cancel),
+        }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -94,7 +113,8 @@ impl Client {
             self.settings.repository_url.clone(),
             self.settings.scratch.clone(),
         )
-        .with_token(self.settings.token.clone());
+        .with_token(self.settings.token.clone())
+        .with_cancel(self.cancel.clone());
         if let Some(git) = &self.settings.git {
             publisher = publisher.with_git(git.clone());
         }

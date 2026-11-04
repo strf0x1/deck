@@ -12,7 +12,7 @@
 use deck_acp::{Client, Inbound, TurnState};
 use deck_runtime::lifecycle::Spec;
 use deck_runtime::paths::Paths;
-use deck_runtime::{Runtime, State, Vm};
+use deck_runtime::{DaemonClient, Runtime, State, Vm};
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::future::{Either, select};
 use std::path::{Path, PathBuf};
@@ -99,7 +99,13 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
 /// timings #16 records. Skipped unless a model endpoint is configured:
 /// `CONSTRUCT_BASE_URL` names the provider the host gateway proxies for the
 /// task (construct-dev's scripted server in the test process), and
-/// `OPENAI_API_KEY` is the host key the gateway injects.
+/// `DECK_CREDENTIALS` names a 0600 file holding `OPENAI_API_KEY`, the host
+/// key the gateway fetches from `deckd` per request (ADR 0004 §4).
+///
+/// The task runs under a real `deckd` (the signed `DECK_VM_EXECUTABLE`),
+/// because only the daemon hands out credentials. That daemon is started with
+/// a decoy `OPENAI_API_KEY` exported, which must reach neither the VMM nor the
+/// gateway.
 #[test]
 #[ignore = "needs a scripted model endpoint; set DECK_VM_MOCK=1"]
 fn vm_prompt_and_permission_round_trip() {
@@ -114,7 +120,7 @@ fn vm_prompt_and_permission_round_trip() {
         deck_runtime::vm::EXECUTABLE_ENV,
         deck_runtime::vm::GATEWAY_ENV,
         "CONSTRUCT_BASE_URL",
-        "OPENAI_API_KEY",
+        deck_runtime::credentials::FILE_ENV,
     ] {
         assert!(std::env::var_os(key).is_some(), "the prompt test needs {key}");
     }
@@ -125,13 +131,39 @@ fn vm_prompt_and_permission_round_trip() {
     let paths = Paths::for_data(&data).unwrap();
     let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project") };
 
-    let runtime = open(&data, &paths);
-    let id = runtime.create(spec).unwrap();
+    let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())
+        .arg("--data")
+        .arg(&data)
+        .env("OPENAI_API_KEY", "decoy-exported-in-deckd-shell")
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut daemon = Daemon(child);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let deckd = loop {
+        if let Ok(deckd) = DaemonClient::connect(&data) {
+            break deckd;
+        }
+        assert!(daemon.0.try_wait().unwrap().is_none(), "deckd exited before opening its socket");
+        assert!(Instant::now() < deadline, "deckd did not open its socket");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let id = deckd.create(spec).unwrap().id;
+    // Declared after the daemon guard, so on a panic the daemon is gone
+    // before Cleanup opens the runtime to stop the VMM.
     let mut cleanup = Cleanup { data: data.clone(), paths: paths.clone(), id: id.clone(), armed: true };
     let launched = Instant::now();
-    runtime.start(&id).unwrap();
+    let task = deckd.start(&id).unwrap();
     let started = launched.elapsed();
-    let stream = runtime.attach(&id).unwrap();
+    let vmm = task.pid.expect("a running VM task has a VMM pid");
+    for pid in std::iter::once(vmm).chain(children(vmm)) {
+        let environment = environment(pid);
+        assert!(
+            !environment.contains("OPENAI_API_KEY=") && !environment.contains("DECK_CREDENTIALS="),
+            "process {pid} inherited a credential name: {environment}"
+        );
+    }
+    let stream = deckd.attach(&id).unwrap();
     let attached = launched.elapsed();
     let (client, mut events) = Client::over(PathBuf::from("/workspace"), stream.reader, stream.writer).unwrap();
     let deadline = Instant::now() + READY;
@@ -140,18 +172,17 @@ fn vm_prompt_and_permission_round_trip() {
         match event {
             Inbound::Ready { session_id, .. } => {
                 println!(
-                    "runtime.start: {started:?}; attach: {:?}; launch to ACP ready: {:?}",
+                    "deckd start: {started:?}; attach: {:?}; launch to ACP ready: {:?}",
                     attached - started,
                     launched.elapsed()
                 );
-                runtime.session(&id, &session_id).unwrap();
+                deckd.session(&id, &session_id).unwrap();
                 break;
             }
             Inbound::Failed(reason) => panic!("ACP failed: {reason}"),
             _ => {}
         }
     }
-
     let prompted = Instant::now();
     let turn_deadline = prompted + Duration::from_secs(20);
     client.prompt("read /etc/hostname").unwrap();
@@ -174,10 +205,47 @@ fn vm_prompt_and_permission_round_trip() {
         }
     }
     drop(client);
-    runtime.stop(&id).unwrap();
-    runtime.destroy(&id).unwrap();
+    deckd.stop(&id).unwrap();
+    deckd.destroy(&id).unwrap();
     cleanup.armed = false;
+    // The record names the value the run used, never the value.
+    let events = std::fs::read_to_string(data.join("tasks").join(&id).join("events.jsonl")).unwrap();
+    assert!(events.contains("credential_used"), "{events}");
+    drop(deckd);
+    daemon.stop();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The test's `deckd`, killed when the test ends however it ends.
+struct Daemon(std::process::Child);
+
+impl Daemon {
+    fn stop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// A process's environment as `ps eww` shows it to the same user.
+fn environment(pid: u32) -> String {
+    let output = std::process::Command::new("ps").args(["eww", "-o", "command=", "-p", &pid.to_string()]).output();
+    output.map(|output| String::from_utf8_lossy(&output.stdout).into_owned()).unwrap_or_default()
+}
+
+/// Direct children of `pid` (the VMM's gateway).
+fn children(pid: u32) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep").args(["-P", &pid.to_string()]).output();
+    output
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.trim().parse().ok()).collect()
+        })
+        .unwrap_or_default()
 }
 
 /// #30's acceptance run: twenty consecutive launches on fresh tasks, each

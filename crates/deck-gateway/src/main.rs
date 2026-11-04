@@ -2,9 +2,11 @@
 //! the whole configuration; the VMM starts it before boot and waits for its
 //! readiness line.
 //!
-//! The design choice: the provider key comes from the host environment (the
-//! daemon's, never the guest's) until deckd's credential broker owns it. The
-//! gateway prints one JSON line, then never writes a secret anywhere. The
+//! The design choice: no credential value reaches this process through its
+//! arguments or environment. `--secret` and `--github-token` are credential
+//! *names*; each operation fetches its value from `deckd` over `--control`
+//! (ADR 0004 §4.4). The gateway prints one JSON line, then never writes a
+//! secret anywhere. The
 //! web gateway's policy — its profiles, its grant files, its optional pinned
 //! hosts — is all given as arguments by the VMM, so nothing in the guest can
 //! widen it.
@@ -126,7 +128,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     if models.is_empty() {
         bail!("--model names at least one model the task may use");
     }
-    let key = std::env::var(&secret).ok().filter(|value| !value.is_empty());
     // `--task` names the task whose branch rules this gateway applies, with
     // or without a queue; `--control` needs it because a decision is per task.
     let control = match &control {
@@ -196,7 +197,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         Config {
             upstream,
             models,
-            key,
             secret: secret.clone(),
             control,
             budget: Budget { requests: request_budget, tokens: token_budget },

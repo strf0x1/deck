@@ -109,6 +109,22 @@ pub(crate) enum Request {
         task: String,
         id: String,
     },
+    /// The gateway asks for one credential value for one operation
+    /// (ADR 0004 §4.4). Answered only for a name in the task's set, while the
+    /// task runs; never logged.
+    Credential {
+        task: String,
+        name: String,
+    },
+    /// A gateway's revocation feed for its task's set, held for the
+    /// connection's lifetime (§4.5).
+    CredentialWatch {
+        task: String,
+    },
+    /// Revoke a credential's current value, from the CLI or the access panel.
+    RevokeCredential {
+        name: String,
+    },
     /// A capable window attaches to this task for the connection's lifetime.
     Watch {
         task: String,
@@ -136,6 +152,8 @@ impl Request {
             | Self::SetBudget { task: id, .. }
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }
+            | Self::Credential { task: id, .. }
+            | Self::CredentialWatch { task: id }
             | Self::Watch { task: id } => Some(id),
             _ => None,
         };
@@ -156,6 +174,11 @@ impl Request {
             && !valid(id)
         {
             bail!("invalid approval id");
+        }
+        if let Self::Credential { name, .. } | Self::RevokeCredential { name } = self
+            && !crate::credentials::valid_name(name)
+        {
+            bail!("invalid credential name");
         }
         Ok(())
     }

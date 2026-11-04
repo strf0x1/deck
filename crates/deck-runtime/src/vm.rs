@@ -74,15 +74,15 @@ pub const GITHUB_REPOSITORY_ENV: &str = "DECK_GITHUB_REPOSITORY";
 pub const GITHUB_BASE_ENV: &str = "DECK_GITHUB_BASE";
 /// Branches beyond `deck/<task>` this project lets a task write.
 pub const GITHUB_BRANCHES_ENV: &str = "DECK_GITHUB_BRANCHES";
-/// The environment variable the GitHub token is read from; the value never
-/// enters `vmm.json` or the guest (ADR 0007 §4).
+/// Names the stored credential that holds the GitHub token; the value never
+/// enters `vmm.json` or the guest (ADR 0007 §4, ADR 0004 §4).
 pub const GITHUB_TOKEN_ENV: &str = "DECK_GITHUB_TOKEN_SECRET";
-/// The default variable the gateway reads the token from.
+/// The default credential name for the GitHub token.
 pub const GITHUB_TOKEN: &str = "DECK_GITHUB_TOKEN";
 
 /// The GitHub operation gateway's host policy (ADR 0007): the repository, the
 /// base, and the branches a task may also write. The token's value is never
-/// here; only the name of the environment variable it comes from.
+/// here; only the name of the stored credential it comes from.
 #[derive(Debug, Clone)]
 pub struct GitHub {
     pub repository: String,
@@ -197,6 +197,18 @@ impl Vm {
         self.data.join("tasks").join(id)
     }
 
+    /// The names this task's gateway may fetch (ADR 0004 §4.3): the model
+    /// key, and the GitHub token when the project names a repository.
+    fn credentials(&self) -> Vec<String> {
+        let mut names = vec![boundary::SECRET.to_string()];
+        if let Some(github) = &self.github
+            && !names.contains(&github.token)
+        {
+            names.push(github.token.clone());
+        }
+        names
+    }
+
     fn disk(&self, id: &str) -> PathBuf {
         self.dir(id).join("disk.img")
     }
@@ -237,6 +249,7 @@ impl Backend for Vm {
                 std::fs::remove_file(path)?;
             }
         }
+        let credentials = self.credentials();
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
         let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some(), self.github.is_some());
@@ -288,6 +301,7 @@ impl Backend for Vm {
                 usage: task.usage,
                 budget_file: self.dir(&task.id).join("budget.json"),
                 secret: boundary::SECRET.into(),
+                credentials: credentials.clone(),
                 control: self.paths.control(),
                 task: task.id.clone(),
             },
@@ -304,6 +318,12 @@ impl Backend for Vm {
             .stderr(Stdio::from(log));
         if let Some(paths) = library_path(&self.library) {
             command.env("DYLD_LIBRARY_PATH", paths.clone()).env("LD_LIBRARY_PATH", paths);
+        }
+        // A stray `export OPENAI_API_KEY=…` in the shell that started deckd
+        // never reaches a holder: the task's credential names, and where the
+        // store is, leave the environment here (ADR 0004 §4.2).
+        for name in credentials.iter().map(String::as_str).chain([crate::credentials::FILE_ENV]) {
+            command.env_remove(name);
         }
         // SAFETY: setsid and fcntl are async-signal-safe. Only the VMM
         // inherits the cleared descriptor; the parent's copy stays CLOEXEC.
@@ -611,8 +631,18 @@ fn clone(source: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::copy(source, target).map(|_| ())
 }
 
-/// The VMM config carries the guest environment, including any model key, so
-/// it is owner-only.
+/// The credential names a VM task's gateway may fetch, from the `vmm.json`
+/// its run was started with. A task with no VMM config (a local task, or one
+/// never started) has none.
+pub fn credential_set(data: &Path, id: &str) -> Result<Vec<String>> {
+    let path = data.join("tasks").join(id).join("vmm.json");
+    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let config: vmm::Config = serde_json::from_slice(&bytes).context("parsing the VMM configuration")?;
+    Ok(config.gateway.credentials)
+}
+
+/// The VMM config is owner-only: it is the complete description of a guest,
+/// though it never carries a credential value.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;

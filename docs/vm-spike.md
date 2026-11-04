@@ -54,7 +54,6 @@ sign a copy):
 
 ```sh
 cp target/debug/deckd /tmp/deckd && scripts/vm-sign.sh /tmp/deckd
-OPENAI_API_KEY=test \
 DECK_VM_IMAGE=target/vm/base.img \
 DECK_VM_JOURNAL=target/vm/journal.img \
 DECK_VM_KRUN=/tmp/libkrun/target/release/libkrun.1.19.7.dylib \
@@ -67,12 +66,17 @@ For a prompt + permission round trip, run construct's scripted endpoint on
 the host and name it as the gateway's upstream with `CONSTRUCT_BASE_URL`
 (`http://127.0.0.1:<port>/v1`). The guest has no IP route (ADR 0004), so the
 guest's Construct talks to `deck-egress` on guest loopback; that relay carries
-the stream over vsock to the `deck-gateway` process, which adds the host key
-from `OPENAI_API_KEY` and forwards the request upstream. The measurement run:
+the stream over vsock to the `deck-gateway` process, which fetches the host
+key from `deckd` for that request (ADR 0004 §4) and forwards it upstream. The
+test starts its own `deckd` from `DECK_VM_EXECUTABLE`, with a decoy
+`OPENAI_API_KEY` exported that must reach neither the VMM nor the gateway;
+the real key is in a `DECK_CREDENTIALS` file. The measurement run:
 
 ```sh
 construct-dev serve --script script.json --port-file /tmp/port
-OPENAI_API_KEY=x CONSTRUCT_BASE_URL=http://127.0.0.1:$(cat /tmp/port)/v1 \
+export DECK_CREDENTIALS=/tmp/deck-credentials.json
+echo x | /tmp/deckd credential set OPENAI_API_KEY
+CONSTRUCT_BASE_URL=http://127.0.0.1:$(cat /tmp/port)/v1 \
 DECK_VM_MOCK=1 ... cargo test -p deck-runtime --test vm -- --ignored --nocapture
 ```
 
@@ -102,7 +106,7 @@ cargo test -p deck-runtime --test vm -- --nocapture
 ```
 
 The prompt + permission run is the same command with `DECK_VM_MOCK=1`,
-`CONSTRUCT_BASE_URL` and `OPENAI_API_KEY`. `scripts/vm-image.sh` picks the
+`CONSTRUCT_BASE_URL` and a `DECK_CREDENTIALS` file holding `OPENAI_API_KEY`. `scripts/vm-image.sh` picks the
 host architecture, so a Linux x86_64 host builds an amd64 Debian guest.
 Keep `TMPDIR` off tmpfs: the per-task 6 GiB root is a sparse image, and a
 plain copy into a RAM-backed `/tmp` exhausts it.
@@ -112,8 +116,9 @@ To drive the real window, export the same `DECK_VM_*` values and run
 window's default command is `construct acp`, and the backend maps it to
 `/usr/local/bin/construct` in the guest. `DECK_GATEWAY_EXECUTABLE` defaults to
 `deck-gateway` beside the `deckd` the runtime runs, and `CONSTRUCT_BASE_URL` /
-`CONSTRUCT_MODEL` in `deckd`'s environment configure the task's model gateway;
-neither the endpoint nor `OPENAI_API_KEY` is passed into the guest.
+`CONSTRUCT_MODEL` in `deckd`'s environment configure the task's model gateway.
+The key is a stored credential (`deckd credential set OPENAI_API_KEY`); it is
+never passed into the guest, and `deckd` never reads it from its environment.
 
 ## Window check
 

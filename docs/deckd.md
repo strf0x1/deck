@@ -137,6 +137,39 @@ The gateway's boundary events reach the agent through the status endpoint's
 `/events` beside the model gateway's, with `gateway: "web"`, so a blocked
 package fetch is explained in the tool result rather than read as an outage.
 
+## Credentials
+
+ADR 0004 §4's broker lives in `deckd`. It reads one store, chosen at start:
+the 0600 JSON file `DECK_CREDENTIALS` names (refused at start with group or
+other bits), or otherwise the macOS Keychain / Secret Service under
+`com.sprawlcommons.deck`. `deckd` never reads a value from its environment,
+and the runtime removes the task's credential names and `DECK_CREDENTIALS`
+from the environment it hands the VMM and the gateway. Each read is bounded
+at 5 s, with at most one read per name outstanding.
+
+A VM run writes its credential set into `vmm.json` as `gateway.credentials`
+(the model key's name, and the GitHub token's when the project names a
+repository). Three control requests serve it:
+
+- `credential {task, name}` returns `{"value", "fingerprint"}` for one
+  operation, only for a running task and a name in its set; anything else is
+  refused without reading the store. A failure is an error line starting with
+  its code: `deck_credential_missing`, `_unavailable`, `_refused` or
+  `_revoked`. Neither the request nor the reply is logged; the log line names
+  the task, the name and the fingerprint. The first use of a value in a run
+  appends `credential_used {name, fingerprint}` to the task's events.
+- `credential_watch {task}` replies `{"revoked": [...]}` for the task's set,
+  then pushes each later revocation as one JSON line for the connection's
+  life. Each gateway holds one, reopened with backoff.
+- `revoke_credential {name}` revokes the name's current fingerprint, writes
+  it to `credentials/revoked.json` before replying, and pushes it to the
+  watching gateways, which close the requests and GitHub operations that used
+  it. A new value serves again; the revoked one never does.
+
+`deckd credential set NAME` (value on stdin), `delete NAME`, `list` (names,
+fingerprints, store, revoked state) and `revoke NAME` manage it. Only
+`revoke` talks to the daemon.
+
 ## The GitHub operation gateway
 
 A VM task's third gateway kind (ADR 0007) publishes to the project's GitHub
@@ -149,8 +182,9 @@ is worse than none.
 The gateway exists only when `DECK_GITHUB_REPOSITORY` (`owner/name`) is set in
 `deckd`'s environment. `DECK_GITHUB_BASE` (default `main`) is the only base a
 pull request may target, and `DECK_GITHUB_BRANCHES` lists branches beyond
-`deck/<task>` a task may also write. The token comes from the variable named by
-`DECK_GITHUB_TOKEN_SECRET` (default `DECK_GITHUB_TOKEN`); its value is never in
+`deck/<task>` a task may also write. The token is the stored credential named
+by `DECK_GITHUB_TOKEN_SECRET` (default `DECK_GITHUB_TOKEN`), fetched from the
+broker once per operation (see Credentials below); its value is never in
 `vmm.json`, the guest environment, a log or a response.
 
 Five operations, and no relay:

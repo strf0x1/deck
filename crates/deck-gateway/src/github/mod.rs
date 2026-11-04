@@ -21,7 +21,9 @@ pub use control::{Answer, Control};
 pub use policy::{Ask, Operation};
 pub use status::Events;
 
+use crate::credential::{Broker, Credential, Registration};
 use crate::http::{self, ReadError, Request};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The most a request head may be; the same bound every listener applies.
 const MAX_HEAD: usize = crate::http::MAX_HEAD;
@@ -49,11 +51,47 @@ pub struct GitHub {
     client: Client,
     control: Option<Control>,
     status: Arc<Events>,
+    /// The broker each operation fetches its token from, and the credential
+    /// name. `None` refuses every operation as unavailable.
+    credentials: Option<(Arc<Broker>, String)>,
+}
+
+/// One operation's token and its registration with the broker. Dropping it
+/// drops the value; a revocation meanwhile sets `cancel`.
+struct Held {
+    credential: Credential,
+    cancel: Arc<AtomicBool>,
+    _registration: Registration,
 }
 
 impl GitHub {
     pub fn new(client: Client, control: Option<Control>, status: Arc<Events>) -> Self {
-        Self { client, control, status }
+        Self { client, control, status, credentials: None }
+    }
+
+    /// Fetch the token under `name` from `broker`, once per operation.
+    pub fn with_credentials(mut self, broker: Arc<Broker>, name: String) -> Self {
+        self.credentials = Some((broker, name));
+        self
+    }
+
+    /// The token for one operation, registered so a revocation stops it. A
+    /// publish's `git push` and its API calls share this one fetch.
+    fn fetch(&self) -> Result<Held, Failure> {
+        let Some((broker, name)) = &self.credentials else {
+            return Err(Failure::credential(&crate::credential::Refusal::Unavailable(
+                "this gateway has no credential broker".into(),
+            )));
+        };
+        let credential = broker.fetch(name).map_err(|refusal| Failure::credential(&refusal))?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let registration = broker
+            .register(&credential, {
+                let cancel = cancel.clone();
+                move || cancel.store(true, Ordering::Release)
+            })
+            .map_err(|refusal| Failure::credential(&refusal))?;
+        Ok(Held { credential, cancel, _registration: registration })
     }
 
     /// Serve one guest connection: read the head, run the operation, answer.
@@ -139,9 +177,6 @@ impl GitHub {
     /// Decide, then perform. A write asks deckd's queue, which answers at once
     /// from a project rule or a live grant; a read never asks.
     fn run(&self, ask: &Ask, operation: Operation, bundle: Option<&[u8]>) -> Result<(String, String), Failure> {
-        if !self.client.has_token() {
-            return Err(Failure::error(503, "deck_credential_missing", "the host has no GitHub credential"));
-        }
         let detail = match operation {
             Operation::Publish => ask.branch.clone(),
             Operation::PullRequest | Operation::UpdatePullRequest | Operation::Review => {
@@ -151,27 +186,63 @@ impl GitHub {
         };
         let domain = self.client.destination(&detail);
         // An update may only touch a pull request this task opened from a
-        // branch it may write; that is checked before anyone is asked.
-        if let (Operation::UpdatePullRequest, Some(number)) = (operation, ask.number)
-            && let Err(problem) = self.client.owns_pull_request(number)
-        {
-            return Err(self.failed(&domain, problem));
+        // branch it may write; that is checked before anyone is asked, and is
+        // the one check that already needs the token. Every other operation
+        // fetches it only once the queue admitted it.
+        let mut held = None;
+        if let (Operation::UpdatePullRequest, Some(number)) = (operation, ask.number) {
+            let token = self.fetch()?;
+            let client = self.client.authorized(token.credential.value(), token.cancel.clone());
+            if let Err(problem) = client.owns_pull_request(number) {
+                return Err(self.stopped(&token).unwrap_or_else(|| self.failed(&domain, problem)));
+            }
+            held = Some(token);
         }
         self.decide(operation, &domain, &reason(ask, operation))?;
-        let result = match operation {
+        let token = match held {
+            Some(token) => token,
+            None => self.fetch()?,
+        };
+        let result = self.perform(
+            &self.client.authorized(token.credential.value(), token.cancel.clone()),
+            ask,
+            operation,
+            bundle,
+        );
+        // A revoked token's operation is reported as revoked, whatever git or
+        // the API made of being stopped; a ref already pushed stays pushed.
+        if let Some(failure) = self.stopped(&token) {
+            return Err(failure);
+        }
+        result.map(|body| (domain.clone(), body)).map_err(|problem| self.failed(&domain, problem))
+    }
+
+    /// The revocation failure, when this operation's token was revoked.
+    fn stopped(&self, token: &Held) -> Option<Failure> {
+        token.cancel.load(Ordering::Acquire).then(|| Failure::credential(&token.credential.revoked()))
+    }
+
+    /// Run the admitted operation with its own token.
+    fn perform(
+        &self,
+        client: &Client,
+        ask: &Ask,
+        operation: Operation,
+        bundle: Option<&[u8]>,
+    ) -> Result<String, problem::Problem> {
+        match operation {
             Operation::Publish => {
-                let bytes = bundle.ok_or_else(|| Failure::error(400, "deck_bad_request", "publish needs a bundle"))?;
-                self.client.publish(&ask.branch, bytes)
+                let bytes = bundle.ok_or_else(|| problem::Problem::invalid("publish needs a bundle"))?;
+                client.publish(&ask.branch, bytes)
             }
-            Operation::Refs => self.client.refs(),
+            Operation::Refs => client.refs(),
             Operation::PullRequest => {
-                self.client.pull_request(&ask.head, &ask.base, &ask.title, &ask.body, ask.draft.unwrap_or(true))
+                client.pull_request(&ask.head, &ask.base, &ask.title, &ask.body, ask.draft.unwrap_or(true))
             }
             Operation::UpdatePullRequest => {
-                let number = ask.number.ok_or_else(|| {
-                    Failure::error(400, "deck_bad_request", "update_pr needs the pull request number")
-                })?;
-                self.client.update_pull_request(
+                let number =
+                    ask.number.ok_or_else(|| problem::Problem::invalid("update_pr needs the pull request number"))?;
+                client.update_pull_request(
                     number,
                     (!ask.base.is_empty()).then_some(ask.base.as_str()),
                     (!ask.title.is_empty()).then_some(ask.title.as_str()),
@@ -182,13 +253,11 @@ impl GitHub {
                 )
             }
             Operation::Review => {
-                let number = ask
-                    .number
-                    .ok_or_else(|| Failure::error(400, "deck_bad_request", "review needs the pull request number"))?;
-                self.client.review(number)
+                let number =
+                    ask.number.ok_or_else(|| problem::Problem::invalid("review needs the pull request number"))?;
+                client.review(number)
             }
-        };
-        result.map(|body| (domain.clone(), body)).map_err(|problem| self.failed(&domain, problem))
+        }
     }
 
     /// Record a failure for the agent's event feed and turn it into a reply;
@@ -267,6 +336,13 @@ impl Failure {
 
     fn error(status: u16, code: &str, message: &str) -> Self {
         Self { status, body: json!({ "error": { "message": message, "type": code, "code": code } }) }
+    }
+
+    /// A broker refusal: nothing was injected and nothing reached GitHub.
+    fn credential(refusal: &crate::credential::Refusal) -> Self {
+        let mut failure = Self::error(refusal.status(), refusal.code(), refusal.message());
+        failure.body["retryable"] = json!(refusal.retryable());
+        failure
     }
 }
 

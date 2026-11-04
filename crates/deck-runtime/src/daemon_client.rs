@@ -123,6 +123,12 @@ impl DaemonClient {
         self.request(Request::SetBudget { task: id.into(), requests, tokens })
     }
 
+    /// Revoke a credential's current value. Running gateways close the
+    /// operations that used it before their next read of the store.
+    pub fn revoke_credential(&self, name: &str) -> Result<crate::credentials::revoked::Revocation> {
+        self.request(Request::RevokeCredential { name: name.into() })
+    }
+
     /// Ask the daemon's queue for a scope. This may hold for a decision when
     /// a capable window is attached; the gateway is the normal caller.
     pub fn request_approval(&self, task: &str, ask: Ask) -> Result<Approval> {
