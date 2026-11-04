@@ -990,6 +990,22 @@ The implementation is not done until these have tests where practical.
    CI: the Keychain and Secret Service stores and the VM tests, which are run
    by hand.
 
+   Checked by hand 2026-11-04 on macOS/arm64 (libkrun 1.19.7): the VM prompt
+   test passes with a `DECK_CREDENTIALS` file, the upstream receiving the
+   stored value. Revoking during a streaming VM turn closes the stream within
+   ~45 ms (file store and Keychain), and the next turn gets
+   `deck_credential_revoked` without reaching the model. In the Keychain, the
+   `deckd` that set the item reads it without a dialog. A differently signed
+   `deckd` daemon gets one dialog; its first fetch is `unavailable` after 5 s,
+   the read stays in flight, and once the dialog is allowed the next fetch in
+   the same turn succeeds, after which that binary reads without asking. Not
+   yet checked: the Secret Service store. Two rough edges: a short-lived
+   `deckd credential list` that times out leaves its dialog behind, and an
+   answer given after it exits is discarded, so repeated CLI reads pile up
+   dialogs. And a stream closed by revocation reaches the agent as a generic
+   interrupted stream, not `deck_credential_revoked`; only the next request
+   names it.
+
 ## Deferred
 
 - A virtio-net compatibility backend and any UDP/QUIC support. The guest has
