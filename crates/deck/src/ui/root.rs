@@ -241,7 +241,7 @@ impl Deck {
             }
             return cx.notify();
         }
-        if self.session.ask.is_some() {
+        if self.session.ask.is_some() && !self.boundary.is_reviewing() {
             match k.key.as_str() {
                 "escape" => self.choose(None, cx),
                 d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) && d != "0" => {

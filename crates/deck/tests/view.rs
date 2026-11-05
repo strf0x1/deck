@@ -159,6 +159,43 @@ fn a_boundary_card_takes_the_decision_keys_instead_of_the_prompt(cx: &mut TestAp
     });
 }
 
+#[gpui::test]
+fn reviewing_external_access_does_not_answer_a_different_agent_permission(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Permission {
+                request: json!(19),
+                title: "different agent permission".into(),
+                options: vec![PermissionOption {
+                    id: "allow".into(),
+                    name: "Allow once".into(),
+                    kind: "allow_once".into(),
+                }],
+            },
+            cx,
+        );
+        d.on_boundary(approval("reviewed"), cx);
+    });
+    click_control(&mut cx, "hdr-access");
+    click_control(&mut cx, "access-review-0");
+    cx.simulate_keystrokes("1");
+    deck.read_with(&cx, |d, _| {
+        assert!(d.session().ask.is_some(), "the reviewed boundary card owns the decision key");
+        assert!(d.boundary().pending().is_some(), "without a daemon the boundary decision stays pending");
+    });
+    deck.update(&mut cx, |d, cx| {
+        let mut decided = approval("reviewed");
+        decided.state = deck_runtime::approvals::State::Denied;
+        d.on_boundary(decided, cx);
+    });
+    cx.simulate_keystrokes("1");
+    assert!(
+        deck.read_with(&cx, |d, _| d.session().ask.is_none()),
+        "the agent permission regains its keys after review ends"
+    );
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

@@ -11,6 +11,7 @@ use deck_runtime::approvals::{Approval, State};
 #[derive(Default)]
 pub struct Boundary {
     items: Vec<Approval>,
+    reviewed: Option<String>,
 }
 
 impl Boundary {
@@ -36,6 +37,9 @@ impl Boundary {
                     // the watch update cannot suppress the note.
                     let waited = approval.waiters > 0;
                     let id = approval.id.clone();
+                    if self.reviewed.as_deref() == Some(id.as_str()) {
+                        self.reviewed = None;
+                    }
                     self.items.retain(|item| item.id != id);
                     (decided && !waited).then_some(approval)
                 }
@@ -56,14 +60,24 @@ impl Boundary {
         &self.items
     }
 
+    /// A request explicitly opened with Review owns the decision keys until
+    /// it leaves the queue, even if the agent also has a permission question.
+    pub fn is_reviewing(&self) -> bool {
+        self.reviewed.is_some()
+    }
+
     pub fn select(&mut self, id: &str) {
         if let Some(index) = self.items.iter().position(|item| item.id == id) {
+            self.reviewed = Some(id.to_owned());
             let item = self.items.remove(index);
             self.items.insert(0, item);
         }
     }
 
     pub fn remove(&mut self, id: &str) {
+        if self.reviewed.as_deref() == Some(id) {
+            self.reviewed = None;
+        }
         self.items.retain(|item| item.id != id);
     }
 }
