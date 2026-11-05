@@ -74,3 +74,69 @@ esac
     }
     std::fs::remove_dir_all(data).unwrap();
 }
+
+#[test]
+fn deletion_distinguishes_missing_items_from_store_and_clear_failures() {
+    let data = std::env::temp_dir().join(format!("deck-secret-delete-{}", std::process::id()));
+    std::fs::create_dir_all(&data).unwrap();
+    let tool = data.join("secret-tool");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+case "$*" in
+    'lookup service com.sprawlcommons.deck name TEST_KEY')
+        case "$DECK_TEST_DELETE" in
+            unavailable)
+                printf 'synthetic-diagnostic\n' >&2
+                exit 1 ;;
+            missing) exit 1 ;;
+            *) printf 'synthetic-value\n' ;;
+        esac ;;
+    'clear service com.sprawlcommons.deck name TEST_KEY')
+        printf 'called' > "$DECK_TEST_MARKER"
+        case "$DECK_TEST_DELETE" in
+            clear-failure)
+                printf 'synthetic-value\n' >&2
+                exit 1 ;;
+            clear-silent) exit 1 ;;
+        esac ;;
+    *) exit 2 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let marker = data.join("clear-called");
+    for scenario in ["unavailable", "missing", "clear-failure", "clear-silent", "success"] {
+        let _ = std::fs::remove_file(&marker);
+        let output = Command::new(env!("CARGO_BIN_EXE_deckd"))
+            .arg("--data")
+            .arg(&data)
+            .args(["credential", "delete", "TEST_KEY"])
+            .env_remove("DECK_CREDENTIALS")
+            .env("PATH", &data)
+            .env("DECK_TEST_DELETE", scenario)
+            .env("DECK_TEST_MARKER", &marker)
+            .output()
+            .unwrap();
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(output.stdout.is_empty());
+        assert!(!error.contains("synthetic"), "{error}");
+        assert_eq!(marker.exists(), !matches!(scenario, "unavailable" | "missing"));
+        match scenario {
+            "success" => {
+                assert!(output.status.success(), "{error}");
+                assert!(error.contains("deleted from"), "{error}");
+            }
+            "missing" => {
+                assert!(output.status.success(), "{error}");
+                assert!(error.contains("was not in"), "{error}");
+            }
+            _ => {
+                assert!(!output.status.success(), "{scenario}: {error}");
+                assert!(error.contains("the Secret Service could not"), "{error}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(data).unwrap();
+}

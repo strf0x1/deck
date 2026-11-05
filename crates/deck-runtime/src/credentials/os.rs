@@ -120,13 +120,17 @@ mod imp {
     }
 
     pub fn delete(name: &str) -> Result<bool> {
-        let present = read(name).is_ok();
+        match read(name) {
+            Ok(_) => {}
+            Err(Absent::Missing) => return Ok(false),
+            Err(Absent::Unavailable(_)) => bail!("the Secret Service could not check {name} before deletion"),
+        }
         let output =
             tool().args(["clear", "service", SERVICE, "name", name]).output().context("running secret-tool")?;
-        if !output.status.success() && present {
-            bail!("secret-tool clear failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        if !output.status.success() {
+            bail!("the Secret Service could not delete {name}");
         }
-        Ok(present)
+        Ok(true)
     }
 
     pub fn names() -> Result<Vec<String>> {
