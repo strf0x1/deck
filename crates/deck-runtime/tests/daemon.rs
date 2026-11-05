@@ -1093,7 +1093,11 @@ fn the_credential_commands_take_values_on_stdin_and_list_only_fingerprints() {
     };
     assert!(deckd(&["credential", "set", "OPENAI_API_KEY"], "sk-from-stdin\n").status.success());
     assert!(deckd(&["credential", "set", "DECK_GITHUB_TOKEN"], "ghp-token").status.success());
-    assert!(!deckd(&["credential", "set", "lower"], "x").status.success());
+    // Invalid names are rejected before stdin is read. Sending a value here
+    // races that early exit and can give the fixture a broken pipe instead.
+    let invalid = deckd(&["credential", "set", "lower"], "");
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("not a credential name"));
     assert!(!deckd(&["credential", "set", "EMPTY"], "\n").status.success());
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(stored["OPENAI_API_KEY"], "sk-from-stdin", "one trailing newline is not part of the value");

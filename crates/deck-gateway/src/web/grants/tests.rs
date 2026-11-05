@@ -25,8 +25,14 @@ fn a_changed_file_is_re_read_and_a_replacement_does_not_keep_an_old_permit() {
     let permit = grants.authorize("example.com", 8443, "connect").unwrap();
     assert!(grants.authorize("example.com", 8444, "connect").is_none());
     assert!(grants.live(&permit));
+    let original = std::fs::metadata(&path).unwrap();
     let replacement = path.with_extension("tmp");
     std::fs::write(&replacement, json!([grant("b", "example.com:8443")]).to_string()).unwrap();
+    // Atomic writes can land within one filesystem clock tick. Preserve
+    // that timestamp explicitly so this also reproduces on faster clocks.
+    let file = std::fs::File::options().write(true).open(&replacement).unwrap();
+    file.set_modified(original.modified().unwrap()).unwrap();
+    assert_eq!(file.metadata().unwrap().len(), original.len());
     std::fs::rename(replacement, &path).unwrap();
     assert!(!grants.live(&permit), "a new grant does not resurrect an old permit");
     assert!(grants.authorize("example.com", 8443, "connect").is_some());
