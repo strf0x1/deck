@@ -119,7 +119,7 @@ impl Connector {
             if let Err(error) = send(&mut upstream, &method, &current, &request) {
                 return self.deny_plain(&mut guest, None, &format!("the request to {} failed: {error}", current.name));
             }
-            let (status, headers, rest) = match read_head(&mut upstream) {
+            let (status, headers) = match read_head(&mut upstream) {
                 Ok(parts) => parts,
                 Err(error) => {
                     return self.deny_plain(
@@ -137,7 +137,7 @@ impl Connector {
                     }
                     next = Some(location);
                 }
-                None => return relay(&mut guest, &mut upstream, &status, &headers, &rest),
+                None => return relay(&mut guest, &mut upstream, &status, &headers),
             }
         }
         self.deny_plain(&mut guest, None, "the redirect chain ended nowhere")
@@ -224,10 +224,9 @@ fn send(upstream: &mut TcpStream, method: &str, target: &Target, request: &Reque
     upstream.flush()
 }
 
-/// Read a response head, bounded, and keep whatever body bytes arrived with it.
-/// A response status line, its lowered headers, and any body bytes read with
-/// the head.
-type ResponseHead = (String, Vec<(String, String)>, Vec<u8>);
+/// A response status line and its lowered headers. The byte-at-a-time read
+/// stops exactly after the terminator, leaving all body bytes upstream.
+type ResponseHead = (String, Vec<(String, String)>);
 
 fn read_head(upstream: &mut TcpStream) -> io::Result<ResponseHead> {
     let mut raw = Vec::new();
@@ -241,7 +240,7 @@ fn read_head(upstream: &mut TcpStream) -> io::Result<ResponseHead> {
         }
         raw.push(byte[0]);
     }
-    let rest = raw.split_off(raw.len() - 4);
+    raw.truncate(raw.len() - 4);
     let text = String::from_utf8(raw).map_err(|_| io::Error::other("response head is not UTF-8"))?;
     let mut lines = text.split("\r\n");
     let status_line = lines.next().unwrap_or_default().to_owned();
@@ -255,7 +254,7 @@ fn read_head(upstream: &mut TcpStream) -> io::Result<ResponseHead> {
         };
         headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
     }
-    Ok((status_line, headers, rest))
+    Ok((status_line, headers))
 }
 
 /// The destination a redirect names, if this response is one. A `Location`
@@ -286,7 +285,6 @@ fn relay(
     upstream: &mut TcpStream,
     status: &str,
     headers: &[(String, String)],
-    rest: &[u8],
 ) -> io::Result<()> {
     write!(guest, "{status}\r\n")?;
     for (name, value) in headers {
@@ -296,7 +294,6 @@ fn relay(
         write!(guest, "{name}: {value}\r\n")?;
     }
     write!(guest, "connection: close\r\n\r\n")?;
-    guest.write_all(rest)?;
     io::copy(upstream, guest)?;
     guest.flush()
 }

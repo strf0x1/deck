@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 /// forbids.
 const DECOY: &str = "env-value-must-not-be-used";
 
+#[path = "gateway/mirror_body.rs"]
+mod mirror_body;
+
 #[path = "gateway/model_grants.rs"]
 mod model_grants;
 
