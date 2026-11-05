@@ -185,7 +185,7 @@ at 5 s, with at most one read per name outstanding.
 
 A VM run writes its credential set into `vmm.json` as `gateway.credentials`
 (the model key's name, and the GitHub token's when the project names a
-repository). Three control requests serve it:
+repository). These control requests serve it:
 
 - `credential {task, name}` returns `{"value", "fingerprint"}` for one
   operation, only for a running task and a name in its set; anything else is
