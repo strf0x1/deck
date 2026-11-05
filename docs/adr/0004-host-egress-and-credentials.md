@@ -421,6 +421,12 @@ deckd credential revoke NAME   # a control request to the running daemon (§4.5)
 panel lists names and fingerprints and offers revoke. Entering a value in
 the UI is deferred.
 
+The panel asks the daemon for `credentials {task}`, which lists only the
+names in that task's set (so a window causes no read of any other item) with
+fingerprint and revoked state, never a value. Revoke asks for confirmation,
+sends `revoke_credential`, and shows the new listing from the daemon's reply;
+it then says the key is not cancelled at the provider (§4.5).
+
 #### 4.3 Which task may use which credential
 
 When the runtime starts a VMM, it writes the task's credential set into

@@ -1,0 +1,168 @@
+//! Renders the access panel from [`Access`](super::access::Access). It takes
+//! the conversation pane's body while open. No state of its own.
+//!
+//! The design choice: red appears only on what revokes (the button, the
+//! confirmation) and amber only on the reminder that follows, so the panel
+//! stays quiet until a decision is on it.
+
+use super::access::NOT_CANCELLED;
+use super::panels::glyph;
+use super::root::Deck;
+use super::theme::{MONO, Tokens, icon, tint};
+use gpui::{
+    AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px,
+};
+
+pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    let access = &deck.access;
+    let rows = access.credentials().iter().enumerate().map(|(i, item)| {
+        let name = item.name.clone();
+        let can_revoke = item.fingerprint.is_some() && !item.revoked;
+        let (label, color): (&str, Hsla) = if item.revoked {
+            ("revoked", Tokens::red())
+        } else if item.fingerprint.is_some() {
+            ("active", Tokens::lime())
+        } else {
+            ("no value", Tokens::text_faint().into())
+        };
+        let detail = item.fingerprint.clone().or_else(|| item.error.clone()).unwrap_or_default();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .px(px(12.))
+            .py(px(9.))
+            .rounded(px(10.))
+            .bg(Tokens::raised())
+            .child(div().font_family(MONO).text_size(px(12.5)).child(item.name.clone()))
+            .child(div().font_family(MONO).text_size(px(11.5)).text_color(Tokens::text_faint()).child(detail))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(11.5))
+                    .text_color(Tokens::text_dim())
+                    .child(div().size(px(6.)).rounded_full().bg(color))
+                    .child(label),
+            )
+            .children(can_revoke.then(|| {
+                button(("access-revoke", i), "Revoke", Tokens::red())
+                    .on_click(cx.listener(move |this, _, _, cx| this.ask_revoke(&name, cx)))
+            }))
+    });
+    let empty = access.credentials().is_empty().then(|| {
+        div().text_color(Tokens::text_faint()).child("This task has no credentials. Its agent holds no secret.")
+    });
+    div()
+        .id("access")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .gap(px(14.))
+        .px(px(22.))
+        .py(px(18.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(glyph(icon::SHIELD, 13.).text_color(Tokens::text_dim()))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).child("Access"))
+                .child(div().flex_1())
+                .child(
+                    button("access-close", "Close", Tokens::text_dim())
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(div().font_weight(FontWeight::MEDIUM).child("Credentials"))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(Tokens::text_faint())
+                        .child("Values stay on the host. This lists names and fingerprints only."),
+                )
+                .children(empty)
+                .children(rows),
+        )
+        .children(access.confirming().map(|name| confirm(name, access.busy(), cx)))
+        .children(access.revoked().map(rotate))
+        .children(access.error().map(|why| div().text_color(Tokens::red()).child(why.to_owned())))
+        .into_any_element()
+}
+
+fn confirm(name: &str, busy: bool, cx: &mut Context<Deck>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .p(px(14.))
+        .rounded(px(14.))
+        .border_1()
+        .border_color(tint(Tokens::red(), 0.35))
+        .bg(tint(Tokens::red(), 0.06))
+        .child(div().font_weight(FontWeight::MEDIUM).child(format!("Revoke {name}?")))
+        .child(div().text_size(px(12.5)).text_color(Tokens::text_dim()).child(format!(
+            "Requests using this value stop now, and the name stays blocked until a new value is set. {NOT_CANCELLED}"
+        )))
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    button("access-revoke-confirm", if busy { "Revoking…" } else { "Revoke" }, Tokens::red())
+                        .on_click(cx.listener(|this, _, _, cx| this.confirm_revoke(cx))),
+                )
+                .child(
+                    button("access-revoke-cancel", "Cancel", Tokens::text_dim())
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_revoke(cx))),
+                ),
+        )
+        .into_any_element()
+}
+
+/// After a revoke: the part that is still the user's to do.
+fn rotate(name: &str) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .p(px(14.))
+        .rounded(px(14.))
+        .border_1()
+        .border_color(tint(Tokens::amber(), 0.35))
+        .bg(tint(Tokens::amber(), 0.06))
+        .child(div().font_weight(FontWeight::MEDIUM).child(format!("{name} revoked")))
+        .child(div().text_size(px(12.5)).text_color(Tokens::text_dim()).child(format!(
+            "{NOT_CANCELLED} Rotate it at the provider, then set the new value with `deckd credential set {name}`."
+        )))
+        .into_any_element()
+}
+
+fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<Hsla>) -> gpui::Stateful<gpui::Div> {
+    let fg = fg.into();
+    div()
+        .id(id.into())
+        .h(px(28.))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .rounded(px(9.))
+        .border_1()
+        .border_color(tint(fg, 0.3))
+        .bg(Tokens::raised())
+        .text_color(fg)
+        .text_size(px(12.5))
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .child(label.to_owned())
+}

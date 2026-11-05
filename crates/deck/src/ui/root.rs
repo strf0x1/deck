@@ -6,6 +6,7 @@
 //! each render steps the springs by the real frame gap and requests another
 //! frame only while something still moves, so an idle window draws nothing.
 
+use super::access::Access;
 use super::board::{Board, Lane, LaneState};
 use super::boundary::Boundary;
 use super::rail::Rail;
@@ -36,6 +37,7 @@ pub struct Deck {
     pub(super) rail: Rail,
     pub(super) session: Session,
     pub(super) boundary: Boundary,
+    pub(super) access: Access,
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
@@ -68,6 +70,7 @@ impl Deck {
             rail: Rail::new(),
             session: Session::new(),
             boundary: Boundary::new(),
+            access: Access::new(),
             draft: String::new(),
             scroll: ScrollHandle::new(),
             agent_cmd: String::new(),
@@ -103,6 +106,10 @@ impl Deck {
 
     pub fn boundary(&self) -> &Boundary {
         &self.boundary
+    }
+
+    pub fn access(&self) -> &Access {
+        &self.access
     }
 
     /// Apply a boundary change from the daemon's watch connection.
@@ -220,6 +227,14 @@ impl Deck {
 
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
+        // Escape backs out of the access panel first: a revoke confirmation,
+        // then the panel. Other keys still reach what is underneath.
+        if self.access.is_open() && k.key == "escape" {
+            if !self.access.cancel() {
+                self.access.toggle();
+            }
+            return cx.notify();
+        }
         if self.session.ask.is_some() {
             match k.key.as_str() {
                 "escape" => self.choose(None, cx),
@@ -334,7 +349,7 @@ impl Render for Deck {
             .text_color(Tokens::text())
             .child(div().flex_none().w(px(chrome::RAIL_SLOT)))
             .child(
-                div().flex_1().min_w_0().flex().flex_col().gap(px(GUTTER)).child(chrome::header(self)).child(
+                div().flex_1().min_w_0().flex().flex_col().gap(px(GUTTER)).child(chrome::header(self, cx)).child(
                     div()
                         .flex_1()
                         .min_h_0()

@@ -954,6 +954,34 @@ fn a_credential_is_served_per_request_only_to_a_running_task_that_names_it() {
 }
 
 #[test]
+fn a_task_lists_only_its_credential_set_by_name_and_fingerprint() {
+    let file = credential_file("listing", &[("OPENAI_API_KEY", "sk-one"), ("OTHER_KEY", "sk-other")]);
+    let (daemon, client) = Daemon::with_credentials("listing", Some(file));
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+
+    assert_eq!(client.credentials(&task.id).unwrap(), vec![], "no VMM config: no set");
+    credential_set(&daemon, &task.id, &["OPENAI_API_KEY", "DECK_GITHUB_TOKEN"]);
+    let listed = client.credentials(&task.id).unwrap();
+    assert_eq!(
+        listed.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+        ["OPENAI_API_KEY", "DECK_GITHUB_TOKEN"]
+    );
+    let fingerprint = listed[0].fingerprint.clone().unwrap();
+    assert!(fingerprint.starts_with("sha256:") && !listed[0].revoked);
+    assert_eq!((listed[1].fingerprint.as_deref(), listed[1].error.as_deref()), (None, Some("no value")));
+
+    client.revoke_credential("OPENAI_API_KEY").unwrap();
+    let listed = client.credentials(&task.id).unwrap();
+    assert!(listed[0].revoked && listed[0].fingerprint.as_deref() == Some(&*fingerprint));
+    // Nothing on the wire carries a value, and a bad task id is refused.
+    let raw = control(&daemon, serde_json::json!({ "op": "credentials", "task": task.id }));
+    assert!(!raw.to_string().contains("sk-"), "{raw}");
+    assert!(client.credentials("../x").is_err());
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
 fn a_credential_file_other_users_can_read_stops_deckd_at_start() {
     use std::os::unix::fs::PermissionsExt as _;
     let file = credential_file("mode", &[("OPENAI_API_KEY", "sk-one")]);

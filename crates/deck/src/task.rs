@@ -4,6 +4,7 @@
 use anyhow::Result;
 use deck_acp::{Client, Inbound};
 use deck_runtime::approvals::{Approval, Decision};
+use deck_runtime::broker::Listed;
 use deck_runtime::{DaemonClient, Spec, State, Watch};
 use futures::channel::mpsc;
 use std::path::{Path, PathBuf};
@@ -51,6 +52,16 @@ impl WindowTask {
 
     pub fn decide(&self, id: &str, decision: Decision) -> Result<Approval> {
         self.daemon.decide(id, decision)
+    }
+
+    /// This task's credential names with fingerprints and revoked state.
+    /// The daemon never sends a value.
+    pub fn credentials(&self) -> Result<Vec<Listed>> {
+        self.daemon.credentials(&self.id)
+    }
+
+    pub fn revoke_credential(&self, name: &str) -> Result<()> {
+        self.daemon.revoke_credential(name).map(|_| ())
     }
 
     /// Stop and start the agent, then rebuild its conversation by loading

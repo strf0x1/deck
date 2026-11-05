@@ -34,7 +34,8 @@ settle.
 | `crates/deck/src/task.rs` | The window's daemon connection: finds or starts a task, live-attaches when supported, and explicitly restarts unsupported detached tasks. Dropping it detaches. |
 | `crates/deck/src/ui/root.rs` | The one view entity: owns `Board`, `Rail`, `Session`, the client and the window's task; routes keys and mouse; steps animation. `ui/attachment.rs` connects and restarts its daemon-owned task. |
 | `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
-| `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `boundary.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, the boundary card's pending items, spring physics. |
+| `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `boundary.rs`, `access.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, the boundary card's pending items, the access panel's credential listing and revoke confirmation, spring physics. |
+| `crates/deck/src/ui/access_panel.rs`, `credentials.rs` | The access panel (header shield button): render, and the window's daemon calls (list, revoke) off the UI thread. The panel changes only on the daemon's reply. |
 | `crates/deck/src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
 | `crates/deck/src/control/` | Dev-only control socket (`DECK_CONTROL`). `protocol.rs` the pure line grammar, `socket.rs` the listener threads, `drive.rs` dispatches commands as GPUI input on the window and reads `state`. |
 | `crates/deck/tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |

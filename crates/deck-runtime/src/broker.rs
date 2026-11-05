@@ -12,7 +12,7 @@ use crate::credentials::revoked::{Revocation, Revoked};
 use crate::credentials::{self, Absent, Store};
 use anyhow::{Result, bail};
 use futures::channel::mpsc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
@@ -60,7 +60,7 @@ pub struct Fetched {
 }
 
 /// A name as `deckd credential list` shows it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listed {
     pub name: String,
     pub fingerprint: Option<String>,
@@ -156,22 +156,36 @@ impl Broker {
     pub fn list(&self) -> Result<Vec<Listed>> {
         list(&self.store, &self.revoked)
     }
+
+    /// The listing for one task's set: only those names are read, so a window
+    /// never causes a read (or a Keychain dialog) for a credential the task
+    /// cannot use. A name with no stored value is listed with its error.
+    pub fn list_names(&self, names: &[String]) -> Vec<Listed> {
+        let mut seen = HashSet::new();
+        names
+            .iter()
+            .filter(|name| credentials::valid_name(name) && seen.insert(name.as_str()))
+            .map(|name| list_one(&self.store, &self.revoked, name.clone()))
+            .collect()
+    }
 }
 
 /// The listing `deckd credential list` prints, from a store and revocation
 /// list it opened itself or the daemon's.
 pub fn list(store: &Store, revoked: &Revoked) -> Result<Vec<Listed>> {
-    let mut listed = Vec::new();
-    for name in store.names()? {
-        let (fingerprint, error) = match store.read(&name) {
-            Ok(value) => (Some(credentials::fingerprint(&value)), None),
-            Err(Absent::Missing) => (None, Some("no value".to_string())),
-            Err(Absent::Unavailable(why)) => (None, Some(why)),
-        };
-        let is_revoked = fingerprint.as_deref().is_some_and(|fingerprint| revoked.is_revoked(fingerprint));
-        listed.push(Listed { name, fingerprint, revoked: is_revoked, error });
-    }
-    Ok(listed)
+    Ok(store.names()?.into_iter().map(|name| list_one(store, revoked, name)).collect())
+}
+
+/// One name as listed: its current fingerprint and revoked state, or why
+/// there is none. This is the only place a listing reads a value.
+fn list_one(store: &Store, revoked: &Revoked, name: String) -> Listed {
+    let (fingerprint, error) = match store.read(&name) {
+        Ok(value) => (Some(credentials::fingerprint(&value)), None),
+        Err(Absent::Missing) => (None, Some("no value".to_string())),
+        Err(Absent::Unavailable(why)) => (None, Some(why)),
+    };
+    let is_revoked = fingerprint.as_deref().is_some_and(|fingerprint| revoked.is_revoked(fingerprint));
+    Listed { name, fingerprint, revoked: is_revoked, error }
 }
 
 #[cfg(test)]
@@ -238,6 +252,25 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].revoked);
         assert!(broker.revoke("DECK_GITHUB_TOKEN").is_err(), "nothing to revoke");
+    }
+
+    #[test]
+    fn a_task_listing_names_only_its_set_and_shows_revocation() {
+        let (broker, _) = broker("listing");
+        broker.store.set("OTHER_KEY", "sk-other").unwrap();
+        let names = vec!["OPENAI_API_KEY".to_string(), "DECK_GITHUB_TOKEN".into(), "lower".into()];
+        let listed = broker.list_names(&names);
+        assert_eq!(
+            listed.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+            ["OPENAI_API_KEY", "DECK_GITHUB_TOKEN"]
+        );
+        assert_eq!(listed[0].fingerprint.as_deref(), Some(credentials::fingerprint("sk-one").as_str()));
+        assert_eq!((listed[0].revoked, listed[1].error.as_deref()), (false, Some("no value")));
+        broker.revoke("OPENAI_API_KEY").unwrap();
+        assert!(broker.list_names(&names)[0].revoked);
+        // The listing never carries a value.
+        let json = serde_json::to_string(&broker.list_names(&names)).unwrap();
+        assert!(!json.contains("sk-"), "{json}");
     }
 
     #[test]
