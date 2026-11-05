@@ -130,14 +130,15 @@ impl Connector {
                 }
             };
             match redirect(&status, &headers, &current) {
-                Some(location) => {
+                Ok(Some(location)) => {
                     hops += 1;
                     if hops > HOPS {
                         return self.deny_plain(&mut guest, None, "the redirect chain is too long");
                     }
                     next = Some(location);
                 }
-                None => return relay(&mut guest, &mut upstream, &status, &headers),
+                Ok(None) => return relay(&mut guest, &mut upstream, &status, &headers),
+                Err(reason) => return self.deny_plain(&mut guest, None, reason),
             }
         }
         self.deny_plain(&mut guest, None, "the redirect chain ended nowhere")
@@ -257,25 +258,26 @@ fn read_head(upstream: &mut TcpStream) -> io::Result<ResponseHead> {
     Ok((status_line, headers))
 }
 
-/// The destination a redirect names, if this response is one. A `Location`
-/// that is not an absolute `http://` URI is not followed: the host would have
-/// to guess the scheme, and a guess is not a destination.
-fn redirect(status: &str, headers: &[(String, String)], current: &Target) -> Option<Target> {
-    let code = status.split(' ').nth(1)?.parse::<u16>().ok()?;
-    if !matches!(code, 301 | 302 | 303 | 307 | 308) {
-        return None;
+/// A redirect must name a usable destination; an unusable `Location` is a
+/// refusal, distinct from a non-redirect response. Root-relative paths keep
+/// the current destination, while scheme-relative and other schemes fail closed.
+fn redirect(status: &str, headers: &[(String, String)], current: &Target) -> Result<Option<Target>, &'static str> {
+    let code = status.split(' ').nth(1).and_then(|value| value.parse::<u16>().ok());
+    if !matches!(code, Some(301 | 302 | 303 | 307 | 308)) {
+        return Ok(None);
     }
-    let location = headers.iter().find(|(name, _)| name == "location").map(|(_, value)| value)?;
+    let location = headers
+        .iter()
+        .find(|(name, _)| name == "location")
+        .map(|(_, value)| value)
+        .ok_or("the redirect has no Location target")?;
     if location.starts_with("http://") {
-        return Target::parse(location);
+        return Target::parse(location).map(Some).ok_or("the redirect has an invalid HTTP target");
     }
-    if let Some(path) = location.strip_prefix('/') {
-        if path.starts_with("//") {
-            return None;
-        }
-        return Some(Target { name: current.name.clone(), port: current.port, path: format!("/{path}") });
+    if location.starts_with('/') && !location.starts_with("//") {
+        return Ok(Some(Target { name: current.name.clone(), port: current.port, path: location.clone() }));
     }
-    None
+    Err("the redirect target must be an absolute http:// URI or a root-relative path")
 }
 
 /// Answer the guest with the mirror's response, unchanged but for the framing
@@ -337,20 +339,33 @@ mod tests {
     #[test]
     fn a_redirect_is_a_destination_of_its_own() {
         let current = Target::parse("http://deb.debian.org/x").unwrap();
-        let moved = redirect(
-            "HTTP/1.1 301 Moved Permanently",
-            &[("location".into(), "http://pypi.org/simple/".into())],
-            &current,
-        )
-        .unwrap();
-        assert_eq!(moved.destination(), "pypi.org:80");
-        let relative = redirect("HTTP/1.1 302 Found", &[("location".into(), "/elsewhere".into())], &current).unwrap();
-        assert_eq!(relative.destination(), "deb.debian.org:80");
-        assert_eq!(relative.path, "/elsewhere");
-        assert!(
-            redirect("HTTP/1.1 302 Found", &[("location".into(), "https://crates.io/".into())], &current).is_none()
-        );
-        assert!(redirect("HTTP/1.1 200 OK", &[("location".into(), "http://x/".into())], &current).is_none());
-        assert!(redirect("HTTP/1.1 302 Found", &[("location".into(), "*".into())], &current).is_none());
+        for code in [301, 302, 303, 307, 308] {
+            let status = format!("HTTP/1.1 {code} Redirect");
+            let moved =
+                redirect(&status, &[("location".into(), "http://pypi.org/simple/".into())], &current).unwrap().unwrap();
+            assert_eq!(moved.destination(), "pypi.org:80");
+            let relative = redirect(&status, &[("location".into(), "/elsewhere".into())], &current).unwrap().unwrap();
+            assert_eq!(relative.destination(), "deb.debian.org:80");
+            assert_eq!(relative.path, "/elsewhere");
+            for invalid in [
+                "https://crates.io/",
+                "ftp://mirror.example/file",
+                "//other.example/file",
+                "///file",
+                "http:///path",
+                "http://mirror.example:bad/",
+                "*",
+                "",
+                "relative-file",
+            ] {
+                assert!(
+                    redirect(&status, &[("location".into(), invalid.into())], &current).is_err(),
+                    "{code}: {invalid}"
+                );
+            }
+            assert!(redirect(&status, &[], &current).is_err());
+        }
+        assert_eq!(redirect("HTTP/1.1 200 OK", &[("location".into(), "https://x/".into())], &current), Ok(None));
+        assert_eq!(redirect("HTTP/1.1 404 Not Found", &[], &current), Ok(None));
     }
 }
