@@ -95,12 +95,28 @@ mod imp {
                 .map_err(|_| Absent::Unavailable(format!("the Secret Service item {name} is not UTF-8")))?;
             return Ok(value.strip_suffix('\n').map(str::to_owned).unwrap_or(value));
         }
-        // secret-tool exits 1 with nothing on stderr when there is no item;
-        // anything it says is a store that could not answer.
+        // `lookup` exits 1 with empty output both when there is no item and
+        // when a matching item is locked but no prompter can unlock it. Probe
+        // the item's metadata to distinguish those cases. A failed probe is
+        // unavailable: only a successful empty search proves absence.
         if output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty() {
-            Err(Absent::Missing)
+            classify_empty_lookup(name)
         } else {
             Err(Absent::Unavailable(format!("the Secret Service could not answer for {name}")))
+        }
+    }
+
+    fn classify_empty_lookup(name: &str) -> Result<String, Absent> {
+        let output = tool()
+            .args(["search", "--all", "service", SERVICE, "name", name])
+            .output()
+            .map_err(|error| Absent::Unavailable(format!("running secret-tool: {error}")))?;
+        let names = search_names(output.status.success(), &output.stdout, &output.stderr)
+            .map_err(|_| Absent::Unavailable(format!("the Secret Service could not answer for {name}")))?;
+        if names.iter().any(|found| found == name) {
+            Err(Absent::Unavailable(format!("the Secret Service could not answer for {name}")))
+        } else {
+            Err(Absent::Missing)
         }
     }
 
