@@ -90,6 +90,8 @@ case "$*" in
                 printf 'synthetic-diagnostic\n' >&2
                 exit 1 ;;
             missing) exit 1 ;;
+            lookup-killed) kill -TERM $$ ;;
+            lookup-failure) exit 2 ;;
             *) printf 'synthetic-value\n' ;;
         esac ;;
     'clear service com.sprawlcommons.deck name TEST_KEY')
@@ -107,7 +109,9 @@ esac
     .unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
     let marker = data.join("clear-called");
-    for scenario in ["unavailable", "missing", "clear-failure", "clear-silent", "success"] {
+    for scenario in
+        ["unavailable", "missing", "lookup-killed", "lookup-failure", "clear-failure", "clear-silent", "success"]
+    {
         let _ = std::fs::remove_file(&marker);
         let output = Command::new(env!("CARGO_BIN_EXE_deckd"))
             .arg("--data")
@@ -122,7 +126,10 @@ esac
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(output.stdout.is_empty());
         assert!(!error.contains("synthetic"), "{error}");
-        assert_eq!(marker.exists(), !matches!(scenario, "unavailable" | "missing"));
+        assert_eq!(
+            marker.exists(),
+            !matches!(scenario, "unavailable" | "missing" | "lookup-killed" | "lookup-failure")
+        );
         match scenario {
             "success" => {
                 assert!(output.status.success(), "{error}");

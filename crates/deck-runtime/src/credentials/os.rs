@@ -97,11 +97,10 @@ mod imp {
         }
         // secret-tool exits 1 with nothing on stderr when there is no item;
         // anything it says is a store that could not answer.
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
+        if output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty() {
             Err(Absent::Missing)
         } else {
-            Err(Absent::Unavailable(format!("the Secret Service could not answer for {name}: {stderr}")))
+            Err(Absent::Unavailable(format!("the Secret Service could not answer for {name}")))
         }
     }
 
