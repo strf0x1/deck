@@ -931,6 +931,59 @@ fn credential_file(name: &str, pairs: &[(&str, &str)]) -> PathBuf {
     file
 }
 
+#[test]
+fn cli_credential_list_uses_the_running_daemons_store() {
+    let file = credential_file("cli-authority", &[("OPENAI_API_KEY", "daemon-key")]);
+    let other = credential_file("cli-decoy", &[("OTHER_KEY", "cli-key")]);
+    let (daemon, client) = Daemon::with_credentials("cli-authority", Some(file.clone()));
+    let list = || {
+        Command::new(env!("CARGO_BIN_EXE_deckd"))
+            .arg("--data")
+            .arg(&daemon.data)
+            .args(["credential", "list"])
+            .env("DECK_CREDENTIALS", &other)
+            .output()
+            .unwrap()
+    };
+    let output = list();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("OPENAI_API_KEY\tsha256:"), "{text}");
+    assert!(text.contains(&format!("file {}", file.display())), "{text}");
+    assert!(!text.contains("OTHER_KEY") && !text.contains("daemon-key") && !text.contains("cli-key"), "{text}");
+
+    let store = deck_runtime::credentials::Store::file(file.clone()).unwrap();
+    store.set("OPENAI_API_KEY", "rotated-key").unwrap();
+    let rotated = String::from_utf8(list().stdout).unwrap();
+    assert!(rotated.contains(&deck_runtime::credentials::fingerprint("rotated-key")), "{rotated}");
+    client.revoke_credential("OPENAI_API_KEY").unwrap();
+    assert!(String::from_utf8(list().stdout).unwrap().contains("\trevoked"));
+    drop(client);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(other.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn cli_credential_list_never_falls_back_when_the_daemon_is_unavailable() {
+    let data = Daemon::data("cli-unavailable");
+    let file = credential_file("cli-unavailable", &[("OPENAI_API_KEY", "local-secret")]);
+    let output = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .arg("--data")
+        .arg(&data)
+        .args(["credential", "list"])
+        .env("DECK_CREDENTIALS", &file)
+        .env("DECKD", "/deck-test/no-such-daemon")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("starting /deck-test/no-such-daemon"), "{error}");
+    assert!(!error.contains("local-secret"), "{error}");
+    std::fs::remove_dir_all(data).unwrap();
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+}
+
 /// What a VM run writes: a `vmm.json` naming the task's credential set. A
 /// local task stands in for the VMM here; the daemon reads only the set.
 #[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]

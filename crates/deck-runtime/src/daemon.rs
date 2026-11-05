@@ -168,6 +168,12 @@ fn connection(
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
+            Ok(Request::ListCredentials) => {
+                let result = broker.list().and_then(|credentials| {
+                    Ok(serde_json::to_value(crate::broker::Listing { store: broker.describe(), credentials })?)
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request @ Request::RevokeCredential { .. }) => {
                 let result = request.validate().and_then(|()| match request {
                     Request::RevokeCredential { name } => Ok(serde_json::to_value(broker.revoke(&name)?)?),
@@ -465,6 +471,7 @@ impl Service {
             | Request::Credential { .. }
             | Request::CredentialWatch { .. }
             | Request::Credentials { .. }
+            | Request::ListCredentials
             | Request::RevokeCredential { .. } => unreachable!("handled before service dispatch"),
         }
     }
