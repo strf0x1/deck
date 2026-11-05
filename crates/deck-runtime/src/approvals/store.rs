@@ -7,7 +7,7 @@
 use super::Grant;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -36,9 +36,15 @@ pub(super) fn save_projects(data: &Path, rules: &[Grant], version: u64) -> Resul
 
 pub(super) fn save_task(data: &Path, task: &str, grants: &[Grant]) -> Result<()> {
     let path = task_grants(data, task);
+    // A retry allowance lives only in memory. Revoking another grant must
+    // not turn the remaining allow-once items into durable policy.
+    let grants: Vec<_> = grants.iter().filter(|grant| grant.scope == super::Scope::Task).collect();
     if grants.is_empty() {
         match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                let directory = path.parent().context("a task grant file has a directory")?;
+                File::open(directory)?.sync_all().context("syncing the removed task grant file")
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
         }
@@ -70,4 +76,24 @@ fn projects_file(data: &Path) -> PathBuf {
 
 pub(super) fn task_grants(data: &Path, task: &str) -> PathBuf {
     data.join("tasks").join(task).join("grants.json")
+}
+
+/// Append the removed grants before the control caller is answered. The
+/// policy file has already been narrowed, so an audit failure cannot keep a
+/// revoked allowance active; it does prevent a successful control reply.
+pub(super) fn audit_revoked(data: &Path, grants: &[Grant], at_ms: u64) -> Result<()> {
+    if grants.is_empty() {
+        return Ok(());
+    }
+    let directory = data.join("approvals");
+    fs::create_dir_all(&directory)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(directory.join("audit.jsonl"))?;
+    for grant in grants {
+        let event = serde_json::json!({ "event": "grant_revoked", "at_ms": at_ms, "grant": grant });
+        serde_json::to_writer(&mut file, &event)?;
+        file.write_all(b"\n")?;
+    }
+    file.sync_all()?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }

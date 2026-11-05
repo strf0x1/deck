@@ -822,6 +822,7 @@ fn with_web(
         .arg(dir.join("extension.sock"))
         .arg("--web-socket")
         .arg(dir.join("web.sock"))
+        .args(["--web-project", "/fixture"])
         .stderr(Stdio::null())
         .arg("--upstream")
         .arg("http://127.0.0.1:9/v1")
@@ -859,13 +860,13 @@ fn with_web(
 }
 
 /// A tunnel to a name the host file pins, with a grant file for the port.
-fn grant_file(name: &str, destination: &str, scope: &str) -> PathBuf {
+fn grant_file(name: &str, destination: &str, operation: &str) -> PathBuf {
     let dir = scratch(name);
     let path = dir.join("grants.json");
     std::fs::write(
         &path,
         serde_json::json!([{
-            "gateway": "web", "operation": "connect", "destination": destination, "scope": scope
+            "id": "grant-1", "task": "t", "gateway": "web", "operation": operation, "destination": destination, "scope": "task"
         }])
         .to_string(),
     )
@@ -897,7 +898,7 @@ fn a_granted_port_opens_a_tunnel_and_another_port_is_a_different_decision() {
     let (port, hits) = probe("web-granted", "PROBE READY\n");
     let hosts = hosts_file("web-granted-hosts");
     pin(&hosts, "140.82.112.3", "pinned.example");
-    let grants = grant_file("web-granted-file", &format!("pinned.example:{port}"), "task");
+    let grants = grant_file("web-granted-file", &format!("pinned.example:{port}"), "connect");
     let gateway = with_web("web-granted-gw", &[&grants], &[], Some(&hosts), None);
     let web = gateway.ready.web.clone().unwrap();
     let mut tunnel = UnixStream::connect(&web).unwrap();
@@ -934,6 +935,167 @@ fn a_granted_port_opens_a_tunnel_and_another_port_is_a_different_decision() {
     assert!(other.starts_with("HTTP/1.1 403 Forbidden"), "{other}");
     assert!(other.contains(&format!("pinned.example:{}", port + 1)), "{other}");
     assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "an ungranted port is not dialled");
+}
+
+/// Read the proxy handshake and the probe's greeting before sending payload.
+fn open_web_tunnel(web: &Path, destination: &str) -> UnixStream {
+    let mut stream = UnixStream::connect(web).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream.write_all(format!("CONNECT {destination} HTTP/1.1\r\n\r\n").as_bytes()).unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"PROBE READY\n") {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 200 Connection Established\r\n\r\n"));
+    stream
+}
+
+fn echo_payload(stream: &mut UnixStream) {
+    stream.write_all(b"still open").unwrap();
+    let mut back = [0; 10];
+    stream.read_exact(&mut back).unwrap();
+    assert_eq!(&back, b"still open");
+}
+
+#[test]
+fn revoking_a_grant_closes_its_open_tunnel_and_preserves_other_tunnels() {
+    let (port, hits) = probe("web-revoke", "PROBE READY\n");
+    let hosts = hosts_file("web-revoke-hosts");
+    pin(&hosts, "140.82.112.3", "revoked.example");
+    pin(&hosts, "140.82.112.4", "kept.example");
+    let destination = format!("revoked.example:{port}");
+    let revoked = grant_file("web-revoke-file", &destination, "connect");
+    let kept = grant_file("web-kept-file", &format!("kept.example:{port}"), "connect");
+    let gateway = with_web("web-revoke-gw", &[&revoked, &kept], &[], Some(&hosts), None);
+    let web = gateway.ready.web.as_ref().unwrap();
+    let mut tunnel = open_web_tunnel(web, &destination);
+    let mut unrelated = open_web_tunnel(web, &format!("kept.example:{port}"));
+    echo_payload(&mut tunnel);
+    echo_payload(&mut unrelated);
+
+    std::fs::remove_file(revoked).unwrap();
+    let mut byte = [0];
+    assert_eq!(tunnel.read(&mut byte).unwrap(), 0, "revocation closes an already open tunnel");
+    echo_payload(&mut unrelated);
+    let refused = send(web, &format!("CONNECT {destination} HTTP/1.1\r\n\r\n"));
+    assert!(refused.starts_with("HTTP/1.1 403 Forbidden"), "{refused}");
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2, "a revoked destination is not dialled again");
+}
+
+#[test]
+fn removing_a_project_rule_closes_its_tunnel_even_with_deckd_down() {
+    let (port, _) = probe("web-project-revoke", "PROBE READY\n");
+    let hosts = hosts_file("web-project-revoke-hosts");
+    pin(&hosts, "140.82.112.3", "project.example");
+    let destination = format!("project.example:{port}");
+    let path = scratch("web-project-revoke-file").join("projects.json");
+    let rule = serde_json::json!({
+        "id": "project-1", "project": "/fixture", "gateway": "web", "operation": "connect",
+        "destination": destination, "scope": "project"
+    });
+    std::fs::write(&path, serde_json::json!({"version": 1, "rules": [rule]}).to_string()).unwrap();
+    let gateway = with_web("web-pr-revoke", &[&path], &[], Some(&hosts), None);
+    let web = gateway.ready.web.as_ref().unwrap();
+    let mut tunnel = open_web_tunnel(web, &destination);
+    gateway.deckd.stop();
+    echo_payload(&mut tunnel);
+    let next = path.with_extension("tmp");
+    std::fs::write(&next, r#"{"version":2,"rules":[]}"#).unwrap();
+    std::fs::rename(next, &path).unwrap();
+    assert_eq!(tunnel.read(&mut [0]).unwrap(), 0);
+    let refused = send(web, &format!("CONNECT {destination} HTTP/1.1\r\n\r\n"));
+    assert!(refused.starts_with("HTTP/1.1 403 Forbidden"), "{refused}");
+}
+
+#[test]
+fn revoking_a_mirror_grant_closes_the_stream_and_its_upstream() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (closed, upstream_closed) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\n\r\nfirst").unwrap();
+        closed.send(stream.read(&mut [0]).unwrap()).unwrap();
+    });
+    let hosts = hosts_file("web-mirror-revoke-hosts");
+    pin(&hosts, "140.82.112.3", "mirror.example");
+    let destination = format!("mirror.example:{port}");
+    let grants = grant_file("web-mirror-revoke-file", &destination, "fetch");
+    let gateway = with_web("web-mirror-revoke-gw", &[&grants], &[], Some(&hosts), None);
+    let mut stream = UnixStream::connect(gateway.ready.web.as_ref().unwrap()).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream
+        .write_all(format!("GET http://{destination}/file HTTP/1.1\r\nhost: {destination}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut response = Vec::new();
+    while !response.ends_with(b"first") {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        response.push(byte[0]);
+    }
+    std::fs::remove_file(grants).unwrap();
+    assert_eq!(stream.read(&mut [0]).unwrap(), 0, "the guest's response stream closes");
+    assert_eq!(upstream_closed.recv_timeout(Duration::from_secs(2)).unwrap(), 0, "the upstream closes too");
+    server.join().unwrap();
+}
+
+#[test]
+fn an_allow_once_tunnel_survives_consumption_and_the_next_request_asks_again() {
+    let (port, hits) = probe("web-once", "PROBE READY\n");
+    let hosts = hosts_file("web-once-hosts");
+    pin(&hosts, "140.82.112.3", "once.example");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let (queue, _) = interactive_queue("web-once-queue", move |_| {
+        let state = if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            serde_json::json!({"allowed": "once"})
+        } else {
+            serde_json::json!("pending")
+        };
+        serde_json::json!({"id": "once-1", "state": state})
+    });
+    let gateway = with_web("web-once-gw", &[], &[], Some(&hosts), Some((&queue, "t")));
+    let web = gateway.ready.web.as_ref().unwrap();
+    let destination = format!("once.example:{port}");
+    let mut tunnel = open_web_tunnel(web, &destination);
+    let refused = send(web, &format!("CONNECT {destination} HTTP/1.1\r\n\r\n"));
+    assert!(refused.starts_with("HTTP/1.1 403 Forbidden"), "{refused}");
+    // The refused second request also gives the monitor time to observe an
+    // empty grant file. That must not revoke the already admitted operation.
+    echo_payload(&mut tunnel);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_expiring_task_grant_closes_an_idle_tunnel_without_a_policy_file_change() {
+    let (port, hits) = probe("web-expiry", "PROBE READY\n");
+    let hosts = hosts_file("web-expiry-hosts");
+    pin(&hosts, "140.82.112.3", "expires.example");
+    let destination = format!("expires.example:{port}");
+    let grants = grant_file("web-expiry-file", &destination, "connect");
+    let gateway = with_web("web-expiry-gw", &[&grants], &[], Some(&hosts), None);
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&grants).unwrap()).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    policy[0]["expires_ms"] = serde_json::json!(now + 3000);
+    std::fs::write(&grants, policy.to_string()).unwrap();
+    let web = gateway.ready.web.as_ref().unwrap();
+    let mut tunnel = open_web_tunnel(web, &destination);
+    tunnel.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    echo_payload(&mut tunnel);
+    assert_eq!(tunnel.read(&mut [0]).unwrap(), 0, "an idle connection ends when its grant expires");
+    let refused = send(web, &format!("CONNECT {destination} HTTP/1.1\r\n\r\n"));
+    assert!(refused.starts_with("HTTP/1.1 403 Forbidden"), "{refused}");
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -45,6 +45,7 @@ impl Deck {
                     // Drop the watch before the entity can outlive the app;
                     // its reader thread then closes the daemon connection.
                     deck.watch = None;
+                    deck.access_refresh = None;
                     async {}
                 }));
                 match connection {

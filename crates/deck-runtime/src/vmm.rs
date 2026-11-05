@@ -89,6 +89,10 @@ pub struct Gateway {
     pub web_profiles: Vec<String>,
     #[serde(default)]
     pub web_grants: Vec<PathBuf>,
+    /// Host project identity. An older config without it admits no project
+    /// rule from the shared file. New task grants still work.
+    #[serde(default)]
+    pub web_project: Option<String>,
     /// The GitHub operation gateway's socket and port. `None` serves no
     /// publication: the task's project names no repository.
     #[serde(default)]
@@ -369,6 +373,9 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         }
         for grant in &gateway.web_grants {
             command.arg("--web-grants").arg(grant);
+        }
+        if let Some(project) = &gateway.web_project {
+            command.arg("--web-project").arg(project);
         }
     }
     if let Some(limit) = gateway.request_budget {
@@ -677,6 +684,7 @@ mod tests {
             web_port: None,
             web_profiles: Vec::new(),
             web_grants: Vec::new(),
+            web_project: None,
             github_socket: None,
             github_port: None,
             github_repository: None,

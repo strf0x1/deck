@@ -5,16 +5,19 @@
 //! refuses host and private address space on any port, and asks the daemon for
 //! a scope it does not already hold. Everything the guest can influence — the
 //! name, the port, a redirect, its own `/etc/hosts` — is an input to a check,
-//! never a route. One request is one connection, so a grant is evaluated where
-//! it applies and a revoked grant stops the next attempt without a restart.
+//! never a route. One request is one connection, and each granted connection
+//! holds its authorizing rule. Removing or expiring that rule closes both
+//! sockets without a VM restart, including while deckd is down.
 //!
 //! [`profiles`] is the built-in table and [`policy`] the checks that are pure.
 //! [`resolve`] is bounded host resolution. [`connect`] is the opaquely relayed
 //! tunnel and [`mirror`] the parsed plain-HTTP proxy. [`control`] asks the
-//! daemon, [`status`] records what the agent needs to read.
+//! daemon, [`grants`] tracks live rules and connections, and [`status`] records
+//! what the agent needs to read.
 
 pub mod connect;
 pub mod control;
+pub mod grants;
 pub mod mirror;
 pub mod policy;
 pub mod profiles;

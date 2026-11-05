@@ -102,11 +102,19 @@ impl Connector {
                 Ok(addresses) => addresses,
                 Err(refused) => return self.deny_plain(&mut guest, None, &refused.reason()),
             };
-            if let Err(held) = self.decide_mirror(&current, &request) {
-                return self.deny_held(&mut guest, held, &current.destination());
-            }
+            let permit = match self.decide_mirror(&current, &request) {
+                Ok(permit) => permit,
+                Err(held) => return self.deny_held(&mut guest, held, &current.destination()),
+            };
             let Some(mut upstream) = dial(&addresses, &self.resolver) else {
                 return self.deny_plain(&mut guest, None, &format!("{} did not accept the connection", current.name));
+            };
+            let _registration = match self.grants.register(permit, &guest, &upstream) {
+                Ok(registration) => registration,
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    return self.deny_plain(&mut guest, None, &error.to_string());
+                }
+                Err(error) => return Err(error),
             };
             if let Err(error) = send(&mut upstream, &method, &current, &request) {
                 return self.deny_plain(&mut guest, None, &format!("the request to {} failed: {error}", current.name));
@@ -139,13 +147,17 @@ impl Connector {
     /// profile entry covers the destination; a live grant covers it until it
     /// is revoked; otherwise the daemon decides, and a held request is one the
     /// user can allow while the client waits.
-    fn decide_mirror(&self, target: &Target, request: &Request) -> Result<(), crate::web::connect::Held> {
+    fn decide_mirror(
+        &self,
+        target: &Target,
+        request: &Request,
+    ) -> Result<Option<super::grants::Permit>, crate::web::connect::Held> {
         use crate::web::connect::Held;
         if self.profiles.covering(&target.name, target.port).is_some() {
-            return Ok(());
+            return Ok(None);
         }
-        if self.grants.allows(&target.name, target.port) {
-            return Ok(());
+        if let Some(permit) = self.grants.authorize(&target.name, target.port, crate::web::FETCH) {
+            return Ok(Some(permit));
         }
         let Some(control) = &self.control else { return Err(Held::NoQueue) };
         let ask = crate::web::control::Ask::fetch(
@@ -156,7 +168,7 @@ impl Connector {
             None,
         );
         match control.ask(&ask) {
-            Answer::Allowed(_) => Ok(()),
+            Answer::Allowed(scope) => self.allowed(&scope, &target.name, target.port, crate::web::FETCH),
             Answer::Pending(id) => {
                 self.status.observe(&id, &target.destination(), "pending", None, None);
                 Err(Held::Pending(id))

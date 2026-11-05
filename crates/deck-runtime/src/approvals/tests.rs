@@ -74,6 +74,25 @@ fn an_allow_once_is_consumed_exactly_once() {
 }
 
 #[test]
+fn revoking_a_grant_does_not_persist_other_once_allowances() {
+    let dir = scratch("once-revoke");
+    let settings = Settings { once: Duration::from_secs(5), ..steady() };
+    let boundary = Boundary::with_settings(&dir, settings).unwrap();
+    for destination in ["first", "second"] {
+        let item = boundary.submit(incoming("t", "/w", destination)).unwrap();
+        boundary.decide(&item.id, Decision::Once).unwrap();
+    }
+    let first = boundary.grants("t").unwrap().into_iter().find(|grant| grant.destination == "first").unwrap();
+    boundary.revoke("t", &first.id).unwrap();
+    assert_eq!(boundary.grants("t").unwrap().len(), 1);
+    assert!(!task_grants(&dir, "t").exists(), "once grants never reach the task's policy file");
+    drop(boundary);
+    let restarted = Boundary::with_settings(&dir, steady()).unwrap();
+    assert_eq!(restarted.submit(incoming("t", "/w", "second")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_task_grant_applies_to_matching_requests_only() {
     let dir = scratch("task");
     let boundary = Boundary::with_settings(&dir, steady()).unwrap();
@@ -98,6 +117,23 @@ fn project_rules_survive_a_restart_and_stay_with_their_project() {
     let reopened = Boundary::with_settings(&dir, steady()).unwrap();
     assert_eq!(reopened.submit(incoming("other", "/w", "m")).unwrap().state, State::Allowed(Scope::Project));
     assert_eq!(reopened.submit(incoming("other", "/elsewhere", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_failed_revocation_audit_reports_failure_but_keeps_the_policy_narrowed() {
+    let dir = scratch("revoke-audit-failure");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let request = incoming("t", "/w", "m");
+    let item = boundary.submit(request.clone()).unwrap();
+    boundary.decide(&item.id, Decision::Task).unwrap();
+    let grant = boundary.grants("t").unwrap().remove(0);
+    fs::create_dir_all(dir.join("approvals/audit.jsonl")).unwrap();
+    assert!(boundary.revoke("t", &grant.id).is_err(), "no successful reply without the audit");
+    assert_eq!(boundary.submit(request.clone()).unwrap().state, State::Pending);
+    drop(boundary);
+    let reopened = Boundary::with_settings(&dir, steady()).unwrap();
+    assert_eq!(reopened.submit(request).unwrap().state, State::Pending);
     fs::remove_dir_all(dir).unwrap();
 }
 

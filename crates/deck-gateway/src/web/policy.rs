@@ -9,8 +9,7 @@
 //! (`host:port`); it is never a wildcard and never a port range.
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 /// A CONNECT to this port needs no approval when the task holds a profile
 /// entry for the name. Another port is a policy decision: the profile hint
@@ -272,93 +271,6 @@ impl Profiles {
     }
 }
 
-/// The live grants `deckd` keeps for this task and project, read from the
-/// files it writes. A grant file is re-read when it changes, the way the model
-/// budget is, so a revoked grant stops the next attempt without a VM restart.
-#[derive(Debug)]
-pub struct Grants {
-    files: Vec<PathBuf>,
-    cached: RwLock<Cache>,
-}
-
-#[derive(Debug, Default)]
-struct Cache {
-    stamps: Vec<Stamp>,
-    destinations: Vec<Allowed>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    modified: Option<std::time::SystemTime>,
-    length: u64,
-}
-
-impl Grants {
-    /// `files` are the project rule files and the task's grant file, in the
-    /// daemon's order. A grant removed from every file is gone here on the
-    /// next read, and a file that disappears changes the stamps with it.
-    pub fn new(files: Vec<PathBuf>) -> Self {
-        Self { files, cached: RwLock::new(Cache::default()) }
-    }
-
-    pub fn none() -> Self {
-        Self::new(Vec::new())
-    }
-
-    /// Whether a live grant covers exactly this destination. A `once` grant is
-    /// not honoured here: it is consumed by the request that asked for it, and
-    /// the daemon's own ledger checks a retry.
-    pub fn allows(&self, host: &str, port: u16) -> bool {
-        self.refresh();
-        let cached = self.cached.read().unwrap_or_else(|poisoned| poisoned.into_inner());
-        cached.destinations.iter().any(|allowed| allowed.admits(host, port))
-    }
-
-    fn refresh(&self) {
-        let stamps: Vec<Stamp> = self.files.iter().map(|path| stamp(path)).collect();
-        {
-            let cached = self.cached.read().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if cached.stamps == stamps {
-                return;
-            }
-        }
-        // The files changed, appeared or went away. Re-reading is the only way
-        // to see a removal, so a changed stamp always re-parses.
-        let destinations = self.files.iter().flat_map(|path| rules(path)).collect();
-        let mut cached = self.cached.write().unwrap_or_else(|poisoned| poisoned.into_inner());
-        cached.stamps = stamps;
-        cached.destinations = destinations;
-    }
-}
-
-fn stamp(path: &Path) -> Stamp {
-    match std::fs::metadata(path) {
-        Ok(meta) => Stamp { modified: meta.modified().ok(), length: meta.len() },
-        Err(_) => Stamp { modified: None, length: 0 },
-    }
-}
-
-/// Destinations in a grant file. Every grant shape shares `gateway`,
-/// `operation`, `destination` and `scope`; a grant for another gateway or for
-/// a model is not a web destination, so the same file shape serves both.
-fn rules(path: &Path) -> Vec<Allowed> {
-    let Ok(bytes) = std::fs::read(path) else { return Vec::new() };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return Vec::new() };
-    let list = match &value {
-        serde_json::Value::Array(items) => items.clone(),
-        serde_json::Value::Object(object) => match object.get("rules").and_then(|rules| rules.as_array()) {
-            Some(rules) => rules.clone(),
-            None => return Vec::new(),
-        },
-        _ => return Vec::new(),
-    };
-    list.iter()
-        .filter(|grant| grant.get("gateway").and_then(|value| value.as_str()) == Some(crate::web::GATEWAY))
-        .filter(|grant| grant.get("scope").and_then(|value| value.as_str()) != Some("once"))
-        .filter_map(|grant| Allowed::parse(grant.get("destination")?.as_str()?))
-        .collect()
-}
-
 /// How many tunnels this process has open. A task that held every tunnel open
 /// could exhaust the gateway's and the host's sockets, so the slot is taken
 /// before a connection is dialled and released when the tunnel ends.
@@ -464,50 +376,6 @@ mod tests {
         assert_eq!(repo.covering("example.com", 443), None, "a profile lists names, never a pattern");
         assert!(Profiles::declared(["invented".to_string()]).is_err());
         assert!(Profiles::declared(Vec::new()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_changed_grant_file_is_re_read_and_a_removed_grant_stops() {
-        let dir = std::env::temp_dir().join(format!("deck-web-grants-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("grants.json");
-        let grant = |destination: &str| {
-            serde_json::json!([{
-                "gateway": "web", "operation": "connect", "destination": destination, "scope": "task"
-            }])
-            .to_string()
-        };
-        std::fs::write(&file, grant("example.com:8443")).unwrap();
-        let grants = Grants::new(vec![file.clone()]);
-        assert!(grants.allows("example.com", 8443));
-        assert!(!grants.allows("example.com", 8444), "a grant names one port");
-        std::fs::write(&file, grant("example.com:8444")).unwrap();
-        assert!(!grants.allows("example.com", 8443), "a removed grant stops at the next read");
-        assert!(grants.allows("example.com", 8444));
-        std::fs::remove_file(&file).unwrap();
-        assert!(!grants.allows("example.com", 8444), "a missing file grants nothing");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn another_gateways_grant_and_a_once_grant_are_not_web_destinations() {
-        let dir = std::env::temp_dir().join(format!("deck-web-grants-other-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("grants.json");
-        std::fs::write(
-            &file,
-            serde_json::json!([
-                { "gateway": "model", "operation": "chat_completions", "destination": "a:443", "scope": "task" },
-                { "gateway": "web", "operation": "connect", "destination": "b:443", "scope": "once" },
-            ])
-            .to_string(),
-        )
-        .unwrap();
-        let grants = Grants::new(vec![file]);
-        assert!(Grants::none().files.is_empty());
-        assert!(!grants.allows("a", 443), "a model grant is not a web destination");
-        assert!(!grants.allows("b", 443), "a once grant is consumed by the daemon, not cached here");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

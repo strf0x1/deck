@@ -237,7 +237,11 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .child(div().font_family(MONO).text_size(px(11.)).child(agent_label(&deck.agent_cmd))),
         )
         .child(icon_button("hdr-bell", icon::BELL))
-        .child(icon_button("hdr-access", icon::SHIELD).on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))))
+        .child(
+            icon_button("hdr-access", icon::SHIELD)
+                .debug_selector(|| "hdr-access".into())
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))),
+        )
         .child(
             div()
                 .id("hdr-new")

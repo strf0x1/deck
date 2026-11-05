@@ -1012,6 +1012,39 @@ The implementation is not done until these have tests where practical.
    interrupted stream, not `deck_credential_revoked`; only the next request
    names it.
 
+8. Close active web connections on grant revocation (§7). The gateway keeps
+   the exact authorizing rule for each CONNECT tunnel and plain-HTTP stream.
+   One monitor checks changed policy files and grant expiry every 50 ms,
+   closing both sockets when that rule is removed or expires. It works while
+   `deckd` is down and leaves unrelated connections open. An allow-once
+   operation continues after its allowance is consumed; launch profiles stay
+   fixed. The VMM passes the host project identity as `--web-project`, and
+   the gateway selects only its task's grants and that project's rules.
+
+   Task-grant and project-rule revokes append the removed grant and time to
+   `approvals/audit.jsonl` and fsync before a successful control reply. A
+   failed audit write reports an error without restoring access. Verified by
+   real gateway socket tests for task and project removal, daemon outage,
+   expiry, mirror response cancellation, unrelated traffic and allow-once;
+   grant-selection and admission-race unit tests; and real daemon tests for
+   persisted removal, audit contents and a new request needing approval.
+   The Access panel lists live task allowances and the task's saved project
+   rules, with scope and expiry, and pending requests that return to the
+   boundary card for review. A revoke confirms its scope before asking the
+   daemon. Revoking a project rule also removes matching task allowances
+   throughout that project. Listings and revokes are filtered by the task's
+   host project identity; another project's rules are not exposed. The view
+   updates from daemon replies and discards stale listings. GPUI tests drive
+   real clicks through confirmation, cancellation, task and project removal,
+   and pending-request review against a real daemon. Checked in a live macOS
+   window through `DECK_CONTROL`: prompt entry, ACP permission handling,
+   opening Access, cancellation and confirmed task-grant revocation, with
+   removal verified at the daemon. Window-only screenshots were inspected.
+   Project-rule removal was verified headlessly, not in this live pass.
+   Model and GitHub
+   grant revocation during an operation are not covered by this web slice;
+   credential revocation for those operations is §4.5.
+
 ## Deferred
 
 - A virtio-net compatibility backend and any UDP/QUIC support. The guest has

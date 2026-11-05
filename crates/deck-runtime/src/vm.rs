@@ -287,6 +287,7 @@ impl Backend for Vm {
                     self.dir(&task.id).join("grants.json"),
                     self.data.join("approvals").join("projects.json"),
                 ],
+                web_project: Some(task.spec.cwd.to_string_lossy().into_owned()),
                 github_socket: self.github.as_ref().map(|_| socket.with_extension("github")),
                 github_port: self.github.as_ref().map(|_| boundary::GITHUB_VSOCK_PORT),
                 github_repository: self.github.as_ref().map(|github| github.repository.clone()),

@@ -1,200 +1,263 @@
-//! The access panel's state: this task's credentials as the daemon lists
-//! them, and the revoke confirmation.
+//! The access panel's daemon-owned listings and two-step revoke state.
 //!
-//! The design choice: the panel is a mirror of the daemon's listing, never a
-//! store. It holds names, fingerprints and revoked flags and nothing that
-//! could be a value (ADR 0004 §4.2). A revoke is two steps, ask then
-//! confirm, and what follows it always says that revoking here does not
-//! cancel the key at the provider (§4.5). Pure state, so the flow is
-//! testable without a window.
+//! The design choice: a confirmation names either a credential or an exact
+//! grant. The in-flight target is kept separately, so closing the panel or a
+//! late listing cannot change what a revoke result refers to. Request tickets
+//! discard listings started before a revoke or a newer refresh.
 
+use deck_runtime::approvals::{Grant, Scope};
 use deck_runtime::broker::Listed;
 
-/// Said whenever a revoke is offered or done: the daemon stops using the
-/// value, the provider still honours it.
 pub const NOT_CANCELLED: &str = "Revoking stops Deck using this value. It does not cancel the key at the provider.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Revoke {
+    Credential(String),
+    Grant(Grant),
+}
+
+impl Revoke {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Credential(name) => name.clone(),
+            Self::Grant(grant) => format!("{} to {}", grant.operation, grant.destination),
+        }
+    }
+
+    pub fn explanation(&self) -> String {
+        match self {
+            Self::Credential(_) => format!("Requests using this value stop now. {NOT_CANCELLED}"),
+            Self::Grant(grant) => {
+                let scope = if grant.scope == Scope::Project {
+                    "This removes the saved rule and matching task grants for every task in this project."
+                } else {
+                    "This task will need approval again for matching requests."
+                };
+                format!(
+                    "{scope} Existing web connections authorized by these grants close. Completed operations cannot be undone."
+                )
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Access {
     open: bool,
     credentials: Vec<Listed>,
-    confirming: Option<String>,
-    revoked: Option<String>,
-    error: Option<String>,
-    busy: bool,
+    grants: Vec<Grant>,
+    confirming: Option<Revoke>,
+    in_flight: Option<Revoke>,
+    revoked: Option<Revoke>,
+    credentials_request: u64,
+    grants_request: u64,
+    credentials_loading: bool,
+    grants_loading: bool,
+    credentials_error: Option<String>,
+    grants_error: Option<String>,
+    revoke_error: Option<String>,
 }
 
 impl Access {
     pub fn new() -> Self {
         Self::default()
     }
-
     pub fn is_open(&self) -> bool {
         self.open
     }
+    pub fn credentials(&self) -> &[Listed] {
+        &self.credentials
+    }
+    pub fn grants(&self) -> &[Grant] {
+        &self.grants
+    }
+    pub fn confirming(&self) -> Option<&Revoke> {
+        self.confirming.as_ref()
+    }
+    pub fn revoked(&self) -> Option<&Revoke> {
+        self.revoked.as_ref()
+    }
+    pub fn busy(&self) -> bool {
+        self.in_flight.is_some()
+    }
+    pub fn credentials_loading(&self) -> bool {
+        self.credentials_loading
+    }
+    pub fn grants_loading(&self) -> bool {
+        self.grants_loading
+    }
+    pub fn credentials_error(&self) -> Option<&str> {
+        self.credentials_error.as_deref()
+    }
+    pub fn grants_error(&self) -> Option<&str> {
+        self.grants_error.as_deref()
+    }
+    pub fn revoke_error(&self) -> Option<&str> {
+        self.revoke_error.as_deref()
+    }
 
-    /// Open or close the panel; closing drops any half-made decision.
     pub fn toggle(&mut self) -> bool {
         self.open = !self.open;
         if !self.open {
-            self.cancel();
+            self.confirming = None;
             self.revoked = None;
-            self.error = None;
+            self.invalidate();
         }
         self.open
     }
 
-    pub fn credentials(&self) -> &[Listed] {
-        &self.credentials
+    fn invalidate(&mut self) {
+        self.credentials_request += 1;
+        self.grants_request += 1;
     }
 
-    pub fn confirming(&self) -> Option<&str> {
-        self.confirming.as_deref()
+    pub fn begin_credentials(&mut self) -> u64 {
+        self.credentials_loading = true;
+        self.credentials_request += 1;
+        self.credentials_request
     }
 
-    /// The name just revoked, whose provider-side rotation is the user's.
-    pub fn revoked(&self) -> Option<&str> {
-        self.revoked.as_deref()
+    pub fn begin_grants(&mut self) -> u64 {
+        self.grants_loading = true;
+        self.grants_request += 1;
+        self.grants_request
     }
 
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
-    }
-
-    pub fn busy(&self) -> bool {
-        self.busy
-    }
-
-    /// A fresh listing, or why there is none. A listing that fails keeps the
-    /// last one, so a daemon blip does not blank the panel.
-    pub fn listed(&mut self, result: Result<Vec<Listed>, String>) {
+    pub fn credentials_listed(&mut self, ticket: u64, result: Result<Vec<Listed>, String>) {
+        if ticket != self.credentials_request {
+            return;
+        }
+        self.credentials_loading = false;
         match result {
             Ok(list) => {
                 self.credentials = list;
-                self.error = None;
-                // A name that is no longer listed or already revoked has
-                // nothing left to confirm.
-                if self.confirming.as_deref().is_some_and(|name| !self.revocable(name)) {
+                self.credentials_error = None;
+                if !self.busy()
+                    && let Some(Revoke::Credential(name)) = &self.confirming
+                    && !self
+                        .credentials
+                        .iter()
+                        .any(|item| item.name == *name && item.fingerprint.is_some() && !item.revoked)
+                {
                     self.confirming = None;
                 }
             }
-            Err(why) => self.error = Some(why),
+            Err(why) => self.credentials_error = Some(why),
         }
     }
 
-    fn revocable(&self, name: &str) -> bool {
-        self.credentials.iter().any(|item| item.name == name && item.fingerprint.is_some() && !item.revoked)
+    pub fn grants_listed(&mut self, ticket: u64, result: Result<Vec<Grant>, String>) {
+        if ticket != self.grants_request {
+            return;
+        }
+        self.grants_loading = false;
+        match result {
+            Ok(list) => {
+                self.grants = list;
+                self.grants_error = None;
+                if !self.busy()
+                    && let Some(Revoke::Grant(grant)) = &self.confirming
+                    && !self.grants.iter().any(|listed| listed.id == grant.id)
+                {
+                    self.confirming = None;
+                }
+            }
+            Err(why) => self.grants_error = Some(why),
+        }
     }
 
-    /// Start a revoke of `name`; only a name with a current, unrevoked value
-    /// can be. Returns whether the confirmation opened.
-    pub fn ask_revoke(&mut self, name: &str) -> bool {
-        if self.busy || !self.revocable(name) {
+    pub fn ask_credential(&mut self, name: &str) -> bool {
+        if self.busy()
+            || !self.credentials.iter().any(|item| item.name == name && item.fingerprint.is_some() && !item.revoked)
+        {
             return false;
         }
-        self.confirming = Some(name.to_owned());
-        self.revoked = None;
-        self.error = None;
+        self.confirm(Revoke::Credential(name.into()));
         true
     }
 
+    pub fn ask_grant(&mut self, id: &str) -> bool {
+        if self.busy() {
+            return false;
+        }
+        let Some(grant) = self.grants.iter().find(|grant| grant.id == id).cloned() else {
+            return false;
+        };
+        self.confirm(Revoke::Grant(grant));
+        true
+    }
+
+    fn confirm(&mut self, target: Revoke) {
+        self.confirming = Some(target);
+        self.revoked = None;
+        self.revoke_error = None;
+    }
+
     pub fn cancel(&mut self) -> bool {
+        if self.busy() {
+            return self.confirming.is_some();
+        }
         self.confirming.take().is_some()
     }
 
-    /// The confirmed name, now in flight. Nothing is revoked until the
-    /// daemon says so.
-    pub fn begin_revoke(&mut self) -> Option<String> {
-        if self.busy {
+    pub fn begin_revoke(&mut self) -> Option<Revoke> {
+        if self.busy() {
             return None;
         }
-        let name = self.confirming.clone()?;
-        self.busy = true;
-        Some(name)
+        let target = self.confirming.clone()?;
+        self.in_flight = Some(target.clone());
+        self.invalidate();
+        Some(target)
     }
 
-    /// The daemon's answer to a confirmed revoke: the new listing, or why it
-    /// failed. On failure the confirmation stays so the user can retry.
-    pub fn revoke_done(&mut self, result: Result<Vec<Listed>, String>) {
-        self.busy = false;
+    /// A successful reply is authority to remove the grant. Credential state
+    /// comes from its subsequent listing, since rotation may have happened.
+    pub fn revoke_done(&mut self, result: Result<(), String>) {
+        let Some(target) = self.in_flight.take() else {
+            return;
+        };
         match result {
-            Ok(list) => {
-                self.revoked = self.confirming.take();
-                self.credentials = list;
-                self.error = None;
+            Ok(()) => {
+                if let Revoke::Grant(grant) = &target {
+                    self.grants.retain(|listed| listed.id != grant.id);
+                }
+                self.revoked = Some(target);
+                self.confirming = None;
+                self.revoke_error = None;
             }
-            Err(why) => self.error = Some(why),
+            Err(why) => {
+                self.confirming = self.open.then_some(target);
+                self.revoke_error = Some(why);
+            }
+        }
+    }
+}
+
+/// Time remaining at the most recent panel refresh. Expiry is enforced by
+/// the daemon and gateway, regardless of whether a window is open.
+pub fn grant_scope(grant: &Grant, now_ms: u64) -> String {
+    let scope = match grant.scope {
+        Scope::Once => "Once",
+        Scope::Task => "Task",
+        Scope::Project => "Project",
+    };
+    match grant.expires_ms {
+        None => match grant.scope {
+            Scope::Project => "Project · no expiry".into(),
+            Scope::Task => "Task · until stopped".into(),
+            Scope::Once => scope.into(),
+        },
+        Some(expiry) if expiry <= now_ms => format!("{scope} · expired"),
+        Some(expiry) => {
+            let minutes = (expiry - now_ms).div_ceil(60_000);
+            if minutes >= 60 {
+                format!("{scope} · expires in {}h {}m", minutes / 60, minutes % 60)
+            } else {
+                format!("{scope} · expires in {minutes}m")
+            }
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn item(name: &str, fingerprint: Option<&str>, revoked: bool) -> Listed {
-        Listed { name: name.into(), fingerprint: fingerprint.map(Into::into), revoked, error: None }
-    }
-
-    fn panel() -> Access {
-        let mut access = Access::new();
-        access.listed(Ok(vec![
-            item("OPENAI_API_KEY", Some("sha256:aaaaaaaaaaaa"), false),
-            item("OLD", Some("sha256:bbbbbbbbbbbb"), true),
-            item("EMPTY", None, false),
-        ]));
-        access
-    }
-
-    #[test]
-    fn only_a_live_value_can_be_revoked() {
-        let mut access = panel();
-        assert!(!access.ask_revoke("OLD") && !access.ask_revoke("EMPTY") && !access.ask_revoke("NOPE"));
-        assert!(access.confirming().is_none());
-        assert!(access.ask_revoke("OPENAI_API_KEY"));
-        assert_eq!(access.confirming(), Some("OPENAI_API_KEY"));
-        assert!(access.cancel() && access.confirming().is_none());
-    }
-
-    #[test]
-    fn a_confirmed_revoke_waits_for_the_daemon_and_then_reports_the_new_listing() {
-        let mut access = panel();
-        assert!(access.begin_revoke().is_none(), "nothing to confirm");
-        access.ask_revoke("OPENAI_API_KEY");
-        assert_eq!(access.begin_revoke().as_deref(), Some("OPENAI_API_KEY"));
-        assert!(access.busy() && access.begin_revoke().is_none(), "one in flight at a time");
-        assert!(!access.credentials()[0].revoked, "not revoked until the daemon says so");
-        access.revoke_done(Ok(vec![item("OPENAI_API_KEY", Some("sha256:aaaaaaaaaaaa"), true)]));
-        assert!(!access.busy() && access.confirming().is_none());
-        assert_eq!(access.revoked(), Some("OPENAI_API_KEY"));
-        assert!(access.credentials()[0].revoked);
-    }
-
-    #[test]
-    fn a_failed_revoke_keeps_the_confirmation_and_says_why() {
-        let mut access = panel();
-        access.ask_revoke("OPENAI_API_KEY");
-        access.begin_revoke();
-        access.revoke_done(Err("deckd is gone".into()));
-        assert_eq!(
-            (access.confirming(), access.revoked(), access.error()),
-            (Some("OPENAI_API_KEY"), None, Some("deckd is gone"))
-        );
-        assert!(!access.credentials()[0].revoked && !access.busy());
-    }
-
-    #[test]
-    fn a_failed_listing_keeps_the_last_one_and_closing_clears_the_decision() {
-        let mut access = panel();
-        access.toggle();
-        access.ask_revoke("OPENAI_API_KEY");
-        access.listed(Err("no daemon".into()));
-        assert_eq!((access.credentials().len(), access.error()), (3, Some("no daemon")));
-        // The value rotated elsewhere and was revoked: nothing left to confirm.
-        access.listed(Ok(vec![item("OPENAI_API_KEY", Some("sha256:aaaaaaaaaaaa"), true)]));
-        assert!(access.confirming().is_none());
-        access.ask_revoke("OPENAI_API_KEY");
-        access.toggle();
-        assert!(!access.is_open() && access.confirming().is_none() && access.error().is_none());
-    }
-}
+mod tests;

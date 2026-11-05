@@ -160,6 +160,127 @@ fn a_boundary_card_takes_the_decision_keys_instead_of_the_prompt(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn reviewing_external_access_does_not_answer_a_different_agent_permission(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Permission {
+                request: json!(19),
+                title: "different agent permission".into(),
+                options: vec![PermissionOption {
+                    id: "allow".into(),
+                    name: "Allow once".into(),
+                    kind: "allow_once".into(),
+                }],
+            },
+            cx,
+        );
+        d.on_boundary(approval("reviewed"), cx);
+    });
+    click_control(&mut cx, "hdr-access");
+    click_control(&mut cx, "access-review-0");
+    cx.simulate_keystrokes("1");
+    deck.read_with(&cx, |d, _| {
+        assert!(d.session().ask.is_some(), "the reviewed boundary card owns the decision key");
+        assert!(d.boundary().pending().is_some(), "without a daemon the boundary decision stays pending");
+    });
+    deck.update(&mut cx, |d, cx| {
+        let mut decided = approval("reviewed");
+        decided.state = deck_runtime::approvals::State::Denied;
+        d.on_boundary(decided, cx);
+    });
+    cx.simulate_keystrokes("1");
+    assert!(
+        deck.read_with(&cx, |d, _| d.session().ask.is_none()),
+        "the agent permission regains its keys after review ends"
+    );
+}
+
+fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+}
+
+fn wait_view(cx: &mut VisualTestContext, mut ready: impl FnMut(&VisualTestContext) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        cx.run_until_parked();
+        if ready(cx) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the window did not receive its daemon reply");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[gpui::test]
+fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_card(cx: &mut TestAppContext) {
+    use deck::ui::access::Revoke;
+    use deck_runtime::approvals::{Ask, Decision, Scope, State as ApprovalState};
+    use deck_runtime::{DaemonClient, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-access-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone() }).unwrap().task;
+    let ask = Ask {
+        gateway: "web".into(),
+        operation: "connect".into(),
+        destination: "example.com:443".into(),
+        credential: None,
+        details: Default::default(),
+        reason: None,
+    };
+    let item = daemon.request_approval(&task.id, ask.clone()).unwrap();
+    daemon.decide(&item.id, Decision::Task).unwrap();
+    daemon.web_profile(&task.id, None, "custom", &["saved.example:443".into()], false).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, data.clone(), cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    click_control(&mut vcx, "hdr-access");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.access().grants().len() == 2));
+    click_control(&mut vcx, "access-grant-revoke-0");
+    deck.read_with(&vcx, |d, _| {
+        assert!(matches!(d.access().confirming(), Some(Revoke::Grant(grant)) if grant.scope == Scope::Task))
+    });
+    vcx.simulate_keystrokes("escape");
+    assert_eq!(daemon.grants(&task.id).unwrap().len(), 1, "cancelling changes nothing");
+    click_control(&mut vcx, "access-grant-revoke-0");
+    vcx.simulate_keystrokes("h i enter 2");
+    assert!(deck.read_with(&vcx, |d, _| d.draft().is_empty()), "Access never types into the hidden prompt");
+    click_control(&mut vcx, "access-revoke-confirm");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.access().busy() && d.access().grants().len() == 1));
+    assert!(daemon.grants(&task.id).unwrap().is_empty());
+    click_control(&mut vcx, "access-grant-revoke-0");
+    deck.read_with(&vcx, |d, _| {
+        assert!(matches!(d.access().confirming(), Some(Revoke::Grant(grant)) if grant.scope == Scope::Project))
+    });
+    click_control(&mut vcx, "access-revoke-confirm");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.access().busy() && d.access().grants().is_empty()));
+    assert!(daemon.access_grants(&task.id).unwrap().is_empty());
+
+    let holder = DaemonClient::connect(&data).unwrap();
+    let id = task.id.clone();
+    let asked = std::thread::spawn(move || holder.request_approval(&id, ask));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.boundary().pending().is_some()));
+    click_control(&mut vcx, "access-review-0");
+    assert!(!deck.read_with(&vcx, |d, _| d.access().is_open()));
+    vcx.simulate_keystrokes("4");
+    assert_eq!(asked.join().unwrap().unwrap().state, ApprovalState::Denied);
+    cx.quit();
+    daemon.stop(&task.id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[gpui::test]
 fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
     cx.run_until_parked();

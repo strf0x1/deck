@@ -225,6 +225,15 @@ pub fn state(d: &Deck) -> Value {
             "waiting": item.waiters > 0,
         })),
         "draft": d.draft(),
+        "access": {
+            "open": d.access().is_open(),
+            "grants": d.access().grants().iter().map(|grant| json!({
+                "id": grant.id, "gateway": grant.gateway, "operation": grant.operation,
+                "destination": grant.destination, "scope": grant.scope, "expires_ms": grant.expires_ms,
+            })).collect::<Vec<_>>(),
+            "confirming": d.access().confirming().map(|target| target.label()),
+            "busy": d.access().busy(),
+        },
         "animating": d.animating(),
     })
 }
