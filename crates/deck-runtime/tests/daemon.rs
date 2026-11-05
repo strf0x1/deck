@@ -593,6 +593,50 @@ fn a_watch_lease_holds_the_request_for_the_window_decision() {
 }
 
 #[test]
+fn one_once_decision_admits_one_concurrent_control_request() {
+    use deck_runtime::approvals::{Decision, Scope, State};
+    let (mut daemon, client) = Daemon::new("concurrent-once");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let _watch = client.watch(&task.id).unwrap();
+    let gate = Arc::new(Barrier::new(5));
+    let requests: Vec<_> = (0..4)
+        .map(|_| {
+            let requester = daemon.connect();
+            let task = task.id.clone();
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                requester.request_approval(&task, ask("other")).unwrap()
+            })
+        })
+        .collect();
+    gate.wait();
+    eventually(|| client.approvals(&task.id).unwrap().len() == 1);
+    let first = client.approvals(&task.id).unwrap().remove(0);
+    // Let the already-connected control clients join the shared hold. The
+    // unit regression synchronizes on the exact held-request count.
+    std::thread::sleep(Duration::from_millis(100));
+    client.decide(&first.id, Decision::Once).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while requests.iter().any(|request| !request.is_finished()) {
+        // Unadmitted operations get a new card which the window can deny.
+        for item in client.approvals(&task.id).unwrap() {
+            assert_ne!(item.id, first.id);
+            client.decide(&item.id, Decision::Deny).unwrap();
+        }
+        assert!(Instant::now() < deadline, "the remaining requests did not resolve on their new card");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let outcomes: Vec<_> = requests.into_iter().map(|request| request.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Allowed(Scope::Once)).count(), 1);
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Denied).count(), 3);
+    assert!(client.grants(&task.id).unwrap().is_empty());
+    assert_eq!(client.approval_status(&task.id, &first.id).unwrap().unwrap().state, State::Allowed(Scope::Once));
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
 fn without_a_lease_a_new_scope_is_answered_without_waiting() {
     use deck_runtime::approvals::{Decision, Scope, State};
     let (mut daemon, client) = Daemon::new("approval-fail-fast");
@@ -931,6 +975,59 @@ fn credential_file(name: &str, pairs: &[(&str, &str)]) -> PathBuf {
     file
 }
 
+#[test]
+fn cli_credential_list_uses_the_running_daemons_store() {
+    let file = credential_file("cli-authority", &[("OPENAI_API_KEY", "daemon-key")]);
+    let other = credential_file("cli-decoy", &[("OTHER_KEY", "cli-key")]);
+    let (daemon, client) = Daemon::with_credentials("cli-authority", Some(file.clone()));
+    let list = || {
+        Command::new(env!("CARGO_BIN_EXE_deckd"))
+            .arg("--data")
+            .arg(&daemon.data)
+            .args(["credential", "list"])
+            .env("DECK_CREDENTIALS", &other)
+            .output()
+            .unwrap()
+    };
+    let output = list();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("OPENAI_API_KEY\tsha256:"), "{text}");
+    assert!(text.contains(&format!("file {}", file.display())), "{text}");
+    assert!(!text.contains("OTHER_KEY") && !text.contains("daemon-key") && !text.contains("cli-key"), "{text}");
+
+    let store = deck_runtime::credentials::Store::file(file.clone()).unwrap();
+    store.set("OPENAI_API_KEY", "rotated-key").unwrap();
+    let rotated = String::from_utf8(list().stdout).unwrap();
+    assert!(rotated.contains(&deck_runtime::credentials::fingerprint("rotated-key")), "{rotated}");
+    client.revoke_credential("OPENAI_API_KEY").unwrap();
+    assert!(String::from_utf8(list().stdout).unwrap().contains("\trevoked"));
+    drop(client);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(other.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn cli_credential_list_never_falls_back_when_the_daemon_is_unavailable() {
+    let data = Daemon::data("cli-unavailable");
+    let file = credential_file("cli-unavailable", &[("OPENAI_API_KEY", "local-secret")]);
+    let output = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .arg("--data")
+        .arg(&data)
+        .args(["credential", "list"])
+        .env("DECK_CREDENTIALS", &file)
+        .env("DECKD", "/deck-test/no-such-daemon")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("starting /deck-test/no-such-daemon"), "{error}");
+    assert!(!error.contains("local-secret"), "{error}");
+    std::fs::remove_dir_all(data).unwrap();
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+}
+
 /// What a VM run writes: a `vmm.json` naming the task's credential set. A
 /// local task stands in for the VMM here; the daemon reads only the set.
 #[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
@@ -1111,4 +1208,42 @@ fn the_credential_commands_take_values_on_stdin_and_list_only_fingerprints() {
     let text = String::from_utf8(deckd(&["credential", "list"], "").stdout).unwrap();
     assert!(!text.contains("DECK_GITHUB_TOKEN"), "{text}");
     let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_disconnected_approval_caller_leaves_once_for_a_half_closed_retry() {
+    use deck_runtime::approvals::Decision;
+    use std::net::Shutdown;
+
+    let (daemon, client) = Daemon::new("once-disconnected");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let _watch = client.watch(&task.id).unwrap();
+    let request = serde_json::json!({
+        "op": "approval", "task": task.id, "gateway": "model",
+        "operation": "chat_completions", "destination": "other", "credential": "OPENAI_API_KEY"
+    });
+    let mut abandoned = UnixStream::connect(daemon.paths.control()).unwrap();
+    writeln!(abandoned, "{request}").unwrap();
+    eventually(|| client.approvals(&task.id).unwrap().len() == 1);
+    let item = client.approvals(&task.id).unwrap().remove(0);
+    drop(abandoned);
+    // The daemon checks abandoned holds every 100 ms; the unit tests use an
+    // explicit cancellation signal to synchronize before the decision.
+    std::thread::sleep(Duration::from_millis(200));
+    client.decide(&item.id, Decision::Once).unwrap();
+
+    let mut retry = UnixStream::connect(daemon.paths.control()).unwrap();
+    retry.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    writeln!(retry, "{request}").unwrap();
+    // A caller can finish writing while retaining its right to receive the
+    // response. Readable EOF alone must not classify this as cancellation.
+    retry.shutdown(Shutdown::Write).unwrap();
+    let mut line = String::new();
+    let response = BufReader::new(retry).read_line(&mut line);
+    client.stop(&task.id).unwrap();
+    response.unwrap();
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["ok"]["state"], serde_json::json!({"allowed": "once"}), "{reply}");
+    assert!(client.grants(&task.id).unwrap().is_empty());
 }

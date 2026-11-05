@@ -43,7 +43,14 @@ impl Control {
 
     /// Ask for one operation on one destination. `reason` is what the card
     /// shows about the request; it never contains a credential.
-    pub fn ask(&self, operation: &str, destination: &str, reason: Option<String>) -> Answer {
+    pub fn ask(
+        &self,
+        operation: &str,
+        destination: &str,
+        reason: Option<String>,
+        credential: Option<&str>,
+        identity: Option<&str>,
+    ) -> Answer {
         let mut request = json!({
             "op": "approval",
             "task": self.task,
@@ -52,6 +59,12 @@ impl Control {
             "destination": destination,
             "details": {},
         });
+        if let Some(credential) = credential {
+            request["credential"] = json!(credential);
+        }
+        if let Some(identity) = identity {
+            request["details"]["identity"] = json!(identity);
+        }
         if let Some(reason) = reason {
             request["reason"] = json!(reason);
         }

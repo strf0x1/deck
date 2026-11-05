@@ -221,12 +221,12 @@ impl Store {
 
 /// Publish a read's answer to its waiters and forget the flight.
 fn finish(reads: &Reads, name: &str, flight: &Arc<Flight>, outcome: Outcome) {
-    *flight.outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
-    flight.done.notify_all();
     let mut reads = reads.lock().unwrap_or_else(|e| e.into_inner());
+    *flight.outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
     if reads.get(name).is_some_and(|current| Arc::ptr_eq(current, flight)) {
         reads.remove(name);
     }
+    flight.done.notify_all();
 }
 
 fn read_source(source: &Source, name: &str) -> Outcome {

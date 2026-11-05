@@ -27,6 +27,10 @@ pub struct Details {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// Host gateway fingerprint of the write's validated target and content.
+    /// Read operations use their gateway/operation/destination authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 
 /// How broad an allowance is.
@@ -122,6 +126,8 @@ impl Approval {
             && self.gateway == other.gateway
             && self.operation == other.operation
             && self.destination == other.destination
+            && self.credential == other.credential
+            && self.details.identity == other.details.identity
     }
 }
 
@@ -190,6 +196,17 @@ pub struct Grant {
     pub scope: Scope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_ms: Option<u64>,
+    /// Once admission identity, held only in memory like the allowance itself.
+    #[serde(skip)]
+    pub reviewed: Option<Reviewed>,
+}
+
+/// The request-specific part of a Once allowance. Credential rotation keeps
+/// its name; a different name or write fingerprint needs another decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reviewed {
+    pub credential: Option<String>,
+    pub identity: Option<String>,
 }
 
 impl Grant {
@@ -204,7 +221,11 @@ impl Grant {
                     .destination
                     .strip_prefix(self.destination.as_str())
                     .is_some_and(|detail| detail.starts_with('#')));
-        self.gateway == request.gateway && self.operation == request.operation && destination
+        let reviewed = self.scope != Scope::Once
+            || self.reviewed.as_ref().is_some_and(|reviewed| {
+                reviewed.credential == request.credential && reviewed.identity == request.details.identity
+            });
+        self.gateway == request.gateway && self.operation == request.operation && destination && reviewed
     }
 }
 

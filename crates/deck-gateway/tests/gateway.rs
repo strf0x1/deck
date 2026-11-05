@@ -23,11 +23,17 @@ use std::time::{Duration, Instant};
 /// forbids.
 const DECOY: &str = "env-value-must-not-be-used";
 
+#[path = "gateway/mirror_body.rs"]
+mod mirror_body;
+
 #[path = "gateway/mirror_redirect.rs"]
 mod mirror_redirect;
 
 #[path = "gateway/model_grants.rs"]
 mod model_grants;
+
+#[path = "gateway/identity.rs"]
+mod identity;
 
 /// A fake `deckd` in front of a test's own queue fixture: it answers
 /// `credential` and `credential_watch` as the broker does, and forwards every

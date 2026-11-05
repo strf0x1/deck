@@ -185,7 +185,7 @@ at 5 s, with at most one read per name outstanding.
 
 A VM run writes its credential set into `vmm.json` as `gateway.credentials`
 (the model key's name, and the GitHub token's when the project names a
-repository). Three control requests serve it:
+repository). These control requests serve it:
 
 - `credential {task, name}` returns `{"value", "fingerprint"}` for one
   operation, only for a running task and a name in its set; anything else is
@@ -197,14 +197,21 @@ repository). Three control requests serve it:
 - `credential_watch {task}` replies `{"revoked": [...]}` for the task's set,
   then pushes each later revocation as one JSON line for the connection's
   life. Each gateway holds one, reopened with backoff.
+- `list_credentials` replies with the daemon's store description and every
+  stored name's fingerprint, revoked state and read error. It uses the same
+  broker and outstanding reads as task listings and gateway fetches, without
+  holding the task service lock or returning credential values.
 - `revoke_credential {name}` revokes the name's current fingerprint, writes
   it to `credentials/revoked.json` before replying, and pushes it to the
   watching gateways, which close the requests and GitHub operations that used
   it. A new value serves again; the revoked one never does.
 
 `deckd credential set NAME` (value on stdin), `delete NAME`, `list` (names,
-fingerprints, store, revoked state) and `revoke NAME` manage it. Only
-`revoke` talks to the daemon.
+fingerprints, store, revoked state) and `revoke NAME` manage it. `list` and
+`revoke` connect to the daemon, starting it when necessary. A running daemon's
+store selection wins over the CLI's environment. If it cannot connect or
+start the daemon, `list` fails without opening an independent store read.
+`set` and `delete` manage the store directly.
 
 ## The GitHub operation gateway
 
