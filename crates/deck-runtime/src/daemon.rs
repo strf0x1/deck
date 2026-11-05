@@ -196,7 +196,8 @@ fn connection(
                         | Request::RevokeAccessGrant { .. }
                 ) =>
             {
-                let result = request.validate().and_then(|()| approval(&service, &boundary, request));
+                let result =
+                    request.validate().and_then(|()| approval(&service, &boundary, request, || connected(&socket)));
                 wire::write(&mut socket, &reply(result))?;
             }
             // A profile decision writes the project's rule file, which the
@@ -255,15 +256,37 @@ fn failed(error: anyhow::Error) -> Reply {
     Reply { ok: None, error: Some(format!("{error:#}")) }
 }
 
+/// Whether the caller can still receive a reply, without blocking.
+fn connected(socket: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+
+    // POLLOUT detects a closed recipient while preserving a peer's deliberate
+    // write-half-close. Checking readable EOF would cancel clients which have
+    // finished sending their request but are still waiting for its reply.
+    let mut descriptor = libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLOUT, revents: 0 };
+    // SAFETY: descriptor names the socket borrowed for this call, and poll
+    // receives one initialized descriptor with a zero timeout.
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result < 0 {
+        return std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+    }
+    descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
+}
+
 /// Approval requests do not take the service lock while they may hold for a
 /// decision; the task record is read briefly and the queue does the waiting.
-fn approval(service: &Mutex<Service>, boundary: &Arc<Boundary>, request: Request) -> Result<Value> {
+fn approval(
+    service: &Mutex<Service>,
+    boundary: &Arc<Boundary>,
+    request: Request,
+    connected: impl Fn() -> bool,
+) -> Result<Value> {
     match request {
         Request::Approval { task, ask } => {
             let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?;
             let project = record.spec.cwd.to_string_lossy().into_owned();
             let incoming = ask.into_incoming(task, project, record.session_id.clone());
-            Ok(serde_json::to_value(boundary.submit(incoming)?)?)
+            Ok(serde_json::to_value(boundary.submit_while(incoming, connected)?)?)
         }
         Request::Approvals { task } => Ok(serde_json::to_value(boundary.pending(&task)?)?),
         Request::ApprovalStatus { task, id } => Ok(serde_json::to_value(boundary.status(&task, &id)?)?),
@@ -515,5 +538,22 @@ struct SocketPath(PathBuf);
 impl Drop for SocketPath {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connected;
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn a_write_half_close_keeps_the_reply_recipient_connected() {
+        let (server, client) = UnixStream::pair().unwrap();
+        assert!(connected(&server));
+        client.shutdown(Shutdown::Write).unwrap();
+        assert!(connected(&server));
+        drop(client);
+        assert!(!connected(&server));
     }
 }

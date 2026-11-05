@@ -3,7 +3,7 @@
 Status: accepted, 2026-11-03; first and second slices landed 2026-11-03;
 §4's credential broker amendment accepted and landed 2026-11-04. The scoped
 approval reuse and credential-prompt amendment is accepted 2026-11-05;
-implementation is pending (§11 item 10). Answers #9; the input is
+implementation has started (§11 item 10). Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
 operations; #12 compares runtimes. Its extension names are superseded in
 part by ADR 0005.
@@ -1175,12 +1175,27 @@ The implementation is not done until these have tests where practical.
    GitHub grant cancellation during an operation remains a separate unit.
 
 10. Implement scoped approval reuse and separate credential-prompt handling.
-    Accepted 2026-11-05; not yet implemented. This amendment changes the target
+    Accepted 2026-11-05; Once admission and review matching implemented 2026-11-05. The
+    remaining work below is pending. This amendment changes the target
     behavior in §§4.2, 5 and 7, not the historical results above.
 
-    - First fix atomic Once consumption for concurrent held requests, with
-      runtime and real-daemon regressions. Define the reviewed operation's
-      identity per gateway and test changed writes and credential names.
+    - Once decisions now create one allowance whether or not requests are
+      held. Each admission consumes it under the queue lock. Other held
+      requests share a fresh pending card and keep their original hold
+      deadline. Runtime and real-daemon regressions cover concurrent requests;
+      runtime tests also cover late retries, expiry and clearing a held task.
+      A disconnected caller leaves the allowance for a live request or retry;
+      a client that closes only its write half can still receive the reply.
+    - Once matching also preserves the credential name and the host gateway's
+      reviewed-write fingerprint. GitHub fingerprints include the validated
+      branch and commit for publish, or the PR target and effective edits.
+      Identical retries share authority; changed commits, PR edits and
+      credential names ask again. Model and web requests retain their
+      gateway/operation/destination authority without requiring identical
+      prompt bodies or mirror paths. An older GitHub gateway without a
+      fingerprint must restart its task before a Once decision can apply.
+      Runtime and real-gateway tests cover these identities. These fields are
+      private daemon control metadata; ACP notifications are unchanged.
     - Add the five-minute grant to the runtime, persistence, gateway monitors,
       boundary card and Access panel. Test repeated use, scope isolation,
       unchanged deadlines, expiry during daemon outage and active revocation.

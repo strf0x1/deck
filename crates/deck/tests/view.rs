@@ -133,7 +133,12 @@ fn approval(id: &str) -> Approval {
         operation: "chat_completions".into(),
         destination: "other".into(),
         credential: Some("OPENAI_API_KEY".into()),
-        details: Details { method: Some("POST".into()), path: Some("/v1/chat/completions".into()), size: Some(0) },
+        details: Details {
+            method: Some("POST".into()),
+            path: Some("/v1/chat/completions".into()),
+            size: Some(0),
+            identity: None,
+        },
         reason: None,
         created_ms: 0,
         expires_ms: 0,
