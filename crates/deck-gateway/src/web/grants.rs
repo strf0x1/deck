@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io;
 use std::net::{Shutdown, TcpStream};
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -51,6 +52,7 @@ pub struct Permit {
 struct Stamp {
     modified: Option<SystemTime>,
     length: u64,
+    identity: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -185,8 +187,12 @@ impl Drop for Registration {
 
 fn stamp(path: &Path) -> Stamp {
     match std::fs::metadata(path) {
-        Ok(meta) => Stamp { modified: meta.modified().ok(), length: meta.len() },
-        Err(_) => Stamp { modified: None, length: 0 },
+        // The daemon atomically replaces policy files. A new inode must
+        // invalidate the cache even when size and timestamp are unchanged.
+        Ok(meta) => {
+            Stamp { modified: meta.modified().ok(), length: meta.len(), identity: Some((meta.dev(), meta.ino())) }
+        }
+        Err(_) => Stamp { modified: None, length: 0, identity: None },
     }
 }
 
