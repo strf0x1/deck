@@ -17,7 +17,6 @@
 
 pub mod connect;
 pub mod control;
-pub mod grants;
 pub mod mirror;
 pub mod policy;
 pub mod profiles;

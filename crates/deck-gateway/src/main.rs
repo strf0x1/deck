@@ -19,7 +19,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--web-grants PATH] [--web-project ID] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--grants PATH] [--project ID] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -67,8 +67,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
     let mut task = None;
     let mut web_socket = None;
     let mut web_profiles = Vec::new();
-    let mut web_grants = Vec::new();
-    let mut web_project = None;
+    let mut grants = Vec::new();
+    let mut project = None;
     let mut web_hosts = None;
     let mut web_test_connect = None;
     let mut github_socket = None;
@@ -98,8 +98,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             "--task" => task = Some(value(&mut args, &flag)?),
             "--web-socket" => web_socket = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--web-profile" => web_profiles.push(value(&mut args, &flag)?),
-            "--web-grants" => web_grants.push(PathBuf::from(value(&mut args, &flag)?)),
-            "--web-project" => web_project = Some(value(&mut args, &flag)?),
+            "--grants" => grants.push(PathBuf::from(value(&mut args, &flag)?)),
+            "--project" => project = Some(value(&mut args, &flag)?),
             "--web-hosts" => web_hosts = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--web-test-connect" => {
                 let address = value(&mut args, &flag)?;
@@ -140,26 +140,19 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
         None => None,
     };
     let web = match web_socket {
-        Some(socket) => Some(WebSettings {
-            socket,
-            profiles: web_profiles,
-            grants: web_grants,
-            project: web_project,
-            hosts: web_hosts,
-            test_connect: web_test_connect,
-        }),
+        Some(socket) => {
+            Some(WebSettings { socket, profiles: web_profiles, hosts: web_hosts, test_connect: web_test_connect })
+        }
         None => {
-            if !web_profiles.is_empty()
-                || !web_grants.is_empty()
-                || web_project.is_some()
-                || web_hosts.is_some()
-                || web_test_connect.is_some()
-            {
-                bail!("--web-profile, --web-grants, --web-project and --web-hosts need --web-socket");
+            if !web_profiles.is_empty() || web_hosts.is_some() || web_test_connect.is_some() {
+                bail!("--web-profile and --web-hosts need --web-socket");
             }
             None
         }
     };
+    if (!grants.is_empty() || project.is_some()) && task.is_none() {
+        bail!("--grants and --project need --task");
+    }
     let task_id = task.clone().unwrap_or_default();
     let github = match github_socket {
         Some(socket) => {
@@ -207,6 +200,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             models,
             secret: secret.clone(),
             control,
+            task: task_id,
+            grants,
+            project,
             budget: Budget { requests: request_budget, tokens: token_budget },
             usage: Usage { requests: used_requests, tokens: used_tokens },
             budget_file,
@@ -247,6 +243,33 @@ mod tests {
         let mut ftp = base;
         ftp.extend(args(&["--upstream", "ftp://example.com/v1", "--model", "m"]));
         assert!(parse(ftp).is_err());
+    }
+
+    #[test]
+    fn grant_policy_is_available_without_web_but_requires_a_task_identity() {
+        let mut flags = args(&[
+            "--model-socket",
+            "/tmp/m",
+            "--extension-socket",
+            "/tmp/e",
+            "--upstream",
+            "https://example.com/v1",
+            "--model",
+            "m",
+            "--secret",
+            "KEY",
+            "--grants",
+            "/tmp/grants.json",
+            "--project",
+            "/project",
+        ]);
+        assert!(parse(flags.clone()).unwrap_err().to_string().contains("need --task"));
+        flags.extend(args(&["--task", "t"]));
+        let (config, _, _) = parse(flags).unwrap();
+        assert!(config.web.is_none());
+        assert_eq!(config.task, "t");
+        assert_eq!(config.grants, vec![PathBuf::from("/tmp/grants.json")]);
+        assert_eq!(config.project.as_deref(), Some("/project"));
     }
 
     #[test]

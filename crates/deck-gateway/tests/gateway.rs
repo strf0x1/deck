@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 /// forbids.
 const DECOY: &str = "env-value-must-not-be-used";
 
+#[path = "gateway/model_grants.rs"]
+mod model_grants;
+
 /// A fake `deckd` in front of a test's own queue fixture: it answers
 /// `credential` and `credential_watch` as the broker does, and forwards every
 /// other line to `upstream`, so each fixture stays one concern.
@@ -201,6 +204,19 @@ fn start_full(
     limits: Limits,
     budget_file: Option<&Path>,
 ) -> Gateway {
+    start_launch(name, upstream, models, key, Launch { control, limits, budget_file, ..Launch::default() })
+}
+
+#[derive(Default)]
+struct Launch<'a> {
+    control: Option<(&'a Path, &'a str)>,
+    limits: Limits,
+    budget_file: Option<&'a Path>,
+    grants: Option<&'a Path>,
+}
+
+fn start_launch(name: &str, upstream: &str, models: &[&str], key: Option<&str>, launch: Launch<'_>) -> Gateway {
+    let Launch { control, limits, budget_file, grants } = launch;
     let dir = scratch(name);
     let values: Vec<(&str, &str)> = key.map(|key| ("DECK_GATEWAY_TEST_KEY", key)).into_iter().collect();
     let deckd = Deckd::start(&dir, &values, control.map(|(socket, _)| socket));
@@ -233,6 +249,9 @@ fn start_full(
     }
     if let Some(path) = budget_file {
         command.arg("--budget-file").arg(path);
+    }
+    if let Some(path) = grants {
+        command.arg("--grants").arg(path).args(["--project", "/fixture"]);
     }
     deckd.args(&mut command, control.map_or("task-1", |(_, task)| task));
     command.env("DECK_GATEWAY_TEST_KEY", DECOY);
@@ -609,19 +628,31 @@ fn a_denied_approval_is_not_reported_as_retryable() {
 
 #[test]
 fn the_gateway_waits_for_the_queue_decision() {
+    let grants = scratch("hold-grants").join("grants.json");
+    let persisted = grants.clone();
     let socket = queue(
         "queue-hold",
         serde_json::json!({ "id": "a3", "state": { "allowed": "task" } }),
         Duration::from_millis(250),
-        |_| {},
+        move |_| {
+            std::fs::write(
+                &persisted,
+                serde_json::json!([{
+                    "id": "held", "gateway": "model", "operation": "chat_completions",
+                    "destination": "other", "scope": "task", "task": "t"
+                }])
+                .to_string(),
+            )
+            .unwrap();
+        },
     );
     let (port, provider) = provider(|_| {});
-    let gateway = start_with(
+    let gateway = start_launch(
         "hold",
         &format!("http://127.0.0.1:{port}/v1"),
         &["allowed"],
         Some("host-key"),
-        Some((&socket, "t")),
+        Launch { control: Some((&socket, "t")), grants: Some(&grants), ..Launch::default() },
     );
     let started = std::time::Instant::now();
     let response = send(&gateway.ready.model, &chat("other"));
@@ -822,7 +853,7 @@ fn with_web(
         .arg(dir.join("extension.sock"))
         .arg("--web-socket")
         .arg(dir.join("web.sock"))
-        .args(["--web-project", "/fixture"])
+        .args(["--project", "/fixture"])
         .stderr(Stdio::null())
         .arg("--upstream")
         .arg("http://127.0.0.1:9/v1")
@@ -835,7 +866,7 @@ fn with_web(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     for grant in grants {
-        command.arg("--web-grants").arg(grant);
+        command.arg("--grants").arg(grant);
     }
     for profile in profiles {
         command.arg("--web-profile").arg(profile);

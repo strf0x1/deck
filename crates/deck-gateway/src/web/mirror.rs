@@ -109,7 +109,7 @@ impl Connector {
             let Some(mut upstream) = dial(&addresses, &self.resolver) else {
                 return self.deny_plain(&mut guest, None, &format!("{} did not accept the connection", current.name));
             };
-            let _registration = match self.grants.register(permit, &guest, &upstream) {
+            let _registration = match self.register(permit, &guest, &upstream) {
                 Ok(registration) => registration,
                 Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                     return self.deny_plain(&mut guest, None, &error.to_string());
@@ -151,12 +151,12 @@ impl Connector {
         &self,
         target: &Target,
         request: &Request,
-    ) -> Result<Option<super::grants::Permit>, crate::web::connect::Held> {
+    ) -> Result<Option<crate::grants::Permit>, crate::web::connect::Held> {
         use crate::web::connect::Held;
         if self.profiles.covering(&target.name, target.port).is_some() {
             return Ok(None);
         }
-        if let Some(permit) = self.grants.authorize(&target.name, target.port, crate::web::FETCH) {
+        if let Some(permit) = self.grants.web(&target.name, target.port, crate::web::FETCH) {
             return Ok(Some(permit));
         }
         let Some(control) = &self.control else { return Err(Held::NoQueue) };

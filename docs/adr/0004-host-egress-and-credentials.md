@@ -1045,6 +1045,23 @@ The implementation is not done until these have tests where practical.
    grant revocation during an operation are not covered by this web slice;
    credential revocation for those operations is §4.5.
 
+9. Close active model requests on grant revocation (§7). The shared gateway
+   grant monitor now retains exact task/project model rules as well as web
+   rules. Each model request owns its HTTP client pool. Revocation shuts
+   that pool and the guest socket, interrupting idle header and body reads.
+   Before response commitment the guest receives `deck_boundary_denied`;
+   after commitment it sees an interrupted stream. Credential revocation uses the same
+   request cancellation, preserving `deck_credential_revoked` before headers.
+   Unrelated model grants, configured launch models and admitted once
+   requests continue. Request and token accounting keep their existing rules.
+
+   The VMM passes `--grants` and `--project` outside optional web configuration,
+   so model grants work with web disabled. Saved VMM records using the old
+   `web_grants` and `web_project` fields still load. Real gateway socket tests
+   cover idle provider closure before and after headers, isolated streams,
+   once consumption, expiry with the daemon down, and missing durable grants.
+   GitHub grant cancellation during an operation remains a separate unit.
+
 ## Deferred
 
 - A virtio-net compatibility backend and any UDP/QUIC support. The guest has

@@ -1,18 +1,16 @@
-//! Live web grants and the connections they authorize (ADR 0004 §7).
+//! Live model and web grants and the operations they authorize (ADR 0004 §7).
 //!
 //! The design choice: a connection holds the exact persisted rule that
 //! admitted it. One monitor re-reads changed policy files every 50 ms and
-//! closes both sockets when that rule disappears or expires, even while
+//! cancels each operation when that rule disappears or expires, even while
 //! deckd is down. A replacement grant cannot keep an older tunnel alive.
 //! Fixed launch profiles and allow-once requests have no persisted grant.
 
-use super::policy::Allowed;
+use crate::web::policy::Allowed;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io;
-use std::net::{Shutdown, TcpStream};
 use std::os::unix::fs::MetadataExt as _;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -63,8 +61,7 @@ struct Cache {
 
 struct Active {
     permit: Permit,
-    guest: UnixStream,
-    upstream: TcpStream,
+    cancel: Box<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -94,22 +91,35 @@ impl Grants {
 
     /// A task/project grant for this operation and exact destination. Once
     /// grants are consumed by the daemon, never admitted from a policy file.
-    pub fn authorize(&self, host: &str, port: u16, operation: &str) -> Option<Permit> {
+    pub fn web(&self, host: &str, port: u16, operation: &str) -> Option<Permit> {
+        self.find(crate::web::GATEWAY, |rule| {
+            (rule.operation == operation || (rule.operation == crate::web::CONNECT && operation == crate::web::FETCH))
+                && Allowed::parse(&rule.destination).is_some_and(|allowed| allowed.admits(host, port))
+        })
+    }
+
+    /// Model names are exact; a queue reply must name the same persisted scope.
+    pub fn model(&self, model: &str, scope: Option<&str>) -> Option<Permit> {
+        self.find("model", |rule| {
+            rule.operation == "chat_completions"
+                && rule.destination == model
+                && scope.is_none_or(|scope| rule.scope == scope)
+        })
+    }
+
+    fn find(&self, gateway: &str, matches: impl Fn(&Rule) -> bool) -> Option<Permit> {
         let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
         self.refresh(&mut cached);
         cached.rules.iter().enumerate().find_map(|(file, rules)| {
             rules.iter().find_map(|rule| {
-                (rule.gateway == super::GATEWAY
-                    // A CONNECT grant admits arbitrary bytes on this port,
-                    // including a mirror fetch; a fetch grant is narrower.
-                    && (rule.operation == operation || (rule.operation == super::CONNECT && operation == super::FETCH))
+                (rule.gateway == gateway
                     && match rule.scope.as_str() {
                         "task" => rule.task.as_deref() == Some(self.task.as_str()),
                         "project" => self.project.is_some() && rule.project == self.project,
                         _ => false,
                     }
                     && rule.live()
-                    && Allowed::parse(&rule.destination).is_some_and(|allowed| allowed.admits(host, port)))
+                    && matches(rule))
                 .then(|| Permit { file, rule: rule.clone() })
             })
         })
@@ -134,46 +144,49 @@ impl Grants {
     pub fn register(
         self: &Arc<Self>,
         permit: Option<Permit>,
-        guest: &UnixStream,
-        upstream: &TcpStream,
+        cancel: impl Fn() + Send + Sync + 'static,
     ) -> io::Result<Option<Registration>> {
         let Some(permit) = permit else { return Ok(None) };
         let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if !self.live(&permit) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the authorizing grant was revoked"));
         }
-        let active = Active { permit, guest: guest.try_clone()?, upstream: upstream.try_clone()? };
+        let active = Active { permit, cancel: Box::new(cancel) };
         let id = connections.next;
         connections.next += 1;
         connections.active.insert(id, active);
         Ok(Some(Registration { grants: self.clone(), id }))
     }
 
-    /// One monitor for both the dedicated web socket and extension kind.
-    /// A weak reference lets it end when the connector is dropped.
+    /// One monitor for model requests and both web entry points.
+    /// A weak reference lets it end when the gateways are dropped.
     pub fn watch(self: &Arc<Self>) -> io::Result<()> {
         let grants = Arc::downgrade(self);
         std::thread::Builder::new().name("gateway-grants".into()).spawn(move || {
             loop {
                 std::thread::sleep(CHECK);
                 let Some(grants) = grants.upgrade() else { break };
-                let mut connections = grants.connections.lock().unwrap_or_else(|e| e.into_inner());
-                connections.active.retain(|_, active| {
-                    if grants.live(&active.permit) {
-                        true
-                    } else {
-                        let _ = active.guest.shutdown(Shutdown::Both);
-                        let _ = active.upstream.shutdown(Shutdown::Both);
-                        false
-                    }
-                });
+                let revoked = {
+                    let mut connections = grants.connections.lock().unwrap_or_else(|e| e.into_inner());
+                    let ids: Vec<_> = connections
+                        .active
+                        .iter()
+                        .filter(|(_, active)| !grants.live(&active.permit))
+                        .map(|(id, _)| *id)
+                        .collect();
+                    ids.into_iter().filter_map(|id| connections.active.remove(&id)).collect::<Vec<_>>()
+                };
+                // Cancellation can touch a request's phase lock; never hold the registry then.
+                for active in revoked {
+                    (active.cancel)();
+                }
             }
         })?;
         Ok(())
     }
 }
 
-/// Removing the registration releases the cloned sockets on normal completion.
+/// Removing the registration releases the cancellation handle on normal completion.
 pub struct Registration {
     grants: Arc<Grants>,
     id: u64,

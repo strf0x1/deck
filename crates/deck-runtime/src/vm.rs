@@ -283,11 +283,8 @@ impl Backend for Vm {
                 web_socket: self.web_profiles.as_ref().map(|_| socket.with_extension("web")),
                 web_port: self.web_profiles.as_ref().map(|_| boundary::WEB_VSOCK_PORT),
                 web_profiles: self.web_profiles.clone().unwrap_or_default(),
-                web_grants: vec![
-                    self.dir(&task.id).join("grants.json"),
-                    self.data.join("approvals").join("projects.json"),
-                ],
-                web_project: Some(task.spec.cwd.to_string_lossy().into_owned()),
+                grants: vec![self.dir(&task.id).join("grants.json"), self.data.join("approvals").join("projects.json")],
+                project: Some(task.spec.cwd.to_string_lossy().into_owned()),
                 github_socket: self.github.as_ref().map(|_| socket.with_extension("github")),
                 github_port: self.github.as_ref().map(|_| boundary::GITHUB_VSOCK_PORT),
                 github_repository: self.github.as_ref().map(|github| github.repository.clone()),
