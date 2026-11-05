@@ -32,7 +32,7 @@ use serde_json::json;
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The gateway kind approvals, grants and events carry, and the framed kind
 /// the extension port dispatches.
@@ -42,6 +42,9 @@ pub use policy::{GATEWAY, KIND, PROFILE};
 const MAX_ASK: usize = 64 * 1024;
 /// The gateway answers one request per connection; a publish is the slow one.
 const READ: Duration = Duration::from_secs(60);
+/// The total request-head budget. Recompute the socket timeout for each byte
+/// so a peer cannot renew it by trickling input.
+const HEAD: Duration = Duration::from_secs(5);
 const WRITE: Duration = Duration::from_secs(180);
 /// The wait for the remainder of a body the peer declared. A publish's bundle
 /// arrives on the same connection; anything slower than this is a peer that
@@ -99,8 +102,9 @@ impl GitHub {
     pub fn handle(&self, mut stream: UnixStream) -> io::Result<()> {
         stream.set_read_timeout(Some(READ))?;
         stream.set_write_timeout(Some(WRITE))?;
+        let deadline = Instant::now() + HEAD;
         let (request, rest) = {
-            match read(&mut stream) {
+            match read(&mut stream, deadline) {
                 Ok(Some(request)) => request,
                 Ok(None) => return Ok(()),
                 Err(ReadError::Refused { status, message }) => {
@@ -110,6 +114,9 @@ impl GitHub {
                 Err(ReadError::Io(error)) => return Err(error),
             }
         };
+        // Header reads temporarily narrow this before every byte. Bodies and
+        // bundles retain their existing independent bounds.
+        stream.set_read_timeout(Some(READ))?;
         if request.method != "POST" {
             return reply(&mut stream, 405, json!({ "error": "the GitHub operations take POST" }));
         }
@@ -392,18 +399,26 @@ fn drain(stream: &mut UnixStream) -> io::Result<()> {
 /// is then exactly its content-length. For a publish that body is the JSON
 /// head, the bundle's length and the bundle, and its ceiling is sized for the
 /// bundle rather than for a JSON request.
-fn read(reader: &mut UnixStream) -> Result<Option<(Request, Vec<u8>)>, ReadError> {
+fn read(reader: &mut UnixStream, deadline: Instant) -> Result<Option<(Request, Vec<u8>)>, ReadError> {
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
         if head.len() >= MAX_HEAD {
             return Err(ReadError::Refused { status: 431, message: format!("request head exceeds {MAX_HEAD} bytes") });
         }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ReadError::Refused { status: 408, message: "request head deadline expired".into() });
+        }
+        reader.set_read_timeout(Some(left)).map_err(ReadError::Io)?;
         match reader.read(&mut byte) {
             Ok(0) if head.is_empty() => return Ok(None),
             Ok(0) => return Err(ReadError::Io(io::Error::from(io::ErrorKind::UnexpectedEof))),
             Ok(_) => head.push(byte[0]),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                return Err(ReadError::Refused { status: 408, message: "request head deadline expired".into() });
+            }
             Err(error) => return Err(ReadError::Io(error)),
         }
         if head.ends_with(b"\r\n\r\n") {

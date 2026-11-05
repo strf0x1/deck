@@ -2034,3 +2034,31 @@ fn incomplete_connect_headers_have_a_total_deadline_even_when_bytes_keep_arrivin
     let response = send(web, "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n");
     assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
 }
+
+#[test]
+fn incomplete_github_headers_have_a_total_deadline_even_when_bytes_keep_arriving() {
+    let gateway = with_github("gh-head", "http://127.0.0.1:9", "https://github.com/owner/repo", None, None);
+    let github = gateway.ready.github.as_ref().unwrap();
+    let start = Instant::now();
+    let mut stream = UnixStream::connect(github).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
+    stream.write_all(b"POST /operations/publish HTTP/1.1\r\nX: ").unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let sender = std::thread::spawn(move || {
+        for _ in 0..80 {
+            if writer.write_all(b"x").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 408 Request Timeout"), "{response}");
+    assert!(start.elapsed() < Duration::from_secs(8), "trickling must not renew the header budget");
+    drop(stream);
+    sender.join().unwrap();
+    // A timed-out request releases its worker and leaves the listener usable.
+    let response = send(github, "BROKEN\r\n\r\n");
+    assert!(response.starts_with("HTTP/1.1 400 Bad Request"), "{response}");
+}
