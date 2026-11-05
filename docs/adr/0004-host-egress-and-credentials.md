@@ -1,7 +1,9 @@
 # 0004 — Host gateways enforce guest egress, credentials, and approvals
 
 Status: accepted, 2026-11-03; first and second slices landed 2026-11-03;
-§4's credential broker amendment proposed 2026-11-04. Answers #9; the input is
+§4's credential broker amendment accepted and landed 2026-11-04. The scoped
+approval reuse and credential-prompt amendment is accepted 2026-11-05;
+implementation is pending (§11 item 10). Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
 operations; #12 compares runtimes. Its extension names are superseded in
 part by ADR 0005.
@@ -39,6 +41,19 @@ Three more facts constrain the design:
   running task during a daemon restart. The approval queue and persisted
   grants still belong to `deckd`; the per-task data plane belongs to the
   holder.
+
+The 2026-11-05 review adds a usability constraint: repeated work within an
+approved capability must not require repeated clicks or system passwords.
+A model's next prompt or another package URL can use the same authority.
+A new destination, credential or publication action may require more.
+Short approval reuse must therefore name that authority and its expiration.
+
+The review also reproduced a Once decision releasing two concurrent held
+requests. That is an accidental expansion, not a defined grace period.
+Separately, the 2026-11-04 Keychain checks found timed-out CLI processes
+leaving dialogs behind (§11 item 7). Credential access and operation approval
+need separate fixes. Reusing recent authentication, as sudo does, is useful
+only while each operation still passes its authorization policy.
 
 ## Decision
 
@@ -427,6 +442,29 @@ fingerprint and revoked state, never a value. Revoke asks for confirmation,
 sends `revoke_credential`, and shows the new listing from the daemon's reply;
 it then says the key is not cancelled at the provider (§4.5).
 
+**Credential prompts and operation approvals are separate.** macOS or Secret
+Service authorizes `deckd` to read a stored credential. Deck authorizes a task
+to use a capability. An ordinary boundary decision is a Deck UI action and
+does not itself require the user's system password. Permission to read a key
+does not authorize another task, destination or operation.
+
+Credential reads, including `deckd credential list`, go through the running
+daemon's store and share its one outstanding read per name. A CLI invocation
+must not create an independent store read or silently fall back to one when
+the daemon is unavailable. A caller's timeout does not end the daemon's
+outstanding read, so a later caller can join it and receive its answer.
+Automatic retries and panel refreshes must not create parallel OS dialogs
+for the same item. After the user denies access, automatic retries do not
+reopen the dialog; Deck reports the failure and offers an explicit retry.
+
+A distributed macOS `deckd` uses a stable signing identity and supports
+Keychain trust for that application and item. Trust is never broadened to
+all applications. An ad-hoc development rebuild may still need new consent;
+the file store remains the development and CI path. These requirements do
+not add a credential-value cache: each operation still reads the store, so
+rotation affects the next operation (§4.4). Reusing OS access consent and
+reusing a Deck grant are separate from retaining a secret value.
+
 #### 4.3 Which task may use which credential
 
 When the runtime starts a VMM, it writes the task's credential set into
@@ -455,11 +493,11 @@ model request including its streamed response, or one GitHub operation (a
 publish's `git push` and its API calls share one fetch). Neither side logs
 the reply. `deckd` logs the task, the name and the fingerprint.
 
-Nothing is cached, neither in the gateway nor in `deckd`: every operation
-reads the store. That is why rotation needs no extra machinery, and a
-Keychain or file read is small next to a provider round trip. Add a cache
-checked against the fingerprint only if a measurement shows the read
-matters.
+Credential values are not cached in the gateway or in `deckd`: each operation
+reads the store, joining an outstanding read for that name when one exists.
+Rotation therefore needs no extra invalidation machinery. A credential-value
+cache would require a separate decision about rotation visibility and
+invalidation; approval reuse is not a reason to add one.
 
 Each failure injects nothing and reaches the guest in the gateway's existing
 bounded error shape. ADR 0007's GitHub table gains the same rows.
@@ -532,17 +570,54 @@ An approval item records: task, agent/session, gateway, operation, destination
 (method, path, size — not a body), requested duration, policy version, a
 deduplication key, and the agent's untrusted reason.
 
-Options:
+The options distinguish one operation from reusable authority:
 
-- **Allow once** — the held request continues; if it already failed, one
-  retry of the exact request fingerprint within a short window (for example
-  60 s).
-- **Allow for this task** — matching operations until the task stops or the
-  grant expires.
-- **Always allow for this project** — a persisted project rule. Rules live
-  in Deck's data root keyed by project identity, not in the repository, so
-  the guest cannot edit its own policy.
-- **Deny** — the operation fails; the agent sees a structured error.
+- **Allow once** authorizes exactly one operation, including its internal
+  steps. If no held request claims it, one matching retry may claim it
+  within 60 s. Claiming the allowance is atomic. Deduplicating an approval
+  card never lets several concurrent requests consume that one allowance.
+  Other requests need another grant or a new approval.
+- **Allow for 5 minutes** authorizes repeated matching operations for this
+  task until a fixed host-controlled deadline, five minutes after the
+  decision. Traffic, retries and agent requests cannot extend the deadline.
+- **Allow for this task** authorizes matching operations until the task
+  stops or the displayed grant expiry, currently 12 h after the decision.
+- **Always allow for this project** creates a persisted project rule.
+  Rules live in Deck's data root keyed by project identity, not in the
+  repository, so the guest cannot edit its own policy.
+- **Deny** refuses the operation; the agent sees a structured error.
+
+Five minutes is the initial product choice for short approval reuse, not a
+security constant. The UI displays the scope and expiry before the decision
+and in Access afterward. Routine model and package work can use a timed or
+task allowance without another click for each request. A Once button must
+never silently act as a timed allowance.
+
+**Matching means the same authority.** Each request is checked against the
+grant even when no new human decision is needed. A reusable grant names its
+task or project, gateway, operation, destination and credential name if any.
+Provider, repository and ref restrictions still apply. The gateway defines
+the authority its operation requires:
+
+| Gateway | What reuse must preserve | Changes that need no new approval within that authority |
+|---|---|---|
+| Model | Configured provider, allowed model, operation and credential name | Prompts and request sizes, subject to the task's budgets |
+| Web | Approved host, port and operation or mirror policy | URLs within a permitted mirror; bytes in an admitted CONNECT tunnel remain opaque |
+| GitHub | Repository, operation, approved branch or PR, and ADR 0007's ref rules | Repeated uses allowed by the selected grant; no additional repository, ref or action |
+
+A different method, path or body size is not automatically a new permission.
+If that change requires another operation or more authority, it asks. A new
+credential name also asks; rotating the value under the same name preserves
+the grant (§7). All allowances remain subject to budgets, connection limits,
+address checks and explicit revocation. No reuse window overrides a refusal.
+
+Once uses the gateway's identity for the reviewed operation rather than a
+generic time window. For a write, that identity includes the validated target
+and content the user approved, such as a publish's branch and commit or a
+PR change's target and requested edits. A changed write must ask again.
+Fingerprints may identify content without persisting bodies or secrets in
+the approval or audit records. Reusable grants deliberately cover more than
+one request body; they do not require identical bytes on every use.
 
 The gateway **holds briefly, then fails**. While a Deck window is attached
 to the task, a request that needs a new scope waits up to a short hold
@@ -582,8 +657,9 @@ gateway exists; switching model or provider asks.
 Pending items are deduplicated within a short window and expire (five minutes
 by default). A late decision reports `expired`; the guest may retry. Pending
 items are ephemeral across a `deckd` restart: the in-flight request already
-failed, and the guest's retry creates a fresh item. Saved rules and task
-grants are persisted.
+failed, and the guest's retry creates a fresh item. Saved rules, timed grants
+and task grants are persisted. A timed grant retains its original deadline
+across daemon restarts and window reconnects; it never restarts its timer.
 
 Control surface: the daemon control protocol is additive. A window opens a
 `watch {task}` connection, which is both its notice stream for that task and
@@ -696,9 +772,10 @@ would no longer be what the model saw.
 ### 7. Grants and revocation
 
 A grant is `(task, gateway, operation, destination, credential_name?)` with a
-scope (once/task) or a persisted project rule. It names a credential, never a
-fingerprint, so rotating the value keeps the grant. Revoking a credential is
-§4.5 and is separate from revoking a grant. Revoking a grant:
+scope of once, timed or task, or a persisted project rule. It names a
+credential, never a fingerprint, so rotating the value keeps the grant.
+Revoking a credential is §4.5 and is separate from revoking a grant.
+Revoking a grant:
 
 - stops new matching requests immediately;
 - closes existing matching tunnels and streams; a response already returned
@@ -706,6 +783,15 @@ fingerprint, so rotating the value keeps the grant. Revoking a credential is
 - is appended to the audit log and recorded before the control reply;
 - on task stop or destroy, ends every task-scoped grant and terminates the
   gateway with the holder's process group.
+
+Timed grants belong to the task and end on stop or destroy as task grants
+do. Their expiry follows the existing grant-expiry behavior: no new matching
+operation is admitted and active operations authorized by the expired grant
+are closed. Expiry is enforced by the gateway even while `deckd` is down.
+Consuming a Once allowance prevents a second admission; it does not cancel
+the operation that claimed it. Credential revocation still stops that
+operation. A timed or task allowance does not authorize rollback of an
+external change already completed.
 
 Closing Deck does not widen anything. Pending items stay in the daemon and
 expire; saved rules and task grants keep their documented expiry; new scopes
@@ -818,6 +904,21 @@ The implementation is not done until these have tests where practical.
 5. An expired approval is a denial; a later retry creates a new item.
 6. A retried shell script is not replayed by Deck; side effects may repeat
    and the transcript shows both attempts.
+7. Several concurrent held requests may share a card. One Once decision
+   admits at most one operation, including when decision, hold timeout and
+   cancellation race. If an eligible held request remains, it can claim the
+   allowance. Unclaimed Once authority expires after 60 s.
+8. A Once retry with a different credential name or changed reviewed write
+   target or content cannot consume the original allowance.
+9. A five-minute decision admits repeated matching requests without another
+   prompt. Requests for another task, destination, model, credential name
+   or operation still need their own authority. Different prompts or mirror
+   paths within the approved authority do not ask again.
+10. Traffic and reconnects do not extend a timed grant. Expiry closes matching
+    active operations and blocks new admissions, including during a daemon
+    outage. Unrelated operations remain open.
+11. The boundary card and Access panel display the reusable scope and its
+    expiry. Revocation closes matching operations before the window expires.
 
 **Credentials**
 
@@ -839,6 +940,17 @@ The implementation is not done until these have tests where practical.
    next request with `deck_credential_revoked`, and records the name and
    fingerprint. Setting a new value restores service.
 9. A file store with group or other permission bits is refused at start.
+10. Concurrent gateway reads, UI listings and CLI listings for one credential
+    share a daemon read and cause at most one outstanding OS access dialog.
+    A caller timing out or exiting does not orphan that read or cause the
+    next caller to open another dialog. Its eventual answer serves a caller
+    still waiting; a later operation reads the store again.
+11. OS-store denial does not cause an automatic retry dialog loop. An
+    explicit user retry can try again. Deck boundary approval does not
+    request a system password unless the separate store access requires it.
+12. An authorized, consistently signed macOS daemon can perform successive
+    admitted operations without repeated Keychain consent. Another task or
+    expanded operation scope still requires its own Deck authority.
 
 **Agent feedback**
 
@@ -1062,6 +1174,26 @@ The implementation is not done until these have tests where practical.
    once consumption, expiry with the daemon down, and missing durable grants.
    GitHub grant cancellation during an operation remains a separate unit.
 
+10. Implement scoped approval reuse and separate credential-prompt handling.
+    Accepted 2026-11-05; not yet implemented. This amendment changes the target
+    behavior in §§4.2, 5 and 7, not the historical results above.
+
+    - First fix atomic Once consumption for concurrent held requests, with
+      runtime and real-daemon regressions. Define the reviewed operation's
+      identity per gateway and test changed writes and credential names.
+    - Add the five-minute grant to the runtime, persistence, gateway monitors,
+      boundary card and Access panel. Test repeated use, scope isolation,
+      unchanged deadlines, expiry during daemon outage and active revocation.
+    - Route CLI credential reads and listings through the daemon's shared
+      store. Test timeout, caller exit, denied access and explicit retry, then
+      verify Keychain prompts by hand with the supported signing identity.
+
+    The timed scope reaches agent-visible boundary status and notifications.
+    Before implementation exposes it, settle its names and payloads in the
+    shared ACP extension contract, release and pin it, and update Construct
+    and Deck in the same wave (ADRs 0005 and 0006). This amendment assigns no
+    new wire name and does not change `CONTRACT.lock` or its fixtures.
+
 ## Deferred
 
 - A virtio-net compatibility backend and any UDP/QUIC support. The guest has
@@ -1102,6 +1234,11 @@ The implementation is not done until these have tests where practical.
 - The first request to a new destination waits briefly for a human
   decision, then fails rather than hanging. Construct is told why and
   chooses whether to wait (§6); other ACP agents see only the failure.
+- Repeated work within a timed or task allowance needs no repeated approval.
+  Every operation still passes host policy. The UI makes broader reuse
+  explicit, and the user can revoke it before expiry. A five-minute grant
+  also closes operations still running at expiry, as existing task expiry
+  does; the displayed deadline makes that interruption predictable.
 - Credentials leave the environment. A value is set once with `deckd
   credential set` (or a 0600 file for headless hosts and CI) instead of
   exported, and every model request or GitHub operation costs a control
@@ -1118,6 +1255,22 @@ The implementation is not done until these have tests where practical.
 
 ## Evidence
 
+- Scoped reuse amendment accepted by the project owner, 2026-11-05. Review
+  at `560b9e9` reproduced one Once decision admitting two of two concurrent
+  held requests in five rounds through the public `Boundary` API. Sequential
+  retries admitted one request only. A changed credential name, method, path
+  and size still matched a late Once allowance. Sources:
+  `crates/deck-runtime/src/approvals.rs` and `approvals/types.rs` at that commit.
+  These observations are not permanent regression tests; §11 item 10 adds
+  those tests as implementation work.
+- [PR #35](https://github.com/strf0x1/deck/pull/35) introduced the approval
+  queue on 2026-11-03. [PR #47](https://github.com/strf0x1/deck/pull/47)
+  recorded the Keychain CLI dialog problem on 2026-11-04. The recorded Once
+  behavior predates that observation.
+- [Apple's Keychain access options](https://support.apple.com/en-gb/guide/mac-help/kychn002/26/mac/26)
+  distinguish access once from ongoing trust for an application and item.
+  [The sudoers manual source](https://github.com/sudo-project/sudo/blob/main/docs/sudoers.mdoc.in)
+  describes authentication timestamp reuse separately from command policy.
 - #9, #16, #13; `SANDBOX-DESIGN.md` (external boundary, gateways, Minimal and
   Coop notes); ADR 0001 (deckd authority, holder lifetime, gateways) and ADR
   0003 (the libkrun backend and TSI).
