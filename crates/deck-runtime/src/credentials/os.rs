@@ -131,13 +131,47 @@ mod imp {
 
     pub fn names() -> Result<Vec<String>> {
         let output = tool().args(["search", "--all", "service", SERVICE]).output().context("running secret-tool")?;
-        // `search` prints each item's secret too; only attribute lines are read.
-        let text = String::from_utf8_lossy(&output.stdout);
-        Ok(text
-            .lines()
-            .filter_map(|line| line.strip_prefix("attribute.name = "))
-            .map(|name| name.trim().to_string())
-            .collect())
+        search_names(output.status.success(), &output.stdout, &output.stderr)
+    }
+
+    /// libsecret prints attributes on stderr on Linux, and secrets on stdout.
+    /// Accept attributes from either stream for compatibility, but never put
+    /// command output into an error: it may contain a credential value.
+    fn search_names(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Vec<String>> {
+        if !success {
+            bail!("the Secret Service could not list Deck credentials");
+        }
+        let mut names = Vec::new();
+        for bytes in [stdout, stderr] {
+            names.extend(
+                String::from_utf8_lossy(bytes)
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("attribute.name = "))
+                    .map(|name| name.trim().to_string()),
+            );
+        }
+        Ok(names)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::search_names;
+
+        #[test]
+        fn lists_attributes_from_stderr_without_returning_secrets() {
+            let names = search_names(true, b"secret = synthetic-value\n", b"attribute.name = TEST_KEY\n").unwrap();
+            assert_eq!(names, ["TEST_KEY"]);
+            assert_eq!(search_names(true, b"attribute.name = OLD_KEY\n", b"").unwrap(), ["OLD_KEY"]);
+        }
+
+        #[test]
+        fn unavailable_is_not_an_empty_store_and_errors_reveal_no_output() {
+            let error = search_names(false, b"secret = synthetic-value", b"bus unavailable").unwrap_err();
+            assert_eq!(error.to_string(), "the Secret Service could not list Deck credentials");
+            assert!(search_names(false, b"", b"").is_err());
+            assert!(search_names(false, b"attribute.name = PARTIAL_KEY\n", b"").is_err());
+            assert!(search_names(true, b"", b"").unwrap().is_empty());
+        }
     }
 }
 
