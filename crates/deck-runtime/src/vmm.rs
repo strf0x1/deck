@@ -84,15 +84,16 @@ pub struct Gateway {
     pub web_socket: Option<PathBuf>,
     #[serde(default)]
     pub web_port: Option<u32>,
-    /// The profiles the task may use and the grant files the gateway re-reads.
+    /// The web profiles the task may use.
     #[serde(default)]
     pub web_profiles: Vec<String>,
-    #[serde(default)]
-    pub web_grants: Vec<PathBuf>,
+    /// Task and project grant files, shared by model and web policy.
+    #[serde(default, alias = "web_grants")]
+    pub grants: Vec<PathBuf>,
     /// Host project identity. An older config without it admits no project
     /// rule from the shared file. New task grants still work.
-    #[serde(default)]
-    pub web_project: Option<String>,
+    #[serde(default, alias = "web_project")]
+    pub project: Option<String>,
     /// The GitHub operation gateway's socket and port. `None` serves no
     /// publication: the task's project names no repository.
     #[serde(default)]
@@ -371,13 +372,14 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         for profile in &gateway.web_profiles {
             command.args(["--web-profile", profile]);
         }
-        for grant in &gateway.web_grants {
-            command.arg("--web-grants").arg(grant);
-        }
-        if let Some(project) = &gateway.web_project {
-            command.arg("--web-project").arg(project);
-        }
     }
+    for grant in &gateway.grants {
+        command.arg("--grants").arg(grant);
+    }
+    if let Some(project) = &gateway.project {
+        command.arg("--project").arg(project);
+    }
+
     if let Some(limit) = gateway.request_budget {
         command.arg("--request-budget").arg(limit.to_string());
     }
@@ -683,8 +685,8 @@ mod tests {
             web_socket: None,
             web_port: None,
             web_profiles: Vec::new(),
-            web_grants: Vec::new(),
-            web_project: None,
+            grants: Vec::new(),
+            project: None,
             github_socket: None,
             github_port: None,
             github_repository: None,
@@ -724,6 +726,20 @@ mod tests {
             &with_web,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn older_gateway_records_keep_their_grant_policy() {
+        let mut saved = serde_json::to_value(gateway()).unwrap();
+        let fields = saved.as_object_mut().unwrap();
+        fields.remove("grants");
+        fields.remove("project");
+        fields.insert("web_grants".into(), serde_json::json!(["/task/grants.json"]));
+        fields.insert("web_project".into(), serde_json::json!("/project"));
+        let restored: Gateway = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored.grants, vec![PathBuf::from("/task/grants.json")]);
+        assert_eq!(restored.project.as_deref(), Some("/project"));
+        assert!(restored.web_socket.is_none());
     }
 
     #[test]

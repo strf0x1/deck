@@ -10,7 +10,7 @@
 //! is dropped first, because a proxy credential belongs to the guest's proxy
 //! configuration and not to the tunnel's destination.
 
-use crate::web::grants::{Grants, Permit};
+use crate::grants::{Grants, Permit};
 use crate::web::policy::Profiles;
 use crate::web::resolve::{Refused, Resolver};
 use crate::web::status::Events;
@@ -38,6 +38,20 @@ pub struct Connector {
 }
 
 impl Connector {
+    pub(super) fn register(
+        &self,
+        permit: Option<Permit>,
+        guest: &UnixStream,
+        upstream: &TcpStream,
+    ) -> io::Result<Option<crate::grants::Registration>> {
+        let guest = guest.try_clone()?;
+        let upstream = upstream.try_clone()?;
+        self.grants.register(permit, move || {
+            let _ = upstream.shutdown(std::net::Shutdown::Both);
+            let _ = guest.shutdown(std::net::Shutdown::Both);
+        })
+    }
+
     /// One connector per direction of work, sharing the resolver, the grant
     /// cache and the status sequence with the server that built it.
     pub fn with_events(&self, status: Arc<Events>) -> Self {
@@ -170,7 +184,7 @@ impl Connector {
         upstream.set_read_timeout(Some(IDLE))?;
         upstream.set_write_timeout(Some(IDLE))?;
         upstream.set_nodelay(true).ok();
-        let _registration = match self.grants.register(permit, &guest, &upstream) {
+        let _registration = match self.register(permit, &guest, &upstream) {
             Ok(registration) => registration,
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                 return self.refuse(&mut guest, None, &error.to_string(), None);
@@ -205,7 +219,7 @@ impl Connector {
             let _ = profile;
             return Ok(None);
         }
-        if let Some(permit) = self.grants.authorize(name, port_of(destination), crate::web::CONNECT) {
+        if let Some(permit) = self.grants.web(name, port_of(destination), crate::web::CONNECT) {
             return Ok(Some(permit));
         }
         let Some(control) = &self.control else { return Err(Held::NoQueue) };
@@ -233,7 +247,7 @@ impl Connector {
             "once" => Ok(None),
             "task" | "project" => self
                 .grants
-                .authorize(name, port, operation)
+                .web(name, port, operation)
                 .map(Some)
                 .ok_or_else(|| Held::Unavailable("the authorizing grant is no longer present".into())),
             _ => Err(Held::Unavailable("the queue returned an unknown scope".into())),

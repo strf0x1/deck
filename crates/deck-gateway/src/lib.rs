@@ -19,6 +19,7 @@
 pub mod control;
 pub mod credential;
 pub mod github;
+pub mod grants;
 pub mod http;
 pub mod model;
 pub mod policy;

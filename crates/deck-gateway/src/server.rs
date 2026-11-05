@@ -21,12 +21,12 @@ use crate::control::Control;
 use crate::credential::Broker;
 use crate::github::GitHub;
 use crate::github::status::Events as GitHubEvents;
+use crate::grants::Grants;
 use crate::http;
 use crate::model::{Model, Settings};
 use crate::policy::{Budget, Models, Usage};
 use crate::status::Status;
 use crate::web::connect::Connector;
-use crate::web::grants::Grants;
 use crate::web::policy::Profiles;
 use crate::web::resolve::Resolver;
 use crate::web::status::Events as WebEvents;
@@ -64,6 +64,10 @@ pub struct Config {
     pub secret: String,
     /// The daemon queue that decides a model the task was not configured with.
     pub control: Option<Control>,
+    /// Host identities and persisted grant files, independent of web egress.
+    pub task: String,
+    pub grants: Vec<PathBuf>,
+    pub project: Option<String>,
     /// Process-start limits; `budget_file` overrides them when present.
     pub budget: Budget,
     /// Counts already on the task's record, so a resumed gateway continues
@@ -111,10 +115,6 @@ pub struct WebSettings {
     pub socket: PathBuf,
     /// The profiles the task may use without asking, by name.
     pub profiles: Vec<String>,
-    /// The project's rule files and the task's grant file, re-read on change.
-    pub grants: Vec<PathBuf>,
-    /// Host project identity used to select rules from the shared file.
-    pub project: Option<String>,
     /// A reserved name for a test or a task whose destinations are pinned;
     /// production resolution is the host's own.
     pub hosts: Option<PathBuf>,
@@ -163,7 +163,9 @@ pub fn serve(config: Config) -> Result<()> {
 
     let budget = config.budget_file.as_ref().and_then(|path| Budget::load(path)).unwrap_or(config.budget);
     let status = Status::new(config.control.clone());
-    let web = web_settings(config.web.as_ref(), config.control.clone())?;
+    let grants = Arc::new(Grants::new(config.grants, config.task, config.project));
+    grants.watch().context("starting the live grant monitor")?;
+    let web = web_settings(config.web.as_ref(), config.control.clone(), grants.clone())?;
     let events = Arc::new(WebEvents::new());
     let web = web.map(|connector| Arc::new(connector.with_events(events.clone())));
     // One broker for the process: the model and GitHub operations register
@@ -174,6 +176,7 @@ pub fn serve(config: Config) -> Result<()> {
     let model = Arc::new(Model::new(Settings {
         upstream: config.upstream,
         models: Models::new(config.models),
+        grants,
         credentials,
         secret: config.secret,
         control: config.control,
@@ -242,16 +245,17 @@ pub fn serve(config: Config) -> Result<()> {
 /// The web gateway's host state, or `None` when the task was started without
 /// one. An undeclared profile is a startup error rather than a silently
 /// narrower or wider policy.
-fn web_settings(settings: Option<&WebSettings>, control: Option<Control>) -> Result<Option<Connector>> {
+fn web_settings(
+    settings: Option<&WebSettings>,
+    control: Option<Control>,
+    grants: Arc<Grants>,
+) -> Result<Option<Connector>> {
     let Some(settings) = settings else { return Ok(None) };
     // The web gateway asks for destinations only; the model jobs (usage,
     // waiting) are the model gateway's, so it takes the destination half.
-    let task = control.as_ref().map(|control| control.task().to_string()).unwrap_or_default();
     let control =
         control.map(|control| crate::web::Control::new(control.socket().to_owned(), control.task().to_owned()));
     let profiles = Profiles::declared(settings.profiles.iter().cloned()).map_err(anyhow::Error::msg)?;
-    let grants = Arc::new(Grants::new(settings.grants.clone(), task, settings.project.clone()));
-    grants.watch().context("starting the live grant monitor")?;
     Ok(Some(Connector {
         resolver: match settings.test_connect {
             Some(address) => Resolver::at(settings.hosts.as_deref()).redirect_to(address),

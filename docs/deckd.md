@@ -132,8 +132,8 @@ closed port is worse for a package manager than no proxy.
 
 `deckd` passes the policy, never the guest: `--web-profile` for each profile
 (`repo`, `registry`, `package-mirrors`, `os-mirrors`, `docs`; the table is
-compiled into the binary), `--web-grants` for the task's `grants.json` and the
-project's `approvals/projects.json` (re-read when their size or mtime change),
+compiled into the binary), `--grants` for the task's `grants.json` and the
+project's `approvals/projects.json` (re-read when their identity, size or mtime change),
 and no policy that the guest can name. `DECK_WEB_PROFILES` in `deckd`'s
 environment selects the profiles (default `repo,registry,package-mirrors,docs`;
 `none` starts no web gateway). An undeclared profile refuses to start the
@@ -151,17 +151,23 @@ per destination, from the host's expansion, so a profile the task did not start
 with is one decision and a package install does not ask per package. Task grants
 carry a 12-hour expiry; project rules do not.
 
-Each granted CONNECT or plain-HTTP stream holds the rule that admitted it.
-One monitor checks policy files every 50 ms and shuts both sockets when that
-rule disappears or expires, including while `deckd` is down. Unrelated rules
-and connections stay active. A replacement rule can admit a new connection
-but cannot keep an older rule's stream alive. An allow-once decision admits
-one operation; consuming it does not interrupt that operation. Launch profiles
-remain fixed for the gateway's lifetime.
+Each granted CONNECT, plain-HTTP stream or model request holds the exact
+rule that admitted it. One monitor checks policy files every 50 ms and closes
+both guest and upstream sockets when that rule disappears or expires,
+including while `deckd` is down. Unrelated requests stay active. A replacement
+rule can admit a new request but cannot keep an older rule's stream alive.
+An allow-once decision admits one operation; consuming it does not interrupt
+that operation. Launch web profiles and configured models remain fixed for
+the gateway's lifetime.
 
-The VMM passes `--web-project` with the host project identity. The gateway
-matches task grants to its task and project rules to that identity, so the
-shared project-rule file cannot grant another project's access.
+The VMM passes `--grants` and `--project` independently of the optional web
+socket, so model grants remain revocable with `DECK_WEB_PROFILES=none`.
+The gateway matches task grants to its task and project rules to the host
+project identity. The shared project-rule file cannot grant another project's
+access. Model names match exactly. Each model request owns a separate HTTP
+client pool so revocation interrupts idle upstream reads without closing
+unrelated requests. A revocation before the gateway commits the response returns a bounded
+`deck_boundary_denied`; one after that point interrupts the response.
 
 The gateway's boundary events reach the agent through the status endpoint's
 `/events` beside the model gateway's, with `gateway: "web"`, so a blocked
