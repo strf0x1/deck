@@ -1,0 +1,318 @@
+{
+  "contract": "1.0.1",
+  "cases": [
+    {
+      "case": "canonical-boundary",
+      "schema": "boundary-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "approval_id": "a1",
+        "outcome": "allowed",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "case": "alias-boundary",
+      "schema": "boundary-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "a1",
+        "state": "denied",
+        "session_id": "s1"
+      }
+    },
+    {
+      "case": "boundary-defaults-and-meta",
+      "schema": "boundary-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "approval_id": "a1",
+        "_meta": {
+          "future": true
+        }
+      }
+    },
+    {
+      "case": "missing-id",
+      "schema": "boundary-notice.schema.json",
+      "valid": false,
+      "payload": {}
+    },
+    {
+      "case": "empty-id",
+      "schema": "boundary-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "id": ""
+      }
+    },
+    {
+      "case": "empty-approval-id",
+      "schema": "boundary-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "approval_id": ""
+      }
+    },
+    {
+      "case": "wrong-id-type",
+      "schema": "boundary-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "id": 1
+      }
+    },
+    {
+      "case": "turn-idle",
+      "schema": "turn-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 0,
+        "state": "idle"
+      }
+    },
+    {
+      "case": "turn-working",
+      "schema": "turn-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 0,
+        "state": "working"
+      }
+    },
+    {
+      "case": "turn-waiting",
+      "schema": "turn-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 0,
+        "state": "waiting"
+      }
+    },
+    {
+      "case": "idle-with-reason",
+      "schema": "turn-notice.schema.json",
+      "valid": true,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 1,
+        "state": "idle",
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "case": "negative-turn",
+      "schema": "turn-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "sessionId": "s1",
+        "turn": -1,
+        "state": "idle"
+      }
+    },
+    {
+      "case": "fractional-turn",
+      "schema": "turn-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 0.5,
+        "state": "idle"
+      }
+    },
+    {
+      "case": "unknown-state",
+      "schema": "turn-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 0,
+        "state": "done"
+      }
+    },
+    {
+      "case": "working-with-stop-reason",
+      "schema": "turn-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "sessionId": "s1",
+        "turn": 0,
+        "state": "working",
+        "stopReason": "error"
+      }
+    },
+    {
+      "case": "missing-session",
+      "schema": "turn-notice.schema.json",
+      "valid": false,
+      "payload": {
+        "sessionId": null,
+        "turn": 0,
+        "state": "idle"
+      }
+    },
+    {
+      "case": "dual-snapshot",
+      "schema": "load-snapshot.schema.json",
+      "valid": true,
+      "payload": {
+        "_meta": {
+          "com.sprawlcommons/construct": {
+            "turn": {
+              "sessionId": "s1",
+              "turn": 0,
+              "state": "idle"
+            }
+          },
+          "construct": {
+            "turn": {
+              "sessionId": "s1",
+              "turn": 0,
+              "state": "idle"
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "missing-snapshot-keys",
+      "schema": "load-snapshot.schema.json",
+      "valid": false,
+      "payload": {
+        "_meta": {}
+      }
+    },
+    {
+      "case": "legacy-only-snapshot",
+      "schema": "load-snapshot.schema.json",
+      "valid": false,
+      "payload": {
+        "_meta": {
+          "construct": {
+            "turn": {
+              "sessionId": "s1",
+              "turn": 0,
+              "state": "idle"
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "bad-referenced-turn",
+      "schema": "load-snapshot.schema.json",
+      "valid": false,
+      "payload": {
+        "_meta": {
+          "com.sprawlcommons/construct": {
+            "turn": {
+              "sessionId": "s1",
+              "turn": -1,
+              "state": "idle"
+            }
+          },
+          "construct": {
+            "turn": {
+              "sessionId": "s1",
+              "turn": 0,
+              "state": "idle"
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "agent-capabilities-future-meta",
+      "schema": "agent-capabilities.schema.json",
+      "valid": true,
+      "payload": {
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "future": {}
+        },
+        "future": {}
+      }
+    },
+    {
+      "case": "agent-capabilities-bad-events",
+      "schema": "agent-capabilities.schema.json",
+      "valid": false,
+      "payload": {
+        "com.sprawlcommons/construct": {
+          "events": "true"
+        }
+      }
+    },
+    {
+      "case": "client-capabilities-future-meta",
+      "schema": "client-capabilities.schema.json",
+      "valid": true,
+      "payload": {
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "future": {}
+        },
+        "future": {}
+      }
+    },
+    {
+      "case": "client-capabilities-bad-events",
+      "schema": "client-capabilities.schema.json",
+      "valid": false,
+      "payload": {
+        "com.sprawlcommons/construct": {
+          "events": "true"
+        }
+      }
+    },
+    {
+      "case": "future-event",
+      "schema": "event-notification.schema.json",
+      "valid": true,
+      "payload": {
+        "sessionId": "s1",
+        "event": {
+          "event": "future_kind",
+          "payload": {}
+        },
+        "_meta": {
+          "future": 1
+        }
+      }
+    },
+    {
+      "case": "missing-event-tag",
+      "schema": "event-notification.schema.json",
+      "valid": false,
+      "payload": {
+        "sessionId": "s1",
+        "event": {}
+      }
+    },
+    {
+      "case": "child-start",
+      "schema": "start.schema.json",
+      "valid": true,
+      "payload": {
+        "config": {},
+        "origin": {
+          "policy": {},
+          "system": "child",
+          "parent_session": "s1",
+          "parent_call_id": "c1"
+        }
+      }
+    },
+    {
+      "case": "missing-child-origin",
+      "schema": "start.schema.json",
+      "valid": false,
+      "payload": {
+        "config": {}
+      }
+    }
+  ]
+}

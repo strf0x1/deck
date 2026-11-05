@@ -1,5 +1,5 @@
 {
-  "contract": "1.0.0",
+  "contract": "1.0.1",
   "acp": "1",
   "names": {
     "construct_meta": "com.sprawlcommons/construct",
@@ -31,7 +31,10 @@
     {
       "case": "current",
       "client_meta": {
-        "com.sprawlcommons/construct": { "events": true, "turn": true }
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "turn": true
+        }
       },
       "expect": {
         "lossless": true,
@@ -42,7 +45,9 @@
     {
       "case": "current-events-only",
       "client_meta": {
-        "com.sprawlcommons/construct": { "events": true }
+        "com.sprawlcommons/construct": {
+          "events": true
+        }
       },
       "expect": {
         "lossless": true,
@@ -53,7 +58,9 @@
     {
       "case": "legacy",
       "client_meta": {
-        "construct": { "events": true }
+        "construct": {
+          "events": true
+        }
       },
       "expect": {
         "lossless": true,
@@ -64,7 +71,10 @@
     {
       "case": "legacy-turn-is-not-a-capability",
       "client_meta": {
-        "construct": { "events": true, "turn": true }
+        "construct": {
+          "events": true,
+          "turn": true
+        }
       },
       "expect": {
         "lossless": true,
@@ -84,8 +94,13 @@
     {
       "case": "both-keys-current-wins",
       "client_meta": {
-        "construct": { "events": true },
-        "com.sprawlcommons/construct": { "events": true, "turn": true }
+        "construct": {
+          "events": true
+        },
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "turn": true
+        }
       },
       "expect": {
         "lossless": true,
