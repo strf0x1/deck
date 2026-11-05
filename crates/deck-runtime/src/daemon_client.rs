@@ -124,15 +124,17 @@ impl DaemonClient {
     }
 
     /// The names in a task's credential set with fingerprints and revoked
-    /// state; never a value, so a window needs none (ADR 0004 §4.2).
+    /// state; never a value, so a window needs none (ADR 0004 §4.2). Store
+    /// reads get their own connection: a Keychain dialog must not serialize
+    /// grant controls behind the listing on a cloned window client.
     pub fn credentials(&self, task: &str) -> Result<Vec<crate::broker::Listed>> {
-        self.request(Request::Credentials { task: task.into() })
+        Self::at(self.paths.clone())?.request(Request::Credentials { task: task.into() })
     }
 
     /// Revoke a credential's current value. Running gateways close the
     /// operations that used it before their next read of the store.
     pub fn revoke_credential(&self, name: &str) -> Result<crate::credentials::revoked::Revocation> {
-        self.request(Request::RevokeCredential { name: name.into() })
+        Self::at(self.paths.clone())?.request(Request::RevokeCredential { name: name.into() })
     }
 
     /// Ask the daemon's queue for a scope. This may hold for a decision when
@@ -353,3 +355,6 @@ fn executable() -> Result<PathBuf> {
     }
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests;
