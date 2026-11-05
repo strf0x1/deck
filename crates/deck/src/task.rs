@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use deck_acp::{Client, Inbound};
-use deck_runtime::approvals::{Approval, Decision};
+use deck_runtime::approvals::{Approval, Decision, Grant};
 use deck_runtime::broker::Listed;
 use deck_runtime::{DaemonClient, Spec, State, Watch};
 use futures::channel::mpsc;
@@ -16,6 +16,7 @@ pub struct WindowTask {
     daemon: DaemonClient,
     id: String,
     cwd: PathBuf,
+    boundary_enforced: bool,
 }
 
 impl WindowTask {
@@ -23,7 +24,7 @@ impl WindowTask {
     pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
         let daemon = DaemonClient::connect_or_start(data)?;
         let run = daemon.run(Spec { argv, cwd: cwd.clone() })?;
-        let task = WindowTask { daemon, id: run.task.id, cwd };
+        let task = WindowTask { daemon, boundary_enforced: run.task.backend == "vm", id: run.task.id, cwd };
         let connection = if run.started {
             Some(task.connect(run.task.session_id)?)
         } else if let Some(id) = run.task.session_id {
@@ -37,6 +38,10 @@ impl WindowTask {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn boundary_enforced(&self) -> bool {
+        self.boundary_enforced
     }
 
     /// Persist a pointer to the conversation in the agent's own journal.
@@ -62,6 +67,14 @@ impl WindowTask {
 
     pub fn revoke_credential(&self, name: &str) -> Result<()> {
         self.daemon.revoke_credential(name).map(|_| ())
+    }
+
+    pub fn grants(&self) -> Result<Vec<Grant>> {
+        self.daemon.access_grants(&self.id)
+    }
+
+    pub fn revoke_grant(&self, id: &str) -> Result<()> {
+        self.daemon.revoke_access_grant(&self.id, id)
     }
 
     /// Stop and start the agent, then rebuild its conversation by loading

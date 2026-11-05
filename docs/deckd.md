@@ -60,6 +60,21 @@ connection ends the lease. Windows decide with
 `decide_approval {id, decision}` where decision is `once`, `task`, `project`
 or `deny`; `approvals {task}` lists pending items, `grants {task}` lists
 task-scoped grants, and `revoke_grant {task,id}` removes one.
+The Access panel uses `access_grants {task}` to list live task allowances and
+saved rules for that task's project. Each row shows the destination, gateway,
+operation, scope, and expiry. `revoke_access_grant {task,id}` removes the
+confirmed grant. For a project rule it also removes matching task grants
+throughout that project. Another project's grants cannot be listed or removed
+through this task. Pending requests have a Review button that returns to the
+existing approval card.
+
+The panel refreshes grants every 30 seconds while open and after approval
+decisions. Refresh also reloads credentials; those reads run separately so a
+Keychain dialog does not delay the grant listing. Revoke asks for confirmation,
+updates after the daemon's reply, and explains that completed operations cannot
+be undone. The panel labels local tasks as having unrestricted host network
+access; the VM's host gateways enforce its external boundary.
+
 Task-grant and project-rule revocations append `grant_revoked` events to
 `approvals/audit.jsonl`, with the removed grant and time, and fsync before a
 successful reply. An audit failure reports an error but leaves access removed.

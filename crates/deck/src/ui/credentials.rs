@@ -1,37 +1,83 @@
-//! The window's side of the access panel: asking the daemon for this task's
-//! credential listing and for a revoke, off the UI thread.
+//! Access panel operations run off the UI thread and update from daemon replies.
 //!
-//! The design choice: the daemon is the authority. A click only asks; the
-//! panel changes when the daemon's reply (the new listing) arrives, so it
-//! never shows a value as revoked that the daemon has not revoked.
+//! The design choice: credentials and grants load independently, so a Keychain
+//! dialog cannot delay grant controls. Each listing has a request ticket to
+//! discard stale replies. Only grant listings refresh periodically while the
+//! panel is open; closing it cancels that timer.
 
+use super::access::Revoke;
 use super::root::Deck;
 use gpui::Context;
+use std::time::Duration;
 
 impl Deck {
     pub fn toggle_access(&mut self, cx: &mut Context<Self>) {
         if self.access.toggle() {
-            self.load_credentials(cx);
+            self.refresh_access(cx);
+            let executor = cx.background_executor().clone();
+            self.access_refresh = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    executor.timer(Duration::from_secs(30)).await;
+                    let open = this
+                        .update(cx, |deck, cx| {
+                            if !deck.access.is_open() {
+                                return false;
+                            }
+                            deck.load_grants(cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !open {
+                        break;
+                    }
+                }
+            }));
+        } else {
+            self.access_refresh = None;
         }
         cx.notify();
     }
 
-    fn load_credentials(&mut self, cx: &mut Context<Self>) {
-        let Some(task) = self.task.clone() else { return };
+    pub fn refresh_access(&mut self, cx: &mut Context<Self>) {
+        self.load_grants(cx);
+        let Some(task) = self.task.clone() else {
+            return;
+        };
+        let ticket = self.access.begin_credentials();
         let listed = cx.background_executor().spawn(async move { task.credentials() });
         cx.spawn(async move |this, cx| {
             let result = listed.await.map_err(|e| format!("listing credentials: {e:#}"));
             let _ = this.update(cx, |deck, cx| {
-                deck.access.listed(result);
+                deck.access.credentials_listed(ticket, result);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    /// Open the revoke confirmation for `name`; nothing is sent yet.
+    pub(super) fn load_grants(&mut self, cx: &mut Context<Self>) {
+        let Some(task) = self.task.clone() else {
+            return;
+        };
+        let ticket = self.access.begin_grants();
+        let listed = cx.background_executor().spawn(async move { task.grants() });
+        cx.spawn(async move |this, cx| {
+            let result = listed.await.map_err(|e| format!("listing access: {e:#}"));
+            let _ = this.update(cx, |deck, cx| {
+                deck.access.grants_listed(ticket, result);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn ask_revoke(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.access.ask_revoke(name);
+        self.access.ask_credential(name);
+        cx.notify();
+    }
+
+    pub fn ask_revoke_grant(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.access.ask_grant(id);
         cx.notify();
     }
 
@@ -40,45 +86,34 @@ impl Deck {
         cx.notify();
     }
 
-    /// Send the confirmed revoke. The panel updates from the daemon's reply.
+    pub fn review_approval(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.boundary.select(id);
+        self.toggle_access(cx);
+    }
+
     pub fn confirm_revoke(&mut self, cx: &mut Context<Self>) {
-        let Some(name) = self.access.begin_revoke() else { return };
+        let Some(target) = self.access.begin_revoke() else {
+            return;
+        };
         let Some(task) = self.task.clone() else {
             self.access.revoke_done(Err("no task is attached to revoke through".into()));
             return cx.notify();
         };
         cx.notify();
         let done = cx.background_executor().spawn(async move {
-            task.revoke_credential(&name)?;
-            task.credentials()
+            match target {
+                Revoke::Credential(name) => task.revoke_credential(&name),
+                Revoke::Grant(grant) => task.revoke_grant(&grant.id),
+            }
         });
         cx.spawn(async move |this, cx| {
-            let result = done.await.map_err(|e| format!("revoking credential: {e:#}"));
+            let result = done.await.map_err(|e| format!("revoking access: {e:#}"));
             let _ = this.update(cx, |deck, cx| {
                 deck.access.revoke_done(result);
+                deck.refresh_access(cx);
                 cx.notify();
             });
         })
         .detach();
-    }
-
-    /// Apply a daemon answer to a revoke, for tests that have no daemon.
-    pub fn on_revoke_done(
-        &mut self,
-        result: Result<Vec<deck_runtime::broker::Listed>, String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.access.revoke_done(result);
-        cx.notify();
-    }
-
-    /// Apply a listing, for tests that have no daemon.
-    pub fn on_credentials(
-        &mut self,
-        result: Result<Vec<deck_runtime::broker::Listed>, String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.access.listed(result);
-        cx.notify();
     }
 }

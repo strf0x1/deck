@@ -167,6 +167,16 @@ impl DaemonClient {
         self.request(Request::RevokeGrant { task: task.into(), id: id.into() })
     }
 
+    pub fn access_grants(&self, task: &str) -> Result<Vec<Grant>> {
+        self.request(Request::AccessGrants { task: task.into() })
+    }
+
+    /// Confirmed removal of a task grant or project rule. Project removal
+    /// also ends matching task grants throughout that project.
+    pub fn revoke_access_grant(&self, task: &str, id: &str) -> Result<()> {
+        self.request(Request::RevokeAccessGrant { task: task.into(), id: id.into() })
+    }
+
     /// Approve (`revoke = false`) or revoke a whole web profile for a project.
     /// `destinations` is the profile's expansion as the host compiled it, so a
     /// project's rule file names exactly those and the guest never defines

@@ -38,6 +38,7 @@ pub struct Deck {
     pub(super) session: Session,
     pub(super) boundary: Boundary,
     pub(super) access: Access,
+    pub(super) access_refresh: Option<gpui::Task<()>>,
     pub(super) draft: String,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
@@ -71,6 +72,7 @@ impl Deck {
             session: Session::new(),
             boundary: Boundary::new(),
             access: Access::new(),
+            access_refresh: None,
             draft: String::new(),
             scroll: ScrollHandle::new(),
             agent_cmd: String::new(),
@@ -114,8 +116,12 @@ impl Deck {
 
     /// Apply a boundary change from the daemon's watch connection.
     pub fn on_boundary(&mut self, approval: Approval, cx: &mut Context<Self>) {
+        let changed = !matches!(approval.state, State::Pending);
         if let Some(decided) = self.boundary.apply(approval) {
             self.notify_boundary(&decided);
+        }
+        if changed && self.access.is_open() {
+            self.load_grants(cx);
         }
         self.sync_live_lane();
         cx.notify();
@@ -227,11 +233,11 @@ impl Deck {
 
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
-        // Escape backs out of the access panel first: a revoke confirmation,
-        // then the panel. Other keys still reach what is underneath.
-        if self.access.is_open() && k.key == "escape" {
-            if !self.access.cancel() {
-                self.access.toggle();
+        // While Access is open, hidden prompt and approval shortcuts cannot
+        // consume typing. Review returns to the existing boundary card.
+        if self.access.is_open() {
+            if k.key == "escape" && !self.access.cancel() {
+                self.toggle_access(cx);
             }
             return cx.notify();
         }

@@ -660,6 +660,48 @@ fn revoking_a_task_grant_is_persisted_and_audited_before_the_reply() {
 }
 
 #[test]
+fn the_access_panel_lists_its_project_and_a_project_revoke_removes_matching_task_grants() {
+    use deck_runtime::approvals::{Decision, Scope};
+    let (daemon, client) = Daemon::new("access-project");
+    let first = client.create(daemon.spec(&["cat"])).unwrap();
+    let peer = client.create(daemon.spec(&["cat"])).unwrap();
+    let mut other_spec = daemon.spec(&["cat"]);
+    other_spec.cwd = daemon.data.join("other-project");
+    std::fs::create_dir_all(&other_spec.cwd).unwrap();
+    let other = client.create(other_spec).unwrap();
+    let request = |destination: &str| {
+        let mut request = ask(destination);
+        request.gateway = "web".into();
+        request.operation = "connect".into();
+        request.credential = None;
+        request
+    };
+    for task in [&first, &peer, &other] {
+        let item = client.request_approval(&task.id, request("example.com:443")).unwrap();
+        client.decide(&item.id, Decision::Task).unwrap();
+    }
+    let item = client.request_approval(&peer.id, request("kept.example:443")).unwrap();
+    client.decide(&item.id, Decision::Task).unwrap();
+    client.web_profile(&first.id, None, "custom", &["example.com:443".into()], false).unwrap();
+    let listed = client.access_grants(&first.id).unwrap();
+    assert_eq!(listed.len(), 2);
+    let project_rule = listed.iter().find(|grant| grant.scope == Scope::Project).unwrap();
+    assert_eq!(client.access_grants(&other.id).unwrap().len(), 1, "another project cannot list the rule");
+    assert!(client.revoke_access_grant(&other.id, &project_rule.id).is_err(), "another project cannot revoke it");
+    client.revoke_access_grant(&first.id, &project_rule.id).unwrap();
+    assert!(client.access_grants(&first.id).unwrap().is_empty());
+    let peer_grants = client.access_grants(&peer.id).unwrap();
+    assert_eq!(peer_grants.len(), 1);
+    assert_eq!(peer_grants[0].destination, "kept.example:443");
+    assert_eq!(client.access_grants(&other.id).unwrap().len(), 1);
+    let reopened = deck_runtime::approvals::Boundary::open(&daemon.data).unwrap();
+    assert!(reopened.grants(&first.id).unwrap().is_empty(), "removal is persisted");
+    assert_eq!(reopened.grants(&peer.id).unwrap().len(), 1);
+    let audit = std::fs::read_to_string(daemon.data.join("approvals/audit.jsonl")).unwrap();
+    assert_eq!(audit.lines().count(), 3, "the project rule and two matching task grants are audited");
+}
+
+#[test]
 fn a_project_rule_outlives_the_task_and_the_daemon() {
     use deck_runtime::approvals::{Decision, Scope, State};
     let (mut daemon, client) = Daemon::new("approval-project");

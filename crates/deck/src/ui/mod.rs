@@ -4,6 +4,7 @@
 //! the visual vocabulary.
 
 pub mod access;
+mod access_grants;
 mod access_panel;
 mod attachment;
 pub mod board;

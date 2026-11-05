@@ -186,6 +186,8 @@ fn connection(
                         | Request::DecideApproval { .. }
                         | Request::Grants { .. }
                         | Request::RevokeGrant { .. }
+                        | Request::AccessGrants { .. }
+                        | Request::RevokeAccessGrant { .. }
                 ) =>
             {
                 let result = request.validate().and_then(|()| approval(&service, &boundary, request));
@@ -268,6 +270,25 @@ fn approval(service: &Mutex<Service>, boundary: &Arc<Boundary>, request: Request
         Request::Grants { task } => Ok(serde_json::to_value(boundary.grants(&task)?)?),
         Request::RevokeGrant { task, id } => {
             boundary.revoke(&task, &id)?;
+            Ok(json!(null))
+        }
+        Request::AccessGrants { task } => {
+            let project = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?.spec.cwd;
+            Ok(serde_json::to_value(boundary.access_grants(&task, &project.to_string_lossy())?)?)
+        }
+        Request::RevokeAccessGrant { task, id } => {
+            // Keep task creation serialized until the project revoke ends,
+            // so a new task cannot be missed by the matching-grant removal.
+            let service = service.lock().unwrap_or_else(|e| e.into_inner());
+            let project = service.runtime.task(&task)?.spec.cwd;
+            let peers: Vec<_> = service
+                .runtime
+                .tasks()?
+                .into_iter()
+                .filter(|record| record.spec.cwd == project)
+                .map(|record| record.id)
+                .collect();
+            boundary.revoke_access_grant(&task, &project.to_string_lossy(), &peers, &id)?;
             Ok(json!(null))
         }
         _ => unreachable!("approval is called only for approval requests"),
@@ -439,6 +460,8 @@ impl Service {
             | Request::DecideApproval { .. }
             | Request::Grants { .. }
             | Request::RevokeGrant { .. }
+            | Request::AccessGrants { .. }
+            | Request::RevokeAccessGrant { .. }
             | Request::Credential { .. }
             | Request::CredentialWatch { .. }
             | Request::Credentials { .. }

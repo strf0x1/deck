@@ -74,6 +74,25 @@ fn an_allow_once_is_consumed_exactly_once() {
 }
 
 #[test]
+fn revoking_a_grant_does_not_persist_other_once_allowances() {
+    let dir = scratch("once-revoke");
+    let settings = Settings { once: Duration::from_secs(5), ..steady() };
+    let boundary = Boundary::with_settings(&dir, settings).unwrap();
+    for destination in ["first", "second"] {
+        let item = boundary.submit(incoming("t", "/w", destination)).unwrap();
+        boundary.decide(&item.id, Decision::Once).unwrap();
+    }
+    let first = boundary.grants("t").unwrap().into_iter().find(|grant| grant.destination == "first").unwrap();
+    boundary.revoke("t", &first.id).unwrap();
+    assert_eq!(boundary.grants("t").unwrap().len(), 1);
+    assert!(!task_grants(&dir, "t").exists(), "once grants never reach the task's policy file");
+    drop(boundary);
+    let restarted = Boundary::with_settings(&dir, steady()).unwrap();
+    assert_eq!(restarted.submit(incoming("t", "/w", "second")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_task_grant_applies_to_matching_requests_only() {
     let dir = scratch("task");
     let boundary = Boundary::with_settings(&dir, steady()).unwrap();

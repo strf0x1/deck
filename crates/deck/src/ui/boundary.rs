@@ -52,6 +52,17 @@ impl Boundary {
         self.items.first()
     }
 
+    pub fn items(&self) -> &[Approval] {
+        &self.items
+    }
+
+    pub fn select(&mut self, id: &str) {
+        if let Some(index) = self.items.iter().position(|item| item.id == id) {
+            let item = self.items.remove(index);
+            self.items.insert(0, item);
+        }
+    }
+
     pub fn remove(&mut self, id: &str) {
         self.items.retain(|item| item.id != id);
     }

@@ -109,6 +109,15 @@ pub(crate) enum Request {
         task: String,
         id: String,
     },
+    /// Live task grants and the task's saved project rules for the panel.
+    AccessGrants {
+        task: String,
+    },
+    /// A confirmed removal. Project rules also remove matching task grants.
+    RevokeAccessGrant {
+        task: String,
+        id: String,
+    },
     /// The gateway asks for one credential value for one operation
     /// (ADR 0004 §4.4). Answered only for a name in the task's set, while the
     /// task runs; never logged.
@@ -157,6 +166,8 @@ impl Request {
             | Self::SetBudget { task: id, .. }
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }
+            | Self::AccessGrants { task: id }
+            | Self::RevokeAccessGrant { task: id, .. }
             | Self::Credential { task: id, .. }
             | Self::CredentialWatch { task: id }
             | Self::Credentials { task: id }
@@ -171,6 +182,7 @@ impl Request {
         let approval = match self {
             Self::DecideApproval { id, .. }
             | Self::RevokeGrant { id, .. }
+            | Self::RevokeAccessGrant { id, .. }
             | Self::ApprovalStatus { id, .. }
             | Self::ApprovalWait { id, .. }
             | Self::WithdrawApproval { id, .. } => Some(id),

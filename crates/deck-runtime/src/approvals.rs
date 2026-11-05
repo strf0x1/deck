@@ -8,6 +8,7 @@
 //! it is answered as pending at once, so a socket never waits on a human who
 //! is not there. The gateway asks; this module decides and remembers.
 
+mod access;
 mod store;
 mod types;
 

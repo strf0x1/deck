@@ -1028,7 +1028,16 @@ The implementation is not done until these have tests where practical.
    expiry, mirror response cancellation, unrelated traffic and allow-once;
    grant-selection and admission-race unit tests; and real daemon tests for
    persisted removal, audit contents and a new request needing approval.
-   The Access panel's grant controls remain a follow-up. Model and GitHub
+   The Access panel lists live task allowances and the task's saved project
+   rules, with scope and expiry, and pending requests that return to the
+   boundary card for review. A revoke confirms its scope before asking the
+   daemon. Revoking a project rule also removes matching task allowances
+   throughout that project. Listings and revokes are filtered by the task's
+   host project identity; another project's rules are not exposed. The view
+   updates from daemon replies and discards stale listings. GPUI tests drive
+   real clicks through confirmation, cancellation, task and project removal,
+   and pending-request review against a real daemon. Live visual inspection
+   is still outstanding. Model and GitHub
    grant revocation during an operation are not covered by this web slice;
    credential revocation for those operations is §4.5.
 
