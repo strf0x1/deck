@@ -38,7 +38,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The most concurrent guest connections one kind accepts. Excess connections
 /// wait in the listener's backlog, which bounds the gateway's threads.
@@ -376,12 +376,16 @@ impl Kinds {
     /// space and looks at what follows. The bytes are only peeked, so
     /// whichever handler runs reads the request once.
     fn web(mut stream: UnixStream, web: Arc<Connector>) -> io::Result<()> {
+        let deadline = Instant::now() + crate::web::head::TIMEOUT;
+        stream.set_read_timeout(Some(crate::web::head::TIMEOUT))?;
+        stream.set_write_timeout(Some(crate::web::head::TIMEOUT))?;
         match target(&stream) {
             Some(Target::Absolute) => web.handle_plain(stream),
             Some(Target::NotUtf8) => {
                 http::write_error(&mut stream, 400, "deck_bad_request", "the request target is not UTF-8")
             }
-            _ => web.handle(stream),
+            None => Ok(()),
+            _ => web.handle(stream, deadline),
         }
     }
 }
@@ -397,8 +401,8 @@ enum Target {
 }
 
 /// Whether the request line's target is an absolute `http://` URI, which only
-/// a plain-HTTP proxy request has. `None` is a closed peer; the caller then
-/// hands the stream to the tunnel handler, which reports the EOF.
+/// a plain-HTTP proxy request has. `None` is a closed peer or a failed or
+/// timed-out peek; the caller closes the connection.
 fn target(stream: &UnixStream) -> Option<Target> {
     const LINE: usize = 96;
     let mut buffer = [0u8; LINE];

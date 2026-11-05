@@ -934,7 +934,9 @@ fn a_granted_port_opens_a_tunnel_and_another_port_is_a_different_decision() {
     let web = gateway.ready.web.clone().unwrap();
     let mut tunnel = UnixStream::connect(&web).unwrap();
     tunnel.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let requested = format!("CONNECT pinned.example:{port} HTTP/1.1\r\n\r\n");
+    let requested = format!(
+        "CONNECT pinned.example:{port} HTTP/1.1\r\nProxy-Authorization: Basic synthetic\r\nX-Guest: proxy-only\r\n\r\n"
+    );
     tunnel.write_all(requested.as_bytes()).unwrap();
     // The guest reads what the gateway wrote. The probe greets on accept and
     // echoes, so the tunnel is proven by the probe's own bytes arriving: the
@@ -953,7 +955,11 @@ fn a_granted_port_opens_a_tunnel_and_another_port_is_a_different_decision() {
         assert_ne!(read, 0, "closed after {:?}", String::from_utf8_lossy(&seen));
         seen.extend_from_slice(&buf[..read]);
     }
-    assert!(seen.starts_with(STATUS.as_bytes()), "the gateway's head is first: {}", String::from_utf8_lossy(&seen));
+    assert_eq!(
+        seen,
+        [STATUS.as_bytes(), b"PROBE READY\n"].concat(),
+        "only destination bytes follow the CONNECT response"
+    );
     let payload = b"\x16\x03\x01 not http";
     tunnel.write_all(payload).unwrap();
     let mut back = vec![0u8; payload.len()];
@@ -1981,4 +1987,41 @@ fn a_revoked_github_token_refuses_the_next_operation_before_github() {
     assert_eq!(seen.lock().unwrap().len(), before, "nothing reached GitHub");
     gateway.deckd.set("DECK_GATEWAY_TEST_GITHUB", "ghp-new");
     assert!(refs().starts_with("HTTP/1.1 200 OK"), "a new value restores service");
+}
+
+#[test]
+fn incomplete_connect_headers_have_a_total_deadline_even_when_bytes_keep_arriving() {
+    let gateway = with_web("web-header-deadline", &[], &[], None, None);
+    let web = gateway.ready.web.as_ref().unwrap();
+    let start = Instant::now();
+    let mut silent = UnixStream::connect(web).unwrap();
+    let mut stalled = UnixStream::connect(web).unwrap();
+    let mut trickled = UnixStream::connect(web).unwrap();
+    for stream in [&silent, &stalled, &trickled] {
+        stream.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
+    }
+    stalled.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nX: ").unwrap();
+    trickled.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nX: ").unwrap();
+    let mut writer = trickled.try_clone().unwrap();
+    let sender = std::thread::spawn(move || {
+        for _ in 0..80 {
+            if writer.write_all(b"x").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let mut buffer = [0u8; 1024];
+    assert_eq!(silent.read(&mut buffer).unwrap(), 0, "no initial bytes must also time out");
+    for stream in [&mut stalled, &mut trickled] {
+        let n = stream.read(&mut buffer).unwrap();
+        let response = String::from_utf8_lossy(&buffer[..n]);
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
+    }
+    assert!(start.elapsed() < Duration::from_secs(8), "trickling must not renew the header budget");
+    drop(trickled);
+    sender.join().unwrap();
+    // A timed-out header must not stop the listener from serving other clients.
+    let response = send(web, "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n");
+    assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
 }
