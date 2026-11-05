@@ -45,3 +45,14 @@ rename is exactly the change that needs one owner.
   `scripts/acp-contract.sh verify`.
 - deck#36 and construct#171 (compatibility matrix); PR #40 pins the first
   release.
+
+## Payload conformance (contract 1.0.1 candidate)
+
+The shared payload fixtures cover valid and invalid forms for all seven
+schemas. Tests use a standard JSON Schema validator with network resolution
+disabled and every referenced schema registered from the vendored tree.
+Actual ACP payloads are also checked, so agreement on names alone is not
+sufficient. The validator is a dev dependency only, absent from shipped
+binaries. Contract 1.0.1 corrects schemas to match existing wire rules; it
+changes no negotiation or method names. Candidate pins stay in draft until
+the release tag exists and both implementations adopt it.
