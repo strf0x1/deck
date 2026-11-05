@@ -13,12 +13,12 @@ use crate::web::policy::Profiles;
 use crate::web::resolve::{Refused, Resolver};
 use crate::web::status::Events;
 use crate::web::{Answer, Control, refuse};
-use std::io::{self, BufReader, Write as _};
+use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A tunnel that carries nothing is a client that changed its mind; one that
 /// is idle for this long is a stream that stalled and holds a socket.
@@ -72,6 +72,7 @@ pub struct Request {
 impl Request {
     /// Parse and consume the CONNECT head; it is never tunnel payload.
     pub fn parse(reader: &mut impl io::BufRead) -> Result<Self, Refused> {
+        let mut reader = reader.take((MAX_HEAD + 1) as u64);
         let mut head = Vec::new();
         let mut line = Vec::new();
         loop {
@@ -127,7 +128,7 @@ fn split(target: &str) -> Option<(String, u16)> {
 impl Connector {
     /// Serve one CONNECT on a guest connection: read the request, decide, dial,
     /// then relay until both directions are done.
-    pub fn handle(&self, mut guest: UnixStream) -> io::Result<()> {
+    pub(crate) fn handle(&self, mut guest: UnixStream, deadline: Instant) -> io::Result<()> {
         guest.set_write_timeout(Some(IDLE))?;
         // The request is parsed through a clone of the guest connection. The
         // clone holds a pipe the kernel keeps for the peer's reads, so it is
@@ -135,12 +136,13 @@ impl Connector {
         // open can be lost, because the kernel sizes that pipe from the peer's
         // buffer and a guest that has not started reading yet has none.
         let request = {
-            let mut reader = BufReader::new(guest.try_clone()?);
+            let mut reader = BufReader::new(super::head::Reader::new(guest.try_clone()?, deadline));
             match Request::parse(&mut reader) {
                 Ok(request) => request,
                 Err(refused) => return self.refuse(&mut guest, None, &refused.reason(), None),
             }
         };
+        guest.set_read_timeout(Some(IDLE))?;
         let destination = request.destination();
         let addresses = match self.resolver.check(&request.name, request.port) {
             Ok(addresses) => addresses,
@@ -309,6 +311,14 @@ mod tests {
 
     fn parse(raw: &str) -> Result<Request, Refused> {
         Request::parse(&mut BufReader::new(raw.as_bytes()))
+    }
+
+    #[test]
+    fn an_oversized_unterminated_line_is_bounded() {
+        let raw = vec![b'X'; MAX_HEAD * 2];
+        let mut input = raw.as_slice();
+        assert!(Request::parse(&mut input).is_err());
+        assert_eq!(input.len(), MAX_HEAD - 1);
     }
 
     #[test]

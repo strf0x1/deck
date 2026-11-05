@@ -17,6 +17,7 @@
 
 pub mod connect;
 pub mod control;
+pub(crate) mod head;
 pub mod mirror;
 pub mod policy;
 pub mod profiles;
