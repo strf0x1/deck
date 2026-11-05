@@ -1343,3 +1343,38 @@ The implementation is not done until these have tests where practical.
   gateway (request denial before the provider, SSE usage in the final chunk,
   usage recording, a budget file change between two requests), and the real
   daemon (`model_usage` totals, stale reports ignored, `set_budget` file).
+
+- Linux acceptance started 2026-11-05 at `560b9e9`, then reran at merged
+  PR #58 (`c820a94`) with libkrun 1.19.7, libkrunfw 5.6.2 and Construct
+  v0.4.0. All 56 live probes pass after the fixes for #54–#57, including
+  unattended Secret Service rotation/revocation/deletion, public guest TLS,
+  approved SSH transport and total CONNECT header deadlines. The initial
+  full test run hit an intermittent approval-wait assertion (#61); the
+  isolated rerun and subsequent full suite pass. This is not full matrix
+  or scoped-reuse amendment acceptance. Evidence and remaining live gaps:
+  [Linux acceptance report](../acceptance/2026-11-05-linux-adr-0004.md).
+
+- Broader Linux guest coverage at `c820a94`, 2026-11-05: 59 of 61 new live
+  assertions pass, covering concurrent task isolation, upstream model headers,
+  live VM credential rotation/revocation, real Construct denial feedback,
+  gateway-crash containment, mixed-address resolution and project-profile
+  persistence/revocation. Mirror body corruption (#62) and unsupported-scheme
+  redirect handling (#63) remain failures. A checked-in harness and exact
+  limitations are recorded in the
+  [broader Linux report](../acceptance/2026-11-05-broader-linux.md).
+
+- Linux follow-up at `78127b3`, 2026-11-05: merged #62/#63 fixes pass the
+  61-check harness. Thirty-three added resolver-cache, daemon-outage expiry
+  and malformed GitHub assertions pass. Isolated real Secret Service and
+  trickled GitHub-header probes find two nonblocking failures (#66/#67),
+  for 104/106 live assertions passing overall. The user's keyring and host
+  resolver are untouched. Exact fixture boundaries and remaining limits:
+  [Linux follow-up report](../acceptance/2026-11-05-follow-up-linux.md).
+
+- Linux merged-fix rerun at `337db12`, 2026-11-05: all 107 current live
+  assertions pass, including real isolated locked-item classification,
+  genuine absence, pending-read single-flight/recovery, and a trickled
+  GitHub header receiving 408 after ~5.1 s. Workspace checks pass (389 tests).
+  No open reproduced failure remains in this suite; fixture boundaries and
+  untested limits still apply. Assets now live outside the collected build
+  cache. See the [final Linux rerun](../acceptance/2026-11-05-final-linux-rerun.md).

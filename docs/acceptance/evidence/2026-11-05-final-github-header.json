@@ -1,0 +1,16 @@
+[
+  {
+    "check": "GitHub trickled header gets 408 within five-second total budget",
+    "passed": true,
+    "observed": {
+      "closed": true,
+      "elapsed": 5.11334478,
+      "reply": "HTTP/1.1 408 Request Timeout\r\ncontent-type: application/json\r\ncontent-length: 41\r\nconnection: close\r\n\r\n{\"error\":\"request head deadline expired\"}"
+    }
+  },
+  {
+    "check": "GitHub slow-header probe leaves model gateway usable",
+    "passed": true,
+    "observed": null
+  }
+]
