@@ -6,6 +6,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 impl Boundary {
     pub fn access_grants(&self, task: &str, project: &str) -> Result<Vec<Grant>> {
         let mut inner = self.lock();
@@ -40,6 +43,7 @@ impl Boundary {
         else {
             bail!("unknown grant {id:?} for this task or project");
         };
+        let mut revoked = Vec::new();
         for peer in peers {
             self.load_task(&mut inner, peer)?;
             let grants = inner.grants.entry(peer.clone()).or_default();
@@ -47,13 +51,16 @@ impl Boundary {
             if !removed.is_empty() {
                 save_task(&self.data, peer, &kept)?;
                 *grants = kept;
-                audit_revoked(&self.data, &removed, now_ms())?;
+                revoked.extend(removed);
             }
         }
         let kept: Vec<_> = inner.projects.iter().filter(|grant| grant.id != id).cloned().collect();
         save_projects(&self.data, &kept, inner.version)?;
         inner.projects = kept;
-        audit_revoked(&self.data, &[rule], now_ms())
+        revoked.push(rule);
+        // An audit failure must not leave the project rule or a peer's
+        // matching allowance active, so finish narrowing policy first.
+        audit_revoked(&self.data, &revoked, now_ms())
     }
 }
 
