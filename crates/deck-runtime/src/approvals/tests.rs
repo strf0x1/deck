@@ -19,7 +19,12 @@ fn incoming(task: &str, project: &str, destination: &str) -> Incoming {
         operation: "chat_completions".into(),
         destination: destination.into(),
         credential: Some("OPENAI_API_KEY".into()),
-        details: Details { method: Some("POST".into()), path: Some("/v1/chat/completions".into()), size: Some(0) },
+        details: Details {
+            method: Some("POST".into()),
+            path: Some("/v1/chat/completions".into()),
+            size: Some(0),
+            identity: None,
+        },
         reason: None,
     }
 }
@@ -42,6 +47,23 @@ fn steady() -> Settings {
         pending: Duration::from_secs(5),
         once: Duration::from_millis(200),
         task: super::TASK,
+    }
+}
+
+fn held_card(boundary: &Boundary, count: usize) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let inner = boundary.lock();
+        if let Some((id, _)) = inner
+            .holds
+            .iter()
+            .find(|(id, held)| **held == count && inner.items.get(*id).is_some_and(|item| item.state.pending()))
+        {
+            return id.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "requests did not share a held card");
+        drop(inner);
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -70,6 +92,132 @@ fn an_allow_once_is_consumed_exactly_once() {
     assert_eq!(boundary.decide(&item.id, Decision::Once).unwrap().state, State::Allowed(Scope::Once));
     assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Allowed(Scope::Once));
     assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_changed_credential_cannot_share_or_consume_a_once_approval() {
+    let dir = scratch("once-credential");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let original = incoming("t", "/w", "m");
+    let changed = Incoming { credential: Some("OTHER_API_KEY".into()), ..original.clone() };
+    let first = boundary.submit(original.clone()).unwrap();
+    let second = boundary.submit(changed.clone()).unwrap();
+    assert_ne!(first.id, second.id);
+    boundary.decide(&first.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(changed).unwrap().state, State::Pending);
+    assert_eq!(boundary.submit(original).unwrap().state, State::Allowed(Scope::Once));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_changed_write_needs_its_own_once_decision() {
+    let dir = scratch("once-write");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let mut original = github("t", "publish", "o/r#deck/t");
+    original.details.identity = Some("sha256:original-write".into());
+    let mut changed = original.clone();
+    changed.details.identity = Some("sha256:changed-write".into());
+    let first = boundary.submit(original.clone()).unwrap();
+    let second = boundary.submit(changed.clone()).unwrap();
+    assert_ne!(first.id, second.id);
+    boundary.decide(&first.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(changed).unwrap().state, State::Pending);
+    assert_eq!(boundary.submit(original).unwrap().state, State::Allowed(Scope::Once));
+    let legacy = boundary.submit(github("t", "publish", "o/r#other")).unwrap();
+    assert!(boundary.decide(&legacy.id, Decision::Once).is_err(), "an old gateway cannot bypass write matching");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_deduplicated_once_decision_admits_only_one_held_request() {
+    let dir = scratch("concurrent-once");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let (lease, _rx) = boundary.watch("t");
+    let requests: Vec<_> = (0..4)
+        .map(|_| {
+            let boundary = boundary.clone();
+            std::thread::spawn(move || boundary.submit(incoming("t", "/w", "m")).unwrap())
+        })
+        .collect();
+    let id = held_card(&boundary, requests.len());
+    boundary.decide(&id, Decision::Once).unwrap();
+    let outcomes: Vec<_> = requests.into_iter().map(|request| request.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Allowed(Scope::Once)).count(), 1);
+    let pending: Vec<_> = outcomes.iter().filter(|item| item.state == State::Pending).collect();
+    assert_eq!(pending.len(), 3);
+    assert_ne!(pending[0].id, id, "unadmitted requests need a new decision");
+    assert!(pending.iter().all(|item| item.id == pending[0].id));
+    assert_eq!(boundary.status("t", &id).unwrap().unwrap().state, State::Allowed(Scope::Once));
+    assert!(boundary.grants("t").unwrap().is_empty());
+    drop(lease);
+    // Repeating a decision or reading its status never replenishes it.
+    boundary.decide(&id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn remaining_held_requests_can_use_their_new_card() {
+    let dir = scratch("once-requeue");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let (_lease, _rx) = boundary.watch("t");
+    let requests: Vec<_> = (0..3)
+        .map(|_| {
+            let boundary = boundary.clone();
+            std::thread::spawn(move || boundary.submit(incoming("t", "/w", "m")).unwrap())
+        })
+        .collect();
+    let first = held_card(&boundary, 3);
+    boundary.decide(&first, Decision::Once).unwrap();
+    let next = held_card(&boundary, 2);
+    assert_ne!(first, next);
+    boundary.decide(&next, Decision::Task).unwrap();
+    let outcomes: Vec<_> = requests.into_iter().map(|request| request.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Allowed(Scope::Once)).count(), 1);
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Allowed(Scope::Task)).count(), 2);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn once_after_a_hold_timeout_still_admits_only_one_retry() {
+    let dir = scratch("once-hold-timeout");
+    let settings = Settings { hold: Duration::from_millis(10), ..steady() };
+    let boundary = Boundary::with_settings(&dir, settings).unwrap();
+    let (_lease, _rx) = boundary.watch("t");
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    assert_eq!(item.state, State::Pending);
+    boundary.decide(&item.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Allowed(Scope::Once));
+    assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_unclaimed_once_expires_without_being_replenished() {
+    let dir = scratch("once-expiry");
+    let settings = Settings { once: Duration::ZERO, ..steady() };
+    let boundary = Boundary::with_settings(&dir, settings).unwrap();
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    boundary.decide(&item.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    boundary.decide(&item.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn clearing_a_task_wakes_its_held_request_without_granting() {
+    let dir = scratch("clear-held");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let (_lease, _rx) = boundary.watch("t");
+    let asked = boundary.clone();
+    let request = std::thread::spawn(move || asked.submit(incoming("t", "/w", "m")));
+    held_card(&boundary, 1);
+    boundary.clear_task("t").unwrap();
+    assert!(request.join().unwrap().is_err());
+    assert!(boundary.pending("t").unwrap().is_empty());
+    assert!(boundary.grants("t").unwrap().is_empty());
     fs::remove_dir_all(dir).unwrap();
 }
 

@@ -349,7 +349,7 @@ impl Client {
     }
 }
 
-fn check_text(title: &str, body: &str) -> Result<(), Problem> {
+pub(super) fn check_text(title: &str, body: &str) -> Result<(), Problem> {
     if title.trim().is_empty() {
         return Err(Problem::invalid("a pull request needs a title"));
     }

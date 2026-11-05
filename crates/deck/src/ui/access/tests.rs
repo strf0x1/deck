@@ -12,6 +12,7 @@ fn grant(scope: Scope) -> Grant {
         destination: "example.com:443".into(),
         scope,
         expires_ms: Some(3_600_000),
+        reviewed: None,
     }
 }
 
