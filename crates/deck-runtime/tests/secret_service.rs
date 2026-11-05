@@ -145,6 +145,8 @@ case "$*" in
             lookup-failure) exit 2 ;;
             *) printf 'synthetic-value\n' ;;
         esac ;;
+    'search --all service com.sprawlcommons.deck name TEST_KEY')
+        [ "$DECK_TEST_DELETE" = missing ] || exit 2 ;;
     'clear service com.sprawlcommons.deck name TEST_KEY')
         printf 'called' > "$DECK_TEST_MARKER"
         case "$DECK_TEST_DELETE" in
@@ -196,5 +198,53 @@ esac
             }
         }
     }
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn lookup_distinguishes_a_locked_item_from_a_missing_item() {
+    let data = std::env::temp_dir().join(format!("deck-secret-lookup-{}", std::process::id()));
+    std::fs::create_dir_all(&data).unwrap();
+    let tool = data.join("secret-tool");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+case "$*" in
+    'lookup service com.sprawlcommons.deck name TEST_KEY') exit 1 ;;
+    'search --all service com.sprawlcommons.deck name TEST_KEY')
+        case "$DECK_TEST_LOOKUP" in
+            locked) printf 'attribute.name = TEST_KEY\n' >&2 ;;
+            missing) exit 0 ;;
+            unavailable) exit 1 ;;
+        esac ;;
+    *) exit 2 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (scenario, expected) in [
+        ("locked", "could not check TEST_KEY before deletion"),
+        ("unavailable", "could not check TEST_KEY before deletion"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_deckd"))
+            .args(["credential", "delete", "TEST_KEY"])
+            .env_remove("DECK_CREDENTIALS")
+            .env("PATH", &data)
+            .env("DECK_TEST_LOOKUP", scenario)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{scenario}: {output:?}");
+        assert!(String::from_utf8(output.stderr).unwrap().contains(expected));
+    }
+    let missing = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .args(["credential", "delete", "TEST_KEY"])
+        .env_remove("DECK_CREDENTIALS")
+        .env("PATH", &data)
+        .env("DECK_TEST_LOOKUP", "missing")
+        .output()
+        .unwrap();
+    assert!(missing.status.success(), "{missing:?}");
+    assert!(String::from_utf8(missing.stderr).unwrap().contains("was not in"));
     std::fs::remove_dir_all(data).unwrap();
 }
