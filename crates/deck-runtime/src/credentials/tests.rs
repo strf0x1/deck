@@ -119,6 +119,44 @@ fn one_read_per_name_is_outstanding_and_its_answer_serves_the_waiters() {
 }
 
 #[test]
+fn a_timed_out_caller_leaves_its_read_for_a_later_waiter() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (answer, pending) = std::sync::mpsc::channel();
+    let pending = Mutex::new(pending);
+    let store = Arc::new(Store::scripted(Duration::from_millis(200), {
+        let calls = calls.clone();
+        move |_| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                pending.lock().unwrap().recv().unwrap();
+                Ok("first-value".into())
+            } else {
+                Ok("rotated-value".into())
+            }
+        }
+    }));
+    assert!(matches!(store.read("OPENAI_API_KEY"), Err(Absent::Unavailable(_))));
+    let late = {
+        let store = store.clone();
+        std::thread::spawn(move || store.read("OPENAI_API_KEY"))
+    };
+    // Wait until the later caller joins the map and worker's existing flight.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let reads = store.reads.lock().unwrap();
+        if reads.get("OPENAI_API_KEY").is_some_and(|flight| Arc::strong_count(flight) == 3) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the later caller never joined the outstanding read");
+        drop(reads);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    answer.send(()).unwrap();
+    assert_eq!(late.join().unwrap().unwrap(), "first-value");
+    assert_eq!(store.read("OPENAI_API_KEY").unwrap(), "rotated-value");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "a completed read never becomes a value cache");
+}
+
+#[test]
 fn a_revocation_is_permanent_and_survives_reopening() {
     let dir = scratch("revoked");
     let revoked = Revoked::open(&dir).unwrap();

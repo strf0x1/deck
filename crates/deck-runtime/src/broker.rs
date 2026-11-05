@@ -68,6 +68,13 @@ pub struct Listed {
     pub error: Option<String>,
 }
 
+/// The daemon's store description and its credential listing, without values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listing {
+    pub store: String,
+    pub credentials: Vec<Listed>,
+}
+
 struct Watcher {
     names: Vec<String>,
     tx: mpsc::UnboundedSender<Revocation>,
@@ -170,9 +177,8 @@ impl Broker {
     }
 }
 
-/// The listing `deckd credential list` prints, from a store and revocation
-/// list it opened itself or the daemon's.
-pub fn list(store: &Store, revoked: &Revoked) -> Result<Vec<Listed>> {
+/// Read the daemon's selected store and join its outstanding reads by name.
+fn list(store: &Store, revoked: &Revoked) -> Result<Vec<Listed>> {
     Ok(store.names()?.into_iter().map(|name| list_one(store, revoked, name)).collect())
 }
 

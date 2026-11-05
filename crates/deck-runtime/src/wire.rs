@@ -135,6 +135,8 @@ pub(crate) enum Request {
     Credentials {
         task: String,
     },
+    /// All stored names for the credential CLI, through the daemon's broker.
+    ListCredentials,
     /// Revoke a credential's current value, from the CLI or the access panel.
     RevokeCredential {
         name: String,

@@ -4,10 +4,9 @@
 //! on macOS the Keychain item's access list names the application that later
 //! reads it. A value arrives on stdin, never as an argument (an argument is
 //! readable by every local user), with echo off on a terminal. `list` prints
-//! names and fingerprints only. `revoke` is a request to the running daemon,
-//! because only the daemon can close the operations using the value.
+//! names and fingerprints only, through the daemon's selected store and shared
+//! reads. `revoke` also uses the daemon, which closes operations using the value.
 
-use super::revoked::Revoked;
 use super::{Store, valid_name};
 use crate::DaemonClient;
 use anyhow::{Context as _, Result, bail};
@@ -49,10 +48,10 @@ pub fn run(data: &Path, args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("list") if args.len() == 1 => {
-            let store = Store::from_env()?;
-            let revoked = Revoked::open(data)?;
-            let store_name = store.describe();
-            for listed in crate::broker::list(&store, &revoked)? {
+            let client = DaemonClient::connect_or_start(data)?;
+            let listing = client.stored_credentials()?;
+            let store_name = listing.store;
+            for listed in listing.credentials {
                 let state = match (&listed.error, listed.revoked) {
                     (Some(error), _) => format!("unreadable: {error}"),
                     (None, true) => "revoked".to_string(),

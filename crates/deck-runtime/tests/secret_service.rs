@@ -1,10 +1,59 @@
 //! Linux credential listing through the real CLI and a scripted secret-tool.
-//! Each child gets its own PATH and store environment; no desktop keyring is touched.
+//! Each listing scenario owns a daemon with its own PATH and store environment;
+//! no desktop keyring is touched, and the daemon is stopped before cleanup.
 
 #![cfg(target_os = "linux")]
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// A fresh daemon keeps each scripted store scenario independent of the
+/// environment inherited by an earlier listing. Reap it even after a panic.
+struct ListingDaemon {
+    child: Child,
+    directory: PathBuf,
+}
+
+#[expect(clippy::unwrap_used, reason = "test fixture setup and process observation must succeed")]
+impl ListingDaemon {
+    fn start(data: &Path, tools: &Path, scenario: &str) -> Self {
+        let directory = deck_runtime::paths::Paths::for_data(data).unwrap().directory;
+        let mut daemon = Self {
+            directory,
+            child: Command::new(env!("CARGO_BIN_EXE_deckd"))
+                .arg("--data")
+                .arg(data)
+                .args(["--idle-ms", "60000"])
+                .env_remove("DECK_CREDENTIALS")
+                .env("PATH", tools)
+                .env("DECK_TEST_SEARCH", scenario)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if deck_runtime::DaemonClient::connect(data).is_ok() {
+                return daemon;
+            }
+            assert!(daemon.child.try_wait().unwrap().is_none(), "daemon exited before opening its socket");
+            assert!(Instant::now() < deadline, "daemon did not open its socket");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for ListingDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
 
 #[test]
 fn listing_secret_service_reports_names_and_fingerprints_or_a_safe_failure() {
@@ -41,13 +90,15 @@ esac
     .unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
     let list = |scenario: &str| {
+        let scenario_data = data.join(scenario);
+        let _daemon = ListingDaemon::start(&scenario_data, &data, scenario);
         Command::new(env!("CARGO_BIN_EXE_deckd"))
             .arg("--data")
-            .arg(&data)
+            .arg(&scenario_data)
             .args(["credential", "list"])
             .env_remove("DECK_CREDENTIALS")
             .env("PATH", &data)
-            .env("DECK_TEST_SEARCH", scenario)
+            .env("DECKD", "/deck-test/unexpected-daemon-start")
             .output()
             .unwrap()
     };
