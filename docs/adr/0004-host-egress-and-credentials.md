@@ -1036,8 +1036,12 @@ The implementation is not done until these have tests where practical.
    host project identity; another project's rules are not exposed. The view
    updates from daemon replies and discards stale listings. GPUI tests drive
    real clicks through confirmation, cancellation, task and project removal,
-   and pending-request review against a real daemon. Live visual inspection
-   is still outstanding. Model and GitHub
+   and pending-request review against a real daemon. Checked in a live macOS
+   window through `DECK_CONTROL`: prompt entry, ACP permission handling,
+   opening Access, cancellation and confirmed task-grant revocation, with
+   removal verified at the daemon. Window-only screenshots were inspected.
+   Project-rule removal was verified headlessly, not in this live pass.
+   Model and GitHub
    grant revocation during an operation are not covered by this web slice;
    credential revocation for those operations is §4.5.
 
