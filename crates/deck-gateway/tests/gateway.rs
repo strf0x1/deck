@@ -26,6 +26,9 @@ const DECOY: &str = "env-value-must-not-be-used";
 #[path = "gateway/model_grants.rs"]
 mod model_grants;
 
+#[path = "gateway/identity.rs"]
+mod identity;
+
 /// A fake `deckd` in front of a test's own queue fixture: it answers
 /// `credential` and `credential_watch` as the broker does, and forwards every
 /// other line to `upstream`, so each fixture stays one concern.

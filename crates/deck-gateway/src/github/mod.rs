@@ -11,6 +11,7 @@
 pub mod bundle;
 pub mod client;
 pub mod control;
+mod identity;
 pub mod policy;
 pub mod problem;
 pub mod publish;
@@ -185,6 +186,8 @@ impl GitHub {
             Operation::Refs => String::new(),
         };
         let domain = self.client.destination(&detail);
+        let identity = identity::review(ask, operation, bundle, self.client.settings())
+            .map_err(|problem| self.failed(&domain, problem))?;
         // An update may only touch a pull request this task opened from a
         // branch it may write; that is checked before anyone is asked, and is
         // the one check that already needs the token. Every other operation
@@ -198,7 +201,7 @@ impl GitHub {
             }
             held = Some(token);
         }
-        self.decide(operation, &domain, &reason(ask, operation))?;
+        self.decide(operation, &domain, &reason(ask, operation), identity.as_deref())?;
         let token = match held {
             Some(token) => token,
             None => self.fetch()?,
@@ -267,7 +270,13 @@ impl GitHub {
         Failure { status: problem.kind.status(), body: problem.body() }
     }
 
-    fn decide(&self, operation: Operation, destination: &str, reason: &str) -> Result<(), Failure> {
+    fn decide(
+        &self,
+        operation: Operation,
+        destination: &str,
+        reason: &str,
+        identity: Option<&str>,
+    ) -> Result<(), Failure> {
         if !operation.asks() {
             return Ok(());
         }
@@ -278,7 +287,8 @@ impl GitHub {
                 &format!("{destination} needs approval, but this task has no approval queue"),
             ));
         };
-        match control.ask(operation.name(), destination, Some(reason.to_string())) {
+        let credential = self.credentials.as_ref().map(|(_, name)| name.as_str());
+        match control.ask(operation.name(), destination, Some(reason.to_string()), credential, identity) {
             Answer::Allowed(_) => Ok(()),
             Answer::Pending(id) => {
                 self.status.observe(&id, destination, "pending", None, Some(reason));

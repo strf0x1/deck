@@ -1272,6 +1272,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "ureq",
 ]
 

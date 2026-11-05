@@ -122,6 +122,9 @@ impl Boundary {
             self.wake.notify_all();
             return Ok(item);
         };
+        if scope == Scope::Once && item.gateway == GITHUB && item.details.identity.is_none() {
+            bail!("this GitHub gateway does not identify the reviewed write; restart the task before allowing Once");
+        }
         self.remember(&mut inner, &item, scope, now)?;
         item.state = State::Allowed(scope);
         self.notify(&mut inner, &item);
@@ -364,6 +367,8 @@ impl Boundary {
                 Scope::Task => Some(now + millis(self.settings.task)),
                 Scope::Project => None,
             },
+            reviewed: (scope == Scope::Once)
+                .then(|| Reviewed { credential: item.credential.clone(), identity: item.details.identity.clone() }),
         };
         match scope {
             Scope::Project => {
@@ -502,6 +507,7 @@ impl Boundary {
                 destination: destination.to_string(),
                 scope: Scope::Project,
                 expires_ms: None,
+                reviewed: None,
             });
             changed += 1;
         }

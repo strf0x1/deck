@@ -19,7 +19,12 @@ fn incoming(task: &str, project: &str, destination: &str) -> Incoming {
         operation: "chat_completions".into(),
         destination: destination.into(),
         credential: Some("OPENAI_API_KEY".into()),
-        details: Details { method: Some("POST".into()), path: Some("/v1/chat/completions".into()), size: Some(0) },
+        details: Details {
+            method: Some("POST".into()),
+            path: Some("/v1/chat/completions".into()),
+            size: Some(0),
+            identity: None,
+        },
         reason: None,
     }
 }
@@ -87,6 +92,40 @@ fn an_allow_once_is_consumed_exactly_once() {
     assert_eq!(boundary.decide(&item.id, Decision::Once).unwrap().state, State::Allowed(Scope::Once));
     assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Allowed(Scope::Once));
     assert_eq!(boundary.submit(incoming("t", "/w", "m")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_changed_credential_cannot_share_or_consume_a_once_approval() {
+    let dir = scratch("once-credential");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let original = incoming("t", "/w", "m");
+    let changed = Incoming { credential: Some("OTHER_API_KEY".into()), ..original.clone() };
+    let first = boundary.submit(original.clone()).unwrap();
+    let second = boundary.submit(changed.clone()).unwrap();
+    assert_ne!(first.id, second.id);
+    boundary.decide(&first.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(changed).unwrap().state, State::Pending);
+    assert_eq!(boundary.submit(original).unwrap().state, State::Allowed(Scope::Once));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_changed_write_needs_its_own_once_decision() {
+    let dir = scratch("once-write");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let mut original = github("t", "publish", "o/r#deck/t");
+    original.details.identity = Some("sha256:original-write".into());
+    let mut changed = original.clone();
+    changed.details.identity = Some("sha256:changed-write".into());
+    let first = boundary.submit(original.clone()).unwrap();
+    let second = boundary.submit(changed.clone()).unwrap();
+    assert_ne!(first.id, second.id);
+    boundary.decide(&first.id, Decision::Once).unwrap();
+    assert_eq!(boundary.submit(changed).unwrap().state, State::Pending);
+    assert_eq!(boundary.submit(original).unwrap().state, State::Allowed(Scope::Once));
+    let legacy = boundary.submit(github("t", "publish", "o/r#other")).unwrap();
+    assert!(boundary.decide(&legacy.id, Decision::Once).is_err(), "an old gateway cannot bypass write matching");
     fs::remove_dir_all(dir).unwrap();
 }
 
