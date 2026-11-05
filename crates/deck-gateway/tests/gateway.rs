@@ -2037,8 +2037,7 @@ fn incomplete_connect_headers_have_a_total_deadline_even_when_bytes_keep_arrivin
 
 #[test]
 fn incomplete_github_headers_have_a_total_deadline_even_when_bytes_keep_arriving() {
-    let gateway =
-        with_github("github-header-deadline", "http://127.0.0.1:9", "https://github.com/owner/repo", None, None);
+    let gateway = with_github("gh-head", "http://127.0.0.1:9", "https://github.com/owner/repo", None, None);
     let github = gateway.ready.github.as_ref().unwrap();
     let start = Instant::now();
     let mut stream = UnixStream::connect(github).unwrap();
