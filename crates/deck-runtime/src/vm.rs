@@ -695,6 +695,7 @@ fn guest_environment(guest: &str, args: &[String], model: &str, web: bool, githu
 /// `DECK_WEB_PROFILES`: absent means every built-in profile but the OS
 /// mirrors, which a project that builds on Debian or Ubuntu wants and a task
 /// that does not use it does not need. `none` disables the web gateway.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
 fn web_profiles(value: Option<String>) -> Result<Option<Vec<String>>> {
     let Some(value) = value else {
         return Ok(Some(vec!["repo".into(), "registry".into(), "package-mirrors".into(), "docs".into()]));
