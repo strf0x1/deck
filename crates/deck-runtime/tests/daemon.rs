@@ -634,6 +634,32 @@ fn task_grants_survive_a_daemon_restart_and_do_not_widen_other_tasks() {
 }
 
 #[test]
+fn revoking_a_task_grant_is_persisted_and_audited_before_the_reply() {
+    use deck_runtime::approvals::{Decision, State};
+    let (daemon, client) = Daemon::new("grant-revoke-audit");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let mut request = ask("revoked.example:443");
+    request.gateway = "web".into();
+    request.operation = "connect".into();
+    request.credential = None;
+    let item = client.request_approval(&task.id, request.clone()).unwrap();
+    client.decide(&item.id, Decision::Task).unwrap();
+    let grant = client.grants(&task.id).unwrap().remove(0);
+
+    client.revoke_grant(&task.id, &grant.id).unwrap();
+    assert!(client.grants(&task.id).unwrap().is_empty());
+    assert!(!daemon.data.join("tasks").join(&task.id).join("grants.json").exists());
+    let audit = std::fs::read_to_string(daemon.data.join("approvals/audit.jsonl")).unwrap();
+    let events: Vec<serde_json::Value> = audit.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event"], "grant_revoked");
+    assert_eq!(events[0]["grant"], serde_json::to_value(&grant).unwrap());
+    assert_eq!(client.request_approval(&task.id, request).unwrap().state, State::Pending);
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
 fn a_project_rule_outlives_the_task_and_the_daemon() {
     use deck_runtime::approvals::{Decision, Scope, State};
     let (mut daemon, client) = Daemon::new("approval-project");
@@ -802,6 +828,11 @@ fn a_profile_decision_becomes_project_rules_the_gateway_re_reads() {
     let rules = std::fs::read_to_string(daemon.data.join("approvals").join("projects.json")).unwrap();
     assert!(rules.contains("security.debian.org:443"), "the sibling stays: {rules}");
     assert!(!rules.contains("deb.debian.org:443"), "the revoked destination is gone: {rules}");
+    let audit = std::fs::read_to_string(daemon.data.join("approvals/audit.jsonl")).unwrap();
+    let event: serde_json::Value = serde_json::from_str(audit.trim()).unwrap();
+    assert_eq!(event["event"], "grant_revoked");
+    assert_eq!(event["grant"]["project"], project);
+    assert_eq!(event["grant"]["destination"], "deb.debian.org:443");
     client.stop(&task.id).unwrap();
 }
 

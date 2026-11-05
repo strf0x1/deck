@@ -10,7 +10,8 @@
 //! is dropped first, because a proxy credential belongs to the guest's proxy
 //! configuration and not to the tunnel's destination.
 
-use crate::web::policy::{Grants, Profiles};
+use crate::web::grants::{Grants, Permit};
+use crate::web::policy::Profiles;
 use crate::web::resolve::{Refused, Resolver};
 use crate::web::status::Events;
 use crate::web::{Answer, Control, refuse};
@@ -154,9 +155,10 @@ impl Connector {
             // A host or private address is never a human decision (§9.5).
             Err(refused) => return self.refuse(&mut guest, None, &refused.reason(), None),
         };
-        if let Err(held) = self.decide(&destination, &request.name, &addresses) {
-            return self.deny(&mut guest, held, &destination);
-        }
+        let permit = match self.decide(&destination, &request.name, &addresses) {
+            Ok(permit) => permit,
+            Err(held) => return self.deny(&mut guest, held, &destination),
+        };
         let Some(upstream) = connect(&addresses, &self.resolver) else {
             return self.refuse(
                 &mut guest,
@@ -168,6 +170,13 @@ impl Connector {
         upstream.set_read_timeout(Some(IDLE))?;
         upstream.set_write_timeout(Some(IDLE))?;
         upstream.set_nodelay(true).ok();
+        let _registration = match self.grants.register(permit, &guest, &upstream) {
+            Ok(registration) => registration,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                return self.refuse(&mut guest, None, &error.to_string(), None);
+            }
+            Err(error) => return Err(error),
+        };
         guest.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
         guest.write_all(&request.head)?;
         guest.flush()?;
@@ -191,19 +200,19 @@ impl Connector {
     /// A profile entry or a live grant lets the tunnel through; otherwise the
     /// daemon decides, and its hold is what makes `git` or `ssh` succeed after
     /// the user's click without a retry.
-    fn decide(&self, destination: &str, name: &str, addresses: &[SocketAddr]) -> Result<(), Held> {
+    fn decide(&self, destination: &str, name: &str, addresses: &[SocketAddr]) -> Result<Option<Permit>, Held> {
         if let Some(profile) = self.profiles.covering(name, port_of(destination)) {
             let _ = profile;
-            return Ok(());
+            return Ok(None);
         }
-        if self.grants.allows(name, port_of(destination)) {
-            return Ok(());
+        if let Some(permit) = self.grants.authorize(name, port_of(destination), crate::web::CONNECT) {
+            return Ok(Some(permit));
         }
         let Some(control) = &self.control else { return Err(Held::NoQueue) };
         let reason = addresses.first().map(|address| format!("resolves to {}", address.ip()));
         match control.ask(&crate::web::control::Ask { reason, ..crate::web::control::Ask::connect(destination.into()) })
         {
-            Answer::Allowed(_) => Ok(()),
+            Answer::Allowed(scope) => self.allowed(&scope, name, port_of(destination), crate::web::CONNECT),
             Answer::Pending(id) => {
                 self.status.observe(&id, destination, "pending", None, None);
                 Err(Held::Pending(id))
@@ -213,6 +222,21 @@ impl Connector {
                 Err(Held::Denied(id, state))
             }
             Answer::Unavailable(why) => Err(Held::Unavailable(why)),
+        }
+    }
+
+    /// The daemon persists a task/project decision before answering. Read
+    /// that rule now so a held request is revocable too. Once authorizes this
+    /// operation alone; consuming it does not revoke the admitted connection.
+    pub(super) fn allowed(&self, scope: &str, name: &str, port: u16, operation: &str) -> Result<Option<Permit>, Held> {
+        match scope {
+            "once" => Ok(None),
+            "task" | "project" => self
+                .grants
+                .authorize(name, port, operation)
+                .map(Some)
+                .ok_or_else(|| Held::Unavailable("the authorizing grant is no longer present".into())),
+            _ => Err(Held::Unavailable("the queue returned an unknown scope".into())),
         }
     }
 

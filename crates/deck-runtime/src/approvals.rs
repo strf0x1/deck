@@ -23,7 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use store::{load_projects, save_projects, save_task, task_grants};
+use store::{audit_revoked, load_projects, save_projects, save_task, task_grants};
 
 /// One attached window's claim on a task. Dropping it detaches the window.
 pub struct Lease {
@@ -295,17 +295,19 @@ impl Boundary {
         Ok(item)
     }
 
-    /// Drop a task grant. The next matching request asks again.
+    /// Remove a task grant durably, then audit it before replying. The web
+    /// gateway observes the file change and closes the grant's active streams.
     pub fn revoke(&self, task: &str, id: &str) -> Result<()> {
         let mut inner = self.lock();
         self.load_task(&mut inner, task)?;
         let Some(grants) = inner.grants.get_mut(task) else { bail!("unknown grant {id:?}") };
-        let before = grants.len();
-        grants.retain(|grant| grant.id != id);
-        if grants.len() == before {
+        let Some(grant) = grants.iter().find(|grant| grant.id == id).cloned() else {
             bail!("unknown grant {id:?}");
-        }
-        save_task(&self.data, task, grants)?;
+        };
+        let next: Vec<_> = grants.iter().filter(|grant| grant.id != id).cloned().collect();
+        save_task(&self.data, task, &next)?;
+        *grants = next;
+        audit_revoked(&self.data, &[grant], now_ms())?;
         Ok(())
     }
 
@@ -536,15 +538,16 @@ impl Boundary {
             // A revoke removes the named operations in this gateway; a
             // decision that names none removes every rule for the project on
             // the destination, which is how a web profile revokes.
-            let before = inner.projects.len();
-            inner.projects.retain(|rule| {
+            let (removed, kept): (Vec<_>, Vec<_>) = inner.projects.iter().cloned().partition(|rule| {
                 let same = rule.project.as_deref() == Some(project.as_str()) && rule.destination == destination;
                 let scoped = operations.is_empty() || (rule.gateway == gateway && operations.contains(&rule.operation));
-                !(same && scoped)
+                same && scoped
             });
-            let changed = before - inner.projects.len();
+            let changed = removed.len();
             if changed > 0 {
-                save_projects(&self.data, &inner.projects, inner.version)?;
+                save_projects(&self.data, &kept, inner.version)?;
+                inner.projects = kept;
+                audit_revoked(&self.data, &removed, now)?;
             }
             return Ok(changed);
         }

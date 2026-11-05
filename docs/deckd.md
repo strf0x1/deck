@@ -60,6 +60,9 @@ connection ends the lease. Windows decide with
 `decide_approval {id, decision}` where decision is `once`, `task`, `project`
 or `deny`; `approvals {task}` lists pending items, `grants {task}` lists
 task-scoped grants, and `revoke_grant {task,id}` removes one.
+Task-grant and project-rule revocations append `grant_revoked` events to
+`approvals/audit.jsonl`, with the removed grant and time, and fsync before a
+successful reply. An audit failure reports an error but leaves access removed.
 
 The gateway reads and updates one item over the same socket:
 `approval_status {task,id}` returns it (or null once forgotten),
@@ -132,6 +135,18 @@ revokes a whole profile: the daemon writes one project rule (`web`/`connect`)
 per destination, from the host's expansion, so a profile the task did not start
 with is one decision and a package install does not ask per package. Task grants
 carry a 12-hour expiry; project rules do not.
+
+Each granted CONNECT or plain-HTTP stream holds the rule that admitted it.
+One monitor checks policy files every 50 ms and shuts both sockets when that
+rule disappears or expires, including while `deckd` is down. Unrelated rules
+and connections stay active. A replacement rule can admit a new connection
+but cannot keep an older rule's stream alive. An allow-once decision admits
+one operation; consuming it does not interrupt that operation. Launch profiles
+remain fixed for the gateway's lifetime.
+
+The VMM passes `--web-project` with the host project identity. The gateway
+matches task grants to its task and project rules to that identity, so the
+shared project-rule file cannot grant another project's access.
 
 The gateway's boundary events reach the agent through the status endpoint's
 `/events` beside the model gateway's, with `gateway: "web"`, so a blocked
