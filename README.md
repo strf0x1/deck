@@ -13,3 +13,7 @@ See `PLAN.md` for direction and `AGENTS.md` to work on it.
 ```sh
 cargo build && cargo run --bin deck -- target/debug/deck-fake-agent   # try it without a model
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Brandon Bosch.
