@@ -593,6 +593,50 @@ fn a_watch_lease_holds_the_request_for_the_window_decision() {
 }
 
 #[test]
+fn one_once_decision_admits_one_concurrent_control_request() {
+    use deck_runtime::approvals::{Decision, Scope, State};
+    let (mut daemon, client) = Daemon::new("concurrent-once");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    let _watch = client.watch(&task.id).unwrap();
+    let gate = Arc::new(Barrier::new(5));
+    let requests: Vec<_> = (0..4)
+        .map(|_| {
+            let requester = daemon.connect();
+            let task = task.id.clone();
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                requester.request_approval(&task, ask("other")).unwrap()
+            })
+        })
+        .collect();
+    gate.wait();
+    eventually(|| client.approvals(&task.id).unwrap().len() == 1);
+    let first = client.approvals(&task.id).unwrap().remove(0);
+    // Let the already-connected control clients join the shared hold. The
+    // unit regression synchronizes on the exact held-request count.
+    std::thread::sleep(Duration::from_millis(100));
+    client.decide(&first.id, Decision::Once).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while requests.iter().any(|request| !request.is_finished()) {
+        // Unadmitted operations get a new card which the window can deny.
+        for item in client.approvals(&task.id).unwrap() {
+            assert_ne!(item.id, first.id);
+            client.decide(&item.id, Decision::Deny).unwrap();
+        }
+        assert!(Instant::now() < deadline, "the remaining requests did not resolve on their new card");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let outcomes: Vec<_> = requests.into_iter().map(|request| request.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Allowed(Scope::Once)).count(), 1);
+    assert_eq!(outcomes.iter().filter(|item| item.state == State::Denied).count(), 3);
+    assert!(client.grants(&task.id).unwrap().is_empty());
+    assert_eq!(client.approval_status(&task.id, &first.id).unwrap().unwrap().state, State::Allowed(Scope::Once));
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
 fn without_a_lease_a_new_scope_is_answered_without_waiting() {
     use deck_runtime::approvals::{Decision, Scope, State};
     let (mut daemon, client) = Daemon::new("approval-fail-fast");

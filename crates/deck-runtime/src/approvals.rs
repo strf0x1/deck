@@ -9,6 +9,7 @@
 //! is not there. The gateway asks; this module decides and remembers.
 
 mod access;
+mod admission;
 mod store;
 mod types;
 
@@ -95,78 +96,6 @@ impl Boundary {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Ask for a scope. On a matching grant the request proceeds at once.
-    /// Otherwise an item exists (deduplicated) and, while a capable window is
-    /// attached, the call waits up to `hold` for its decision.
-    pub fn submit(&self, request: Incoming) -> Result<Approval> {
-        let mut inner = self.lock();
-        let now = now_ms();
-        self.load_task(&mut inner, &request.task)?;
-        self.prune(&mut inner, now);
-        if let Some(scope) = self.take_grant(&mut inner, &request, now) {
-            return Ok(resolved(&request, now, inner.version, scope));
-        }
-        let existing = inner
-            .items
-            .values()
-            .find(|item| item.state.pending() && item.expires_ms > now && item.same_request(&request))
-            .map(|item| item.id.clone());
-        let id = match existing {
-            Some(id) => id,
-            None => {
-                inner.seq += 1;
-                let id = format!("{:x}-{:x}", now, inner.seq);
-                let item = Approval {
-                    id: id.clone(),
-                    task: request.task.clone(),
-                    project: request.project.clone(),
-                    session: request.session.clone(),
-                    gateway: request.gateway.clone(),
-                    operation: request.operation.clone(),
-                    destination: request.destination.clone(),
-                    credential: request.credential.clone(),
-                    details: request.details.clone(),
-                    reason: request.reason.clone(),
-                    created_ms: now,
-                    expires_ms: now + millis(self.settings.pending),
-                    policy: inner.version,
-                    state: State::Pending,
-                    waiters: 0,
-                };
-                self.notify(&mut inner, &item);
-                inner.items.insert(id.clone(), item);
-                id
-            }
-        };
-        if inner.leases.get(&request.task).copied().unwrap_or(0) == 0 {
-            return Ok(inner.items[&id].clone());
-        }
-        let deadline = now + millis(self.settings.hold);
-        *inner.holds.entry(id.clone()).or_default() += 1;
-        let item = loop {
-            let item = inner.items[&id].clone();
-            if !item.state.pending() || item.expires_ms <= now {
-                break item;
-            }
-            let now = now_ms();
-            let left = deadline.saturating_sub(now);
-            if left == 0 {
-                break item;
-            }
-            let (guard, _) =
-                self.wake.wait_timeout(inner, Duration::from_millis(left)).unwrap_or_else(|e| e.into_inner());
-            inner = guard;
-            self.prune(&mut inner, now_ms());
-        };
-        if let Some(count) = inner.holds.get_mut(&id) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                inner.holds.remove(&id);
-            }
-        }
-        Ok(item)
-    }
-
     /// Apply the first decision for an item. Later decisions report the state
     /// the item already has.
     pub fn decide(&self, id: &str, decision: Decision) -> Result<Approval> {
@@ -193,10 +122,7 @@ impl Boundary {
             self.wake.notify_all();
             return Ok(item);
         };
-        let waiting = inner.holds.get(id).copied().unwrap_or(0) > 0;
-        if scope != Scope::Once || !waiting {
-            self.remember(&mut inner, &item, scope, now)?;
-        }
+        self.remember(&mut inner, &item, scope, now)?;
         item.state = State::Allowed(scope);
         self.notify(&mut inner, &item);
         inner.items.insert(id.to_owned(), item.clone());
@@ -368,7 +294,9 @@ impl Boundary {
         // Keep a decided item long enough to answer a late status request,
         // then forget it; pending items are never dropped before expiry.
         let keep = millis(self.settings.pending);
-        inner.items.retain(|_, item| item.state.pending() || item.expires_ms.saturating_add(keep) > now);
+        inner.items.retain(|id, item| {
+            inner.holds.contains_key(id) || item.state.pending() || item.expires_ms.saturating_add(keep) > now
+        });
         inner.subscribers.retain(|tx| expired.iter().all(|item| tx.unbounded_send(item.clone()).is_ok()));
         if !expired.is_empty() {
             self.wake.notify_all();
