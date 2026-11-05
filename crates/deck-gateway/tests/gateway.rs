@@ -934,7 +934,9 @@ fn a_granted_port_opens_a_tunnel_and_another_port_is_a_different_decision() {
     let web = gateway.ready.web.clone().unwrap();
     let mut tunnel = UnixStream::connect(&web).unwrap();
     tunnel.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let requested = format!("CONNECT pinned.example:{port} HTTP/1.1\r\n\r\n");
+    let requested = format!(
+        "CONNECT pinned.example:{port} HTTP/1.1\r\nProxy-Authorization: Basic synthetic\r\nX-Guest: proxy-only\r\n\r\n"
+    );
     tunnel.write_all(requested.as_bytes()).unwrap();
     // The guest reads what the gateway wrote. The probe greets on accept and
     // echoes, so the tunnel is proven by the probe's own bytes arriving: the
@@ -953,7 +955,11 @@ fn a_granted_port_opens_a_tunnel_and_another_port_is_a_different_decision() {
         assert_ne!(read, 0, "closed after {:?}", String::from_utf8_lossy(&seen));
         seen.extend_from_slice(&buf[..read]);
     }
-    assert!(seen.starts_with(STATUS.as_bytes()), "the gateway's head is first: {}", String::from_utf8_lossy(&seen));
+    assert_eq!(
+        seen,
+        [STATUS.as_bytes(), b"PROBE READY\n"].concat(),
+        "only destination bytes follow the CONNECT response"
+    );
     let payload = b"\x16\x03\x01 not http";
     tunnel.write_all(payload).unwrap();
     let mut back = vec![0u8; payload.len()];

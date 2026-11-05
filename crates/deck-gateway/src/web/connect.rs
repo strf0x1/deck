@@ -4,11 +4,9 @@
 //! The design choice: the destination-level control is all of it. The host
 //! resolves the name itself, refuses host and private address space on any
 //! port, and asks if the task holds no profile entry and no grant for exactly
-//! that `host:port`; anything but an allowance refuses, so no failure to reach
-//! `deckd` can widen the boundary. Once allowed, the guest's request head is
-//! treated as bytes: it is forwarded, but every proxy-authorization it carried
-//! is dropped first, because a proxy credential belongs to the guest's proxy
-//! configuration and not to the tunnel's destination.
+//! that `host:port`; anything but an allowance refuses. The CONNECT head
+//! terminates here: after the 200 response only opaque destination bytes
+//! reach the guest, and no proxy headers enter the tunnel.
 
 use crate::grants::{Grants, Permit};
 use crate::web::policy::Profiles;
@@ -69,12 +67,10 @@ impl Connector {
 pub struct Request {
     pub name: String,
     pub port: u16,
-    pub head: Vec<u8>,
 }
 
 impl Request {
-    /// Parse the request line and headers of a CONNECT. The head is kept whole
-    /// (minus proxy credentials) so it can be forwarded byte for byte.
+    /// Parse and consume the CONNECT head; it is never tunnel payload.
     pub fn parse(reader: &mut impl io::BufRead) -> Result<Self, Refused> {
         let mut head = Vec::new();
         let mut line = Vec::new();
@@ -105,28 +101,11 @@ impl Request {
         else {
             return Err(Refused::Invalid("the request is not a CONNECT".into()));
         };
-        // The head is rebuilt from the parsed form, so a lenient target
-        // (upper case, a bare name where a port belongs) is never forwarded.
         let (name, port) = split(target).ok_or_else(|| Refused::Invalid(target.to_owned()))?;
         if !crate::web::policy::is_host(&name) {
             return Err(Refused::Invalid(name));
         }
-        // The head is forwarded without the guest's proxy credentials. Every
-        // other header is opaque tunnel setup and stays.
-        let mut kept = format!("CONNECT {name}:{port} HTTP/1.1\r\n");
-        for line in lines {
-            if line.is_empty() {
-                break;
-            }
-            let name = line.split(':').next().unwrap_or_default().trim();
-            if name.eq_ignore_ascii_case("proxy-authorization") || name.eq_ignore_ascii_case("proxy-connection") {
-                continue;
-            }
-            kept.push_str(line);
-            kept.push_str("\r\n");
-        }
-        kept.push_str("\r\n");
-        Ok(Self { name, port, head: kept.into_bytes() })
+        Ok(Self { name, port })
     }
 
     pub fn destination(&self) -> String {
@@ -192,7 +171,6 @@ impl Connector {
             Err(error) => return Err(error),
         };
         guest.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
-        guest.write_all(&request.head)?;
         guest.flush()?;
         let mut upstream_writer = upstream.try_clone()?;
         let mut guest_writer = guest.try_clone()?;
@@ -334,12 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn a_connect_names_one_destination_and_keeps_its_head() {
+    fn a_connect_names_one_destination() {
         let request = parse("CONNECT example.com:8443 HTTP/1.1\r\nhost: example.com:8443\r\n\r\n").unwrap();
         assert_eq!(request.name, "example.com");
         assert_eq!(request.port, 8443);
         assert_eq!(request.destination(), "example.com:8443");
-        assert!(request.head.starts_with(b"CONNECT example.com:8443 HTTP/1.1\r\n"));
     }
 
     #[test]
@@ -348,11 +325,7 @@ mod tests {
             "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: Basic Zm9v\r\nproxy-connection: keep-alive\r\nx-extra: kept\r\n\r\n",
         )
         .unwrap();
-        let head = String::from_utf8(request.head).unwrap();
-        assert!(!head.to_ascii_lowercase().contains("proxy-authorization"), "{head}");
-        assert!(!head.contains("Basic Zm9v"), "{head}");
-        assert!(!head.to_ascii_lowercase().contains("proxy-connection"), "{head}");
-        assert!(head.contains("x-extra: kept"), "{head}");
+        assert_eq!(request.destination(), "example.com:443");
     }
 
     #[test]
