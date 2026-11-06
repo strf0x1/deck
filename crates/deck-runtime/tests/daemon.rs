@@ -941,6 +941,7 @@ fn a_github_profile_writes_one_rule_per_operation_and_revokes_exactly_them() {
     assert_eq!(rules.len(), 2, "{rules:?}");
     for rule in rules {
         assert_eq!(rule["gateway"], "github");
+        assert_eq!(rule["credential"], "DECK_GITHUB_TOKEN");
         assert_eq!(rule["destination"], "strf0x1/deck");
         assert_eq!(rule["scope"], "project");
         assert_eq!(rule["project"], project.as_str());
@@ -1282,4 +1283,30 @@ fn a_host_credential_retry_does_not_restore_revoked_access_or_change_grants() {
     assert!(String::from_utf8(cli.stderr).unwrap().contains("no cancelled read"));
     assert_eq!(client.task(&task.id).unwrap().state, State::Running);
     client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn reusable_control_approvals_preserve_the_credential_name() {
+    use deck_runtime::approvals::Decision;
+    for decision in [Decision::Timed, Decision::Task, Decision::Project] {
+        let (daemon, client) = Daemon::new(&format!("credential-scope-{decision:?}"));
+        let task = client.create(daemon.spec(&["cat"])).unwrap();
+        client.start(&task.id).unwrap();
+        let request = serde_json::json!({
+            "op": "approval", "task": task.id, "gateway": "model",
+            "operation": "chat_completions", "destination": "extra", "credential": "OPENAI_API_KEY"
+        });
+        let item = control(&daemon, request.clone());
+        let id = item["ok"]["id"].as_str().unwrap();
+        client.decide(id, decision).unwrap();
+        let reused = control(&daemon, request.clone());
+        assert!(reused["ok"]["state"]["allowed"].is_string(), "{reused}");
+        let grants = client.access_grants(&task.id).unwrap();
+        assert_eq!(grants[0].credential.as_deref(), Some("OPENAI_API_KEY"));
+        let mut changed = request;
+        changed["credential"] = serde_json::json!("DIFFERENT_KEY");
+        let reply = control(&daemon, changed);
+        assert_eq!(reply["ok"]["state"], "pending", "{reply}");
+        client.stop(&task.id).unwrap();
+    }
 }

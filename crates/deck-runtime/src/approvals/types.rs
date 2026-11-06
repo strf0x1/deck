@@ -203,6 +203,10 @@ pub struct Grant {
     pub gateway: String,
     pub operation: String,
     pub destination: String,
+    /// Credential name, never its value. Legacy rules without a binding
+    /// authorize only requests that do not use a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
     pub scope: Scope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_ms: Option<u64>,
@@ -211,11 +215,10 @@ pub struct Grant {
     pub reviewed: Option<Reviewed>,
 }
 
-/// The request-specific part of a Once allowance. Credential rotation keeps
-/// its name; a different name or write fingerprint needs another decision.
+/// The write-specific part of a Once allowance. The credential name is
+/// bound on Grant for every scope; Once also binds the reviewed write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reviewed {
-    pub credential: Option<String>,
     pub identity: Option<String>,
 }
 
@@ -232,10 +235,12 @@ impl Grant {
                     .strip_prefix(self.destination.as_str())
                     .is_some_and(|detail| detail.starts_with('#')));
         let reviewed = self.scope != Scope::Once
-            || self.reviewed.as_ref().is_some_and(|reviewed| {
-                reviewed.credential == request.credential && reviewed.identity == request.details.identity
-            });
-        self.gateway == request.gateway && self.operation == request.operation && destination && reviewed
+            || self.reviewed.as_ref().is_some_and(|reviewed| reviewed.identity == request.details.identity);
+        self.gateway == request.gateway
+            && self.operation == request.operation
+            && destination
+            && self.credential == request.credential
+            && reviewed
     }
 }
 

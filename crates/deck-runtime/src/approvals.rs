@@ -362,6 +362,7 @@ impl Boundary {
                 (Scope::Project, types::GITHUB) => types::github_repository(&item.destination).to_string(),
                 _ => item.destination.clone(),
             },
+            credential: item.credential.clone(),
             scope,
             expires_ms: match scope {
                 Scope::Once => Some(now + millis(self.settings.once)),
@@ -369,8 +370,7 @@ impl Boundary {
                 Scope::Task => Some(now + millis(self.settings.task)),
                 Scope::Project => None,
             },
-            reviewed: (scope == Scope::Once)
-                .then(|| Reviewed { credential: item.credential.clone(), identity: item.details.identity.clone() }),
+            reviewed: (scope == Scope::Once).then(|| Reviewed { identity: item.details.identity.clone() }),
         };
         let expires_ms = grant.expires_ms;
         match scope {
@@ -409,6 +409,7 @@ impl Boundary {
         project: Option<&str>,
         repository: &str,
         operations: &[String],
+        credential: &str,
         revoke: bool,
     ) -> Result<usize> {
         let operations: Vec<String> = operations
@@ -432,7 +433,7 @@ impl Boundary {
         if !valid {
             bail!("a GitHub profile names its repository as owner/name, not {repository:?}");
         }
-        self.rules_for(project, GITHUB, &operations, &repository, revoke)
+        self.rules_for(project, GITHUB, &operations, &repository, Some(credential), revoke)
     }
 
     /// The shared body of a whole-profile decision: one project rule per
@@ -453,7 +454,7 @@ impl Boundary {
         }
         let mut changed = 0;
         for destination in destinations {
-            changed += self.rules_for(project, gateway, operations, destination, revoke)?;
+            changed += self.rules_for(project, gateway, operations, destination, None, revoke)?;
         }
         Ok(changed)
     }
@@ -464,6 +465,7 @@ impl Boundary {
         gateway: &str,
         operations: &[String],
         destination: &str,
+        credential: Option<&str>,
         revoke: bool,
     ) -> Result<usize> {
         let Some(project) = project.map(str::to_owned).filter(|project| !project.is_empty()) else {
@@ -495,6 +497,7 @@ impl Boundary {
                     && rule.operation == *operation
                     && rule.destination == destination
                     && rule.project.as_deref() == Some(project.as_str())
+                    && rule.credential.as_deref() == credential
             });
             if exists {
                 continue;
@@ -508,6 +511,7 @@ impl Boundary {
                 gateway: gateway.into(),
                 operation: operation.clone(),
                 destination: destination.to_string(),
+                credential: credential.map(str::to_owned),
                 scope: Scope::Project,
                 expires_ms: None,
                 reviewed: None,

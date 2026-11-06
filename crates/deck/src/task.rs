@@ -15,7 +15,7 @@ pub type Connection = (Client, mpsc::UnboundedReceiver<Inbound>);
 pub struct WindowTask {
     daemon: DaemonClient,
     id: String,
-    cwd: PathBuf,
+    agent_cwd: PathBuf,
     boundary_enforced: bool,
 }
 
@@ -23,13 +23,16 @@ impl WindowTask {
     /// Find or start a task, rebuilding an existing live session when supported.
     pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
         let daemon = DaemonClient::connect_or_start(data)?;
-        let run = daemon.run(Spec { argv, cwd: cwd.clone() })?;
-        let task = WindowTask { daemon, boundary_enforced: run.task.backend == "vm", id: run.task.id, cwd };
+        let run = daemon.run(Spec { argv, cwd })?;
+        // ACP addresses the agent filesystem; task and project identity stay
+        // in the host filesystem recorded by the daemon.
+        let agent_cwd = if run.task.backend == "vm" { "/workspace".into() } else { run.task.spec.cwd.clone() };
+        let task = WindowTask { daemon, boundary_enforced: run.task.backend == "vm", id: run.task.id, agent_cwd };
         let connection = if run.started {
             Some(task.connect(run.task.session_id)?)
         } else if let Some(id) = run.task.session_id {
             let stream = task.daemon.attach(&task.id)?;
-            Some(Client::attach(task.cwd.clone(), stream.reader, stream.writer, id)?)
+            Some(Client::attach(task.agent_cwd.clone(), stream.reader, stream.writer, id)?)
         } else {
             None
         };
@@ -90,8 +93,8 @@ impl WindowTask {
     fn connect(&self, session_id: Option<String>) -> Result<Connection> {
         let stream = self.daemon.attach(&self.id)?;
         match session_id {
-            Some(id) => Client::load(self.cwd.clone(), stream.reader, stream.writer, id),
-            None => Client::over(self.cwd.clone(), stream.reader, stream.writer),
+            Some(id) => Client::load(self.agent_cwd.clone(), stream.reader, stream.writer, id),
+            None => Client::over(self.agent_cwd.clone(), stream.reader, stream.writer),
         }
     }
 }

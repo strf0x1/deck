@@ -1206,6 +1206,15 @@ The implementation is not done until these have tests where practical.
       unrelated traffic survives. UI/Construct feedback requires the
       documented path fixture for #78. This slice is not fully accepted:
       [live Linux report](../acceptance/2026-11-06-timed-linux.md).
+    - The follow-up for #77 persists the credential name for all decision
+      scopes and checks it at runtime and cached gateway admission. Legacy
+      rules without a name authorize only credential-free requests; credential
+      rules require renewed approval rather than inferred migration. Profile
+      decisions bind the configured host credential name. The #78 window fix
+      addresses VM ACP with `/workspace` while retaining host project identity.
+      The #71 classifier requires an entirely empty successful Secret Service
+      search to prove absence. Targeted live results and limits:
+      [bug-fix report](../acceptance/2026-11-06-live-bug-fixes.md).
     - CLI credential listings use the daemon's shared store (PR #60).
       The host retry slice retains cancelled/refused Keychain reads per name for
       the current daemon lifetime and adds `deckd credential retry NAME`.

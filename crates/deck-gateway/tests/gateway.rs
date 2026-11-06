@@ -647,7 +647,7 @@ fn the_gateway_waits_for_the_queue_decision() {
             std::fs::write(
                 &persisted,
                 serde_json::json!([{
-                    "id": "held", "gateway": "model", "operation": "chat_completions",
+                    "id": "held", "gateway": "model", "operation": "chat_completions", "credential": "DECK_GATEWAY_TEST_KEY",
                     "destination": "other", "scope": "task", "task": "t"
                 }])
                 .to_string(),

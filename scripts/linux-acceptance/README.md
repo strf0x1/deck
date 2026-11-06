@@ -179,10 +179,9 @@ and performs no login, push or publication.
 `grim`, and the built Deck window executable. It launches without taking
 initial focus and drives GPUI input using `DECK_CONTROL`. It records the
 card, Access expiry, Construct's actual ACP/HTTP feedback and journal data.
-It uses a **fixture-only in-guest path alias around #78**; this is not proof
-that ordinary production VM ACP cwd handling works. The initial unmodified
-window failed before that alias. Remove the workaround and verify the real
-path once #78 is fixed. The user keyring and desktop settings are untouched.
+It runs `/usr/local/bin/construct acp` directly, with the host project copied
+into `/workspace`; no guest path alias is installed. The host task record
+keeps the original project path. The user keyring and desktop settings are untouched.
 
 Results, failures, exact product patch and inspected screenshots are in the
 [2026-11-06 report](../../docs/acceptance/2026-11-06-timed-linux.md).
