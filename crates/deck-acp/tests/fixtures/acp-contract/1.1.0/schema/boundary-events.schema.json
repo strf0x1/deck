@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-events.schema.json",
+  "title": "Boundary HTTP events response",
+  "oneOf": [
+    {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-event.schema.json"
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "events"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-event.schema.json"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

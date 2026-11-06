@@ -109,18 +109,18 @@ fn guest(gateway: &Gateway, model: &str, streaming: bool) -> UnixStream {
 }
 
 #[test]
-fn revoking_a_model_grant_closes_idle_sockets_and_preserves_unrelated_and_once_streams() {
+fn revoking_a_timed_model_grant_closes_idle_sockets_and_preserves_unrelated_and_once_streams() {
     let provider = Provider::idle(true);
     let path = scratch("model-stream-grants").join("grants.json");
-    policy(&path, &[rule("extra", "task"), rule("other", "task")]);
-    let gateway = launch("mg-s", &provider, &path, "task");
+    policy(&path, &[rule("extra", "timed"), rule("other", "timed")]);
+    let gateway = launch("mg-s", &provider, &path, "timed");
     let mut extra = guest(&gateway, "extra", true);
     let _extra_provider = provider.request("extra");
     let mut survivors = Vec::new();
     for model in ["other", "configured", "once"] {
         survivors.push((guest(&gateway, model, true), provider.request(model)));
     }
-    policy(&path, &[rule("other", "task")]);
+    policy(&path, &[rule("other", "timed")]);
     let mut rest = String::new();
     extra.read_to_string(&mut rest).expect("revocation must close the guest even while the provider is idle");
     assert!(!rest.contains("0\r\n\r\n"), "an interrupted stream cannot claim completion");
@@ -158,11 +158,11 @@ fn revoking_a_project_model_grant_before_headers_answers_once_and_closes_the_pro
 fn an_expiring_model_grant_closes_idle_sockets_while_the_daemon_is_down() {
     let provider = Provider::idle(true);
     let path = scratch("model-expiry").join("grants.json");
-    let mut grant = rule("extra", "task");
+    let mut grant = rule("extra", "timed");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
     grant["expires_ms"] = serde_json::json!(now + 1500);
     policy(&path, &[grant]);
-    let gateway = launch("mg-e", &provider, &path, "task");
+    let gateway = launch("mg-e", &provider, &path, "timed");
     let mut guest = guest(&gateway, "extra", true);
     let _upstream = provider.request("extra");
     gateway.deckd.stop();

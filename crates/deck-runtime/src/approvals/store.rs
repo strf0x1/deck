@@ -38,7 +38,8 @@ pub(super) fn save_task(data: &Path, task: &str, grants: &[Grant]) -> Result<()>
     let path = task_grants(data, task);
     // A retry allowance lives only in memory. Revoking another grant must
     // not turn the remaining allow-once items into durable policy.
-    let grants: Vec<_> = grants.iter().filter(|grant| grant.scope == super::Scope::Task).collect();
+    let grants: Vec<_> =
+        grants.iter().filter(|grant| matches!(grant.scope, super::Scope::Timed | super::Scope::Task)).collect();
     if grants.is_empty() {
         match fs::remove_file(&path) {
             Ok(()) => {

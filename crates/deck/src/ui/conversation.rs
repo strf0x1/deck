@@ -154,6 +154,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let Some(item) = deck.boundary().pending() else { return div().into_any_element() };
     let options = [
         (Decision::Once, "Allow once"),
+        (Decision::Timed, "Allow for 5 minutes"),
         (Decision::Task, "Allow for this task"),
         (Decision::Project, "Always for this project"),
         (Decision::Deny, "Deny"),
@@ -210,7 +211,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(glyph(icon::SHIELD, 13.).text_color(Tokens::amber()))
                 .child(div().font_weight(FontWeight::MEDIUM).child("External access needs you"))
                 .child(div().flex_1())
-                .child(kbd("1–4")),
+                .child(kbd("1–5")),
         )
         .child(
             div()

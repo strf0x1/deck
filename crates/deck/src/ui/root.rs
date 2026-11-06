@@ -157,6 +157,9 @@ impl Deck {
             State::Allowed(scope) => {
                 notice["outcome"] = serde_json::json!("allowed");
                 notice["scope"] = serde_json::json!(scope.as_str());
+                if let Some(expires_at_ms) = approval.grant_expires_ms {
+                    notice["expires_at_ms"] = serde_json::json!(expires_at_ms);
+                }
             }
             State::Denied => notice["outcome"] = serde_json::json!("denied"),
             _ => return,
@@ -255,9 +258,10 @@ impl Deck {
         if self.boundary.pending().is_some() {
             match k.key.as_str() {
                 "1" => self.decide_boundary(Decision::Once, cx),
-                "2" => self.decide_boundary(Decision::Task, cx),
-                "3" => self.decide_boundary(Decision::Project, cx),
-                "4" | "escape" => self.decide_boundary(Decision::Deny, cx),
+                "2" => self.decide_boundary(Decision::Timed, cx),
+                "3" => self.decide_boundary(Decision::Task, cx),
+                "4" => self.decide_boundary(Decision::Project, cx),
+                "5" | "escape" => self.decide_boundary(Decision::Deny, cx),
                 _ => {}
             }
             return;

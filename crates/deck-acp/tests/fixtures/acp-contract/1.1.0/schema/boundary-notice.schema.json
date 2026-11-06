@@ -34,6 +34,9 @@
     "session_id": {
       "type": "string",
       "description": "Alias for sessionId."
+    },
+    "expires_at_ms": {
+      "$ref": "#/$defs/grant/properties/expires_at_ms"
     }
   },
   "additionalProperties": true,
@@ -47,6 +50,49 @@
       "required": [
         "id"
       ]
+    }
+  ],
+  "$defs": {
+    "grant": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Absolute host grant deadline in Unix milliseconds; never a relative wait or pending-item expiry."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "timed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "expires_at_ms"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "#/$defs/grant"
     }
   ]
 }

@@ -34,6 +34,7 @@ fn fast() -> Settings {
         hold: Duration::from_secs(2),
         pending: Duration::from_millis(80),
         once: Duration::from_millis(200),
+        timed: super::TIMED,
         task: super::TASK,
     }
 }
@@ -46,8 +47,49 @@ fn steady() -> Settings {
         hold: Duration::from_secs(2),
         pending: Duration::from_secs(5),
         once: Duration::from_millis(200),
+        timed: super::TIMED,
         task: super::TASK,
     }
+}
+
+#[test]
+fn timed_decision_keeps_one_absolute_deadline_across_observations_and_reuse() {
+    let dir = scratch("timed-deadline");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let request = incoming("t", "/w", "registry.example:443");
+    let item = boundary.submit(request.clone()).unwrap();
+
+    let decided = boundary.decide(&item.id, Decision::Timed).unwrap();
+    let expires_at_ms = decided.grant_expires_ms.expect("timed decision has a deadline");
+    assert_eq!(decided.state, State::Allowed(Scope::Timed));
+    assert_eq!(boundary.status("t", &item.id).unwrap().unwrap().grant_expires_ms, Some(expires_at_ms));
+
+    let reused = boundary.submit(request).unwrap();
+    assert_eq!(reused.state, State::Allowed(Scope::Timed));
+    assert_eq!(reused.grant_expires_ms, Some(expires_at_ms));
+
+    assert_eq!(
+        boundary.submit(incoming("other-task", "/w", "registry.example:443")).unwrap().state,
+        State::Pending,
+        "a timed grant is isolated to its task"
+    );
+    assert_eq!(
+        boundary.submit(incoming("t", "/w", "other.example:443")).unwrap().state,
+        State::Pending,
+        "a timed grant is isolated to its reviewed authority"
+    );
+
+    drop(boundary);
+    let reopened = Boundary::with_settings(&dir, steady()).unwrap();
+    let reused = reopened.submit(incoming("t", "/w", "registry.example:443")).unwrap();
+    assert_eq!(reused.grant_expires_ms, Some(expires_at_ms), "restart cannot renew the deadline");
+    let grant = reopened.grants("t").unwrap().into_iter().find(|grant| grant.scope == Scope::Timed).unwrap();
+    reopened.revoke("t", &grant.id).unwrap();
+    assert_eq!(
+        reopened.submit(incoming("t", "/w", "registry.example:443")).unwrap().state,
+        State::Pending,
+        "revocation removes reusable authority"
+    );
 }
 
 fn held_card(boundary: &Boundary, count: usize) -> String {

@@ -225,7 +225,7 @@ impl Connector {
     pub(super) fn allowed(&self, scope: &str, name: &str, port: u16, operation: &str) -> Result<Option<Permit>, Held> {
         match scope {
             "once" => Ok(None),
-            "task" | "project" => self
+            "timed" | "task" | "project" => self
                 .grants
                 .web(name, port, operation)
                 .map(Some)

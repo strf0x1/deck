@@ -13,6 +13,8 @@ pub const HOLD: Duration = Duration::from_secs(20);
 pub const PENDING: Duration = Duration::from_secs(5 * 60);
 /// How long an allow-once grant may be used by a retry.
 pub const ONCE: Duration = Duration::from_secs(60);
+/// How long an allow-for-five-minutes grant lives.
+pub const TIMED: Duration = Duration::from_secs(5 * 60);
 /// How long an allow-for-task grant lives. A task grant is not unbounded
 /// (ADR 0004 §5): a long build may outlive the run that asked for it, but a
 /// destination approved once is not approved forever.
@@ -38,6 +40,7 @@ pub struct Details {
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     Once,
+    Timed,
     Task,
     Project,
 }
@@ -47,6 +50,7 @@ impl Scope {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Once => "once",
+            Self::Timed => "timed",
             Self::Task => "task",
             Self::Project => "project",
         }
@@ -58,6 +62,7 @@ impl Scope {
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Once,
+    Timed,
     Task,
     Project,
     Deny,
@@ -67,6 +72,7 @@ impl Decision {
     pub(super) fn scope(self) -> Option<Scope> {
         match self {
             Self::Once => Some(Scope::Once),
+            Self::Timed => Some(Scope::Timed),
             Self::Task => Some(Scope::Task),
             Self::Project => Some(Scope::Project),
             Self::Deny => None,
@@ -110,6 +116,10 @@ pub struct Approval {
     pub reason: Option<String>,
     pub created_ms: u64,
     pub expires_ms: u64,
+    /// Absolute deadline for the reusable grant created by this decision.
+    /// This is distinct from `expires_ms`, which is the pending card's expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_expires_ms: Option<u64>,
     pub policy: u64,
     pub state: State,
     /// How many agents are long-polling this item through the guest's
@@ -245,11 +255,12 @@ pub struct Settings {
     pub hold: Duration,
     pub pending: Duration,
     pub once: Duration,
+    pub timed: Duration,
     pub task: Duration,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hold: HOLD, pending: PENDING, once: ONCE, task: TASK }
+        Self { hold: HOLD, pending: PENDING, once: ONCE, timed: TIMED, task: TASK }
     }
 }

@@ -45,14 +45,14 @@ impl Model {
         };
         match control.ask(&ask) {
             Answer::Allowed(scope) if scope == "once" => Ok(None),
-            Answer::Allowed(scope) if matches!(scope.as_str(), "task" | "project") => self
+            Answer::Allowed(scope) if matches!(scope.as_str(), "timed" | "task" | "project") => self
                 .grants
                 .model(model, Some(&scope))
                 .map(Some)
                 .ok_or_else(|| Denial::new(None, false, "the authorizing model grant is no longer present".into())),
             Answer::Allowed(_) => Err(Denial::new(None, false, "the queue returned an unknown scope".into())),
             Answer::Pending(id) => {
-                self.status.observe(&id, model, "pending", None);
+                self.status.observe(&id, model, "pending", None, None);
                 Err(Denial::new(
                     Some(id),
                     true,
@@ -60,7 +60,7 @@ impl Model {
                 ))
             }
             Answer::Denied(id, state) => {
-                self.status.observe(&id, model, &state, None);
+                self.status.observe(&id, model, &state, None, None);
                 Err(Denial::new(
                     (!id.is_empty()).then_some(id),
                     false,

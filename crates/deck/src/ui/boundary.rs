@@ -101,6 +101,7 @@ mod tests {
             reason: None,
             created_ms: 0,
             expires_ms: 0,
+            grant_expires_ms: None,
             policy: 0,
             state,
             waiters: 0,

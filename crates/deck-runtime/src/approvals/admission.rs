@@ -34,8 +34,8 @@ impl Boundary {
             }
             let now = now_ms();
             self.prune(&mut inner, now);
-            if let Some(scope) = self.take_grant(&mut inner, &request, now) {
-                return Ok(resolved(&request, now, inner.version, scope));
+            if let Some((scope, expires_ms)) = self.take_grant(&mut inner, &request, now) {
+                return Ok(resolved(&request, now, inner.version, scope, expires_ms));
             }
             let id = self.enqueue(&mut inner, &request, now);
             if inner.leases.get(&request.task).copied().unwrap_or(0) == 0 || now >= deadline {
@@ -74,8 +74,9 @@ impl Boundary {
                 if !connected() {
                     bail!("the approval request's caller disconnected");
                 }
-                let Some(scope) = self.take_grant(&mut inner, &request, now_ms()) else { continue };
+                let Some((scope, expires_ms)) = self.take_grant(&mut inner, &request, now_ms()) else { continue };
                 item.state = State::Allowed(scope);
+                item.grant_expires_ms = expires_ms;
             }
             return Ok(item);
         }
@@ -104,6 +105,7 @@ impl Boundary {
             reason: request.reason.clone(),
             created_ms: now,
             expires_ms: now.saturating_add(millis(self.settings.pending)),
+            grant_expires_ms: None,
             policy: inner.version,
             state: State::Pending,
             waiters: 0,
