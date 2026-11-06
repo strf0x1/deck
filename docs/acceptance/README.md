@@ -1,6 +1,13 @@
 # Linux acceptance evidence
 
-The latest recorded run is [the merged #66/#67 rerun](2026-11-05-final-linux-rerun.md)
+The latest run is [the live timed-grant pass](2026-11-06-timed-linux.md):
+**159/161 final assertions pass**, plus a separate **10/11** private-store
+repeat. It finds #76–#78 and reproduces #71. Timed/public/UI results need the
+documented local #76 fix; UI also uses a fixture path workaround for #78.
+This does not accept unmodified merged main. Workspace checks pass with
+**397 tests**. The report identifies failures and fixture boundaries.
+
+The preceding fully passing run is [the merged #66/#67 rerun](2026-11-05-final-linux-rerun.md)
 at `337db12`: **107/107 live assertions pass**, with **389 workspace tests
 passing**. Its manifest records the host binary and harness hashes. This is
 an opt-in Linux/KVM acceptance suite, separate from the default Cargo tests.
@@ -27,7 +34,7 @@ The suite exercises:
 - GitHub's total header deadline under trickled input.
 
 Fixture boundaries and untested cases are part of each report. A passing
-suite does not accept the entire ADR 0004 product scope, the pending timed
+suite does not accept the entire ADR 0004 product scope, the scoped-reuse
 approval amendment, or macOS behavior.
 
 Historical runs explain the findings and fixes:

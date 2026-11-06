@@ -1,0 +1,13 @@
+{
+  "task": "1a1b1de8998-30a1ba-0",
+  "approval": "1a1b1de8bca-1",
+  "expires_at_ms": 1793985817628,
+  "model_requests": 5,
+  "tool_results": [
+    "Error:   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n\r  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0\r  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0\r  0     0    0     0    0     0      0      0 --:--:--  0:00:03 --:--:--     0\ncurl: (28) Connection timed out after 3001 milliseconds\n\n[exit 28]",
+    "allowed: approval 1a1b1de8bca-1, scope timed, for example.com:443, expires_at_ms=1793985817628 (Unix ms)",
+    "allowed: approval 1a1b1de8bca-1, scope timed, for example.com:443, expires_at_ms=1793985817628 (Unix ms)",
+    "[{\"approval\": \"1a1b1de8bca-1\", \"outcome\": \"allowed\", \"scope\": \"timed\", \"expires_at_ms\": 1793985817628}, {\"approval\": \"1a1b1de8bca-1\", \"outcome\": \"allowed\", \"scope\": \"timed\", \"expires_at_ms\": 1793985817628}]\n",
+    "HTTP/1.1 200 Connection Established\r\n\r\nHTTP/2 200 \r\ndate: Fri, 06 Nov 2026 17:18:38 GMT\r\ncontent-type: text/html; charset=utf-8\r\nserver: cloudflare\r\nlast-modified: Thu, 05 Nov 2026 21:17:41 GMT\r\nallow: GET, HEAD\r\naccept-ranges: bytes\r\nage: 13882\r\ncf-cache-status: HIT\r\ncf-ray: a565c230df8be675-DEN\r\nalt-svc: h3=\":443\"; ma=86400\r\n\r\n"
+  ]
+}

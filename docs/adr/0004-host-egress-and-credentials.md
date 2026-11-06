@@ -1196,9 +1196,16 @@ The implementation is not done until these have tests where practical.
       fingerprint must restart its task before a Once decision can apply.
       Runtime and real-gateway tests cover these identities. These fields are
       private daemon control metadata; ACP notifications are unchanged.
-    - Add the five-minute grant to the runtime, persistence, gateway monitors,
-      boundary card and Access panel. Test repeated use, scope isolation,
-      unchanged deadlines, expiry during daemon outage and active revocation.
+    - The five-minute grant landed in PR #75, coordinated with Construct
+      #183 and released contract 1.1.0. It reaches persistence, gateway
+      monitors, boundary card, Access and agent-visible status/notifications.
+      Live Linux testing found missing persisted task identity (#76), a
+      credential-name matching gap (#77), and a VM ACP working-directory
+      mismatch (#78). With the local #76 fix, real five-minute expiry closes
+      model/web operations during daemon outage without deadline renewal;
+      unrelated traffic survives. UI/Construct feedback requires the
+      documented path fixture for #78. This slice is not fully accepted:
+      [live Linux report](../acceptance/2026-11-06-timed-linux.md).
     - CLI credential listings use the daemon's shared store (PR #60).
       The host retry slice retains cancelled/refused Keychain reads per name for
       the current daemon lifetime and adds `deckd credential retry NAME`.
@@ -1216,10 +1223,9 @@ The implementation is not done until these have tests where practical.
       are introduced by the host-only CLI/control operation.
 
     The timed scope reaches agent-visible boundary status and notifications.
-    Before implementation exposes it, settle its names and payloads in the
-    shared ACP extension contract, release and pin it, and update Construct
-    and Deck in the same wave (ADRs 0005 and 0006). This amendment assigns no
-    new wire name and does not change `CONTRACT.lock` or its fixtures.
+    Names and payloads are settled in released shared contract 1.1.0 §5.4.
+    Deck and Construct pin the same release and checksum (ADRs 0005 and
+    0006). The additive scope/expiry fields retain both 1.x method names.
 
 ## Deferred
 

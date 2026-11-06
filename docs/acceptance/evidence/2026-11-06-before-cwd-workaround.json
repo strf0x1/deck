@@ -1,0 +1,8 @@
+{
+  "deck_revision": "29dd10ff59310dcd92b84f4995f783073e34ac2a",
+  "construct_revision": "28e1b8f7ea56e9c90ee2555d4a7e526655515f7b",
+  "workaround": false,
+  "tool_results": [
+    "Error: spawn failed: No such file or directory (os error 2)"
+  ]
+}

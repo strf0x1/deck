@@ -1,0 +1,120 @@
+{
+  "date": "2026-11-06",
+  "deck_base_revision": "29dd10ff59310dcd92b84f4995f783073e34ac2a",
+  "construct_revision": "28e1b8f7ea56e9c90ee2555d4a7e526655515f7b",
+  "contract": {
+    "version": "1.1.0",
+    "commit": "8d5a67ce27a78b064f721b35ba49c1995a1b8cd3",
+    "sha256": "51e994796e77744afa8939f24f773ffc5bcaa2d5a16c3d12c1ac1a23e06e548d"
+  },
+  "local_product_fix": {
+    "issue": 76,
+    "patch": "diff --git i/crates/deck-runtime/src/approvals.rs w/crates/deck-runtime/src/approvals.rs\nindex d24fa0c..03cb570 100644\n--- i/crates/deck-runtime/src/approvals.rs\n+++ w/crates/deck-runtime/src/approvals.rs\n@@ -354,7 +354,7 @@ impl Boundary {\n         inner.seq += 1;\n         let grant = Grant {\n             id: format!(\"{:x}-g{:x}\", now, inner.seq),\n-            task: (scope == Scope::Task).then(|| item.task.clone()),\n+            task: matches!(scope, Scope::Timed | Scope::Task).then(|| item.task.clone()),\n             project: (scope == Scope::Project).then(|| item.project.clone()),\n             gateway: item.gateway.clone(),\n             operation: item.operation.clone(),\ndiff --git i/crates/deck-runtime/src/approvals/tests.rs w/crates/deck-runtime/src/approvals/tests.rs\nindex 5fca7a3..0be64be 100644\n--- i/crates/deck-runtime/src/approvals/tests.rs\n+++ w/crates/deck-runtime/src/approvals/tests.rs\n@@ -84,6 +84,7 @@ fn timed_decision_keeps_one_absolute_deadline_across_observations_and_reuse() {\n     let reused = reopened.submit(incoming(\"t\", \"/w\", \"registry.example:443\")).unwrap();\n     assert_eq!(reused.grant_expires_ms, Some(expires_at_ms), \"restart cannot renew the deadline\");\n     let grant = reopened.grants(\"t\").unwrap().into_iter().find(|grant| grant.scope == Scope::Timed).unwrap();\n+    assert_eq!(grant.task.as_deref(), Some(\"t\"), \"gateways require the persisted timed grant's task identity\");\n     reopened.revoke(\"t\", &grant.id).unwrap();\n     assert_eq!(\n         reopened.submit(incoming(\"t\", \"/w\", \"registry.example:443\")).unwrap().state,\n",
+    "sha256": "82ba420cf0e5c884024d7f1e9bf53b6962ca6b56088c7eb4cb09215ff61c9871"
+  },
+  "binaries": {
+    "deck": "2a7b90dd968b3929df091e1cbd66d877874552becfd6b3085048a1e19e3a219a",
+    "deckd": "62dff6c57bb53aa151aef6f9a89dd44aafc3880945983165ab7db0da7d84e071",
+    "deck-gateway": "f7c6c10c329f3bffd9ab99d896d22ea5be9de218fd62b374066bfebec18a796b",
+    "deck-egress": "84f4a047a01d1082f628ea384ae41da907221814cfdc51470c716cddbaca12ec"
+  },
+  "guest_construct_sha256": "42587305b0bd67a5d83b317763cbac01656598ff8e47adf80755c257465d8270",
+  "guest_images_sha256": {
+    "base.img": "c9a1aeecebc0a16a7d5ee57facb9f1fc879125162c7b48ad361425ccb4ed918d",
+    "journal.img": "cc716f316813774efc9f0ce3b4b641d70bbeab8b869346dc6afa012f70445b2e"
+  },
+  "baseline_bypass_manifest": {
+    "revision": "29dd10ff59310dcd92b84f4995f783073e34ac2a",
+    "section": "all",
+    "host": "x86_64",
+    "fixture_dial_override": "mirror phase only",
+    "binaries": {
+      "DECK_VM_EXECUTABLE": {
+        "path": "/home/brandon/.local/share/deck-acceptance/linux/live-2026-11-06/bin/deckd",
+        "sha256": "116f1b79dab0af60d61bf9562f6ba69d08c7f5c510af901e215470407e044acb"
+      },
+      "DECK_GATEWAY_EXECUTABLE": {
+        "path": "/home/brandon/.local/share/deck-acceptance/linux/live-2026-11-06/bin/deck-gateway",
+        "sha256": "f7c6c10c329f3bffd9ab99d896d22ea5be9de218fd62b374066bfebec18a796b"
+      },
+      "DECK_VM_KRUN": {
+        "path": "/home/brandon/.local/share/deck-acceptance/linux/lib/libkrun.so.1.19.7",
+        "sha256": "8606e672ba8b289dbb67021a70400d9d8216c054f31a76dd2b839fd3d50a4288"
+      }
+    }
+  },
+  "harness_sha256": {
+    "adversarial.py": "14bc047c7a150e328e2c4477d06d395bae874bd2019916cf42bf10ed754eb0ab",
+    "build_image.py": "b7582a2f26816920e42913e5e5effccaa53e761a43ec9446f4ffffde8b22d1c5",
+    "bypass.py": "77c7bf3a0ad353c310559b0beb46a5d230f4525bcc9a2235e36d6d1dbe38887f",
+    "fixture.py": "4ef7e57dc2fc3fbd4684afeda6d68bacd0e16ecd271df4a12a463bbb3011be93",
+    "github_slow.py": "d0e6a40037a6a80cc491bc71ef2e2231b2011b34b3edd1e05a28ff801f0a9f58",
+    "guest.py": "1bdc29ad635e19e16114d8c394141faa5ccc64996132678bf0751ac4e44d5663",
+    "public_transports.py": "3a784f683cdaa0bed30664b019ed183c245c633589998be0c95ac5a4b0a898ac",
+    "secret_service.py": "83be80b461d9e7c270bdf5b09d1aeb8301c16d77bcfd719a498c9b2da884543a",
+    "support.py": "d2887fb99268f00e6c5155e698644fa9ac74be7026c14dccdeffee25d75aa495",
+    "timed.py": "5031c4dd4bd334447f9098f2fcc4a061fafea4579ab1d5d402cae947691e6527",
+    "timed_ui.py": "bdb7d74e490a071efb8da163c7f5f0661ba9aca5f02e73ae97af31b243819068"
+  },
+  "workspace_tests": {
+    "passed": 397,
+    "failed": 0,
+    "ignored": 2
+  },
+  "results": {
+    "bypass": {
+      "passed": 61,
+      "total": 61,
+      "failures": []
+    },
+    "adversarial": {
+      "passed": 33,
+      "total": 33,
+      "failures": []
+    },
+    "private-secret": {
+      "passed": 10,
+      "total": 11,
+      "failures": [
+        "private Secret Service: locked collection is unavailable rather than missing"
+      ]
+    },
+    "private-secret-repeat": {
+      "passed": 10,
+      "total": 11,
+      "failures": [
+        "private Secret Service: locked collection is unavailable rather than missing"
+      ]
+    },
+    "github-header": {
+      "passed": 2,
+      "total": 2,
+      "failures": []
+    },
+    "public": {
+      "passed": 5,
+      "total": 5,
+      "failures": []
+    },
+    "timed": {
+      "passed": 37,
+      "total": 38,
+      "failures": [
+        "timed: different credential cannot reuse authority"
+      ]
+    },
+    "timed-ui": {
+      "passed": 11,
+      "total": 11,
+      "failures": []
+    }
+  },
+  "boundaries": [
+    "Baseline bypass/adversarial/private-store/header runs started with unpatched merged deckd; subsequent timed/public/UI/repeat-store runs used the issue 76 task-ID fix.",
+    "Timed web expiry uses controlled public-class addresses and localhost dial override; public TLS and SSH use production resolver/dial.",
+    "Timed deadlines are production 300000ms values, never shortened or rewritten.",
+    "UI uses a fixture-only in-guest path alias around issue 78; ordinary VM ACP working-directory flow failed before that alias.",
+    "SSH is a transport/banner exchange without authentication or publication.",
+    "Historical incomplete harness attempts are retained only under local evidence root and excluded from final assertion counts."
+  ]
+}

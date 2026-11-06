@@ -1,0 +1,38 @@
+[
+  {
+    "check": "public: TLS denied before approval",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "public: certificate-verified TLS through proxy succeeds",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 200 Connection Established\n\nHTTP/2 200 \ndate: Fri, 06 Nov 2026 17:18:59 GMT\ncontent-type: text/html; charset=utf-8\nserver: cloudflare\nlast-modified: Thu, 05 Nov 2026 21:17:41 GMT\nallow: GET, HEAD\naccept-ranges: bytes\nage: 13903\ncf-cache-status: HIT\ncf-ray: a565c2b35e3396bd-DEN\nalt-svc: h3=\":443\"; ma=86400\n\n",
+      "err": ""
+    }
+  },
+  {
+    "check": "public: SSH relay denied before approval",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "public: SSH banner exchanged through TCP relay and CONNECT",
+    "passed": true,
+    "observed": {
+      "status": "HTTP/1.1 200 Connection Established",
+      "banner": "SSH-2.0-a0b631fe"
+    }
+  },
+  {
+    "check": "public: other TLS destination remains unapproved",
+    "passed": true,
+    "observed": {
+      "rc": 56,
+      "out": "HTTP/1.1 403 Forbidden\nx-deck-boundary: example.org:443 needs the user's approval (approval 1a1b1deed22-5); retry after they decide\ncontent-type: application/json\ncontent-length: 0\n\n",
+      "err": "curl: (56) CONNECT tunnel failed, response 403\n"
+    }
+  }
+]

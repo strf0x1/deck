@@ -1,0 +1,231 @@
+[
+  {
+    "check": "cache: initial ungranted request refused",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "cache: public resolved address admitted",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "cache: prior public address used before thirty-second expiry",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "cache: changed private answer refused after cache expiry with no dial",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 157\nconnection: close\n\n{\"error\":{\"message\":\"rebind.example resolves to 127.0.0.1, which is loopback\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+      "err": ""
+    }
+  },
+  {
+    "check": "expiry: live tunnel admitted before shortened host fixture deadline",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "expiry: open tunnel closes while daemon is absent",
+    "passed": true,
+    "observed": {
+      "eof": true,
+      "elapsed": 4.026583796000004
+    }
+  },
+  {
+    "check": "expiry: retry denied with daemon still absent",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "expiry: holder and guest survive control-daemon outage",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "expiry: restarted daemon adopts still-running VM",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "expiry: restarted daemon does not restore expired grant",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "github: bounded refusal for not JSON",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.0003064230000000001,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 79\r\nconnection: close\r\n\r\n{\"error\":\"the request is not a JSON object: expected ident at line 1 column 2\"}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for closed operation",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.00015292000000000083,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 112\r\nconnection: close\r\n\r\n{\"error\":\"merge is not a Deck GitHub operation; a task may publish, open or update a pull request, and read it\"}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for missing bundle",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.052298681999999985,
+      "reply": "HTTP/1.1 411 Length Required\r\ncontent-type: application/json\r\ncontent-length: 34\r\nconnection: close\r\n\r\n{\"error\":\"publish needs a bundle\"}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for excess bundle length",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.052243736999999985,
+      "reply": "HTTP/1.1 413 Payload Too Large\r\ncontent-type: application/json\r\ncontent-length: 45\r\nconnection: close\r\n\r\n{\"error\":\"the bundle exceeds 16777216 bytes\"}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for truncated bundle",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05131824800000001,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 50\r\nconnection: close\r\n\r\n{\"error\":\"the connection ended inside the bundle\"}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for pkt-line is not a bundle",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05145994199999998,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for invalid bundle magic",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.050374595999999994,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 0",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05069768699999999,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 1",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.051312703000000015,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 2",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05241142500000007,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 3",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05140255800000004,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 4",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.050462600999999996,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 5",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05143480999999994,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 6",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05145458999999997,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 127\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"a bundle header line is not UTF-8\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 7",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05054984600000001,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 122\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the bundle header has no end\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 8",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05040123399999996,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 9",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05056750700000001,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 10",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.052390736999999965,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: bounded refusal for malformed git corpus 11",
+    "passed": true,
+    "observed": {
+      "elapsed": 0.05149426199999996,
+      "reply": "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 125\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"the body is not a git bundle v2\",\"type\":\"deck_bad_request\",\"code\":\"deck_bad_request\"},\"retryable\":false}"
+    }
+  },
+  {
+    "check": "github: malformed cases create no approval",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "github: malformed cases record no credential use",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "github: unrelated model route remains usable",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "github: local model fixture received only the final model request",
+    "passed": true,
+    "observed": null
+  }
+]
