@@ -13,13 +13,14 @@
 //! local run.
 
 use crate::backend::{Backend, Exited, Instance, Stream};
-use crate::boundary;
 use crate::holder::{Identity, Reply, Request, WAIT};
 use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
 use crate::record::RecordLock;
+use crate::{boundary, github};
 use crate::{reconcile, record::Store, vmm};
 use anyhow::{Context as _, Result, bail};
+use std::borrow::Cow;
 use std::io::BufReader;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -66,31 +67,6 @@ pub const TOKEN_BUDGET_ENV: &str = "DECK_MODEL_TOKEN_BUDGET";
 /// has a web gateway with no pre-approved destination, which is the closed
 /// default; `none` disables it entirely.
 pub const WEB_PROFILES_ENV: &str = "DECK_WEB_PROFILES";
-/// The project's GitHub repository (`owner/name`). Absent starts no GitHub
-/// gateway, which is the closed default: a task publishes only when its
-/// project names where.
-pub const GITHUB_REPOSITORY_ENV: &str = "DECK_GITHUB_REPOSITORY";
-/// The branch a pull request targets. `main` when absent.
-pub const GITHUB_BASE_ENV: &str = "DECK_GITHUB_BASE";
-/// Branches beyond `deck/<task>` this project lets a task write.
-pub const GITHUB_BRANCHES_ENV: &str = "DECK_GITHUB_BRANCHES";
-/// Names the stored credential that holds the GitHub token; the value never
-/// enters `vmm.json` or the guest (ADR 0007 §4, ADR 0004 §4).
-pub const GITHUB_TOKEN_ENV: &str = "DECK_GITHUB_TOKEN_SECRET";
-/// The default credential name for the GitHub token.
-pub const GITHUB_TOKEN: &str = "DECK_GITHUB_TOKEN";
-
-/// The GitHub operation gateway's host policy (ADR 0007): the repository, the
-/// base, and the branches a task may also write. The token's value is never
-/// here; only the name of the stored credential it comes from.
-#[derive(Debug, Clone)]
-pub struct GitHub {
-    pub repository: String,
-    pub base: String,
-    pub branches: Vec<String>,
-    pub token: String,
-}
-
 pub struct Vm {
     data: PathBuf,
     paths: Paths,
@@ -108,9 +84,10 @@ pub struct Vm {
     model: String,
     /// The web and package profiles; `None` disables the web gateway.
     web_profiles: Option<Vec<String>>,
-    /// The project's GitHub destination. `None` starts no GitHub gateway:
-    /// a task whose project names no repository has no route to publish.
-    github: Option<GitHub>,
+    /// `DECK_GITHUB_*` from this daemon's environment, applied only when a
+    /// task is created. `None` lets each project's own policy decide whether
+    /// there is a GitHub gateway at all.
+    github: Option<github::Override>,
     request_budget: Option<u64>,
     token_budget: Option<u64>,
 }
@@ -159,6 +136,13 @@ impl Vm {
                     None => Ok(None),
                 }
             };
+            let github = github::Override::from_env()?;
+            if let Some(github) = &github {
+                eprintln!(
+                    "deckd: DECK_GITHUB_* overrides the matching GitHub policy fields of every newly created task ({})",
+                    github.describe()
+                );
+            }
             Ok(Self {
                 data: data.to_owned(),
                 paths,
@@ -175,20 +159,7 @@ impl Vm {
                 request_budget: number(REQUEST_BUDGET_ENV)?,
                 token_budget: number(TOKEN_BUDGET_ENV)?,
                 web_profiles: web_profiles(host(WEB_PROFILES_ENV))?,
-                github: host(GITHUB_REPOSITORY_ENV).map(|repository| GitHub {
-                    repository,
-                    base: host(GITHUB_BASE_ENV).unwrap_or_else(|| "main".into()),
-                    branches: host(GITHUB_BRANCHES_ENV)
-                        .map(|value| {
-                            value
-                                .split(|c: char| c == ',' || c.is_whitespace())
-                                .filter(|branch| !branch.is_empty())
-                                .map(str::to_owned)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    token: host(GITHUB_TOKEN_ENV).unwrap_or_else(|| GITHUB_TOKEN.into()),
-                }),
+                github,
             })
         }
     }
@@ -198,13 +169,13 @@ impl Vm {
     }
 
     /// The names this task's gateway may fetch (ADR 0004 §4.3): the model
-    /// key, and the GitHub token when the project names a repository.
-    fn credentials(&self) -> Vec<String> {
+    /// key, and the GitHub token when the task has a repository.
+    fn credentials(github: Option<&github::Policy>) -> Vec<String> {
         let mut names = vec![boundary::SECRET.to_string()];
-        if let Some(github) = &self.github
-            && !names.contains(&github.token)
+        if let Some(github) = github
+            && !names.contains(&github.credential)
         {
-            names.push(github.token.clone());
+            names.push(github.credential.clone());
         }
         names
     }
@@ -230,9 +201,26 @@ impl Vm {
     }
 }
 
+/// The policy a run uses: the one recorded with the task, or — for a record
+/// written before policy was recorded — one resolved now, so an upgrade does
+/// not silently remove a gateway the daemon's environment would have provided.
+fn policy_for<'a>(task: &'a Task, over: Option<&github::Override>) -> Result<Option<Cow<'a, github::Policy>>> {
+    match &task.spec.github {
+        Some(policy) => Ok(Some(Cow::Borrowed(policy))),
+        None => Ok(github::resolve(&task.spec.cwd, over)?.map(Cow::Owned)),
+    }
+}
+
 impl Backend for Vm {
     fn name(&self) -> &'static str {
         "vm"
+    }
+
+    fn prepare(&mut self, spec: &mut crate::lifecycle::Spec) -> Result<()> {
+        if spec.github.is_none() {
+            spec.github = github::resolve(&spec.cwd, self.github.as_ref())?;
+        }
+        Ok(())
     }
 
     fn start(&mut self, task: &Task, lock: RecordLock, exited: Exited) -> Result<Box<dyn Instance>> {
@@ -249,10 +237,12 @@ impl Backend for Vm {
                 std::fs::remove_file(path)?;
             }
         }
-        let credentials = self.credentials();
+        let policy = policy_for(task, self.github.as_ref())?;
+        let github = policy.as_deref();
+        let credentials = Self::credentials(github);
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some(), self.github.is_some());
+        let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some(), github.is_some());
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -285,12 +275,12 @@ impl Backend for Vm {
                 web_profiles: self.web_profiles.clone().unwrap_or_default(),
                 grants: vec![self.dir(&task.id).join("grants.json"), self.data.join("approvals").join("projects.json")],
                 project: Some(task.spec.cwd.to_string_lossy().into_owned()),
-                github_socket: self.github.as_ref().map(|_| socket.with_extension("github")),
-                github_port: self.github.as_ref().map(|_| boundary::GITHUB_VSOCK_PORT),
-                github_repository: self.github.as_ref().map(|github| github.repository.clone()),
-                github_base: self.github.as_ref().map(|github| github.base.clone()).unwrap_or_default(),
-                github_branches: self.github.as_ref().map(|github| github.branches.clone()).unwrap_or_default(),
-                github_token: self.github.as_ref().map(|github| github.token.clone()).unwrap_or_default(),
+                github_socket: github.map(|_| socket.with_extension("github")),
+                github_port: github.map(|_| boundary::GITHUB_VSOCK_PORT),
+                github_repository: github.map(|github| github.repository.clone()),
+                github_base: github.map(|github| github.base.clone()).unwrap_or_default(),
+                github_branches: github.map(|github| github.branches.clone()).unwrap_or_default(),
+                github_token: github.map(|github| github.credential.clone()).unwrap_or_default(),
                 github_scratch: self.dir(&task.id).join("github"),
                 upstream: self.upstream.clone(),
                 models: vec![self.model.clone()],
@@ -734,6 +724,47 @@ fn library_path(library: &Path) -> Option<std::ffi::OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::{Spec, State};
+
+    #[test]
+    fn a_record_without_a_policy_resolves_one_at_start() {
+        let dir = std::env::temp_dir().join(format!("deck-vm-policy-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git").arg("-C").arg(&dir).args(args).status().unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet"]);
+        git(&["remote", "add", "origin", "https://github.com/Owner/Name.git"]);
+
+        let task = Task {
+            id: "legacy".into(),
+            backend: "vm".into(),
+            spec: Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir.clone(), github: None },
+            state: State::Created,
+            pid: None,
+            holder: None,
+            session_id: None,
+            usage: Default::default(),
+        };
+        let policy = policy_for(&task, None).unwrap().expect("the origin names a repository");
+        assert_eq!(policy.repository, "owner/name");
+
+        // A recorded policy is authoritative; a later project change does not
+        // move an existing task to another repository.
+        let mut recorded = task.clone();
+        recorded.spec.github = Some(github::Policy {
+            repository: "recorded/one".into(),
+            base: "main".into(),
+            branches: Vec::new(),
+            credential: github::TOKEN.into(),
+            approvals: Default::default(),
+            identity: Default::default(),
+        });
+        assert_eq!(policy_for(&recorded, None).unwrap().unwrap().repository, "recorded/one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_guest_environment_marks_the_task_managed() {

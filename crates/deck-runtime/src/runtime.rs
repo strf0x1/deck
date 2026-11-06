@@ -169,8 +169,9 @@ impl Runtime {
     }
 
     /// Record a new task for `spec`. Nothing runs yet.
-    pub fn create(&self, spec: Spec) -> Result<String> {
+    pub fn create(&self, mut spec: Spec) -> Result<String> {
         let mut inner = self.lock();
+        inner.backend.prepare(&mut spec)?;
         let name = inner.backend.name();
         let task = inner.store.create(name, spec)?;
         inner.notify(&task);
@@ -284,7 +285,7 @@ impl Runtime {
     fn idle(&self, spec: &Spec) -> Result<Option<String>> {
         let inner = self.lock();
         for task in inner.store.list()? {
-            let fits = task.backend == inner.backend.name() && task.spec == *spec && task.resumable();
+            let fits = task.backend == inner.backend.name() && task.spec.same_command(spec) && task.resumable();
             if fits && !inner.live.contains_key(&task.id) && inner.store.lock(&task.id)?.is_some() {
                 return Ok(Some(task.id));
             }

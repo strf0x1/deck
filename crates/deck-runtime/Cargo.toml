@@ -17,6 +17,7 @@ libloading.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+toml.workspace = true
 
 # The OS credential store (ADR 0004 §4.2). Linux uses `secret-tool`, so the
 # Secret Service needs no D-Bus stack in this crate.

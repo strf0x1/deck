@@ -222,13 +222,29 @@ repository and nothing else. It has its own vsock port (1029), answers the
 when the project named a repository, because a URL pointing at a closed port
 is worse than none.
 
-The gateway exists only when `DECK_GITHUB_REPOSITORY` (`owner/name`) is set in
-`deckd`'s environment. `DECK_GITHUB_BASE` (default `main`) is the only base a
-pull request may target, and `DECK_GITHUB_BRANCHES` lists branches beyond
-`deck/<task>` a task may also write. The token is the stored credential named
-by `DECK_GITHUB_TOKEN_SECRET` (default `DECK_GITHUB_TOKEN`), fetched from the
-broker once per operation (see Credentials below); its value is never in
-`vmm.json`, the guest environment, a log or a response.
+The gateway exists when the task's project has a GitHub destination (ADR 0008
+§3), resolved by `deckd` once at create and recorded in the task's spec:
+
+- `origin`, when it is a github.com HTTPS or SSH remote, supplies
+  `owner/name`; the base is the branch in `refs/remotes/origin/HEAD`, else
+  `main`; the host's `user.name`/`user.email` are recorded for the guest
+  checkout.
+- `.deck/project.toml` at the checkout's top level `[github]` overrides
+  `repository`, `base`, `branches` and `approvals` (`own-branch`, the
+  default; `ask`; or `own-branch-public`); a malformed file fails the create
+  rather than silently publishing to `origin`. When the file (or the
+  development override) names a repository other than `origin`, the base is
+  `main` unless set explicitly, because `origin/HEAD` describes the other
+  repository.
+- A project with neither a GitHub origin nor a file has no gateway.
+
+`DECK_GITHUB_REPOSITORY`, `DECK_GITHUB_BASE`, `DECK_GITHUB_BRANCHES` and
+`DECK_GITHUB_TOKEN_SECRET` in `deckd`'s environment remain a development
+override for every newly created task and say so in one log line; they are not
+how a project is configured. The token is the stored credential named by the
+task's policy (default `DECK_GITHUB_TOKEN`), fetched from the broker once per
+operation (see Credentials below); its value is never in `vmm.json`, the guest
+environment, a log or a response.
 
 Five operations, and no relay:
 

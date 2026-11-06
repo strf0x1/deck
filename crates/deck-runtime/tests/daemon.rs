@@ -85,7 +85,7 @@ impl Daemon {
     }
 
     fn spec(&self, argv: &[&str]) -> Spec {
-        Spec { argv: argv.iter().map(|arg| (*arg).into()).collect(), cwd: self.data.clone() }
+        Spec { argv: argv.iter().map(|arg| (*arg).into()).collect(), cwd: self.data.clone(), github: None }
     }
 
     fn wait_exit(&mut self) -> std::process::ExitStatus {

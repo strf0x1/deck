@@ -29,6 +29,13 @@ pub trait Backend: Send {
     /// of backend that created it.
     fn name(&self) -> &'static str;
 
+    /// Resolve what the backend adds to a spec before the record is written.
+    /// A local task needs nothing; a VM task records its project's GitHub
+    /// policy here (ADR 0008 §3).
+    fn prepare(&mut self, _spec: &mut crate::lifecycle::Spec) -> Result<()> {
+        Ok(())
+    }
+
     /// Start the task's agent and take its liveness lock. `exited` reports an
     /// end nobody asked for.
     fn start(&mut self, task: &Task, lock: RecordLock, exited: Exited) -> Result<Box<dyn Instance>>;

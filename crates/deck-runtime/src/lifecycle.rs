@@ -10,11 +10,26 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// What to run: the agent command and the directory it runs in.
+/// What to run: the agent command, the directory it runs in, and the project
+/// policy the backend resolved at create.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spec {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    /// The project's GitHub policy for this task, if it has one (ADR 0008
+    /// §3). Recorded at create so restarts use the same destination and one
+    /// daemon can serve projects with different repositories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<crate::github::Policy>,
+}
+
+impl Spec {
+    /// Whether two specs name the same command in the same directory. The
+    /// GitHub policy is resolved at create, so a changed project file must
+    /// still find the running task rather than start a second agent beside it.
+    pub fn same_command(&self, other: &Self) -> bool {
+        self.argv == other.argv && self.cwd == other.cwd
+    }
 }
 
 /// What the task's model gateway has spent. The gateway owns the live
@@ -245,7 +260,10 @@ mod tests {
     use super::*;
 
     fn created() -> Event {
-        Event::Created { backend: "local".into(), spec: Spec { argv: vec!["agent".into()], cwd: "/w".into() } }
+        Event::Created {
+            backend: "local".into(),
+            spec: Spec { argv: vec!["agent".into()], cwd: "/w".into(), github: None },
+        }
     }
     fn started() -> Event {
         Event::Started { pid: Some(7), holder: None }

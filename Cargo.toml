@@ -20,6 +20,7 @@ libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+toml = "0.8"
 security-framework = "3"
 # GPUI pinned to Zed v0.233.10. The crates.io `gpui` lags Zed by months, so
 # this is a git dependency on purpose; bump the rev deliberately, never float.

@@ -19,6 +19,7 @@ pub mod credentials;
 pub mod daemon;
 pub mod daemon_client;
 mod detached;
+pub mod github;
 pub mod holder;
 pub mod krun;
 pub mod lifecycle;
