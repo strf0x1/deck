@@ -231,13 +231,13 @@ fn a_new_task_or_project_approval_keeps_its_stream_revocable() {
 fn a_cached_or_queue_admitted_rule_for_another_credential_never_fetches_or_forwards() {
     for scope in ["timed", "task", "project"] {
         let provider = Provider::idle(false);
-        let path = scratch(&format!("credential-binding-{scope}")).join("grants.json");
+        let path = scratch(&format!("cb-{scope}")).join("grants.json");
         let mut wrong = rule("extra", scope);
         wrong["credential"] = serde_json::json!("OTHER_KEY");
         policy(&path, &[wrong]);
         // This queue deliberately answers allowed. The persisted admission
         // must still check the gateway's credential binding.
-        let gateway = launch(&format!("credential-binding-{scope}"), &provider, &path, scope);
+        let gateway = launch(&format!("cb-{scope}"), &provider, &path, scope);
         let response = send(&gateway.ready.model, &chat("extra"));
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
         assert!(gateway.deckd.fetched().is_empty());
