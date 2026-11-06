@@ -75,6 +75,30 @@ missing items, and interaction-not-allowed.
    `c566fa7`; this observation was not rerun on that baseline and is not
    claimed as a regression introduced by #72.
 
+## Layout follow-up for #73
+
+The follow-up for [#73](https://github.com/strf0x1/deck/issues/73) moves the
+credential detail below its name, status, and action. The detail wraps within
+the row instead of extending beyond the panel. The original observation above
+describes the tested `13e84f9` layout; the follow-up fixes that clipping.
+
+The real-layout regression
+`credential_retry_instructions_fit_the_access_panel_at_supported_widths`
+failed before the layout change because an 829-point detail extended beyond
+its row at the 1180-point window width. It passes after the change at widths
+1180 and 760, with both ordinary and 64-character credential names. It also
+checks that status and Revoke remain in bounds and that clicking Revoke opens
+the correct confirmation.
+
+Native macOS window inspection confirmed the complete retry instruction at
+both widths. A long name and its command wrap at 760 points; panel scrolling
+makes the complete message and the next credential's Revoke button reachable.
+This layout check used synthetic replies from a local daemon fixture and did
+not access Keychain. Screenshots, the fixture, and before/after test logs are
+under `~/Library/Application Support/deck-acceptance/macos/access-retry-layout-73/`.
+Formatting, clippy, and the full local suite passed with 392 tests and two
+ignored. The separate CLI timing observation remains unresolved.
+
 ## Checks and evidence
 
 `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` passed.

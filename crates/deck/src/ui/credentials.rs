@@ -7,6 +7,7 @@
 
 use super::access::Revoke;
 use super::root::Deck;
+use deck_runtime::broker::Listed;
 use gpui::Context;
 use std::time::Duration;
 
@@ -48,11 +49,16 @@ impl Deck {
         cx.spawn(async move |this, cx| {
             let result = listed.await.map_err(|e| format!("listing credentials: {e:#}"));
             let _ = this.update(cx, |deck, cx| {
-                deck.access.credentials_listed(ticket, result);
-                cx.notify();
+                deck.on_credentials(ticket, result, cx);
             });
         })
         .detach();
+    }
+
+    /// Apply a credential listing only if it still belongs to the current request.
+    pub fn on_credentials(&mut self, ticket: u64, result: Result<Vec<Listed>, String>, cx: &mut Context<Self>) {
+        self.access.credentials_listed(ticket, result);
+        cx.notify();
     }
 
     pub(super) fn load_grants(&mut self, cx: &mut Context<Self>) {
