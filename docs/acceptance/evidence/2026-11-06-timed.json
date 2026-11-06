@@ -1,0 +1,230 @@
+[
+  {
+    "check": "timed: merged Construct executes in guest",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: unapproved model refused",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: fixed production five-minute deadline for timed-model",
+    "passed": true,
+    "observed": {
+      "before_ms": 1793985296527,
+      "after_ms": 1793985296566,
+      "deadline_ms": 1793985596565
+    }
+  },
+  {
+    "check": "timed: changed model prompt 0 reuses authority",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 200 OK\ncontent-type: application/json\ntransfer-encoding: chunked\nconnection: close\n\n{\"id\": \"probe\", \"object\": \"chat.completion\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"ok\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"total_tokens\": 3}}",
+      "err": ""
+    }
+  },
+  {
+    "check": "timed: changed model prompt 1 reuses authority",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 200 OK\ncontent-type: application/json\ntransfer-encoding: chunked\nconnection: close\n\n{\"id\": \"probe\", \"object\": \"chat.completion\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"ok\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"total_tokens\": 3}}",
+      "err": ""
+    }
+  },
+  {
+    "check": "timed: second task cannot reuse model grant",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: different model needs authority",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: different operation cannot reuse authority",
+    "passed": true,
+    "observed": {
+      "state": "pending"
+    }
+  },
+  {
+    "check": "timed: different credential cannot reuse authority",
+    "passed": false,
+    "observed": {
+      "state": {
+        "allowed": "timed"
+      }
+    }
+  },
+  {
+    "check": "timed: different gateway cannot reuse authority",
+    "passed": true,
+    "observed": {
+      "state": "pending"
+    }
+  },
+  {
+    "check": "timed: HTTP status preserves exact scope and deadline",
+    "passed": true,
+    "observed": {
+      "approval_id": "1a1b1db388d-1",
+      "destination": "timed-model",
+      "state": "allowed",
+      "scope": "timed",
+      "expires_at_ms": 1793985596565
+    }
+  },
+  {
+    "check": "timed: HTTP event preserves same deadline",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: unapproved web tunnel refused",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: fixed production five-minute deadline for held.example:36941",
+    "passed": true,
+    "observed": {
+      "before_ms": 1793985296826,
+      "after_ms": 1793985296867,
+      "deadline_ms": 1793985596866
+    }
+  },
+  {
+    "check": "timed: repeated mirror paths reuse web authority",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: peer cannot reuse web grant",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: other destination denied",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: changed port denied",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: opaque web tunnel opened",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: idle model stream opened",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: unrelated configured model stream opened",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: fixed production five-minute deadline for revoked-model",
+    "passed": true,
+    "observed": {
+      "before_ms": 1793985296988,
+      "after_ms": 1793985297061,
+      "deadline_ms": 1793985597026
+    }
+  },
+  {
+    "check": "timed: revocation closes active model operation",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: revocation preserves unrelated stream",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: restart persists exact deadlines without renewal",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: restarted daemon adopts live guests",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: reconnect uses existing web deadline",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: model stream survives until near deadline",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: web tunnel survives until near deadline",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: model closes at real expiry with daemon absent",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: web closes at real expiry with daemon absent",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: unrelated model survives other grants expiry",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: expired web admission denied during outage",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: expired model admission denied during outage",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: expired grant not restored on restart",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: host did not edit persisted five-minute deadlines",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "timed: fixed production five-minute deadline for stop-model",
+    "passed": true,
+    "observed": {
+      "before_ms": 1793985597719,
+      "after_ms": 1793985597793,
+      "deadline_ms": 1793985897759
+    }
+  },
+  {
+    "check": "timed: stopping task removes its timed authority",
+    "passed": true,
+    "observed": null
+  }
+]

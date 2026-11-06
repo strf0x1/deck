@@ -84,6 +84,7 @@ fn timed_decision_keeps_one_absolute_deadline_across_observations_and_reuse() {
     let reused = reopened.submit(incoming("t", "/w", "registry.example:443")).unwrap();
     assert_eq!(reused.grant_expires_ms, Some(expires_at_ms), "restart cannot renew the deadline");
     let grant = reopened.grants("t").unwrap().into_iter().find(|grant| grant.scope == Scope::Timed).unwrap();
+    assert_eq!(grant.task.as_deref(), Some("t"), "gateways require the persisted timed grant's task identity");
     reopened.revoke("t", &grant.id).unwrap();
     assert_eq!(
         reopened.submit(incoming("t", "/w", "registry.example:443")).unwrap().state,

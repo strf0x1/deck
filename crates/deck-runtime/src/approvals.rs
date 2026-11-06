@@ -354,7 +354,7 @@ impl Boundary {
         inner.seq += 1;
         let grant = Grant {
             id: format!("{:x}-g{:x}", now, inner.seq),
-            task: (scope == Scope::Task).then(|| item.task.clone()),
+            task: matches!(scope, Scope::Timed | Scope::Task).then(|| item.task.clone()),
             project: (scope == Scope::Project).then(|| item.project.clone()),
             gateway: item.gateway.clone(),
             operation: item.operation.clone(),

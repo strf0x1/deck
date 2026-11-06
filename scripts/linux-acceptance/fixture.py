@@ -5,10 +5,11 @@ import threading
 
 
 class Fixture:
-    def __init__(self):
+    def __init__(self, stream_timeout=20):
         self.requests = []
         self.lock = threading.Lock()
         self.tool_step = None
+        self.plan = None
         self.streaming = threading.Event()
         self.release = threading.Event()
         fixture = self
@@ -21,7 +22,21 @@ class Fixture:
                 body = self.rfile.read(int(self.headers.get('content-length', 0)))
                 with fixture.lock:
                     fixture.requests.append(dict(path=self.path, headers=dict(self.headers), body=body))
-                if fixture.tool_step is not None:
+                if fixture.plan is not None:
+                    with fixture.lock:
+                        step = fixture.plan.pop(0) if fixture.plan else {'text': 'done'}
+                    delta = dict(content=step.get('text', ''))
+                    reason = 'stop'
+                    if 'call' in step:
+                        delta = dict(tool_calls=[dict(index=0, id='scripted_'+str(len(fixture.requests)),
+                            type='function', function=dict(name=step['call'],
+                            arguments=json.dumps(step.get('args', {}))))])
+                        reason = 'tool_calls'
+                    chunks = [dict(id='scripted', choices=[dict(index=0, delta=delta, finish_reason=None)]),
+                              dict(id='scripted', choices=[dict(index=0, delta={}, finish_reason=reason)])]
+                    payload = ''.join('data: '+json.dumps(chunk)+'\n\n' for chunk in chunks)+'data: [DONE]\n\n'
+                    self.reply(200, payload.encode(), **{'Content-Type': 'text/event-stream'})
+                elif fixture.tool_step is not None:
                     step = fixture.tool_step
                     fixture.tool_step += 1
                     delta = dict(content='done')
@@ -41,7 +56,7 @@ class Fixture:
                     self.end_headers()
                     self.wfile.write(b'data: {"choices":[{"delta":{"content":"started"}}]}\n\n')
                     self.wfile.flush()
-                    fixture.release.wait(20)
+                    fixture.release.wait(stream_timeout)
                 else:
                     self.reply(200, json.dumps(dict(id='probe', object='chat.completion',
                                choices=[dict(index=0, message=dict(role='assistant', content='ok'),

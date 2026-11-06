@@ -1,0 +1,126 @@
+{
+  "deck_revision": "29dd10ff59310dcd92b84f4995f783073e34ac2a",
+  "note": "Partial reproduction before fix; later harness setup failed. These rows are excluded from final counts.",
+  "results": [
+    {
+      "check": "timed: merged Construct executes in guest",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: unapproved model refused",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: fixed production five-minute deadline for timed-model",
+      "passed": true,
+      "observed": {
+        "before_ms": 1793985259772,
+        "after_ms": 1793985259811,
+        "deadline_ms": 1793985559810
+      }
+    },
+    {
+      "check": "timed: changed model prompt 0 reuses authority",
+      "passed": false,
+      "observed": {
+        "rc": 0,
+        "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 150\nconnection: close\n\n{\"error\":{\"message\":\"the authorizing model grant is no longer present\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+        "err": ""
+      }
+    },
+    {
+      "check": "timed: changed model prompt 1 reuses authority",
+      "passed": false,
+      "observed": {
+        "rc": 0,
+        "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 150\nconnection: close\n\n{\"error\":{\"message\":\"the authorizing model grant is no longer present\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+        "err": ""
+      }
+    },
+    {
+      "check": "timed: second task cannot reuse model grant",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: different model needs authority",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: different operation cannot reuse authority",
+      "passed": true,
+      "observed": {
+        "state": "pending"
+      }
+    },
+    {
+      "check": "timed: different credential cannot reuse authority",
+      "passed": false,
+      "observed": {
+        "state": {
+          "allowed": "timed"
+        }
+      }
+    },
+    {
+      "check": "timed: different gateway cannot reuse authority",
+      "passed": true,
+      "observed": {
+        "state": "pending"
+      }
+    },
+    {
+      "check": "timed: HTTP status preserves exact scope and deadline",
+      "passed": true,
+      "observed": {
+        "approval_id": "1a1b1daa8fa-1",
+        "destination": "timed-model",
+        "state": "allowed",
+        "scope": "timed",
+        "expires_at_ms": 1793985559810
+      }
+    },
+    {
+      "check": "timed: HTTP event preserves same deadline",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: unapproved web tunnel refused",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: fixed production five-minute deadline for held.example:34961",
+      "passed": true,
+      "observed": {
+        "before_ms": 1793985260051,
+        "after_ms": 1793985260125,
+        "deadline_ms": 1793985560091
+      }
+    },
+    {
+      "check": "timed: repeated mirror paths reuse web authority",
+      "passed": false,
+      "observed": null
+    },
+    {
+      "check": "timed: peer cannot reuse web grant",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: other destination denied",
+      "passed": true,
+      "observed": null
+    },
+    {
+      "check": "timed: changed port denied",
+      "passed": true,
+      "observed": null
+    }
+  ]
+}

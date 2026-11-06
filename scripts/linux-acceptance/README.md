@@ -140,3 +140,49 @@ blocked-read case pauses only the private keyring process. Recovery keeps
 the private bus alive; this does not prove migration to a replacement bus
 address or interactive desktop password prompts. Private bus/home/keyring
 files are deleted after cleanup.
+
+## Five-minute grants, public transport and the real window
+
+Use a fresh guest image containing the **same merged Construct revision**
+as the receiver under test, rather than an older installed release. The
+2026-11-06 pass builds Construct at `28e1b8f` in `rust:1.94-bookworm` with
+`pkg-config` and `libdbus-1-dev`, using `cargo build --locked -p construct`.
+Its binary is passed to `build_image.py` above. The manifest hashes that
+binary and both resulting images. Host binaries are built from merged Deck
+`29dd10f` plus the explicitly recorded #76 fix.
+
+With the VM environment above and fresh output directories:
+
+```sh
+python3 scripts/linux-acceptance/timed.py --output "$DECK_ACCEPTANCE_ROOT/timed-new"
+python3 scripts/linux-acceptance/public_transports.py --output "$DECK_ACCEPTANCE_ROOT/public-new"
+export DECK_ACCEPTANCE_UI_EXECUTABLE=$DECK_ACCEPTANCE_ROOT/bin/deck
+python3 scripts/linux-acceptance/timed_ui.py --output "$DECK_ACCEPTANCE_ROOT/timed-ui-new"
+```
+
+`timed.py` uses production 300000 ms deadlines and takes slightly over five
+minutes. It checks real model/web reuse, scope isolation, metadata, restart,
+early revocation, expiry with the daemon absent, unrelated stream survival
+and task-stop cleanup. Its web address/dial fixture is explicitly controlled;
+it does not claim public transport. A different-credential probe uses the
+trusted daemon interface. Known #77 remains a failed assertion, so this
+driver currently exits 1 even when the expiry probes pass. No deadlines are
+shortened, rewritten or renewed by the harness.
+
+`public_transports.py` uses the production resolver/dial and guest loopback
+TCP relay: certificate-verified TLS to `example.com`, and an unauthenticated
+SSH identification-banner exchange with `ssh.github.com:443`. It requires
+public network access, creates timed decisions only for disposable tasks,
+and performs no login, push or publication.
+
+`timed_ui.py` additionally requires a visible Hyprland desktop, `hyprctl`,
+`grim`, and the built Deck window executable. It launches without taking
+initial focus and drives GPUI input using `DECK_CONTROL`. It records the
+card, Access expiry, Construct's actual ACP/HTTP feedback and journal data.
+It uses a **fixture-only in-guest path alias around #78**; this is not proof
+that ordinary production VM ACP cwd handling works. The initial unmodified
+window failed before that alias. Remove the workaround and verify the real
+path once #78 is fixed. The user keyring and desktop settings are untouched.
+
+Results, failures, exact product patch and inspected screenshots are in the
+[2026-11-06 report](../../docs/acceptance/2026-11-06-timed-linux.md).
