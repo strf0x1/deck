@@ -221,6 +221,65 @@ fn wait_view(cx: &mut VisualTestContext, mut ready: impl FnMut(&VisualTestContex
 }
 
 #[gpui::test]
+fn credential_retry_instructions_fit_the_access_panel_at_supported_widths(cx: &mut TestAppContext) {
+    use deck_runtime::broker::Listed;
+    use gpui::size;
+
+    let (deck, mut cx) = open(cx);
+    click_control(&mut cx, "hdr-access");
+    for width in [1180., 760.] {
+        cx.simulate_resize(size(px(width), px(760.)));
+        for name in ["OPENAI_API_KEY".to_string(), format!("KEY_{}", "A".repeat(60))] {
+            let message = format!(
+                "OS access was cancelled or refused; automatic reads are paused. Run `deckd credential retry {name}` to try again"
+            );
+            deck.update(&mut cx, |d, cx| {
+                d.on_credentials(
+                    0,
+                    Ok(vec![
+                        Listed { name, fingerprint: None, revoked: false, error: Some(message) },
+                        Listed {
+                            name: "DECK_GITHUB_TOKEN".into(),
+                            fingerprint: Some("sha256:123456789abc".into()),
+                            revoked: false,
+                            error: None,
+                        },
+                    ]),
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            let row = cx.debug_bounds("access-credential-row-0").unwrap();
+            let name = cx.debug_bounds("access-credential-name-0").unwrap();
+            let detail = cx.debug_bounds("access-credential-detail-0").unwrap();
+            let status = cx.debug_bounds("access-credential-status-0").unwrap();
+            assert!(
+                detail.left() >= row.left() && detail.right() <= row.right(),
+                "retry text must fit horizontally at {width}: {detail:?}, {row:?}"
+            );
+            assert!(detail.top() >= name.bottom(), "the recovery instruction needs its own space below the name");
+            assert!(detail.size.height > px(20.), "the complete instruction must wrap onto multiple lines");
+            assert!(detail.bottom() <= row.bottom(), "the row must grow to contain the complete instruction");
+            assert!(
+                status.left() >= row.left() && status.right() <= row.right(),
+                "credential status must stay visible"
+            );
+            let active = cx.debug_bounds("access-credential-row-1").unwrap();
+            let revoke = cx.debug_bounds("access-revoke-1").unwrap();
+            assert!(
+                revoke.left() >= active.left() && revoke.right() <= active.right(),
+                "the active credential's action must stay visible"
+            );
+        }
+    }
+    click_control(&mut cx, "access-revoke-1");
+    assert_eq!(
+        deck.read_with(&cx, |d, _| d.access().confirming().map(|target| target.label())),
+        Some("DECK_GITHUB_TOKEN".into())
+    );
+}
+
+#[gpui::test]
 fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_card(cx: &mut TestAppContext) {
     use deck::ui::access::Revoke;
     use deck_runtime::approvals::{Ask, Decision, Scope, State as ApprovalState};

@@ -1247,3 +1247,39 @@ fn a_disconnected_approval_caller_leaves_once_for_a_half_closed_retry() {
     assert_eq!(reply["ok"]["state"], serde_json::json!({"allowed": "once"}), "{reply}");
     assert!(client.grants(&task.id).unwrap().is_empty());
 }
+
+#[test]
+fn a_host_credential_retry_does_not_restore_revoked_access_or_change_grants() {
+    let file = credential_file("retry", &[("OPENAI_API_KEY", "sk-revoked")]);
+    let (daemon, client) = Daemon::with_credentials("retry", Some(file));
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    credential_set(&daemon, &task.id, &["OPENAI_API_KEY"]);
+    client.revoke_credential("OPENAI_API_KEY").unwrap();
+    let grants = client.grants(&task.id).unwrap();
+    assert!(!client.retry_credential("OPENAI_API_KEY").unwrap());
+    assert!(client.retry_credential("lowercase").is_err());
+    let invalid = control(&daemon, serde_json::json!({ "op": "retry_credential", "name": "lowercase" }));
+    assert!(invalid["error"].as_str().unwrap().contains("invalid credential name"));
+    assert_eq!(client.grants(&task.id).unwrap(), grants);
+    let fetch = control(
+        &daemon,
+        serde_json::json!({
+            "op": "credential", "task": task.id, "name": "OPENAI_API_KEY"
+        }),
+    );
+    assert!(fetch["error"].as_str().unwrap().starts_with("deck_credential_revoked"));
+
+    // The CLI addresses the existing daemon, even with an unusable store
+    // override in its own environment. Retry never opens that other store.
+    let cli = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .args(["--data", daemon.data.to_str().unwrap(), "credential", "retry", "OPENAI_API_KEY"])
+        .env("DECK_CREDENTIALS", "/deck-test/not-a-store")
+        .output()
+        .unwrap();
+    assert!(cli.status.success(), "{cli:?}");
+    assert!(cli.stdout.is_empty());
+    assert!(String::from_utf8(cli.stderr).unwrap().contains("no cancelled read"));
+    assert_eq!(client.task(&task.id).unwrap().state, State::Running);
+    client.stop(&task.id).unwrap();
+}

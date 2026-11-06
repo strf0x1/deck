@@ -32,30 +32,58 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             };
             let detail = item.fingerprint.clone().or_else(|| item.error.clone()).unwrap_or_default();
             div()
+                .debug_selector(move || format!("access-credential-row-{i}"))
+                .min_w_0()
                 .flex()
-                .items_center()
-                .gap(px(12.))
+                .flex_col()
+                .gap(px(6.))
                 .px(px(12.))
                 .py(px(9.))
                 .rounded(px(10.))
                 .bg(Tokens::raised())
-                .child(div().font_family(MONO).text_size(px(12.5)).child(item.name.clone()))
-                .child(div().font_family(MONO).text_size(px(11.5)).text_color(Tokens::text_faint()).child(detail))
-                .child(div().flex_1())
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .text_size(px(11.5))
-                        .text_color(Tokens::text_dim())
-                        .child(div().size(px(6.)).rounded_full().bg(color))
-                        .child(label),
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .debug_selector(move || format!("access-credential-name-{i}"))
+                                .flex_1()
+                                .min_w_0()
+                                .font_family(MONO)
+                                .text_size(px(12.5))
+                                .child(item.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(move || format!("access-credential-status-{i}"))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_size(px(11.5))
+                                .text_color(Tokens::text_dim())
+                                .child(div().size(px(6.)).rounded_full().bg(color))
+                                .child(label),
+                        )
+                        .children(can_revoke.then(|| {
+                            button(("access-revoke", i), "Revoke", Tokens::red())
+                                .debug_selector(move || format!("access-revoke-{i}"))
+                                .flex_none()
+                                .on_click(cx.listener(move |this, _, _, cx| this.ask_revoke(&name, cx)))
+                        })),
                 )
-                .children(can_revoke.then(|| {
-                    button(("access-revoke", i), "Revoke", Tokens::red())
-                        .on_click(cx.listener(move |this, _, _, cx| this.ask_revoke(&name, cx)))
-                }))
+                .child(
+                    div()
+                        .debug_selector(move || format!("access-credential-detail-{i}"))
+                        .w_full()
+                        .whitespace_normal()
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .text_color(Tokens::text_faint())
+                        .child(detail),
+                )
         })
         .collect::<Vec<_>>();
     let empty = (access.credentials().is_empty() && access.credentials_error().is_none()).then(|| {

@@ -1199,9 +1199,21 @@ The implementation is not done until these have tests where practical.
     - Add the five-minute grant to the runtime, persistence, gateway monitors,
       boundary card and Access panel. Test repeated use, scope isolation,
       unchanged deadlines, expiry during daemon outage and active revocation.
-    - Route CLI credential reads and listings through the daemon's shared
-      store. Test timeout, caller exit, denied access and explicit retry, then
-      verify Keychain prompts by hand with the supported signing identity.
+    - CLI credential listings use the daemon's shared store (PR #60).
+      The host retry slice retains cancelled/refused Keychain reads per name for
+      the current daemon lifetime and adds `deckd credential retry NAME`.
+      Retry clears only a completed refusal, never a pending flight, task
+      authority or revocation. Runtime tests cover automatic-read suppression,
+      concurrent retry, late refusal after timeout, transient recovery and
+      fresh values; daemon tests cover CLI routing and unchanged revocation.
+      macOS maps `errSecUserCanceled` and `errSecAuthFailed` to this pause;
+      interaction-unavailable and Linux locked-store errors remain transient.
+      Apple's [cancellation](https://developer.apple.com/documentation/security/errSecUserCanceled)
+      and [authentication failure](https://developer.apple.com/documentation/security/errSecAuthFailed)
+      statuses distinguish those cases. A dedicated Access-panel retry action,
+      interactive Linux refusal classification, and live Keychain verification
+      with the supported signing identity remain pending. No ACP field changes
+      are introduced by the host-only CLI/control operation.
 
     The timed scope reaches agent-visible boundary status and notifications.
     Before implementation exposes it, settle its names and payloads in the
