@@ -142,6 +142,7 @@ fn approval(id: &str) -> Approval {
         reason: None,
         created_ms: 0,
         expires_ms: 0,
+        grant_expires_ms: None,
         policy: 0,
         state: deck_runtime::approvals::State::Pending,
         waiters: 0,
@@ -336,7 +337,7 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.boundary().pending().is_some()));
     click_control(&mut vcx, "access-review-0");
     assert!(!deck.read_with(&vcx, |d, _| d.access().is_open()));
-    vcx.simulate_keystrokes("4");
+    vcx.simulate_keystrokes("5");
     assert_eq!(asked.join().unwrap().unwrap().state, ApprovalState::Denied);
     cx.quit();
     daemon.stop(&task.id).unwrap();
@@ -543,7 +544,7 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
         assert!(std::time::Instant::now() < deadline, "the window never saw the approval");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    vcx.simulate_keystrokes("2");
+    vcx.simulate_keystrokes("3");
     vcx.run_until_parked();
     let outcome = approved.join().unwrap().unwrap();
     assert_eq!(outcome.state, ApprovalState::Allowed(Scope::Task));
@@ -612,7 +613,7 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
         assert!(std::time::Instant::now() < deadline, "the window never saw the approval");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    vcx.simulate_keystrokes("2");
+    vcx.simulate_keystrokes("3");
     let outcome = approved.join().unwrap().unwrap();
     assert_eq!(outcome.state, ApprovalState::Allowed(Scope::Task));
 

@@ -2023,9 +2023,9 @@ fn incomplete_connect_headers_have_a_total_deadline_even_when_bytes_keep_arrivin
     let mut buffer = [0u8; 1024];
     assert_eq!(silent.read(&mut buffer).unwrap(), 0, "no initial bytes must also time out");
     for stream in [&mut stalled, &mut trickled] {
-        let n = stream.read(&mut buffer).unwrap();
-        let response = String::from_utf8_lossy(&buffer[..n]);
-        assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
+        let mut status = [0; b"HTTP/1.1 403 Forbidden\r\n".len()];
+        stream.read_exact(&mut status).unwrap();
+        assert_eq!(&status, b"HTTP/1.1 403 Forbidden\r\n");
     }
     assert!(start.elapsed() < Duration::from_secs(8), "trickling must not renew the header budget");
     drop(trickled);

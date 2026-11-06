@@ -125,8 +125,9 @@ impl Boundary {
         if scope == Scope::Once && item.gateway == GITHUB && item.details.identity.is_none() {
             bail!("this GitHub gateway does not identify the reviewed write; restart the task before allowing Once");
         }
-        self.remember(&mut inner, &item, scope, now)?;
+        let grant_expires_ms = self.remember(&mut inner, &item, scope, now)?;
         item.state = State::Allowed(scope);
+        item.grant_expires_ms = grant_expires_ms;
         self.notify(&mut inner, &item);
         inner.items.insert(id.to_owned(), item.clone());
         self.wake.notify_all();
@@ -324,7 +325,7 @@ impl Boundary {
     }
 
     /// A matching task or project grant, consuming an allow-once.
-    fn take_grant(&self, inner: &mut Inner, request: &Incoming, now: u64) -> Option<Scope> {
+    fn take_grant(&self, inner: &mut Inner, request: &Incoming, now: u64) -> Option<(Scope, Option<u64>)> {
         let task_scope = inner.grants.get_mut(&request.task).and_then(|grants| {
             let index = grants
                 .iter()
@@ -333,7 +334,7 @@ impl Boundary {
             if grant.scope == Scope::Once {
                 grants.remove(index);
             }
-            Some(grant.scope)
+            Some((grant.scope, grant.expires_ms))
         });
         if task_scope.is_some() {
             return task_scope;
@@ -346,10 +347,10 @@ impl Boundary {
                     && grant.matches(request)
                     && grant.expires_ms.is_none_or(|expires| expires > now)
             })
-            .map(|grant| grant.scope)
+            .map(|grant| (grant.scope, grant.expires_ms))
     }
 
-    fn remember(&self, inner: &mut Inner, item: &Approval, scope: Scope, now: u64) -> Result<()> {
+    fn remember(&self, inner: &mut Inner, item: &Approval, scope: Scope, now: u64) -> Result<Option<u64>> {
         inner.seq += 1;
         let grant = Grant {
             id: format!("{:x}-g{:x}", now, inner.seq),
@@ -364,18 +365,20 @@ impl Boundary {
             scope,
             expires_ms: match scope {
                 Scope::Once => Some(now + millis(self.settings.once)),
+                Scope::Timed => Some(now + millis(self.settings.timed)),
                 Scope::Task => Some(now + millis(self.settings.task)),
                 Scope::Project => None,
             },
             reviewed: (scope == Scope::Once)
                 .then(|| Reviewed { credential: item.credential.clone(), identity: item.details.identity.clone() }),
         };
+        let expires_ms = grant.expires_ms;
         match scope {
             Scope::Project => {
                 inner.projects.push(grant);
                 save_projects(&self.data, &inner.projects, inner.version)?;
             }
-            Scope::Task => {
+            Scope::Timed | Scope::Task => {
                 let grants = inner.grants.entry(item.task.clone()).or_default();
                 grants.push(grant);
                 save_task(&self.data, &item.task, grants)?;
@@ -384,7 +387,7 @@ impl Boundary {
                 inner.grants.entry(item.task.clone()).or_default().push(grant);
             }
         }
-        Ok(())
+        Ok(expires_ms)
     }
 
     /// Approve or revoke a whole web profile for a project. Each destination
@@ -518,7 +521,7 @@ impl Boundary {
     }
 }
 
-fn resolved(request: &Incoming, now: u64, policy: u64, scope: Scope) -> Approval {
+fn resolved(request: &Incoming, now: u64, policy: u64, scope: Scope, grant_expires_ms: Option<u64>) -> Approval {
     Approval {
         id: String::new(),
         task: request.task.clone(),
@@ -532,6 +535,7 @@ fn resolved(request: &Incoming, now: u64, policy: u64, scope: Scope) -> Approval
         reason: request.reason.clone(),
         created_ms: now,
         expires_ms: now,
+        grant_expires_ms,
         policy,
         state: State::Allowed(scope),
         waiters: 0,

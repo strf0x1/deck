@@ -1,5 +1,5 @@
 {
-  "contract": "1.0.1",
+  "contract": "1.1.0",
   "acp": "1",
   "names": {
     "construct_meta": "com.sprawlcommons/construct",
@@ -108,5 +108,37 @@
         "turn_method": "_com.sprawlcommons/construct/turn"
       }
     }
-  ]
+  ],
+  "boundary_grants": {
+    "timed_scope": "timed",
+    "deadline_field": "expires_at_ms",
+    "duration_ms": 300000,
+    "deadline_exclusive": true,
+    "capability": "boundary",
+    "new_capability_required": false,
+    "legacy_reader": "scope string accepted; deadline may be ignored; host authority unchanged",
+    "deadline_cases": [
+      {
+        "case": "before-deadline",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 300999,
+        "expires_at_ms": 301000,
+        "elapsed": false
+      },
+      {
+        "case": "at-exclusive-deadline",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 301000,
+        "expires_at_ms": 301000,
+        "elapsed": true
+      },
+      {
+        "case": "late-notice-does-not-renew",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 700000,
+        "expires_at_ms": 301000,
+        "elapsed": true
+      }
+    ]
+  }
 }

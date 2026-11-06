@@ -42,6 +42,8 @@ pub struct State {
     pub state: String,
     /// `once`, `task` or `project` for an allowed item.
     pub scope: Option<String>,
+    /// Absolute host grant deadline in Unix milliseconds, when reported.
+    pub expires_at_ms: Option<u64>,
 }
 
 /// The daemon's answer for one request.
@@ -237,7 +239,8 @@ fn parse_state(value: &Value) -> Option<State> {
         Some(Value::Object(map)) => map.get("allowed").and_then(Value::as_str).map(str::to_owned),
         _ => None,
     };
-    Some(State { id, destination, state, scope })
+    let expires_at_ms = value.get("grant_expires_ms").and_then(Value::as_u64);
+    Some(State { id, destination, state, scope, expires_at_ms })
 }
 
 #[cfg(test)]
@@ -275,12 +278,26 @@ mod tests {
                 destination: "other".into(),
                 state: "allowed".into(),
                 scope: Some("project".into()),
+                expires_at_ms: None,
             }
         );
         assert_eq!(
             parse_state(&serde_json::json!({ "id": "a", "destination": "other", "state": "pending" })).unwrap(),
-            State { id: "a".into(), destination: "other".into(), state: "pending".into(), scope: None }
+            State {
+                id: "a".into(),
+                destination: "other".into(),
+                state: "pending".into(),
+                scope: None,
+                expires_at_ms: None,
+            }
         );
         assert!(parse_state(&serde_json::json!({ "nope": true })).is_none());
+
+        let timed = parse_state(&serde_json::json!({
+            "id": "t", "state": { "allowed": "timed" }, "grant_expires_ms": 1_800_000_300_000_u64
+        }))
+        .unwrap();
+        assert_eq!(timed.scope.as_deref(), Some("timed"));
+        assert_eq!(timed.expires_at_ms, Some(1_800_000_300_000));
     }
 }

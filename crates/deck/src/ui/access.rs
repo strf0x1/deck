@@ -238,6 +238,7 @@ impl Access {
 pub fn grant_scope(grant: &Grant, now_ms: u64) -> String {
     let scope = match grant.scope {
         Scope::Once => "Once",
+        Scope::Timed => "5 minutes",
         Scope::Task => "Task",
         Scope::Project => "Project",
     };
@@ -246,6 +247,7 @@ pub fn grant_scope(grant: &Grant, now_ms: u64) -> String {
             Scope::Project => "Project · no expiry".into(),
             Scope::Task => "Task · until stopped".into(),
             Scope::Once => scope.into(),
+            Scope::Timed => scope.into(),
         },
         Some(expiry) if expiry <= now_ms => format!("{scope} · expired"),
         Some(expiry) => {

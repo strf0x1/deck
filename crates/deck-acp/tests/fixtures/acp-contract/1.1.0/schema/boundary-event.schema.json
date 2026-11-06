@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-event.schema.json",
+  "title": "Boundary HTTP event",
+  "type": "object",
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gateway": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "approval_id"
+  ],
+  "allOf": [
+    {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-status.schema.json"
+    }
+  ],
+  "additionalProperties": true
+}

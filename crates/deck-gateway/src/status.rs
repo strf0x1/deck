@@ -36,6 +36,8 @@ pub struct Event {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 struct Inner {
@@ -61,7 +63,7 @@ impl Status {
     /// Note what happened to one item. A successful request that never had a
     /// denied or held attempt is not a boundary event; a decision changes the
     /// event the agent already knows about.
-    pub fn observe(&self, id: &str, destination: &str, state: &str, scope: Option<&str>) {
+    pub fn observe(&self, id: &str, destination: &str, state: &str, scope: Option<&str>, expires_at_ms: Option<u64>) {
         let mut inner = self.lock();
         let previous = inner.events.iter().rposition(|event| event.approval_id == id);
         let destination = match previous {
@@ -93,6 +95,7 @@ impl Status {
             destination,
             state: state.to_owned(),
             scope: scope.map(str::to_owned),
+            expires_at_ms,
         });
         if inner.events.len() > EVENTS {
             let excess = inner.events.len() - EVENTS;
@@ -177,7 +180,7 @@ impl Status {
             state
         };
         if state.state != "pending" {
-            self.observe(&state.id, &state.destination, &state.state, state.scope.as_deref());
+            self.observe(&state.id, &state.destination, &state.state, state.scope.as_deref(), state.expires_at_ms);
         }
         (200, body(&state))
     }
@@ -191,7 +194,7 @@ impl Status {
         };
         match control.withdraw(id) {
             Ok(()) => {
-                self.observe(id, "", "withdrawn", None);
+                self.observe(id, "", "withdrawn", None, None);
                 (200, "{}".into())
             }
             Err(error) => (400, json!({ "error": error }).to_string()),
@@ -217,7 +220,7 @@ impl Status {
         for id in pending {
             let Ok(Some(state)) = control.status(&id) else { continue };
             if state.state != "pending" {
-                self.observe(&state.id, &state.destination, &state.state, state.scope.as_deref());
+                self.observe(&state.id, &state.destination, &state.state, state.scope.as_deref(), state.expires_at_ms);
             }
         }
     }
@@ -240,13 +243,16 @@ fn latest(inner: &Inner) -> Vec<&Event> {
 }
 
 fn body(state: &Approval) -> String {
-    json!({
+    let mut body = json!({
         "approval_id": state.id,
         "destination": state.destination,
         "state": state.state,
         "scope": state.scope,
-    })
-    .to_string()
+    });
+    if let Some(expires_at_ms) = state.expires_at_ms {
+        body["expires_at_ms"] = json!(expires_at_ms);
+    }
+    body.to_string()
 }
 
 fn query<'a>(target: &'a str, key: &str) -> Option<&'a str> {
@@ -278,26 +284,32 @@ mod tests {
     #[test]
     fn a_held_request_is_an_event_but_a_hold_that_succeeds_is_not() {
         let status = Status::new(None);
-        status.observe("a1", "other", "pending", None);
+        status.observe("a1", "other", "pending", None, None);
         assert_eq!(
             status.events(0, &web_events()),
             r#"[{"seq":1,"approval_id":"a1","gateway":"model","destination":"other","state":"pending"}]"#
         );
-        status.observe("a1", "other", "allowed", Some("task"));
+        status.observe("a1", "other", "allowed", Some("task"), None);
         let events = status.events(0, &web_events());
         assert!(events.contains(r#""state":"allowed""#), "{events}");
         assert!(events.contains(r#""scope":"task""#), "{events}");
 
-        status.observe("a2", "other", "allowed", Some("once"));
+        status.observe("a2", "other", "allowed", Some("once"), None);
         assert!(!status.events(0, &web_events()).contains("a2"), "a successful hold is not a block");
+
+        status.observe("a3", "other", "pending", None, None);
+        status.observe("a3", "other", "allowed", Some("timed"), Some(1_800_000_300_000));
+        let events = status.events(0, &web_events());
+        assert!(events.contains(r#""scope":"timed""#), "{events}");
+        assert!(events.contains(r#""expires_at_ms":1800000300000"#), "{events}");
     }
 
     #[test]
     fn a_decision_replaces_the_pending_event_and_never_reopens() {
         let status = Status::new(None);
-        status.observe("a1", "other", "pending", None);
-        status.observe("a1", "other", "denied", None);
-        status.observe("a1", "other", "pending", None);
+        status.observe("a1", "other", "pending", None, None);
+        status.observe("a1", "other", "denied", None, None);
+        status.observe("a1", "other", "pending", None, None);
         let inner = status.lock();
         let latest = latest(&inner);
         assert_eq!(latest.len(), 1, "{:?}", inner.events);
@@ -309,7 +321,7 @@ mod tests {
     fn event_sequence_survives_trimming_and_filters_by_after() {
         let status = Status::new(None);
         for i in 0..(EVENTS + 10) {
-            status.observe(&format!("a{i}"), "d", "pending", None);
+            status.observe(&format!("a{i}"), "d", "pending", None, None);
         }
         let inner = status.lock();
         assert_eq!(inner.events.len(), EVENTS);

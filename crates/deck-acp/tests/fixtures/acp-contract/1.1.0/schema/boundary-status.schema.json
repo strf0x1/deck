@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-status.schema.json",
+  "title": "Boundary approval HTTP success observation",
+  "type": "object",
+  "properties": {
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "scope": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "expires_at_ms": {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-notice.schema.json#/$defs/grant/properties/expires_at_ms"
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/boundary-notice.schema.json#/$defs/grant"
+    }
+  ],
+  "additionalProperties": true
+}

@@ -114,7 +114,7 @@ impl Grants {
             rules.iter().find_map(|rule| {
                 (rule.gateway == gateway
                     && match rule.scope.as_str() {
-                        "task" => rule.task.as_deref() == Some(self.task.as_str()),
+                        "timed" | "task" => rule.task.as_deref() == Some(self.task.as_str()),
                         "project" => self.project.is_some() && rule.project == self.project,
                         _ => false,
                     }
