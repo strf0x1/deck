@@ -137,6 +137,10 @@ pub(crate) enum Request {
     },
     /// All stored names for the credential CLI, through the daemon's broker.
     ListCredentials,
+    /// Clear a cancelled/refused OS read only when the host explicitly retries.
+    RetryCredential {
+        name: String,
+    },
     /// Revoke a credential's current value, from the CLI or the access panel.
     RevokeCredential {
         name: String,
@@ -195,7 +199,7 @@ impl Request {
         {
             bail!("invalid approval id");
         }
-        if let Self::Credential { name, .. } | Self::RevokeCredential { name } = self
+        if let Self::Credential { name, .. } | Self::RevokeCredential { name } | Self::RetryCredential { name } = self
             && !crate::credentials::valid_name(name)
         {
             bail!("invalid credential name");

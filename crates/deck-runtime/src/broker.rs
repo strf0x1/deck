@@ -4,9 +4,10 @@
 //! The design choice: the task's set is checked before the store is touched,
 //! so a name outside it is refused without a read, and a revoked value is
 //! refused after the read, by its fingerprint, so setting a new value restores
-//! service without un-revoking anything. Nothing is cached: each fetch reads
-//! the store. The value passes through this module once and is never logged;
-//! the name and fingerprint are what records carry.
+//! service without un-revoking anything. No value is cached: each permitted
+//! fetch reads the store. The value passes through this module once and is
+//! never logged; the name and fingerprint are what records carry. OS cancellation
+//! or authentication refusal pauses reads until the host requests a retry.
 
 use crate::credentials::revoked::{Revocation, Revoked};
 use crate::credentials::{self, Absent, Store};
@@ -100,6 +101,11 @@ impl Broker {
         })
     }
 
+    /// A host action can permit another OS read; it grants no task authority.
+    pub fn retry(&self, name: &str) -> Result<bool> {
+        self.store.retry(name)
+    }
+
     pub fn describe(&self) -> String {
         self.store.describe()
     }
@@ -112,6 +118,7 @@ impl Broker {
         }
         let value = self.store.read(name).map_err(|absent| match absent {
             Absent::Missing => Refusal::Missing,
+            Absent::Denied => Refusal::Unavailable(credentials::denied_message(name)),
             Absent::Unavailable(why) => Refusal::Unavailable(why),
         })?;
         let fingerprint = credentials::fingerprint(&value);
@@ -131,6 +138,7 @@ impl Broker {
         }
         let value = match self.store.read(name) {
             Ok(value) => value,
+            Err(Absent::Denied) => bail!("{name}: {}", credentials::denied_message(name)),
             Err(Absent::Missing) => bail!("{name} has no value to revoke"),
             Err(Absent::Unavailable(why)) => bail!("{name} could not be read to revoke it: {why}"),
         };
@@ -188,6 +196,7 @@ fn list_one(store: &Store, revoked: &Revoked, name: String) -> Listed {
     let (fingerprint, error) = match store.read(&name) {
         Ok(value) => (Some(credentials::fingerprint(&value)), None),
         Err(Absent::Missing) => (None, Some("no value".to_string())),
+        Err(Absent::Denied) => (None, Some(credentials::denied_message(&name))),
         Err(Absent::Unavailable(why)) => (None, Some(why)),
     };
     let is_revoked = fingerprint.as_deref().is_some_and(|fingerprint| revoked.is_revoked(fingerprint));

@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result, bail};
 use std::io::{BufRead as _, IsTerminal as _, Read as _};
 use std::path::Path;
 
-pub const USAGE: &str = "deckd [--data PATH] credential set NAME | delete NAME | list | revoke NAME";
+pub const USAGE: &str = "deckd [--data PATH] credential set NAME | delete NAME | list | revoke NAME | retry NAME";
 
 /// Run one credential command. `args` is everything after `credential`.
 pub fn run(data: &Path, args: &[String]) -> Result<()> {
@@ -58,6 +58,16 @@ pub fn run(data: &Path, args: &[String]) -> Result<()> {
                     (None, false) => "active".to_string(),
                 };
                 println!("{}\t{}\t{store_name}\t{state}", listed.name, listed.fingerprint.as_deref().unwrap_or("-"));
+            }
+            Ok(())
+        }
+        Some("retry") => {
+            let name = name("retry")?;
+            let client = DaemonClient::connect_or_start(data)?;
+            if client.retry_credential(name)? {
+                eprintln!("{name}: cancellation cleared; the next operation may ask for OS access again");
+            } else {
+                eprintln!("{name}: no cancelled read; an outstanding read and existing permissions are unchanged");
             }
             Ok(())
         }

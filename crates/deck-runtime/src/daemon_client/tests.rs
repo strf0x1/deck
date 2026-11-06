@@ -41,6 +41,10 @@ fn credential_reads_leave_grant_controls_available() {
                     let reply = match request {
                         Request::Tasks | Request::AccessGrants { .. } => json!({"ok": []}),
                         Request::RevokeAccessGrant { .. } => json!({"ok": null}),
+                        Request::RetryCredential { name } => {
+                            assert_eq!(name, "KEY");
+                            json!({"ok": true})
+                        }
                         Request::Credentials { .. } => {
                             started.send(()).unwrap();
                             released.lock().unwrap().recv().unwrap();
@@ -65,6 +69,7 @@ fn credential_reads_leave_grant_controls_available() {
     let controls = std::thread::spawn(move || {
         let listing = grants.access_grants("t").unwrap();
         grants.revoke_access_grant("t", "g").unwrap();
+        assert!(grants.retry_credential("KEY").unwrap());
         finished.send(listing).unwrap();
     });
     let available = result.recv_timeout(Duration::from_secs(2));

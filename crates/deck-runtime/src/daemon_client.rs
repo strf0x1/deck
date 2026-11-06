@@ -137,6 +137,11 @@ impl DaemonClient {
         Self::at(self.paths.clone())?.request(Request::ListCredentials)
     }
 
+    /// Permit a new OS read after cancellation/refusal, without fetching it.
+    pub fn retry_credential(&self, name: &str) -> Result<bool> {
+        Self::at(self.paths.clone())?.request(Request::RetryCredential { name: name.into() })
+    }
+
     /// Revoke a credential's current value. Running gateways close the
     /// operations that used it before their next read of the store.
     pub fn revoke_credential(&self, name: &str) -> Result<crate::credentials::revoked::Revocation> {

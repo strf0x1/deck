@@ -174,6 +174,13 @@ fn connection(
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
+            Ok(request @ Request::RetryCredential { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::RetryCredential { name } => Ok(json!(broker.retry(&name)?)),
+                    _ => unreachable!("matched a retry request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request @ Request::RevokeCredential { .. }) => {
                 let result = request.validate().and_then(|()| match request {
                     Request::RevokeCredential { name } => Ok(serde_json::to_value(broker.revoke(&name)?)?),
@@ -495,6 +502,7 @@ impl Service {
             | Request::CredentialWatch { .. }
             | Request::Credentials { .. }
             | Request::ListCredentials
+            | Request::RetryCredential { .. }
             | Request::RevokeCredential { .. } => unreachable!("handled before service dispatch"),
         }
     }

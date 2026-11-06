@@ -82,6 +82,7 @@ export DECK_CREDENTIALS=$PWD/target/credentials.json   # the file store; omit fo
 echo x | target/debug/deckd credential set OPENAI_API_KEY   # value on stdin, file written at 0600
 target/debug/deckd credential list                          # names and fingerprints, never values
 target/debug/deckd credential revoke OPENAI_API_KEY         # closes running requests that used it
+target/debug/deckd credential retry OPENAI_API_KEY          # permits another OS read after cancellation
 ```
 
 Without `DECK_CREDENTIALS`, `deckd` uses the macOS Keychain or the Secret

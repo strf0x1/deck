@@ -359,3 +359,31 @@ agent process with one prompt and one model call. The suite's own real-agent
 cases, raw stale permission replies and old prompt response suppression
 included, pass with `CONSTRUCT_BIN` set to that binary. The fake-agent and
 headless UI cases run in both CI jobs.
+
+### Retrying OS credential access
+
+After a Keychain read is cancelled (`errSecUserCanceled`) or authentication
+is refused (`errSecAuthFailed`), the daemon retains that failure by credential
+name. Repeated model requests, listings and revocation attempts return the
+existing failure without starting another OS read. The error names the
+recovery command:
+
+```sh
+deckd credential retry OPENAI_API_KEY
+```
+
+The command sends private host control `retry_credential {name}` and reports
+whether a completed refusal was cleared. It does not fetch a value; the next
+operation or listing may ask for OS access. An unanswered read stays in
+flight even if its caller timed out, so retry cannot create a parallel dialog.
+A retry changes neither task authority nor revoked fingerprints. Successful
+reads still go to the store on every request, so rotation is not cached.
+
+This pause lasts for the current daemon's lifetime, across task and window
+attachments. It is not a persisted credential or grant. Transient failures,
+missing items, unavailable interaction and locked Linux Secret Service
+collections continue to recover automatically. Linux does not classify
+localized `secret-tool` diagnostics as an explicit human refusal.
+
+The CLI provides the explicit retry in this slice; a dedicated Access-panel
+retry action and live macOS dialog verification remain follow-up work.

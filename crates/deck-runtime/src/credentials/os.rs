@@ -28,13 +28,24 @@ mod imp {
 
     /// `errSecItemNotFound`.
     const NOT_FOUND: i32 = -25300;
+    /// `errSecUserCanceled`: explicit cancellation, not an unavailable store.
+    const USER_CANCELED: i32 = -128;
+    /// `errSecAuthFailed`: access/authentication was refused.
+    const AUTH_FAILED: i32 = -25293;
 
     pub fn read(name: &str) -> Result<String, Absent> {
         match passwords::get_generic_password(SERVICE, name) {
             Ok(bytes) => String::from_utf8(bytes)
                 .map_err(|_| Absent::Unavailable(format!("the Keychain item {name} is not UTF-8"))),
-            Err(error) if error.code() == NOT_FOUND => Err(Absent::Missing),
-            Err(error) => Err(Absent::Unavailable(format!("the Keychain refused {name}: {error}"))),
+            Err(error) => Err(read_error(error.code(), name)),
+        }
+    }
+
+    fn read_error(code: i32, name: &str) -> Absent {
+        match code {
+            NOT_FOUND => Absent::Missing,
+            USER_CANCELED | AUTH_FAILED => Absent::Denied,
+            _ => Absent::Unavailable(format!("the Keychain refused {name} (OSStatus {code})")),
         }
     }
 
@@ -68,6 +79,18 @@ mod imp {
             .filter_map(|result| result.simplify_dict())
             .filter_map(|attributes| attributes.get("acct").cloned())
             .collect())
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn cancelled_or_refused_access_is_distinct_from_a_locked_or_missing_store() {
+            assert_eq!(read_error(USER_CANCELED, "KEY"), Absent::Denied);
+            assert_eq!(read_error(NOT_FOUND, "KEY"), Absent::Missing);
+            assert_eq!(read_error(AUTH_FAILED, "KEY"), Absent::Denied);
+            assert!(matches!(read_error(-25308, "KEY"), Absent::Unavailable(_)));
+        }
     }
 }
 
@@ -138,7 +161,9 @@ mod imp {
         match read(name) {
             Ok(_) => {}
             Err(Absent::Missing) => return Ok(false),
-            Err(Absent::Unavailable(_)) => bail!("the Secret Service could not check {name} before deletion"),
+            Err(Absent::Unavailable(_) | Absent::Denied) => {
+                bail!("the Secret Service could not check {name} before deletion")
+            }
         }
         let output =
             tool().args(["clear", "service", SERVICE, "name", name]).output().context("running secret-tool")?;

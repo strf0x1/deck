@@ -8,7 +8,8 @@
 //! most one per name is outstanding, because the OS store may be waiting on
 //! an access dialog: a read that misses the bound is *unavailable*, never
 //! *missing*, and the dialog's answer serves whoever asks next. No value is
-//! cached here; every call reads the store, which is what makes rotation free.
+//! cached here; successful calls read the store, so rotation is immediate.
+//! An OS cancellation or authentication refusal is retained until a host retry; outages are not.
 
 pub mod cli;
 mod file;
@@ -51,6 +52,8 @@ pub fn fingerprint(value: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Absent {
     Missing,
+    /// OS access was cancelled or authentication refused; automatic reads must not retry.
+    Denied,
     Unavailable(String),
 }
 
@@ -161,8 +164,8 @@ impl Store {
 
     /// Run the one read for `name` on its own thread, so a dialog that is
     /// never answered costs a parked thread, not a caller. The thread removes
-    /// its entry once it has an answer, so the next request after that reads
-    /// the store again.
+    /// its entry after a non-denial answer, so the next request reads again.
+    /// Cancelled/refused access remains a completed flight until a host retry.
     fn lead(&self, name: &str, flight: Arc<Flight>) {
         let source = self.source.clone();
         let owned = name.to_string();
@@ -177,6 +180,20 @@ impl Store {
         if let Err(error) = spawned {
             finish(&self.reads, name, &flight, Err(Absent::Unavailable(format!("starting a store read: {error}"))));
         }
+    }
+
+    /// Clear only an answered denial. A retry never starts a read, clears a
+    /// pending flight, or changes a task grant or revoked fingerprint.
+    pub fn retry(&self, name: &str) -> Result<bool> {
+        check_name(name)?;
+        let mut reads = self.reads.lock().unwrap_or_else(|e| e.into_inner());
+        let denied = reads.get(name).is_some_and(|flight| {
+            matches!(*flight.outcome.lock().unwrap_or_else(|e| e.into_inner()), Some(Err(Absent::Denied)))
+        });
+        if denied {
+            reads.remove(name);
+        }
+        Ok(denied)
     }
 
     /// Store `value` under `name`, replacing any value there.
@@ -219,11 +236,12 @@ impl Store {
     }
 }
 
-/// Publish a read's answer to its waiters and forget the flight.
+/// Publish a read's answer; retain only explicit denial until a host retry.
 fn finish(reads: &Reads, name: &str, flight: &Arc<Flight>, outcome: Outcome) {
     let mut reads = reads.lock().unwrap_or_else(|e| e.into_inner());
+    let denied = outcome == Err(Absent::Denied);
     *flight.outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
-    if reads.get(name).is_some_and(|current| Arc::ptr_eq(current, flight)) {
+    if !denied && reads.get(name).is_some_and(|current| Arc::ptr_eq(current, flight)) {
         reads.remove(name);
     }
     flight.done.notify_all();
@@ -239,6 +257,12 @@ fn read_source(source: &Source, name: &str) -> Outcome {
     if value.is_empty() { Err(Absent::Missing) } else { Ok(value) }
 }
 
+pub(crate) fn denied_message(name: &str) -> String {
+    format!(
+        "OS access was cancelled or refused; automatic reads are paused. Run `deckd credential retry {name}` to try again"
+    )
+}
+
 fn check_name(name: &str) -> Result<()> {
     if !valid_name(name) {
         bail!("{name:?} is not a credential name: use [A-Z][A-Z0-9_]{{0,63}}, like OPENAI_API_KEY");
@@ -248,3 +272,6 @@ fn check_name(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod retry_tests;
