@@ -1,7 +1,8 @@
 # 0008 — The GitHub workflow end to end: the agent's client and Deck's view
 
 Status: proposed, 2026-11-06. Builds on ADR 0007; the remaining half of #6's
-"draft PR" step.
+"draft PR" step. Amends ADR 0007 §3 (writes to the task's own branch no
+longer ask by default, §6 here) and §6 (one approval, not two, §5 here).
 
 ## Context
 
@@ -88,8 +89,9 @@ restarts, appears in `task.json`, and differs per project.
   the remote's default branch as the host's checkout records it
   (`refs/remotes/origin/HEAD`), else `main`.
 - A project file (`.deck/project.toml`, `[github] repository, base,
-  branches`) overrides inference, for a checkout whose GitHub remote is not
-  `origin` or a project that wants another base.
+  branches, approvals`) overrides inference, for a checkout whose GitHub
+  remote is not `origin` or a project that wants another base, and sets the
+  approval mode (§6).
 - One repository receives both the push and the pull request, as in ADR
   0007. A fork therefore publishes to and opens its pull requests on the
   fork; a pull request into the upstream repository is opened by the user on
@@ -118,6 +120,16 @@ When the task has a repository, the guest entry, after import:
 - sets `user.name`/`user.email` from the host's git identity recorded in the
   spec, so the commits on the PR are the user's, as they would be locally.
 
+The import into the guest leaves out files the project's git ignores
+(`git ls-files --others --ignored --exclude-standard`) when the project is a
+git checkout. Ignored files are where secrets (`.env`, local credentials) and
+build output live; once a task can publish without a card (§6), a file that
+reaches `/workspace` is one `git add -A` away from a remote branch. Untracked
+files that are not ignored are still imported: they are the user's work in
+progress and the agent should see them. This applies to every VM task of a
+git checkout, with or without a repository, because it is what a guest can
+leak through any route, and it makes the import smaller.
+
 The task branch name reaches the guest entry through the boot configuration
 the VMM already writes. It is a label for the checkout; the gateway still
 refuses any other ref, so getting it wrong makes publication fail, not widen.
@@ -141,28 +153,80 @@ and that `git push` will fail by design (ADR 0007 §6).
 
 **One decision per write, at the gateway.** In Deck mode (`DECK_MANAGED=1`
 and `DECK_GITHUB_URL` set) Construct does not ask its own approval for the
-gateway-backed operations (`push`, `pr_create`, `pr_update`); Deck's card is
-the only decision, and `pr_review` is a read that nobody asks about. This
+gateway-backed operations (`push`, `pr_create`, `pr_update`); Deck's
+gateway is the only decision point (§6), and `pr_review` is a read that
+nobody asks about. This
 amends ADR 0007 §6, which kept both. Construct's approval is cooperative: an
 agent that skips it skips it, so it cannot be the control, while the
 gateway's cannot be bypassed and already names the operation, the
-destination and (§6) what is being published. Two cards back to back in one
+destination and (§7) what is being published. Two cards back to back in one
 window for the same push teach the user to click through both. `commit`
 stays local to the guest and is the sandbox's business, not the boundary's;
 whether Construct still asks for it in Deck mode is Construct's call. Outside
 Deck mode nothing changes: the host-credential path keeps Construct's
 approval, because there it is the only one.
 
-### 6. Approvals say what is being published
+### 6. Writes to the task's own branch are allowed by default
+
+The human decision in this workflow is the pull request, on GitHub, where the
+change can be read. A card at publish time asks for that decision before
+there is anything to read it in: a careful user cannot judge "allow
+`create_pr`?" without the diff, and a hurried one learns to click Allow,
+which protects nothing. What makes a publish safe is §2 of ADR 0007, not the
+card: one repository, one branch, fast-forward only, no merge, nothing on
+the base. Everything a task can do within that is visible, reversible and
+waits for review.
+
+So the default approval mode, `own-branch`, admits without a card:
+
+- `publish` to the task's own branch;
+- `create_pr` from the task's own branch as a draft;
+- `update_pr` of a pull request whose head is the task's own branch, except
+  `draft: false`.
+
+and still asks for:
+
+- any write to a shared branch listed under `branches`, because it changes
+  work other tasks or people build on;
+- making a pull request ready for review (`update_pr` with `draft: false`,
+  or `create_pr` with `draft: false`): it is once per pull request, it is the
+  moment other people are notified, and "the agent says this is ready" is a
+  question worth one click;
+- every write while the repository is public (below).
+
+Everything outside the operation set is refused as before. `approvals =
+"ask"` in the project file restores a card for every write, which is ADR
+0007 §3's behaviour; this section amends that default.
+
+**The queue still decides.** The gateway asks `deckd`'s approval queue for
+every write exactly as now; in `own-branch` mode the queue admits a covered
+operation at once and records it with scope `default`. Writes therefore
+still reach the boundary `/events`, the task record (§8) and the access
+panel, a project or task can be switched to `ask` and the next operation
+sees it, and revoking the GitHub credential still stops everything,
+including a publish in flight (ADR 0004 §7).
+
+**Public repositories ask.** Pushing a branch to a public repository
+publishes it to everyone, so a mistake or an injected instruction becomes a
+disclosure rather than a draft. Before a write it would admit by default,
+the gateway reads the repository's visibility (`GET /repos/{owner}/{name}`,
+a read with the same token, cached for the operation); a public repository,
+or one whose visibility it cannot read, turns that write into a card. A
+project that publishes in the open and accepts this sets `approvals =
+"own-branch-public"` in its project file, explicitly.
+
+### 7. Cards say what is being published
 
 A GitHub ask carries a bounded `summary` in its details: for `publish`, the
 commit being published, its subject and the count of new commits; for
 `create_pr`/`update_pr`, the title and whether it is a draft. The card shows
-it under the destination. The summary is guest-supplied description, shown
+it under the destination. With §6 a card is the exception — a shared
+branch, ready for review, a public repository, or `ask` mode — so the
+summary matters most exactly where a card appears. The summary is guest-supplied description, shown
 as such; the decision is still about the destination and operation, and the
 gateway, not the summary, decides which commit lands.
 
-### 7. Deck shows each task's publication, read-only
+### 8. Deck shows each task's publication, read-only
 
 Publication is a property of the task, so it is stored with the task and
 shown with it.
@@ -191,18 +255,20 @@ shown with it.
 - A local task shows none of this (ADR 0007: no enforced boundary, no
   gateway).
 
-### 8. The fake agent and an acceptance run prove the loop
+### 9. The fake agent and an acceptance run prove the loop
 
 `deck-fake-agent` gains a scripted publication turn (commit, `push`,
 `create_pr`, `review`) against `DECK_GITHUB_URL`, advertising
-`github_operations`, so `crates/deck/tests/` and CI exercise the card, the
-recorded outcome and the panel against a stub GitHub without a model.
+`github_operations`, so `crates/deck/tests/` and CI exercise the default
+admission, the card for ready-for-review, the recorded outcome and the panel against a stub GitHub without a model.
 
 The completion evidence is an acceptance run in `docs/acceptance/` with real
 Construct in a VM, its scripted model and a scratch GitHub repository: a turn
-edits, commits, pushes and opens a draft PR; Deck shows the card with the
-summary, the user allows; the PR chip appears; checks are read; a second push
-fast-forwards; a forced history is refused with `current`; the task is
+edits, commits, pushes and opens a draft PR with no card; the PR chip
+appears; checks are read; a second push fast-forwards; a forced history is
+refused with `current`; marking the PR ready shows a card with the summary
+and the user allows; with `approvals = "ask"` the first push shows a card; a
+git-ignored `.env` in the host project is absent from the guest; the task is
 stopped and resumed and the chip is still there.
 
 ## Consequences
@@ -224,9 +290,18 @@ stopped and resumed and the chip is still there.
   by name. That is intended: the user's working tree is not the task's.
 - Deck gains a read path to GitHub (through each task's gateway) but no write
   path; the token still never leaves `deckd` and the gateways.
-- Each GitHub write gets exactly one human decision, Deck's. A project rule
-  ("Always allow") therefore means the agent publishes to its own branch
-  without any prompt, which is what the rule says; merge stays on GitHub.
+- By default a task goes from edit to draft pull request with no prompt at
+  all; the human decision is reading the pull request and, once per pull
+  request, allowing it to be marked ready. Every write is still admitted by
+  the queue, recorded and revocable.
+- Where a card does appear it is the only one (Construct no longer asks in
+  Deck mode), so it is one decision, not two.
+- A public repository asks on every write unless its project opts out by
+  name; that is friction on open-source work, accepted because the failure
+  is irreversible disclosure.
+- A project that needs a file the import now leaves out (an ignored local
+  config the build reads) has to un-ignore it or provide it another way;
+  Deck does not copy ignored files into a guest that can publish.
 - Revisit if: tasks need several repositories (widen the spec, not the
   operation set), a GitHub App replaces the token (ADR 0004 §4.6), or polling
   `review` proves too costly (GitHub webhooks would need a public endpoint
