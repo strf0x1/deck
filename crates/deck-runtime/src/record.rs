@@ -221,7 +221,7 @@ mod tests {
     }
 
     fn spec() -> Spec {
-        Spec { argv: vec!["agent".into()], cwd: "/w".into() }
+        Spec { argv: vec!["agent".into()], cwd: "/w".into(), github: None }
     }
 
     #[test]

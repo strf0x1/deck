@@ -39,7 +39,7 @@ impl Drop for Scratch {
 }
 
 fn spec(argv: &[&str]) -> Spec {
-    Spec { argv: argv.iter().map(|s| s.to_string()).collect(), cwd: std::env::temp_dir() }
+    Spec { argv: argv.iter().map(|s| s.to_string()).collect(), cwd: std::env::temp_dir(), github: None }
 }
 
 fn sh(script: &str) -> Spec {

@@ -23,7 +23,7 @@ impl WindowTask {
     /// Find or start a task, rebuilding an existing live session when supported.
     pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
         let daemon = DaemonClient::connect_or_start(data)?;
-        let run = daemon.run(Spec { argv, cwd })?;
+        let run = daemon.run(Spec { argv, cwd, github: None })?;
         // ACP addresses the agent filesystem; task and project identity stay
         // in the host filesystem recorded by the daemon.
         let agent_cwd = if run.task.backend == "vm" { "/workspace".into() } else { run.task.spec.cwd.clone() };

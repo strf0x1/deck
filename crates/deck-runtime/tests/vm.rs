@@ -63,7 +63,7 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     std::fs::write(root.join("project/README.md"), "vm test\n").unwrap();
     let data = root.join("data");
     let paths = Paths::for_data(&data).unwrap();
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project") };
+    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), github: None };
 
     let runtime = open(&data, &paths);
     let id = runtime.create(spec.clone()).unwrap();
@@ -129,7 +129,7 @@ fn vm_prompt_and_permission_round_trip() {
     std::fs::create_dir_all(root.join("project")).unwrap();
     let data = root.join("data");
     let paths = Paths::for_data(&data).unwrap();
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project") };
+    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), github: None };
 
     let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())
         .arg("--data")
@@ -266,7 +266,7 @@ fn vm_launch_to_ready_is_event_driven_twenty_times() {
     std::fs::create_dir_all(root.join("project")).unwrap();
     let data = root.join("data");
     let paths = Paths::for_data(&data).unwrap();
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project") };
+    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), github: None };
     let runtime = Runtime::open(&data, Vm::from_env(&data, paths.clone()).expect("VM backend configuration"))
         .expect("runtime")
         .with_grace(Duration::from_millis(200));
@@ -289,6 +289,74 @@ fn vm_launch_to_ready_is_event_driven_twenty_times() {
     let worst = launches.iter().max().unwrap();
     println!("launch to ACP ready over 20 starts: mean {:?}, worst {worst:?}", total / 20);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Two projects under one daemon record two GitHub destinations (ADR 0008
+/// §3). The policy is resolved once, at create, and survives a runtime reopen.
+#[test]
+fn vm_tasks_record_their_projects_github_policy() {
+    let Some(_) = std::env::var_os(deck_runtime::vm::IMAGE_ENV) else {
+        eprintln!("skipping: {} is not set", deck_runtime::vm::IMAGE_ENV);
+        return;
+    };
+    for key in [
+        deck_runtime::vm::JOURNAL_ENV,
+        deck_runtime::vm::KRUN_ENV,
+        deck_runtime::vm::EXECUTABLE_ENV,
+        deck_runtime::vm::GATEWAY_ENV,
+    ] {
+        assert!(std::env::var_os(key).is_some(), "the policy test needs {key}");
+    }
+    for key in [
+        deck_runtime::github::REPOSITORY_ENV,
+        deck_runtime::github::BASE_ENV,
+        deck_runtime::github::BRANCHES_ENV,
+        deck_runtime::github::TOKEN_ENV,
+    ] {
+        if std::env::var_os(key).is_some() {
+            eprintln!("skipping: {key} overrides every task's GitHub policy");
+            return;
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!("deck-vm-policy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut specs = Vec::new();
+    for (name, origin) in [("first", "https://github.com/Owner/One.git"), ("second", "git@github.com:Other/Two.git")] {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet"]);
+        git(&dir, &["remote", "add", "origin", origin]);
+        specs.push(Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir, github: None });
+    }
+
+    let data = root.join("data");
+    let paths = Paths::for_data(&data).unwrap();
+    let runtime = open(&data, &paths);
+    let first = runtime.create(specs[0].clone()).unwrap();
+    let second = runtime.create(specs[1].clone()).unwrap();
+    let repository = |id: &str| runtime.task(id).unwrap().spec.github.expect("a recorded policy").repository;
+    assert_eq!(repository(&first), "owner/one");
+    assert_eq!(repository(&second), "other/two");
+
+    // Both the event log and the human-readable snapshot carry it.
+    for (id, expected) in [(&first, "owner/one"), (&second, "other/two")] {
+        let snapshot = std::fs::read_to_string(data.join("tasks").join(id).join("task.json")).unwrap();
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["spec"]["github"]["repository"], expected, "{snapshot}");
+    }
+
+    // The record, not the daemon's memory, is what a restarted runtime reads.
+    drop(runtime);
+    let runtime = open(&data, &paths);
+    assert_eq!(runtime.task(&first).unwrap().spec.github.unwrap().repository, "owner/one");
+    assert_eq!(runtime.task(&second).unwrap().spec.github.unwrap().repository, "other/two");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+    assert!(status.success(), "git {args:?} failed");
 }
 
 fn open(data: &Path, paths: &Paths) -> Runtime {

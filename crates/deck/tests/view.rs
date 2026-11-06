@@ -291,7 +291,7 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone() }).unwrap().task;
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), github: None }).unwrap().task;
     let ask = Ask {
         gateway: "web".into(),
         operation: "connect".into(),
@@ -441,7 +441,7 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone() }).unwrap().task;
+    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), github: None }).unwrap().task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()

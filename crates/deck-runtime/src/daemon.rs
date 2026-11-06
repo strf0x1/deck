@@ -227,20 +227,18 @@ fn connection(
                 wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
             }
             Ok(Request::GitHubProfile { task, project, repository, operations, revoke }) => {
+                let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task).ok();
                 let project = match project {
                     Some(project) if !project.is_empty() => Some(project),
-                    _ => service
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .runtime
-                        .task(&task)
-                        .ok()
-                        .map(|record| record.spec.cwd.to_string_lossy().into_owned()),
+                    _ => record.as_ref().map(|record| record.spec.cwd.to_string_lossy().into_owned()),
                 };
-                let credential = std::env::var(crate::vm::GITHUB_TOKEN_ENV)
-                    .ok()
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| crate::vm::GITHUB_TOKEN.into());
+                // A VM task's credential name is in its recorded policy; a
+                // local task has no policy and keeps the development default.
+                let credential = record
+                    .as_ref()
+                    .and_then(|record| record.spec.github.as_ref().map(|github| github.credential.clone()))
+                    .or_else(|| std::env::var(crate::github::TOKEN_ENV).ok().filter(|name| !name.is_empty()))
+                    .unwrap_or_else(|| crate::github::TOKEN.into());
                 let changed =
                     boundary.github_profile(project.as_deref(), &repository, &operations, &credential, revoke);
                 wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
@@ -514,7 +512,7 @@ impl Service {
 
     fn run(&mut self, spec: Spec) -> Result<RunResult> {
         let tasks = self.runtime.tasks()?;
-        let fits = |t: &&Task| t.backend == "local" && t.spec == spec;
+        let fits = |t: &&Task| t.backend == "local" && t.spec.same_command(&spec);
         if let Some(task) = tasks.iter().filter(fits).find(|t| t.state == State::Running) {
             return Ok(RunResult { task: task.clone(), started: false });
         }
