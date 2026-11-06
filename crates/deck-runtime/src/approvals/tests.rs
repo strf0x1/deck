@@ -26,6 +26,8 @@ fn incoming(task: &str, project: &str, destination: &str) -> Incoming {
             identity: None,
         },
         reason: None,
+        coverage: None,
+        approvals: None,
     }
 }
 
@@ -554,6 +556,77 @@ fn always_allow_on_a_github_card_trusts_the_repository() {
     let item = boundary.submit(github("t-1", "create_pr", "o/r#deck/t-1")).unwrap();
     boundary.decide(&item.id, Decision::Task).unwrap();
     assert_eq!(boundary.submit(github("t-1", "create_pr", "o/r#other")).unwrap().state, State::Pending);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn own_branch_admission_covers_exactly_the_documented_writes() {
+    use crate::github::Approvals;
+    let dir = scratch("github-default-admission");
+    let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+    let request = |task: &str,
+                   operation: &str,
+                   destination: &str,
+                   mode: Option<Approvals>,
+                   own_branch: bool,
+                   public: Option<bool>| {
+        let mut request = github(task, operation, destination);
+        request.coverage = Some(Coverage { own_branch, public });
+        request.approvals = mode;
+        request
+    };
+    // Admitted: the task's own branch, a draft pull request from it, and an
+    // update of its own pull request that does not mark it ready.
+    for (operation, destination) in
+        [("publish", "o/r#deck/t-1"), ("create_pr", "o/r#deck/t-1"), ("update_pr", "o/r#pr7")]
+    {
+        let item = boundary
+            .submit(request("t-1", operation, destination, Some(Approvals::OwnBranch), true, Some(false)))
+            .unwrap();
+        assert_eq!(item.state, State::Allowed(Scope::Default), "{operation}");
+        assert_eq!(item.gateway, "github");
+        assert_eq!(item.expires_ms, item.created_ms, "an admission is not a decidable card");
+    }
+    assert!(boundary.pending("t-1").unwrap().is_empty(), "no card is open");
+    assert!(boundary.grants("t-1").unwrap().is_empty(), "an admission is not reusable authority");
+
+    // Asked: a shared branch, a public or unreadable repository, `ask` mode,
+    // and a task whose record names no mode. Each task uses its own branch as
+    // the destination, so only the tested gate can keep the write from being
+    // admitted.
+    for (task, mode, own_branch, public) in [
+        ("t-shared", Some(Approvals::OwnBranch), false, Some(false)),
+        ("t-public", Some(Approvals::OwnBranch), true, Some(true)),
+        ("t-unreadable", Some(Approvals::OwnBranch), true, None),
+        ("t-ask", Some(Approvals::Ask), true, Some(false)),
+        ("t-no-mode", None, true, Some(false)),
+    ] {
+        let destination = format!("o/r#deck/{task}");
+        let item = boundary.submit(request(task, "publish", &destination, mode, own_branch, public)).unwrap();
+        assert_eq!(item.state, State::Pending, "{task}");
+    }
+
+    // The explicit opt-in admits a public, or unreadable, repository.
+    for public in [Some(true), None] {
+        assert_eq!(
+            boundary
+                .submit(request("t-1", "publish", "o/r#deck/t-1", Some(Approvals::OwnBranchPublic), true, public))
+                .unwrap()
+                .state,
+            State::Allowed(Scope::Default),
+            "{public:?}"
+        );
+    }
+
+    // Another gateway cannot use the GitHub classification.
+    let mut other = request("t-1", "connect", "o/r#deck/t-1", Some(Approvals::OwnBranch), true, Some(false));
+    other.gateway = "web".into();
+    assert_eq!(boundary.submit(other).unwrap().state, State::Pending);
+
+    assert_eq!(
+        serde_json::to_value(State::Allowed(Scope::Default)).unwrap(),
+        serde_json::json!({ "allowed": "default" })
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 

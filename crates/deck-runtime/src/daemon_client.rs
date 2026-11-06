@@ -158,6 +158,12 @@ impl DaemonClient {
         self.request(Request::Approvals { task: task.into() })
     }
 
+    /// The task's effective GitHub approval mode, re-read from its project
+    /// file; `None` when the task's project names no repository.
+    pub fn github_approvals(&self, task: &str) -> Result<Option<crate::github::Approvals>> {
+        self.request(Request::GithubApprovals { task: task.into() })
+    }
+
     pub fn decide(&self, id: &str, decision: Decision) -> Result<Approval> {
         self.request(Request::DecideApproval { id: id.into(), decision })
     }

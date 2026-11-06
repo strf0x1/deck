@@ -565,6 +565,7 @@ fn ask(destination: &str) -> deck_runtime::approvals::Ask {
         credential: Some("OPENAI_API_KEY".into()),
         details: deck_runtime::approvals::Details::default(),
         reason: None,
+        coverage: None,
     }
 }
 
@@ -651,6 +652,47 @@ fn without_a_lease_a_new_scope_is_answered_without_waiting() {
     assert_eq!(client.request_approval(&task.id, ask("other")).unwrap().state, State::Allowed(Scope::Once));
     assert_eq!(client.request_approval(&task.id, ask("other")).unwrap().state, State::Pending);
     client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn a_live_approvals_switch_applies_to_the_next_operation() {
+    use deck_runtime::approvals::{Coverage, Scope, State};
+    use deck_runtime::github::{Approvals, Policy};
+    let (daemon, client) = Daemon::new("approval-mode-switch");
+    let project = daemon.data.join("project");
+    std::fs::create_dir_all(project.join(".deck")).unwrap();
+    std::fs::write(project.join(".deck/project.toml"), "[github]\napprovals = \"own-branch\"\n").unwrap();
+    let task = client
+        .create(Spec {
+            argv: vec!["cat".into()],
+            cwd: project.clone(),
+            github: Some(Policy {
+                repository: "owner/repo".into(),
+                base: "main".into(),
+                branches: vec![],
+                credential: "DECK_GITHUB_TOKEN".into(),
+                approvals: Approvals::OwnBranch,
+                identity: Default::default(),
+            }),
+        })
+        .unwrap();
+    let ask = deck_runtime::approvals::Ask {
+        gateway: "github".into(),
+        operation: "publish".into(),
+        destination: format!("owner/repo#deck/{}", task.id),
+        credential: Some("DECK_GITHUB_TOKEN".into()),
+        details: deck_runtime::approvals::Details::default(),
+        reason: None,
+        coverage: Some(Coverage { own_branch: true, public: Some(false) }),
+    };
+    assert_eq!(client.request_approval(&task.id, ask.clone()).unwrap().state, State::Allowed(Scope::Default));
+    assert_eq!(client.github_approvals(&task.id).unwrap(), Some(Approvals::OwnBranch));
+    // The recorded policy says own-branch; the project file now says ask. The
+    // next operation reads the file, so it asks without a restart.
+    std::fs::write(project.join(".deck/project.toml"), "[github]\napprovals = \"ask\"\n").unwrap();
+    assert_eq!(client.github_approvals(&task.id).unwrap(), Some(Approvals::Ask));
+    assert_eq!(client.request_approval(&task.id, ask).unwrap().state, State::Pending);
+    client.destroy(&task.id).unwrap();
 }
 
 #[test]

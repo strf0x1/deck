@@ -43,6 +43,9 @@ pub enum Scope {
     Timed,
     Task,
     Project,
+    /// The approval mode admitted a covered write without a card (ADR 0008
+    /// §6). It is recorded for the boundary feed, never reusable authority.
+    Default,
 }
 
 impl Scope {
@@ -53,6 +56,7 @@ impl Scope {
             Self::Timed => "timed",
             Self::Task => "task",
             Self::Project => "project",
+            Self::Default => "default",
         }
     }
 }
@@ -141,6 +145,18 @@ impl Approval {
     }
 }
 
+/// The gateway's classification of a GitHub write (ADR 0008 §6): whether it
+/// is a write to the task's own branch, and the repository's visibility. Both
+/// are host facts the queue cannot read itself; the mode is the daemon's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coverage {
+    pub own_branch: bool,
+    /// `Some(false)` is private. `None` means the gateway could not read the
+    /// repository, which is treated like a public one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<bool>,
+}
+
 /// A gateway's request without the task record fields `deckd` adds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ask {
@@ -153,10 +169,18 @@ pub struct Ask {
     pub details: Details,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
 }
 
 impl Ask {
-    pub(crate) fn into_incoming(self, task: String, project: String, session: Option<String>) -> Incoming {
+    pub(crate) fn into_incoming(
+        self,
+        task: String,
+        project: String,
+        session: Option<String>,
+        approvals: Option<crate::github::Approvals>,
+    ) -> Incoming {
         Incoming {
             task,
             project,
@@ -167,6 +191,8 @@ impl Ask {
             credential: self.credential,
             details: self.details,
             reason: self.reason,
+            coverage: self.coverage,
+            approvals,
         }
     }
 }
@@ -189,6 +215,12 @@ pub struct Incoming {
     pub details: Details,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The gateway's own-branch/visibility classification, for a GitHub write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
+    /// The task's approval mode, filled from the live project file by `deckd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<crate::github::Approvals>,
 }
 
 /// A live allowance. Task and project grants persist; once grants live in

@@ -66,11 +66,27 @@ impl Deck {
             return;
         };
         let ticket = self.access.begin_grants();
-        let listed = cx.background_executor().spawn(async move { task.grants() });
+        let listed = cx.background_executor().spawn({
+            let task = task.clone();
+            async move { task.grants() }
+        });
         cx.spawn(async move |this, cx| {
             let result = listed.await.map_err(|e| format!("listing access: {e:#}"));
             let _ = this.update(cx, |deck, cx| {
                 deck.access.grants_listed(ticket, result);
+                cx.notify();
+            });
+        })
+        .detach();
+        // The mode is the task's live project policy, not a grant; it is read
+        // with the same refresh so a project switched to `ask` shows the new
+        // mode on the next open or 30-second refresh.
+        let mode_ticket = self.access.begin_approvals();
+        let mode = cx.background_executor().spawn(async move { task.github_approvals() });
+        cx.spawn(async move |this, cx| {
+            let result = mode.await.map_err(|e| format!("reading the GitHub approval mode: {e:#}"));
+            let _ = this.update(cx, |deck, cx| {
+                deck.access.approvals_listed(mode_ticket, result);
                 cx.notify();
             });
         })

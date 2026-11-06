@@ -17,11 +17,22 @@ use std::time::Duration;
 /// Longer than the daemon's hold, so a held decision is not cut short.
 const REPLY: Duration = Duration::from_secs(30);
 
+/// The gateway's classification of a GitHub write: whether it is covered by
+/// the task's own branch, and the repository's visibility (`None` when the
+/// read failed). The daemon applies the task's approval mode to these facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Coverage {
+    pub own_branch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public: Option<bool>,
+}
+
 /// The daemon's answer for one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
-    /// A project rule or a held decision allowed it, with the scope.
-    Allowed(String),
+    /// A project rule, a held decision, or the approval mode allowed it, with
+    /// the scope (`default` for a write no card showed).
+    Allowed(String, String),
     /// The item is waiting for a window; a retry after a decision works.
     Pending(String),
     /// A human denied it, or it expired or was withdrawn.
@@ -50,6 +61,7 @@ impl Control {
         reason: Option<String>,
         credential: Option<&str>,
         identity: Option<&str>,
+        coverage: Option<Coverage>,
     ) -> Answer {
         let mut request = json!({
             "op": "approval",
@@ -64,6 +76,9 @@ impl Control {
         }
         if let Some(identity) = identity {
             request["details"]["identity"] = json!(identity);
+        }
+        if let Some(coverage) = coverage {
+            request["coverage"] = json!(coverage);
         }
         if let Some(reason) = reason {
             request["reason"] = json!(reason);
@@ -132,7 +147,7 @@ fn answer(approval: &Value) -> Answer {
             other => Answer::Unavailable(format!("the approval queue returned state {other:?}")),
         },
         Some(Value::Object(state)) => match state.get("allowed").and_then(Value::as_str) {
-            Some(scope) => Answer::Allowed(scope.to_owned()),
+            Some(scope) => Answer::Allowed(id.clone(), scope.to_owned()),
             None => Answer::Unavailable("the approval queue returned no allowed scope".into()),
         },
         _ => Answer::Unavailable("the approval queue returned no state".into()),
@@ -145,7 +160,14 @@ mod tests {
 
     #[test]
     fn a_decision_is_read_from_either_shape_the_daemon_uses() {
-        assert_eq!(answer(&json!({"id": "a", "state": {"allowed": "project"}})), Answer::Allowed("project".into()));
+        assert_eq!(
+            answer(&json!({"id": "a", "state": {"allowed": "project"}})),
+            Answer::Allowed("a".into(), "project".into())
+        );
+        assert_eq!(
+            answer(&json!({"id": "b", "state": {"allowed": "default"}})),
+            Answer::Allowed("b".into(), "default".into())
+        );
         assert_eq!(answer(&json!({"id": "a", "state": "denied"})), Answer::Denied("a".into(), "denied".into()));
         assert!(matches!(answer(&json!({})), Answer::Unavailable(_)));
     }

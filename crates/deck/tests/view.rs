@@ -299,6 +299,7 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
         credential: None,
         details: Default::default(),
         reason: None,
+        coverage: None,
     };
     let item = daemon.request_approval(&task.id, ask.clone()).unwrap();
     daemon.decide(&item.id, Decision::Task).unwrap();
@@ -339,6 +340,46 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     assert!(!deck.read_with(&vcx, |d, _| d.access().is_open()));
     vcx.simulate_keystrokes("5");
     assert_eq!(asked.join().unwrap().unwrap().state, ApprovalState::Denied);
+    cx.quit();
+    daemon.stop(&task.id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[gpui::test]
+fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext) {
+    use deck_runtime::github::{Approvals, Identity, Policy};
+    use deck_runtime::{DaemonClient, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-mode-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let task = daemon
+        .run(Spec {
+            argv: argv.clone(),
+            cwd: data.clone(),
+            github: Some(Policy {
+                repository: "owner/repo".into(),
+                base: "main".into(),
+                branches: vec![],
+                credential: "DECK_GITHUB_TOKEN".into(),
+                approvals: Approvals::Ask,
+                identity: Identity::default(),
+            }),
+        })
+        .unwrap()
+        .task;
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, data.clone(), cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    click_control(&mut vcx, "hdr-access");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.access().approvals() == Some(Approvals::Ask)));
+    assert!(vcx.debug_bounds("access-approvals").is_some(), "the panel shows the mode");
     cx.quit();
     daemon.stop(&task.id).unwrap();
     drop(daemon);
@@ -531,6 +572,7 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
         credential: Some("OPENAI_API_KEY".into()),
         details: Default::default(),
         reason: None,
+        coverage: None,
     };
     let asked = id.clone();
     let approved = std::thread::spawn(move || holder.request_approval(&asked, ask));
@@ -601,6 +643,7 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
         credential: Some("OPENAI_API_KEY".into()),
         details: Default::default(),
         reason: None,
+        coverage: None,
     };
     let asked = id.clone();
     let approved = std::thread::spawn(move || holder.request_approval(&asked, ask));

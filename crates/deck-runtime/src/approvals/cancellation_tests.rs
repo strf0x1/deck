@@ -30,6 +30,8 @@ fn request() -> Incoming {
         credential: Some("OPENAI_API_KEY".into()),
         details: Details::default(),
         reason: None,
+        coverage: None,
+        approvals: None,
     }
 }
 

@@ -15,15 +15,14 @@ mod identity;
 pub mod policy;
 pub mod problem;
 pub mod publish;
-pub mod status;
 
 pub use client::Client;
-pub use control::{Answer, Control};
+pub use control::{Answer, Control, Coverage};
 pub use policy::{Ask, Operation};
-pub use status::Events;
 
 use crate::credential::{Broker, Credential, Registration};
 use crate::http::{self, ReadError, Request};
+use crate::web::Events;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The most a request head may be; the same bound every listener applies.
@@ -71,6 +70,19 @@ struct Held {
 impl GitHub {
     pub fn new(client: Client, control: Option<Control>, status: Arc<Events>) -> Self {
         Self { client, control, status, credentials: None }
+    }
+
+    /// Whether the operation is a write to the task's own branch, before the
+    /// repository's visibility is known (ADR 0008 §6). `head` is the head of
+    /// the pull request an update touches, when that was checked.
+    fn own_branch(ask: &Ask, operation: Operation, settings: &client::Settings, head: Option<&str>) -> bool {
+        let task_branch = policy::Policy::task_branch(&settings.task);
+        match operation {
+            Operation::Publish => ask.branch == task_branch,
+            Operation::PullRequest => ask.head == task_branch && ask.draft.unwrap_or(true),
+            Operation::UpdatePullRequest => head == Some(task_branch.as_str()) && ask.draft != Some(false),
+            Operation::Refs | Operation::Review => false,
+        }
     }
 
     /// Fetch the token under `name` from `broker`, once per operation.
@@ -187,7 +199,10 @@ impl GitHub {
     fn run(&self, ask: &Ask, operation: Operation, bundle: Option<&[u8]>) -> Result<(String, String), Failure> {
         let detail = match operation {
             Operation::Publish => ask.branch.clone(),
-            Operation::PullRequest | Operation::UpdatePullRequest | Operation::Review => {
+            // Opening a pull request names the branch it comes from; changing
+            // or reading one names the pull request.
+            Operation::PullRequest => ask.head.clone(),
+            Operation::UpdatePullRequest | Operation::Review => {
                 ask.number.map(|number| format!("pr{number}")).unwrap_or_else(|| ask.head.clone())
             }
             Operation::Refs => String::new(),
@@ -200,15 +215,34 @@ impl GitHub {
         // the one check that already needs the token. Every other operation
         // fetches it only once the queue admitted it.
         let mut held = None;
+        let mut head = None;
         if let (Operation::UpdatePullRequest, Some(number)) = (operation, ask.number) {
             let token = self.fetch()?;
             let client = self.client.authorized(token.credential.value(), token.cancel.clone());
-            if let Err(problem) = client.owns_pull_request(number) {
-                return Err(self.stopped(&token).unwrap_or_else(|| self.failed(&domain, problem)));
+            match client.owns_pull_request(number) {
+                Ok(owned) => head = Some(owned),
+                Err(problem) => return Err(self.stopped(&token).unwrap_or_else(|| self.failed(&domain, problem))),
             }
             held = Some(token);
         }
-        self.decide(operation, &domain, &reason(ask, operation), identity.as_deref())?;
+        // The queue needs the repository's visibility before it can admit a
+        // covered write without a card (ADR 0008 §6). This read is bounded and
+        // happens once per operation; a failure only means a card.
+        let mut coverage = None;
+        if operation.asks() && Self::own_branch(ask, operation, self.client.settings(), head.as_deref()) {
+            if held.is_none() {
+                held = Some(self.fetch()?);
+            }
+            let Some(token) = held.as_ref() else {
+                return Err(Failure::error(502, "deck_github_failed", "no credential was fetched"));
+            };
+            let public = self.client.authorized(token.credential.value(), token.cancel.clone()).visibility();
+            if let Some(failure) = self.stopped(token) {
+                return Err(failure);
+            }
+            coverage = Some(Coverage { own_branch: true, public });
+        }
+        self.decide(operation, &domain, &reason(ask, operation), identity.as_deref(), coverage)?;
         let token = match held {
             Some(token) => token,
             None => self.fetch()?,
@@ -273,7 +307,7 @@ impl GitHub {
     /// Record a failure for the agent's event feed and turn it into a reply;
     /// [`problem::Kind`] is the one place a failure gets its status and code.
     fn failed(&self, domain: &str, problem: problem::Problem) -> Failure {
-        self.status.observe("", domain, "failed", None, Some(&problem.message));
+        self.status.observe_in(GATEWAY, "", domain, "failed", None, Some(&problem.message));
         Failure { status: problem.kind.status(), body: problem.body() }
     }
 
@@ -283,6 +317,7 @@ impl GitHub {
         destination: &str,
         reason: &str,
         identity: Option<&str>,
+        coverage: Option<Coverage>,
     ) -> Result<(), Failure> {
         if !operation.asks() {
             return Ok(());
@@ -295,10 +330,17 @@ impl GitHub {
             ));
         };
         let credential = self.credentials.as_ref().map(|(_, name)| name.as_str());
-        match control.ask(operation.name(), destination, Some(reason.to_string()), credential, identity) {
-            Answer::Allowed(_) => Ok(()),
+        match control.ask(operation.name(), destination, Some(reason.to_string()), credential, identity, coverage) {
+            Answer::Allowed(id, scope) => {
+                // A default admission is the record of a write no card showed;
+                // every other allow already has a card the agent saw.
+                if scope == "default" {
+                    self.status.observe_in(GATEWAY, &id, destination, "allowed", Some("default"), Some(reason));
+                }
+                Ok(())
+            }
             Answer::Pending(id) => {
-                self.status.observe(&id, destination, "pending", None, Some(reason));
+                self.status.observe_in(GATEWAY, &id, destination, "pending", None, Some(reason));
                 Err(Failure::denied(
                     Some(&id),
                     true,
@@ -309,7 +351,7 @@ impl GitHub {
                 ))
             }
             Answer::Denied(id, state) => {
-                self.status.observe(&id, destination, &state, None, None);
+                self.status.observe_in(GATEWAY, &id, destination, &state, None, None);
                 Err(Failure::denied(
                     (!id.is_empty()).then_some(id.as_str()),
                     false,

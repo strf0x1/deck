@@ -41,6 +41,20 @@ pub enum Approvals {
     OwnBranchPublic,
 }
 
+impl Approvals {
+    /// Whether this mode admits a write the gateway classified as its own
+    /// branch. `public` is the repository's visibility, or `None` when the
+    /// gateway could not read it; an unreadable repository is not assumed
+    /// private.
+    pub fn admits_own_branch(self, public: Option<bool>) -> bool {
+        match self {
+            Self::Ask => false,
+            Self::OwnBranch => public == Some(false),
+            Self::OwnBranchPublic => true,
+        }
+    }
+}
+
 /// The host's git identity, so commits the guest makes carry the user's name
 /// and email (ADR 0008 §4).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +183,18 @@ pub fn resolve(cwd: &Path, over: Option<&Override>) -> Result<Option<Policy>> {
         approvals: project.and_then(|github| github.approvals).unwrap_or_default(),
         identity: Identity { name: git_config(cwd, "user.name"), email: git_config(cwd, "user.email") },
     }))
+}
+
+/// The approval mode that applies to the task's next write. The recorded
+/// policy is the base, but the project file is re-read so switching a project
+/// to `ask` takes effect on its next operation. A file that cannot be read or
+/// parsed fails closed to `Ask`: a typo must not silently admit writes.
+pub fn live_approvals(cwd: &Path, recorded: Approvals) -> Approvals {
+    match project_file(&project_root(cwd)) {
+        Ok(Some(file)) => file.github.and_then(|github| github.approvals).unwrap_or_default(),
+        Ok(None) => recorded,
+        Err(_) => Approvals::Ask,
+    }
 }
 
 /// `owner/name`, lowercased, from a GitHub remote URL. Only github.com's
@@ -464,6 +490,23 @@ approvals = "ask"
             assert_eq!(serde_json::to_value(parsed.approvals).unwrap(), serde_json::json!(name));
         }
         assert_eq!(Approvals::default(), Approvals::OwnBranch);
+    }
+
+    #[test]
+    fn the_approval_mode_is_read_live_from_the_project_file() {
+        let dir = checkout("live-mode", Some("https://github.com/owner/name"), None);
+        std::fs::create_dir_all(dir.join(".deck")).unwrap();
+        assert_eq!(
+            live_approvals(&dir, Approvals::OwnBranch),
+            Approvals::OwnBranch,
+            "no file keeps the mode recorded at create"
+        );
+        std::fs::write(dir.join(PROJECT_FILE), "[github]\napprovals = \"ask\"\n").unwrap();
+        assert_eq!(live_approvals(&dir, Approvals::OwnBranch), Approvals::Ask);
+        std::fs::write(dir.join(PROJECT_FILE), "[github]\napprovals = \"always\"\n").unwrap();
+        assert_eq!(live_approvals(&dir, Approvals::OwnBranch), Approvals::Ask, "a malformed file fails closed");
+        std::fs::remove_file(dir.join(PROJECT_FILE)).unwrap();
+        assert_eq!(live_approvals(&dir, Approvals::OwnBranchPublic), Approvals::OwnBranchPublic);
     }
 
     #[test]

@@ -14,6 +14,8 @@ fn request(task: &str, project: &str, destination: &str) -> Incoming {
         credential: None,
         details: Details::default(),
         reason: None,
+        coverage: None,
+        approvals: None,
     }
 }
 

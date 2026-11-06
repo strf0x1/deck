@@ -95,6 +95,19 @@ fn credentials_still_require_a_live_value_and_keep_the_provider_warning() {
 }
 
 #[test]
+fn a_stale_approval_mode_reply_cannot_replace_a_newer_one() {
+    let mut access = panel();
+    let old = access.begin_approvals();
+    let fresh = access.begin_approvals();
+    access.approvals_listed(fresh, Ok(Some(Approvals::Ask)));
+    access.approvals_listed(old, Ok(Some(Approvals::OwnBranch)));
+    assert_eq!(access.approvals(), Some(Approvals::Ask));
+    access.approvals_listed(fresh, Err("daemon disconnected".into()));
+    assert_eq!(access.approvals(), Some(Approvals::Ask), "an error keeps the last known mode");
+    assert_eq!(access.approvals_error(), Some("daemon disconnected"));
+}
+
+#[test]
 fn scopes_show_expiry_and_project_revocation_explains_the_wider_effect() {
     assert_eq!(grant_scope(&grant(Scope::Task), 0), "Task · expires in 1h 0m");
     assert_eq!(grant_scope(&grant(Scope::Task), 3_600_000), "Task · expired");

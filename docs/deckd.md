@@ -264,6 +264,27 @@ not the allowed branch, then fetches and pushes exactly that refspec. A push
 is fast-forward only (`--force-with-lease` against the sha read a moment
 before), so a task cannot rewrite its branch.
 
+A GitHub write still reaches the approval queue when no card appears. The
+task's `approvals` mode decides whether the queue admits it at once, recorded
+with scope `default` on the boundary `/events` feed, or holds it for a card
+(ADR 0008 §6):
+
+- `own-branch` (the default) admits `publish` to `deck/<task>`, `create_pr`
+  from it as a draft, and `update_pr` of its own pull request except
+  `draft: false`. A shared branch listed under `branches`, marking a pull
+  request ready, and every write while the repository is public still ask.
+- Before a write it would admit this way, the gateway reads
+  `GET /repos/{owner}/{name}` with the operation's token. A public repository,
+  or one whose visibility cannot be read, turns the write into a card.
+- `own-branch-public` admits those writes in a public repository too; `ask`
+  restores a card for every write.
+
+The project file is re-read for the mode on every request, so changing
+`.deck/project.toml` from `own-branch` to `ask` governs the next operation
+without restarting the task. The other recorded policy fields stay as created,
+and a malformed file fails closed to `ask`. `refs` and `review` never ask. The
+Access panel shows the task's mode.
+
 A whole GitHub profile is one decision: `github_profile {task, project?,
 repository, operations, revoke}` writes one durable project rule per operation
 for the repository, and a revoke removes exactly those.

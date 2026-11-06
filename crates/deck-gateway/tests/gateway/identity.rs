@@ -49,6 +49,6 @@ fn github_approval_identity_tracks_publish_and_pull_request_edits() {
         );
     }
     let upstream = upstream.lock().unwrap();
-    assert_eq!(upstream.len(), 2, "only the two PR ownership checks reach GitHub");
+    assert_eq!(upstream.len(), 9, "each covered write reads visibility, and each update reads its PR");
     assert!(upstream.iter().all(|request| request.method == "GET"));
 }
