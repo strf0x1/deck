@@ -1,0 +1,351 @@
+[
+  {
+    "check": "disallowed model never reaches provider 1a1ae14994d-1a204a-0",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "host credential replaces guest headers 1a1ae14994d-1a204a-0",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "credential absent from guest environment 1a1ae14994d-1a204a-0",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "credential absent from task artifacts 1a1ae14994d-1a204a-0",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "disallowed model never reaches provider 1a1ae149a1c-1a204a-1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "host credential replaces guest headers 1a1ae149a1c-1a204a-1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "credential absent from guest environment 1a1ae149a1c-1a204a-1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "credential absent from task artifacts 1a1ae149a1c-1a204a-1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "old host loopback sentinel receives no guest dial",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "task A initially denied on native vsock",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "task A grant opens its native vsock tunnel",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "task B cannot reuse task A grant on same vsock port",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "task A host socket path is absent from task B guest",
+    "passed": true,
+    "observed": "[Errno 2] No such file or directory"
+  },
+  {
+    "check": "guest cannot address another guest CID 3",
+    "passed": true,
+    "observed": "[Errno 104] Connection reset by peer"
+  },
+  {
+    "check": "guest cannot address another guest CID 4",
+    "passed": true,
+    "observed": "timed out"
+  },
+  {
+    "check": "refused address class with no approval: 0.0.0.0",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 127.0.0.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 10.0.0.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 169.254.169.254",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 100.64.0.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 192.0.2.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 198.51.100.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 203.0.113.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 224.0.0.1",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: 255.255.255.255",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [::]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [::1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [fd00::1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [fe80::1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [ff02::1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [2001:db8::1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [::ffff:127.0.0.1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "refused address class with no approval: [64:ff9b::7f00:1]",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "DNS datagram has no route",
+    "passed": true,
+    "observed": "[Errno 101] Network is unreachable"
+  },
+  {
+    "check": "QUIC-port datagram has no route",
+    "passed": true,
+    "observed": "[Errno 101] Network is unreachable"
+  },
+  {
+    "check": "IPv6 UDP datagram has no route",
+    "passed": true,
+    "observed": "[Errno 101] Network is unreachable"
+  },
+  {
+    "check": "raw ICMP socket cannot reach public IP",
+    "passed": true,
+    "observed": "[Errno 101] Network is unreachable"
+  },
+  {
+    "check": "revocation terminates live VM model stream",
+    "passed": true,
+    "observed": {
+      "rc": 18,
+      "started": true
+    }
+  },
+  {
+    "check": "revoked credential blocks next VM request before provider",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "credential rotation restores live VM request without restart",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "real Construct tool result names blocked destination and approval",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "tool_results": 1,
+      "approvals": 1,
+      "error": "construct: made /root/.construct private (755 -> 700); see docs/adr/0021\n\u00b7 shell {\"command\": \"curl --noproxy '' -x http://127.0.0.1:8082 --max-time 5 -I https://example.com\"}\n  \u2717 Error:   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current                                  Dload  Upload   Total   Spent    Left  Speed \n  0     0    0     0    0     0   \u2026\n"
+    }
+  },
+  {
+    "check": "gateway crash ends owning VM task",
+    "passed": true,
+    "observed": {
+      "state": "stopped",
+      "clean": false,
+      "reason": "VMM exited"
+    }
+  },
+  {
+    "check": "gateway crash closes guest task stream",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "unrelated VM survives peer gateway crash",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: private/mixed DNS answer denied without dial or prompt mixed.example",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: private/mixed DNS answer denied without dial or prompt private.example",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: ungranted mirror never dialed",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: granted mirror uses origin form and strips proxy credential",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.0 200 OK\nserver: BaseHTTP Python/3.15.0\ndate: Thu, 05 Nov 2026 23:39:16 GMT\ncontent-type: application/json\ncontent-length: 9\nconnection: close\n\nmirror-ok",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: mirror body is unchanged (#62)",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.0 200 OK\nserver: BaseHTTP Python/3.15.0\ndate: Thu, 05 Nov 2026 23:39:16 GMT\ncontent-type: application/json\ncontent-length: 9\nconnection: close\n\nmirror-ok",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: relative redirect reaches held mirror",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.0 200 OK\nserver: BaseHTTP Python/3.15.0\ndate: Thu, 05 Nov 2026 23:39:16 GMT\ncontent-type: application/json\ncontent-length: 9\nconnection: close\n\nmirror-ok",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: redirect refused before second destination /denied",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\nx-deck-approval: 1a1ae14b9d5-3\ncontent-length: 226\nconnection: close\n\n{\"error\":{\"message\":\"other.example:40739 needs the user's approval (approval 1a1ae14b9d5-3); retry after they decide\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":true,\"approval_id\":\"1a1ae14b9d5-3\"}",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: redirect refused before second destination /https",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 177\nconnection: close\n\n{\"error\":{\"message\":\"the redirect target must be an absolute http:// URI or a root-relative path\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: redirect refused before second destination /missing",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 168\nconnection: close\n\n{\"error\":{\"message\":\"deck-acceptance-no-such-host.invalid does not resolve on this host\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: redirect refused before second destination /private",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 152\nconnection: close\n\n{\"error\":{\"message\":\"127.0.0.1 resolves to 127.0.0.1, which is loopback\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: redirect refused before second destination /loop",
+    "passed": true,
+    "observed": {
+      "rc": 0,
+      "out": "HTTP/1.1 403 Forbidden\ncontent-type: application/json\ncontent-length: 132\nconnection: close\n\n{\"error\":{\"message\":\"the redirect chain is too long\",\"type\":\"deck_boundary_denied\",\"code\":\"deck_boundary_denied\"},\"retryable\":false}",
+      "err": ""
+    }
+  },
+  {
+    "check": "fixture: task mirror grant has finite expiry",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: whole-profile approval persists once per destination",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: saved project rules name both profile destinations",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: saved profile does not authorize another project",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: redirect to newly held second destination is admitted",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "fixture: revoking one profile destination preserves sibling rule",
+    "passed": true,
+    "observed": null
+  }
+]

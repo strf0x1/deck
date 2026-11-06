@@ -1,0 +1,19 @@
+{
+  "revision": "337db12ccee9c423f9fc892042d8473fadc47a1b",
+  "checks": 107,
+  "passed": 107,
+  "binaries": {
+    "deckd": "851dfb76251e0b257d7cb4b2cecbc28237cf59dcb780a5598073e9685b9c8197",
+    "deck-gateway": "fe28665331d092f33fa175cd9b18d59850faebdd536b2d7774f726a9b3e0d35a"
+  },
+  "harness": {
+    "guest.py": "1bdc29ad635e19e16114d8c394141faa5ccc64996132678bf0751ac4e44d5663",
+    "support.py": "d2887fb99268f00e6c5155e698644fa9ac74be7026c14dccdeffee25d75aa495",
+    "fixture.py": "1f40bfa2f605624683c279e46d1419b15bef2efe0c30688396321f9cf64e12f0",
+    "bypass.py": "77c7bf3a0ad353c310559b0beb46a5d230f4525bcc9a2235e36d6d1dbe38887f",
+    "adversarial.py": "14bc047c7a150e328e2c4477d06d395bae874bd2019916cf42bf10ed754eb0ab",
+    "secret_service.py": "83be80b461d9e7c270bdf5b09d1aeb8301c16d77bcfd719a498c9b2da884543a",
+    "github_slow.py": "d0e6a40037a6a80cc491bc71ef2e2231b2011b34b3edd1e05a28ff801f0a9f58",
+    "build_image.py": "b7582a2f26816920e42913e5e5effccaa53e761a43ec9446f4ffffde8b22d1c5"
+  }
+}

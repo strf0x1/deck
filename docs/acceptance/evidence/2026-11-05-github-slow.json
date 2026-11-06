@@ -1,0 +1,16 @@
+[
+  {
+    "check": "GitHub trickled header completes within sixty-second request budget",
+    "passed": false,
+    "observed": {
+      "closed": false,
+      "elapsed": 66.092451038,
+      "reply": ""
+    }
+  },
+  {
+    "check": "GitHub slow-header probe leaves model gateway usable",
+    "passed": true,
+    "observed": null
+  }
+]
