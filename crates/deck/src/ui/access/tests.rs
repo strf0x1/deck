@@ -4,6 +4,7 @@ use super::*;
 
 fn grant(scope: Scope) -> Grant {
     Grant {
+        credential: None,
         id: "g".into(),
         task: Some("t".into()),
         project: None,

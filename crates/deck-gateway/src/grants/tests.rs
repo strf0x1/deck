@@ -102,12 +102,29 @@ fn model_grants_match_exact_names_operations_and_the_decided_scope() {
     let mut model = grant("model", "provider/model");
     model["gateway"] = json!("model");
     model["operation"] = json!("chat_completions");
+    model["credential"] = json!("KEY");
     std::fs::write(&path, json!([model]).to_string()).unwrap();
     let grants = Grants::new(vec![path], "t".into(), Some("/project".into()));
-    assert!(grants.model("provider/model", None).is_some());
-    assert!(grants.model("provider/model", Some("task")).is_some());
-    assert!(grants.model("provider/model", Some("project")).is_none());
-    assert!(grants.model("provider/Model", None).is_none());
-    assert!(grants.model("provider/model/other", None).is_none());
+    assert!(grants.model("provider/model", "KEY", None).is_some());
+    assert!(grants.model("provider/model", "OTHER_KEY", None).is_none());
+    assert!(grants.model("provider/model", "KEY", Some("task")).is_some());
+    assert!(grants.model("provider/model", "KEY", Some("project")).is_none());
+    assert!(grants.model("provider/Model", "KEY", None).is_none());
+    assert!(grants.model("provider/model/other", "KEY", None).is_none());
     assert!(grants.web("provider", 443, "connect").is_none());
+}
+
+#[test]
+fn legacy_model_rules_cannot_authorize_a_credential_and_web_rules_cannot_change_binding() {
+    let path = file("credential-legacy");
+    let mut model = grant("model", "m");
+    model["gateway"] = json!("model");
+    model["operation"] = json!("chat_completions");
+    let mut web = grant("web", "example.com:443");
+    web["credential"] = json!("KEY");
+    std::fs::write(&path, json!([model, web]).to_string()).unwrap();
+    let grants = Grants::new(vec![path.clone()], "t".into(), None);
+    assert!(grants.model("m", "KEY", None).is_none());
+    assert!(grants.web("example.com", 443, "connect").is_none());
+    std::fs::remove_file(path).unwrap();
 }

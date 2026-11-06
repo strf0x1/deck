@@ -112,16 +112,23 @@ def worker(output):
         evidence.check('private Secret Service: genuinely absent item remains missing',
             'deck_credential_missing' in outcome(missing),
             dict(outcome=outcome(missing),metadata_search_exit=search.returncode))
-        service.Lock([collection])
-        locked = dbus.Interface(service_bus.get_object('org.freedesktop.secrets',collection),
-                                 'org.freedesktop.DBus.Properties').Get('org.freedesktop.Secret.Collection','Locked')
-        evidence.check('private Secret Service: test collection actually locked',bool(locked))
-        start = time.monotonic(); reply = fetch()
+        locked_outcomes=[]
+        for cycle in range(20):
+            service.Lock([collection])
+            locked = dbus.Interface(service_bus.get_object('org.freedesktop.secrets',collection),
+                                     'org.freedesktop.DBus.Properties').Get('org.freedesktop.Secret.Collection','Locked')
+            if not locked:
+                raise RuntimeError('private test collection did not lock')
+            start = time.monotonic(); reply = fetch()
+            locked_outcomes.append(dict(outcome=outcome(reply),elapsed=time.monotonic()-start))
+            internal.UnlockWithMasterPassword(collection,master)
+            if fetch().get('ok',{}).get('value')!=value:
+                raise RuntimeError('unlock did not restore the synthetic value')
+        evidence.check('private Secret Service: test collection actually locked',True)
         evidence.check('private Secret Service: locked collection is unavailable rather than missing',
-            'deck_credential_unavailable' in outcome(reply),dict(outcome=outcome(reply),elapsed=time.monotonic()-start))
-        internal.UnlockWithMasterPassword(collection,master)
-        evidence.check('private Secret Service: unlock restores same daemon broker read',
-                       fetch().get('ok',{}).get('value')==value)
+            all('deck_credential_unavailable' in row['outcome'] for row in locked_outcomes),
+            dict(cycles=locked_outcomes))
+        evidence.check('private Secret Service: unlock restores same daemon broker read',True)
         # Stop this private service to simulate a pending OS read. Four callers
         # must join one real secret-tool process, all bounded at five seconds.
         os.kill(keyring.pid,signal.SIGSTOP)

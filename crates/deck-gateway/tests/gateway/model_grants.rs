@@ -51,7 +51,7 @@ impl Provider {
 
 fn rule(model: &str, scope: &str) -> Value {
     serde_json::json!({
-        "id": format!("grant-{model}"), "gateway": "model", "operation": "chat_completions",
+        "id": format!("grant-{model}"), "gateway": "model", "operation": "chat_completions", "credential": "DECK_GATEWAY_TEST_KEY",
         "destination": model, "scope": scope, "task": "t", "project": "/fixture"
     })
 }
@@ -224,5 +224,23 @@ fn a_new_task_or_project_approval_keeps_its_stream_revocable() {
         policy(&path, &[]);
         guest.read_to_end(&mut Vec::new()).unwrap();
         assert_eq!(provider.closed.recv_timeout(Duration::from_secs(2)).unwrap(), "extra");
+    }
+}
+
+#[test]
+fn a_cached_or_queue_admitted_rule_for_another_credential_never_fetches_or_forwards() {
+    for scope in ["timed", "task", "project"] {
+        let provider = Provider::idle(false);
+        let path = scratch(&format!("cb-{scope}")).join("grants.json");
+        let mut wrong = rule("extra", scope);
+        wrong["credential"] = serde_json::json!("OTHER_KEY");
+        policy(&path, &[wrong]);
+        // This queue deliberately answers allowed. The persisted admission
+        // must still check the gateway's credential binding.
+        let gateway = launch(&format!("cb-{scope}"), &provider, &path, scope);
+        let response = send(&gateway.ready.model, &chat("extra"));
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        assert!(gateway.deckd.fetched().is_empty());
+        assert!(provider.requests.try_recv().is_err());
     }
 }

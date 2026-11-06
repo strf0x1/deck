@@ -25,6 +25,8 @@ struct Rule {
     destination: String,
     scope: String,
     #[serde(default)]
+    credential: Option<String>,
+    #[serde(default)]
     task: Option<String>,
     #[serde(default)]
     project: Option<String>,
@@ -93,15 +95,18 @@ impl Grants {
     /// grants are consumed by the daemon, never admitted from a policy file.
     pub fn web(&self, host: &str, port: u16, operation: &str) -> Option<Permit> {
         self.find(crate::web::GATEWAY, |rule| {
-            (rule.operation == operation || (rule.operation == crate::web::CONNECT && operation == crate::web::FETCH))
+            rule.credential.is_none()
+                && (rule.operation == operation
+                    || (rule.operation == crate::web::CONNECT && operation == crate::web::FETCH))
                 && Allowed::parse(&rule.destination).is_some_and(|allowed| allowed.admits(host, port))
         })
     }
 
     /// Model names are exact; a queue reply must name the same persisted scope.
-    pub fn model(&self, model: &str, scope: Option<&str>) -> Option<Permit> {
+    pub fn model(&self, model: &str, credential: &str, scope: Option<&str>) -> Option<Permit> {
         self.find("model", |rule| {
-            rule.operation == "chat_completions"
+            rule.credential.as_deref() == Some(credential)
+                && rule.operation == "chat_completions"
                 && rule.destination == model
                 && scope.is_none_or(|scope| rule.scope == scope)
         })

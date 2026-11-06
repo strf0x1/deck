@@ -1,0 +1,80 @@
+[
+  {
+    "check": "UI: merged Construct ready inside real VM",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: host task identity retains the host project",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: new VM session uses workspace and imported host project without alias",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: actual blocked operation appears on boundary card",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: second decision creates five-minute grant",
+    "passed": true,
+    "observed": {
+      "id": "1a1b1f08c32-g2",
+      "task": "1a1b1f07966-316295-0",
+      "gateway": "web",
+      "operation": "connect",
+      "destination": "example.com:443",
+      "scope": "timed",
+      "expires_ms": 1793986994194
+    }
+  },
+  {
+    "check": "UI: Access shows exact timed deadline",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: late ACP notice carries original timed deadline to Construct",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: late notification is delivered once",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: status and wait expose the host deadline in model text",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: journal preserves structured status and wait metadata",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: approved public TLS succeeds through guest proxy",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: observation did not renew timed grant",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: restart loads same VM session with workspace cwd",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "UI: closing window leaves VM running",
+    "passed": true,
+    "observed": null
+  }
+]

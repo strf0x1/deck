@@ -237,7 +237,12 @@ fn connection(
                         .ok()
                         .map(|record| record.spec.cwd.to_string_lossy().into_owned()),
                 };
-                let changed = boundary.github_profile(project.as_deref(), &repository, &operations, revoke);
+                let credential = std::env::var(crate::vm::GITHUB_TOKEN_ENV)
+                    .ok()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| crate::vm::GITHUB_TOKEN.into());
+                let changed =
+                    boundary.github_profile(project.as_deref(), &repository, &operations, &credential, revoke);
                 wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
             }
             request => {

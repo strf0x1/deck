@@ -509,7 +509,7 @@ fn github(task: &str, operation: &str, destination: &str) -> Incoming {
     Incoming {
         gateway: "github".into(),
         operation: operation.into(),
-        credential: None,
+        credential: Some("GITHUB_KEY".into()),
         details: Details::default(),
         ..incoming(task, "/w", destination)
     }
@@ -520,17 +520,22 @@ fn a_github_profile_covers_every_branch_and_pull_request_of_its_repository() {
     let dir = scratch("github-profile");
     let boundary = Boundary::with_settings(&dir, steady()).unwrap();
     let operations = vec!["publish".to_string(), "update_pr".to_string()];
-    assert_eq!(boundary.github_profile(Some("/w"), "Strf0x1/Deck", &operations, false).unwrap(), 2);
+    assert_eq!(boundary.github_profile(Some("/w"), "Strf0x1/Deck", &operations, "GITHUB_KEY", false).unwrap(), 2);
     let allowed = |task, operation, destination| boundary.submit(github(task, operation, destination)).unwrap().state;
     assert_eq!(allowed("t-1", "publish", "strf0x1/deck#deck/t-1"), State::Allowed(Scope::Project));
     assert_eq!(allowed("t-2", "update_pr", "strf0x1/deck#pr12"), State::Allowed(Scope::Project));
+    let mut other_key = github("t-1", "publish", "strf0x1/deck#deck/t-1");
+    other_key.credential = Some("OTHER_KEY".into());
+    assert_eq!(boundary.submit(other_key).unwrap().state, State::Pending);
+    assert_eq!(boundary.github_profile(Some("/w"), "strf0x1/deck", &operations, "GITHUB_KEY", false).unwrap(), 0);
+
     // Another operation, another repository, or a repository that merely
     // shares the prefix are not covered.
     assert_eq!(allowed("t-1", "create_pr", "strf0x1/deck#deck/t-1"), State::Pending);
     assert_eq!(allowed("t-1", "publish", "strf0x1/deck-other#deck/t-1"), State::Pending);
     assert_eq!(allowed("t-1", "publish", "other/deck#deck/t-1"), State::Pending);
     for invalid in ["deck", "https://github.com/o/r", "o/r#main", "o/../r"] {
-        assert!(boundary.github_profile(Some("/w"), invalid, &operations, false).is_err(), "{invalid}");
+        assert!(boundary.github_profile(Some("/w"), invalid, &operations, "GITHUB_KEY", false).is_err(), "{invalid}");
     }
     fs::remove_dir_all(dir).unwrap();
 }
@@ -550,4 +555,33 @@ fn always_allow_on_a_github_card_trusts_the_repository() {
     boundary.decide(&item.id, Decision::Task).unwrap();
     assert_eq!(boundary.submit(github("t-1", "create_pr", "o/r#other")).unwrap().state, State::Pending);
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn reusable_grants_bind_credential_names_across_restart_and_legacy_rules_fail_closed() {
+    for decision in [Decision::Timed, Decision::Task, Decision::Project] {
+        let dir = scratch(&format!("credential-{decision:?}"));
+        let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+        let request = incoming("t", "/w", "m");
+        let item = boundary.submit(request.clone()).unwrap();
+        boundary.decide(&item.id, decision).unwrap();
+        drop(boundary);
+        let boundary = Boundary::with_settings(&dir, steady()).unwrap();
+        // Values/fingerprints never enter this identity: rotating a value under
+        // the same name preserves the approved authority.
+        assert!(matches!(boundary.submit(request.clone()).unwrap().state, State::Allowed(_)));
+        let mut changed = request.clone();
+        changed.credential = Some("DIFFERENT_KEY".into());
+        assert_eq!(boundary.submit(changed).unwrap().state, State::Pending);
+        let mut no_key = request.clone();
+        no_key.credential = None;
+        assert_eq!(boundary.submit(no_key).unwrap().state, State::Pending);
+        let grant = boundary.access_grants("t", "/w").unwrap().into_iter().next().unwrap();
+        assert_eq!(grant.credential, request.credential);
+        let mut legacy = serde_json::to_value(grant).unwrap();
+        legacy.as_object_mut().unwrap().remove("credential");
+        let legacy: Grant = serde_json::from_value(legacy).unwrap();
+        assert!(!legacy.matches(&request), "an old rule cannot guess its credential binding");
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -51,29 +51,30 @@ def prompt(path,text):
 def run(output,fixture,credentials,evidence):
     daemon=Daemon(output/'ui',f'http://127.0.0.1:{fixture.port}/v1',credentials)
     project=output/'project';project.mkdir()
-    # Host-only fixture workaround for the separately reported VM ACP cwd
-    # bug: map only this disposable path to /workspace inside this guest.
-    agent=project/'acceptance-agent'
-    agent.write_text('#!/bin/sh\nset -e\nmkdir -p '+shlex.quote(str(project.parent))+'\nln -s /workspace '+
-        shlex.quote(str(project))+'\nexec /usr/local/bin/construct acp\n')
-    agent.chmod(0o755)
+    (project/'cwd-proof.txt').write_text('host-project-imported\n')
     path=Path(os.environ['XDG_RUNTIME_DIR'])/f'deck-ta-{os.getpid()}.sock'
     window=None
     try:
-        fixture.plan=[dict(call='shell',args=dict(command=
+        cwd_command='pwd; cat cwd-proof.txt; test ! -e '+shlex.quote(str(project))+' && echo host-path-absent'
+        fixture.plan=[dict(call='shell',args=dict(command=cwd_command)),dict(call='shell',args=dict(command=
             "curl --noproxy '' -x http://127.0.0.1:8082 --max-time 3 -I https://example.com")),
             dict(text='Boundary probe finished.')]
         command='cd '+shlex.quote(str(project))+' && exec '+shlex.join([
             'env','DECK_DATA='+str(daemon.data),'DECK_CONTROL='+str(path),
-            os.environ['DECK_ACCEPTANCE_UI_EXECUTABLE'],'--','/workspace/acceptance-agent'])
+            os.environ['DECK_ACCEPTANCE_UI_EXECUTABLE'],'--','/usr/local/bin/construct','acp'])
         dispatch='hl.dsp.exec_cmd('+json.dumps(shlex.join(['sh','-c',command]))+', { no_initial_focus = true })'
         subprocess.run(['hyprctl','dispatch',dispatch],check=True,capture_output=True)
         until(path,lambda s:s['session']['status']=='ready')
         tasks=daemon.control(op='tasks');task=tasks[0]['id'];daemon.tasks.append(task)
         window=control(path,cmd='geometry')['pid']
         evidence.check('UI: merged Construct ready inside real VM',tasks[0]['backend']=='vm')
+        evidence.check('UI: host task identity retains the host project', tasks[0]['spec']['cwd']==str(project))
         prompt(path,'Run the scripted boundary probe.')
         state=until(path,lambda s:s['approval'] is not None and s['session']['status']=='ready')
+        first_results=[str(m.get('content','')) for r in fixture.snapshot() if r['body']
+            for m in json.loads(r['body']).get('messages',[]) if m.get('role')=='tool']
+        evidence.check('UI: new VM session uses workspace and imported host project without alias',
+            any('/workspace\nhost-project-imported\nhost-path-absent' in text for text in first_results))
         approval=state['approval']['id']
         evidence.check('UI: actual blocked operation appears on boundary card',state['approval']['destination']=='example.com:443')
         screenshot(path,output/'timed-card.png')
@@ -123,6 +124,19 @@ def run(output,fixture,credentials,evidence):
         (output/'observations.json').write_text(json.dumps(dict(task=task,approval=approval,expires_at_ms=expiry,
             model_requests=len(requests),tool_results=tool_results),indent=2)+'\n')
         screenshot(path,output/'timed-feedback.png')
+        session=daemon.control(op='task',id=task)['session_id']
+        daemon.control(op='stop',id=task)
+        until(path,lambda s:isinstance(s['session']['status'],dict) or s['session']['status']=='detached')
+        control(path,cmd='key',key='r',modifiers=['ctrl'])
+        until(path,lambda s:s['session']['status']=='ready')
+        fixture.plan=[dict(call='shell',args=dict(command=cwd_command)),dict(text='Restored cwd verified.')]
+        start=len(fixture.snapshot());prompt(path,'Verify the restored working directory.')
+        until(path,lambda s:s['session']['status']=='ready' and len(fixture.snapshot())>=start+2)
+        restored=[str(m.get('content','')) for r in fixture.snapshot()[start:] if r['body']
+            for m in json.loads(r['body']).get('messages',[]) if m.get('role')=='tool']
+        evidence.check('UI: restart loads same VM session with workspace cwd',
+            daemon.control(op='task',id=task)['session_id']==session and
+            any('/workspace\nhost-project-imported\nhost-path-absent' in text for text in restored))
         control(path,cmd='key',key='q',modifiers=['ctrl'])
         for _ in range(100):
             if not Path(f'/proc/{window}').exists():break
