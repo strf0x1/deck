@@ -51,9 +51,25 @@ plus `denial-retry-tests.log` and `denial-retry-clippy.log` in its parent.
 Synthetic keyrings and test tasks are disposable; no user keyring or provider
 credential was changed.
 
-## macOS acceptance still required
+## macOS live verification
 
-With the supported signing identity, deny/cancel a real Keychain access
+The [macOS run](2026-11-05-macos-credential-retry.md) exercised the real
+Keychain on this development Mac at `13e84f9`, with a dedicated self-signed
+test identity. Late denial, repeated callers, explicit retry, successful
+gateway injection, trust across a changed binary, and locked-Keychain
+recovery behaved as expected. Formatting, clippy, and 391 local tests passed,
+with two ignored.
+
+The run also found a clipped recovery command in the Access panel and a CLI
+listing that exceeded a 20-second harness timeout during an unanswered
+wrong-password challenge. Task-specific listings and gateway requests still
+returned within five seconds. The enumeration code is unchanged by this PR;
+the timing observation has not been reproduced on the accepted baseline.
+The report records these findings and the limits of the local signing check.
+
+## Release-identity acceptance still required
+
+With the supported release signing identity, deny/cancel a real Keychain access
 request, then repeat CLI listings, gateway requests and panel opens. Confirm
 no new dialog until `credential retry NAME`; confirm that retry permits
 another dialog and a successful read. Also check a late denial after the

@@ -6,7 +6,7 @@ passing**. Its manifest records the host binary and harness hashes. This is
 an opt-in Linux/KVM acceptance suite, separate from the default Cargo tests.
 
 The subsequent [credential-retry slice](2026-11-05-credential-retry.md) records
-its separate validation, pending live macOS checks and an intermittent private
+its separate validation, live development macOS checks and an intermittent private
 Secret Service observation (#71). It is not a replacement full-suite acceptance
 run.
 

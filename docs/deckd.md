@@ -386,4 +386,6 @@ collections continue to recover automatically. Linux does not classify
 localized `secret-tool` diagnostics as an explicit human refusal.
 
 The CLI provides the explicit retry in this slice; a dedicated Access-panel
-retry action and live macOS dialog verification remain follow-up work.
+retry action remains follow-up work. [Live development macOS verification](acceptance/2026-11-05-macos-credential-retry.md)
+records the test signing identity, dialog results, and remaining findings.
+Verification with the supported release identity is still pending.
