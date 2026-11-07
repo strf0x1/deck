@@ -102,6 +102,27 @@ impl Grants {
         })
     }
 
+    /// The persisted rule that admitted one GitHub operation (ADR 0007 §3).
+    /// A project rule names the repository and covers every `owner/name#…`
+    /// destination; every other scope matches its destination exactly. The
+    /// queue's admitted scope must be the rule's scope, so a stale rule for a
+    /// broader decision is never mistaken for this one.
+    pub fn github(&self, operation: &str, destination: &str, credential: Option<&str>, scope: &str) -> Option<Permit> {
+        self.find(crate::github::GATEWAY, |rule| {
+            rule.credential.as_deref() == credential
+                && rule.operation == operation
+                && rule.scope == scope
+                && match rule.scope.as_str() {
+                    // A project rule names the repository and covers only its
+                    // `owner/name#branch` and `owner/name#pr<N>` destinations.
+                    "project" => destination
+                        .strip_prefix(rule.destination.as_str())
+                        .is_some_and(|detail| detail.starts_with('#')),
+                    _ => rule.destination == destination,
+                }
+        })
+    }
+
     /// Model names are exact; a queue reply must name the same persisted scope.
     pub fn model(&self, model: &str, credential: &str, scope: Option<&str>) -> Option<Permit> {
         self.find("model", |rule| {

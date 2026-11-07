@@ -1172,7 +1172,14 @@ The implementation is not done until these have tests where practical.
    `web_grants` and `web_project` fields still load. Real gateway socket tests
    cover idle provider closure before and after headers, isolated streams,
    once consumption, expiry with the daemon down, and missing durable grants.
-   GitHub grant cancellation during an operation remains a separate unit.
+   GitHub operations admitted by a persisted timed, task or project rule take
+   part too: the gateway holds that exact rule, and deleting or expiring it
+   interrupts the operation's `git` and API calls with `deck_boundary_denied`
+   ("the authorizing GitHub grant was revoked or expired"). A rule already
+   gone when the operation would dial refuses it before GitHub, and removing
+   an unrelated rule leaves the operation running. Real-socket cases in
+   `crates/deck-gateway/tests/gateway.rs` cover deletion, expiry and the
+   unrelated rule.
 
 10. Implement scoped approval reuse and separate credential-prompt handling.
     Accepted 2026-11-05; Once admission and review matching implemented 2026-11-05. The
