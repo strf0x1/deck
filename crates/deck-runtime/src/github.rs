@@ -197,6 +197,13 @@ pub fn live_approvals(cwd: &Path, recorded: Approvals) -> Approvals {
     }
 }
 
+/// The branch a task publishes to (ADR 0007 §2): `deck/<task>`. The gateway
+/// derives the same name from the task id, so the guest checkout and the
+/// accepted ref cannot disagree.
+pub fn task_branch(task: &str) -> String {
+    format!("deck/{task}")
+}
+
 /// `owner/name`, lowercased, from a GitHub remote URL. Only github.com's
 /// HTTPS and SSH forms are accepted; another host is not this gateway's.
 pub fn parse_github_remote(remote: &str) -> Option<String> {
@@ -339,6 +346,12 @@ mod tests {
             git(&dir, &["symbolic-ref", "refs/remotes/origin/HEAD", &format!("refs/remotes/origin/{base}")]);
         }
         dir
+    }
+
+    #[test]
+    fn a_task_publishes_to_its_own_branch() {
+        assert_eq!(task_branch("t-123"), "deck/t-123");
+        assert_eq!(task_branch("abc"), "deck/abc");
     }
 
     #[test]

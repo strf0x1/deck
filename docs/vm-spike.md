@@ -111,6 +111,27 @@ host architecture, so a Linux x86_64 host builds an amd64 Debian guest.
 Keep `TMPDIR` off tmpfs: the per-task 6 GiB root is a sparse image, and a
 plain copy into a RAM-backed `/tmp` exhausts it.
 
+The checkout contract (#84) needs a public scratch repository and a GitHub
+token under `DECK_GITHUB_TOKEN` in `DECK_CREDENTIALS`; it runs the guest's
+unauthenticated `git fetch` through the web gateway's `repo` profile, so a
+private repository is not supported by this test:
+
+```sh
+DECK_VM_GITHUB_REPOSITORY=owner/name DECK_VM_GITHUB_BASE=main \
+DECK_VM_IMAGE=target/vm/base.img DECK_VM_JOURNAL=target/vm/journal.img \
+DECK_VM_KRUN=/tmp/libkrun/target/release/libkrun.so.1.19.7 \
+DECK_VM_EXECUTABLE=$PWD/target/debug/deckd \
+DECK_GATEWAY_EXECUTABLE=$PWD/target/debug/deck-gateway \
+DECK_CREDENTIALS=$PWD/target/credentials.json \
+LD_LIBRARY_PATH=/usr/lib \
+cargo test -p deck-runtime --test vm vm_guest_checkout_is_ready_to_publish -- --nocapture
+```
+
+The image built by `scripts/vm-image.sh` includes the test entry it sets as
+`DECK_VM_GUEST`; the test reads the guest console and checks the branch,
+`origin`, identity, fetch, bundle and publish, and that a git-ignored `.env`
+did not cross the import share.
+
 To drive the real window, export the same `DECK_VM_*` values and run
 `cargo run --bin deck`; `deckd` inherits them and runs the VM backend. The
 window's default command is `construct acp`, and the backend maps it to

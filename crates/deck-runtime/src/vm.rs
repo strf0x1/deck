@@ -17,7 +17,7 @@ use crate::holder::{Identity, Reply, Request, WAIT};
 use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
 use crate::record::RecordLock;
-use crate::{boundary, github};
+use crate::{boundary, github, import};
 use crate::{reconcile, record::Store, vmm};
 use anyhow::{Context as _, Result, bail};
 use std::borrow::Cow;
@@ -227,9 +227,21 @@ impl Backend for Vm {
         self.reconcile(task)?;
         self.paths.prepare()?;
         std::fs::create_dir_all(self.dir(&task.id))?;
-        for (from, to) in [(&self.image, self.disk(&task.id)), (&self.journal, self.journal(&task.id))] {
-            clone_if_absent(from, &to)?;
-        }
+        // The guest copies the project once, on first boot. Stage a view
+        // without the files the project's git ignores, so they never cross
+        // the virtiofs share (ADR 0008 §4). A resume keeps the disk's copy.
+        // Staging before the clone means a staging failure leaves no disk
+        // that would boot without an import.
+        let first = !self.disk(&task.id).is_file();
+        let staged = if first && task.spec.cwd.is_dir() {
+            let staged = self.dir(&task.id).join("import");
+            import::stage(&task.spec.cwd, &staged)?;
+            Some(staged)
+        } else {
+            None
+        };
+        clone_if_absent(&self.image, &self.disk(&task.id))?;
+        clone_if_absent(&self.journal, &self.journal(&task.id))?;
         let socket = self.paths.task(&task.id);
         let forward = self.forward(&task.id);
         for path in [&socket, &forward] {
@@ -254,7 +266,14 @@ impl Backend for Vm {
             socket: socket.clone(),
             forward,
             console: self.console(&task.id),
-            import: task.spec.cwd.is_dir().then(|| task.spec.cwd.clone()),
+            import: staged.clone(),
+            import_required: task.spec.cwd.is_dir(),
+            checkout: github.map(|policy| vmm::Checkout {
+                branch: github::task_branch(&task.id),
+                repository: policy.repository.clone(),
+                name: policy.identity.name.clone(),
+                email: policy.identity.email.clone(),
+            }),
             guest: self.guest.clone(),
             // libkrun's exec argv is everything after the executable path;
             // the guest script reads the vsock port as $1.
@@ -364,6 +383,12 @@ impl Backend for Vm {
         }
         let done = Arc::new(AtomicBool::new(false));
         watch(self.paths.clone(), task.id.clone(), identity.holder.clone(), done.clone(), Some(child), exited);
+        // The guest connects ACP only after it has copied the import and
+        // prepared the checkout, so the staged view is no longer needed. A
+        // failed start keeps it for the retry.
+        if let Some(staged) = &staged {
+            let _ = std::fs::remove_dir_all(staged);
+        }
         Ok(Box::new(VmInstance {
             data: self.data.clone(),
             paths: self.paths.clone(),
@@ -425,6 +450,11 @@ impl Backend for Vm {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
             }
+        }
+        match std::fs::remove_dir_all(self.dir(&task.id).join("import")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("removing the staged import"),
         }
         cleanup(&self.paths, &task.id);
         Ok(())

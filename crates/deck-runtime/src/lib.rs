@@ -21,6 +21,7 @@ pub mod daemon_client;
 mod detached;
 pub mod github;
 pub mod holder;
+pub mod import;
 pub mod krun;
 pub mod lifecycle;
 pub mod local;

@@ -354,6 +354,140 @@ fn vm_tasks_record_their_projects_github_policy() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// #84: the guest checkout is ready to publish (ADR 0008 §4). Skipped unless
+/// a scratch GitHub repository and a token are configured. The image must
+/// include the test entry (`scripts/vm-image.sh`), and the repository must be
+/// public so the guest's unauthenticated `git fetch` through the web gateway
+/// works; the token is only for the GitHub operation gateway.
+#[test]
+fn vm_guest_checkout_is_ready_to_publish() {
+    let Some(_) = std::env::var_os(deck_runtime::vm::IMAGE_ENV) else {
+        eprintln!("skipping: {} is not set", deck_runtime::vm::IMAGE_ENV);
+        return;
+    };
+    for key in [
+        deck_runtime::vm::JOURNAL_ENV,
+        deck_runtime::vm::KRUN_ENV,
+        deck_runtime::vm::EXECUTABLE_ENV,
+        deck_runtime::vm::GATEWAY_ENV,
+    ] {
+        assert!(std::env::var_os(key).is_some(), "the checkout test needs {key}");
+    }
+    let Some(repository) = std::env::var("DECK_VM_GITHUB_REPOSITORY").ok().filter(|value| !value.is_empty()) else {
+        eprintln!("skipping: DECK_VM_GITHUB_REPOSITORY is not set");
+        return;
+    };
+    let repository = repository.to_ascii_lowercase();
+    let Some(credentials) = std::env::var_os(deck_runtime::credentials::FILE_ENV) else {
+        eprintln!("skipping: {} is not set", deck_runtime::credentials::FILE_ENV);
+        return;
+    };
+    let store = std::fs::read_to_string(&credentials).expect("the credential file");
+    assert!(
+        store.contains(deck_runtime::github::TOKEN),
+        "the credential file must hold {}",
+        deck_runtime::github::TOKEN
+    );
+    let base = std::env::var("DECK_VM_GITHUB_BASE").unwrap_or_else(|_| "main".into());
+
+    let root = std::env::temp_dir().join(format!("deck-vm-checkout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let project = root.join("project");
+    let clone = std::process::Command::new("git")
+        .args(["clone", "--quiet", &format!("https://github.com/{repository}.git")])
+        .arg(&project)
+        .status()
+        .unwrap();
+    assert!(clone.success(), "cloning the scratch repository {repository}");
+    git(&project, &["config", "user.name", "Deck Test"]);
+    git(&project, &["config", "user.email", "deck-test@example.com"]);
+    std::fs::write(project.join(".gitignore"), ".env\n").unwrap();
+    std::fs::write(project.join(".env"), "SECRET=1\n").unwrap();
+    std::fs::write(project.join("untracked.txt"), "work in progress\n").unwrap();
+    git(&project, &["add", ".gitignore"]);
+    git(&project, &["commit", "--quiet", "-m", "checkout fixture"]);
+
+    let data = root.join("data");
+    let paths = Paths::for_data(&data).unwrap();
+    let policy = deck_runtime::github::Policy {
+        repository: repository.clone(),
+        base: base.clone(),
+        branches: Vec::new(),
+        credential: deck_runtime::github::TOKEN.into(),
+        approvals: deck_runtime::github::Approvals::OwnBranchPublic,
+        identity: deck_runtime::github::Identity { name: "Deck Test".into(), email: "deck-test@example.com".into() },
+    };
+    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: project.clone(), github: Some(policy) };
+
+    let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())
+        .arg("--data")
+        .arg(&data)
+        .env("DECK_VM_GUEST", "/usr/local/bin/deck-guest-checkout-test")
+        .env_remove(deck_runtime::github::REPOSITORY_ENV)
+        .env_remove(deck_runtime::github::BASE_ENV)
+        .env_remove(deck_runtime::github::BRANCHES_ENV)
+        .env_remove(deck_runtime::github::TOKEN_ENV)
+        .env_remove(deck_runtime::vm::WEB_PROFILES_ENV)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut daemon = Daemon(child);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let deckd = loop {
+        if let Ok(deckd) = DaemonClient::connect(&data) {
+            break deckd;
+        }
+        assert!(daemon.0.try_wait().unwrap().is_none(), "deckd exited before opening its socket");
+        assert!(Instant::now() < deadline, "deckd did not open its socket");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let id = deckd.create(spec).unwrap().id;
+    let mut cleanup = Cleanup { data: data.clone(), paths: paths.clone(), id: id.clone(), armed: true };
+    deckd.start(&id).unwrap();
+
+    let console = data.join("tasks").join(&id).join("console.log");
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let text = loop {
+        let text = std::fs::read_to_string(&console).unwrap_or_default();
+        if text.contains("CHECK-DONE") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the guest checks did not finish:\n{text}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    println!("{text}");
+    let branch = format!("deck/{id}");
+    for expected in [
+        format!("CHECK branch={branch}"),
+        format!("CHECK origin=https://github.com/{repository}.git"),
+        "CHECK identity=Deck Test <deck-test@example.com>".into(),
+        "CHECK env=absent".into(),
+        "CHECK untracked=present".into(),
+        "CHECK fetch=ok".into(),
+        "CHECK commit=ok".into(),
+        "CHECK commit-author=Deck Test <deck-test@example.com>".into(),
+        "CHECK bundle=ok".into(),
+        "CHECK publish=ok".into(),
+        format!("CHECK publish-branch={branch}"),
+    ] {
+        assert!(text.contains(&expected), "missing {expected:?} in:\n{text}");
+    }
+    let remote = std::process::Command::new("git")
+        .args(["ls-remote", &format!("https://github.com/{repository}.git"), &format!("refs/heads/{branch}")])
+        .output()
+        .unwrap();
+    assert!(remote.status.success(), "ls-remote failed: {}", String::from_utf8_lossy(&remote.stderr));
+    assert!(!remote.stdout.is_empty(), "the publish created the remote branch");
+
+    deckd.stop(&id).unwrap();
+    deckd.destroy(&id).unwrap();
+    cleanup.armed = false;
+    drop(deckd);
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let status = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
     assert!(status.success(), "git {args:?} failed");
