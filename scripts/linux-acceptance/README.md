@@ -217,9 +217,10 @@ steps, and keeps the serve request dumps as the tool-result evidence: the
 window's transcript shows tool titles, not their output. It also reads
 `tasks/<id>/pull_request.json` and the window's `state` as the view evidence.
 
-Fixture boundary: GitHub-hosted Actions jobs do not start for the acceptance
-account (a minimal `echo` workflow also fails in about three seconds with no
-steps), so the scratch workflow targets a self-hosted runner and its check
+Fixture boundary: GitHub-hosted Actions jobs do not start in the private
+scratch repository for this account (a minimal `echo` workflow there also
+fails in about three seconds with no steps; the repository's public CI runs
+normally), so the scratch workflow targets a self-hosted runner and its check
 stays `queued`; the driver cancels the queued runs to produce the completed
 (state `cancelled`) conclusion the panel lists. The deck reads real GitHub
 check runs through the task's gateway; no real CI job ran. See the

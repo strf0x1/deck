@@ -11,8 +11,9 @@ Three product bugs were found: **#106** (marking a pull request ready through
 REST did nothing) is fixed in this PR; **#105** (guest provision markers are
 untracked in `/workspace`) and **#107** (a merged pull request's own card does
 not say done) are open. One fixture limit is material: GitHub-hosted Actions
-jobs do not start for this account, so the scratch CI check is a queued job
-the driver cancels; the deck → gateway → GitHub read path is real (see
+jobs do not start in the private scratch repository for this account (this
+repository's public CI does run), so the scratch check is a queued job the
+driver cancels; the deck → gateway → GitHub read path is real (see
 [Limits](#limits)).
 
 | Case | Result | Evidence |
@@ -118,8 +119,9 @@ rewritten HTTPS origin.
 ## Limits
 
 - **Checks are a GitHub-side fixture, not a CI result.** GitHub-hosted Actions
-  jobs do not start for this account: a minimal workflow with a single
-  `echo` also completes as a failure in about three seconds with no steps.
+  jobs do not start in the private scratch repository for this account: a
+  minimal workflow there with a single `echo` also completes as a failure in
+  about three seconds with no steps; this repository's public CI runs normally.
   The scratch `ci.yml` therefore targets `self-hosted` (no runner is
   registered), so its check stays `queued`. The driver cancels the queued runs
   to give deckd a completed conclusion; the chip transition and the panel rows

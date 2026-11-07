@@ -695,8 +695,9 @@ def main():
             'fixture_limits': [
                 'the model is scripted: the tool steps and the text reply each turn are fixed by the driver; '
                 'a refusal is proven by Construct\'s tool result and by the one publish call in that turn, not by model reasoning',
-                'GitHub-hosted Actions jobs do not start for this account (a minimal workflow also fails in ~3 s with no '
-                'steps), so the scratch CI targets a self-hosted runner and its check stays queued; the harness cancels '
+                'GitHub-hosted Actions jobs do not start in the private scratch repository for this account (a minimal '
+                'workflow there also fails in ~3 s with no steps; this repository\'s public CI runs normally), so '
+                'the scratch CI targets a self-hosted runner and its check stays queued; the harness cancels '
                 'the queued runs to produce the completed conclusion. The deck reads real GitHub check runs; no real CI ran',
                 'the credential store holds the local gh user token (repo scope), not a fine-grained token restricted to '
                 'the scratch repository: fine-grained tokens can only be minted in the web UI. The token never leaves the '

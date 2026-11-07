@@ -7,8 +7,9 @@ model, a private scratch GitHub repository and the real Deck window.
 It finds #105 (open, guest checkout markers), #106 (marking ready through REST
 did nothing; fixed in the same PR) and #107 (open, a merged pull request's own
 card still says idle). Its check results are a GitHub-side fixture:
-GitHub-hosted Actions jobs do not start for this account, so the scratch check
-stays queued and is cancelled to give deckd a completed conclusion.
+GitHub-hosted Actions jobs do not start in the private scratch repository for
+this account, so the scratch check stays queued and is cancelled to give deckd
+a completed conclusion.
 
 The preceding run is [the live timed-grant pass](2026-11-06-timed-linux.md):
 **159/161 final assertions pass**, plus a separate **10/11** private-store
