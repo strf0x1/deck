@@ -57,6 +57,10 @@ pub struct Deck {
     pub(super) expanded: HashSet<String>,
     /// The copy button showing its check (`copy.rs`).
     pub(super) copied: Option<String>,
+    /// The transcript row selected from the keyboard (alt-up/down), by key.
+    pub(super) selected: Option<String>,
+    /// Card bodies fading in and the jump pill (`motion.rs`).
+    pub(super) motion: super::motion::Motion,
     pub(super) agent_cmd: String,
     /// A connection to the daemon-owned task. Window shutdown detaches it.
     pub(super) task: Option<WindowTask>,
@@ -104,6 +108,8 @@ impl Deck {
             row_sigs: Vec::new(),
             expanded: HashSet::new(),
             copied: None,
+            selected: None,
+            motion: super::motion::Motion::default(),
             agent_cmd: String::new(),
             task: None,
             watch: None,
@@ -338,7 +344,7 @@ impl Deck {
     pub fn animating(&self) -> bool {
         let board = self.board.cards().iter().any(|c| !c.y.at_rest() || !c.lift.at_rest());
         let rail = !self.rail.width.at_rest() || !self.rail.marker.at_rest();
-        self.board.dragging().is_some() || board || rail
+        self.board.dragging().is_some() || board || rail || !self.motion.at_rest()
     }
 
     /// The centre of rail item `index` while the rail is closed, in window coordinates.
@@ -356,7 +362,8 @@ impl Deck {
         let dt = self.last_frame.map_or(0., |t| now.duration_since(t).as_secs_f32());
         let board = self.board.step(dt);
         let rail = self.rail.step(dt);
-        if board || rail {
+        let motion = self.motion.step(dt);
+        if board || rail || motion {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {
@@ -373,8 +380,10 @@ impl Focusable for Deck {
 
 impl Render for Deck {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.tick(window);
         self.sync_transcript();
+        // Aim the pill before stepping, so it starts moving this frame.
+        self.motion.pill_to(self.scrolled_back());
+        self.tick(window);
         div()
             .id("deck")
             .track_focus(&self.focus)

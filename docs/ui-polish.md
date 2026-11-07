@@ -109,6 +109,13 @@ transcript and cards, and the other panes still use literal padding.
 - Keyboard navigation between tool cards; expand and collapse with keys.
 - Springs (`spring.rs`) for expanding cards and the jump pill.
 
+Landed: `ui/highlight.rs` (syntect with pure-Rust regex and its bundled
+syntaxes, two-face was not needed; scopes fold to seven classes coloured
+in `theme.rs`; each side of a diff is highlighted whole), alt-up/down and
+tab for cards, and `ui/motion.rs`: opened bodies fade in and the jump pill
+rises. Heights are not animated, since the virtualized list measures rows
+once.
+
 ## Not in scope
 
 Docking, split panes, a command palette and themes other than the one

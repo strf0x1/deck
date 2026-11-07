@@ -116,6 +116,28 @@ pub fn touched(entries: &[Entry]) -> Vec<Touch> {
     out
 }
 
+/// The rows that open and fold (tool cards, folded reads, thoughts): the
+/// ones keyboard selection steps through.
+pub fn expandable(entries: &[Entry], rows: &[Row]) -> Vec<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| match r {
+            Row::Reads(_) => true,
+            Row::One(i) => matches!(entries[*i], Entry::Tool(_) | Entry::Thought(_)),
+            Row::Summary(_) => false,
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The next selectable row from `current` (`up` toward the start); with
+/// nothing selected, the last one. Stays put at either end.
+pub fn step(selectable: &[usize], current: Option<usize>, up: bool) -> Option<usize> {
+    let Some(cur) = current else { return selectable.last().copied() };
+    let found = if up { selectable.iter().rev().find(|&&r| r < cur) } else { selectable.iter().find(|&&r| r > cur) };
+    found.copied().or(Some(cur))
+}
+
 /// The row that draws entry `entry`.
 pub fn row_of(rows: &[Row], entry: usize) -> Option<usize> {
     rows.iter().position(|r| !matches!(r, Row::Summary(_)) && r.range().contains(&entry))
@@ -175,6 +197,16 @@ pub struct Change {
     pub path: String,
     pub diff: Diff,
     pub numbered: bool,
+    /// The texts the diff was built from; its line numbers index them, so
+    /// the view can highlight each whole and keep multi-line context.
+    pub old: String,
+    pub new: String,
+}
+
+impl Change {
+    fn of(path: String, old: &str, new: &str, numbered: bool) -> Self {
+        Change { path, diff: diff(old, new), numbered, old: old.to_string(), new: new.to_string() }
+    }
 }
 
 pub fn changes(call: &ToolCall) -> Vec<Change> {
@@ -183,7 +215,7 @@ pub fn changes(call: &ToolCall) -> Vec<Change> {
         .iter()
         .filter_map(|c| match c {
             ToolContent::Diff { path, old, new } => {
-                Some(Change { path: path.clone(), diff: diff(old.as_deref().unwrap_or_default(), new), numbered: true })
+                Some(Change::of(path.clone(), old.as_deref().unwrap_or_default(), new, true))
             }
             ToolContent::Text(_) => None,
         })
@@ -195,8 +227,8 @@ pub fn changes(call: &ToolCall) -> Vec<Change> {
     let s = |k: &str| input.get(k).and_then(|v| v.as_str());
     let path = s("path").or(s("file_path")).unwrap_or_default().to_string();
     match (s("old_string"), s("new_string"), s("content")) {
-        (Some(old), Some(new), _) => vec![Change { path, diff: diff(old, new), numbered: false }],
-        (_, _, Some(content)) => vec![Change { path, diff: diff("", content), numbered: false }],
+        (Some(old), Some(new), _) => vec![Change::of(path, old, new, false)],
+        (_, _, Some(content)) => vec![Change::of(path, "", content, false)],
         _ => vec![],
     }
 }
@@ -321,6 +353,25 @@ mod tests {
             "a failed edit changed nothing, a file edited twice is one line"
         );
         assert_eq!(row_of(&working, 3), Some(3));
+    }
+
+    #[test]
+    fn selection_steps_through_expandable_rows_and_stops_at_the_ends() {
+        let e = vec![
+            Entry::You("go".into()),
+            tool("r1", ToolKind::Read),
+            tool("r2", ToolKind::Read),
+            Entry::Thought("hm".into()),
+            Entry::Agent("a".into()),
+            tool("x1", ToolKind::Execute),
+        ];
+        let rows = rows(&e, false);
+        let sel = expandable(&e, &rows);
+        assert_eq!(sel, vec![1, 2, 4]);
+        assert_eq!(step(&sel, None, true), Some(4), "the first press picks the latest card");
+        assert_eq!(step(&sel, Some(4), true), Some(2));
+        assert_eq!(step(&sel, Some(1), true), Some(1));
+        assert_eq!(step(&sel, Some(4), false), Some(4));
     }
 
     #[test]

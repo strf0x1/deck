@@ -28,17 +28,47 @@ impl Deck {
     pub(super) fn reveal(&mut self, entry: usize, cx: &mut Context<Self>) {
         let rows = super::transcript::rows(&self.session.entries, self.session.idle());
         let Some(ix) = super::transcript::row_of(&rows, entry) else { return };
-        self.expanded.insert(rows[ix].key(&self.session.entries));
+        let key = rows[ix].key(&self.session.entries);
+        if self.expanded.insert(key.clone()) {
+            self.motion.open(&key);
+        }
         // Measure the opened card before scrolling to it.
         self.sync_transcript();
         self.transcript.scroll_to_reveal_item(ix);
         cx.notify();
     }
 
+    /// Move the keyboard selection to the previous (`up`) or next card and
+    /// scroll it into view.
+    pub(super) fn select_card(&mut self, up: bool, cx: &mut Context<Self>) {
+        let entries = &self.session.entries;
+        let rows = super::transcript::rows(entries, self.session.idle());
+        let current = self.selected.as_ref().and_then(|k| rows.iter().position(|r| r.key(entries) == *k));
+        let Some(ix) = super::transcript::step(&super::transcript::expandable(entries, &rows), current, up) else {
+            return;
+        };
+        self.selected = Some(rows[ix].key(entries));
+        self.transcript.scroll_to_reveal_item(ix);
+        cx.notify();
+    }
+
+    /// Open or fold the selected card; `false` when none is selected.
+    pub(super) fn toggle_selected(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(key) = self.selected.clone() else { return false };
+        self.toggle(&key, cx);
+        true
+    }
+
+    /// The key of the keyboard-selected row.
+    pub fn selected_card(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
     /// Expand or fold a transcript row.
     pub(super) fn toggle(&mut self, key: &str, cx: &mut Context<Self>) {
         if !self.expanded.remove(key) {
             self.expanded.insert(key.to_string());
+            self.motion.open(key);
         }
         cx.notify();
     }
@@ -102,8 +132,10 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     )
     .size_full()
     .pb(px(space::ROW));
-    let jump = deck.scrolled_back().then(|| {
-        div().absolute().bottom(px(12.)).w_full().flex().justify_center().child(
+    // The pill rises 16px and fades in as it appears, and drops as it goes.
+    let shown = deck.motion.pill();
+    let jump = (shown > 0.01).then(|| {
+        div().absolute().bottom(px(12. - 16. * (1. - shown))).opacity(shown).w_full().flex().justify_center().child(
             div()
                 .id("jump-latest")
                 .debug_selector(|| "jump-latest".into())
