@@ -285,6 +285,13 @@ without restarting the task. The other recorded policy fields stay as created,
 and a malformed file fails closed to `ask`. `refs` and `review` never ask. The
 Access panel shows the task's mode.
 
+The gateway reports each successful `publish` (`branch`, `commit`) and
+`create_pr`/`update_pr` (`number`, URL, title, draft) to `deckd`, which
+appends a `publication` event to the task's `events.jsonl`. The latest one is
+folded into `task.json` as the task's publication and survives a stop or a
+daemon restart. Delivery is best effort after the write: a queue that cannot
+be reached does not turn a publish that happened into a failure.
+
 A whole GitHub profile is one decision: `github_profile {task, project?,
 repository, operations, revoke}` writes one durable project rule per operation
 for the repository, and a revoke removes exactly those.

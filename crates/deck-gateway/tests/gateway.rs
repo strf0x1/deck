@@ -1479,6 +1479,10 @@ fn agreement(name: &str) -> PathBuf {
                 continue;
             }
             let request: Value = serde_json::from_str(&line).unwrap();
+            if request["op"] == "publication" {
+                let _ = stream.write_all(b"{\"ok\":null}\n");
+                continue;
+            }
             assert_eq!(request["gateway"], "github", "{request}");
             let reply = serde_json::json!({
                 "ok": { "id": "g1", "gateway": "github", "operation": request["operation"],
@@ -1668,6 +1672,10 @@ fn admission_queue(name: &str, mode: &'static str) -> (PathBuf, Arc<Mutex<Vec<Va
                 continue;
             }
             let request: Value = serde_json::from_str(&line).unwrap();
+            if request["op"] == "publication" {
+                let _ = stream.write_all(b"{\"ok\":null}\n");
+                continue;
+            }
             let coverage = &request["coverage"];
             let own = coverage["own_branch"].as_bool().unwrap_or(false);
             let public = coverage["public"].as_bool();
@@ -1867,6 +1875,67 @@ fn an_incremental_bundle_publishes_from_a_fresh_scratch_repository() {
     let count =
         Command::new("git").arg("--git-dir").arg(&remote).args(["rev-list", "--count", "deck/t-1"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+}
+
+#[test]
+fn a_publish_reports_its_branch_and_commit_to_the_task_record() {
+    let (dir, remote) = bare("gh-report");
+    let (api, _, _) = api(|_| "{}".into());
+    let (queue, seen) = interactive_queue("gh-report-q", |request| match request["op"].as_str() {
+        Some("approval") => serde_json::json!({
+            "id": "g1", "gateway": "github", "operation": request["operation"],
+            "destination": request["destination"], "state": { "allowed": "project" }
+        }),
+        _ => Value::Null,
+    });
+    let gateway = with_github("gh-report-gw", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let bytes = bundle(&dir, "deck/t-1", "report", &dir.join("none"));
+    assert!(publish(&github, "deck/t-1", &bytes).starts_with("HTTP/1.1 200 OK"));
+    let commit =
+        Command::new("git").arg("--git-dir").arg(&remote).args(["rev-parse", "refs/heads/deck/t-1"]).output().unwrap();
+    let commit = String::from_utf8(commit.stdout).unwrap().trim().to_owned();
+    let seen = seen.lock().unwrap();
+    let report = seen.iter().find(|request| request["op"] == "publication").expect("a publish reports its outcome");
+    assert_eq!(report["task"], "t-1");
+    assert_eq!(report["publication"]["kind"], "branch");
+    assert_eq!(report["publication"]["branch"], "deck/t-1");
+    assert_eq!(report["publication"]["commit"], commit);
+}
+
+#[test]
+fn a_created_pull_request_reports_its_number_url_and_draft_state() {
+    let (_, remote) = bare("gh-prreport");
+    let (api, _, _) = api(|request| {
+        match request.target.as_str() {
+        "/repos/owner/repo" => r#"{"private":true}"#.into(),
+        "/repos/owner/repo/pulls" => r#"{"number":7,"title":"ship it","state":"open","draft":true,"head":{"ref":"deck/t-1","sha":"abc"},"base":{"ref":"main"},"mergeable":null,"html_url":"https://github.com/owner/repo/pull/7"}"#.into(),
+        _ => "{}".into(),
+    }
+    });
+    let (queue, seen) = interactive_queue("gh-prreport-q", |request| match request["op"].as_str() {
+        Some("approval") => serde_json::json!({
+            "id": "g1", "gateway": "github", "operation": request["operation"],
+            "destination": request["destination"], "state": { "allowed": "project" }
+        }),
+        _ => Value::Null,
+    });
+    let gateway = with_github("gh-prreport-gw", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let ask = serde_json::json!({
+        "operation": "create_pr", "head": "deck/t-1", "base": "main", "title": "ship it", "body": "b",
+    })
+    .to_string();
+    let response =
+        send(&github, &format!("POST /operations/pull_request HTTP/1.1\r\ncontent-length: {}\r\n\r\n{ask}", ask.len()));
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    let seen = seen.lock().unwrap();
+    let report = seen.iter().find(|request| request["op"] == "publication").expect("a create reports its outcome");
+    assert_eq!(report["publication"]["kind"], "pull_request");
+    assert_eq!(report["publication"]["number"], 7);
+    assert_eq!(report["publication"]["url"], "https://github.com/owner/repo/pull/7");
+    assert_eq!(report["publication"]["title"], "ship it");
+    assert_eq!(report["publication"]["draft"], true);
 }
 
 #[test]

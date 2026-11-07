@@ -747,6 +747,7 @@ mod tests {
             holder: None,
             session_id: None,
             usage: Default::default(),
+            publication: None,
         };
         let policy = policy_for(&task, None).unwrap().expect("the origin names a repository");
         assert_eq!(policy.repository, "owner/name");

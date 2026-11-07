@@ -27,6 +27,16 @@ pub struct Coverage {
     pub public: Option<bool>,
 }
 
+/// What a successful write published, reported to `deckd` after the fact
+/// (ADR 0008 §8). Mirrors the task record's shape; the gateway has no
+/// dependency on the runtime crate.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Publication {
+    Branch { branch: String, commit: String },
+    PullRequest { number: u64, url: String, title: String, draft: bool },
+}
+
 /// The daemon's answer for one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -83,16 +93,24 @@ impl Control {
         if let Some(reason) = reason {
             request["reason"] = json!(reason);
         }
-        match self.call(&request) {
+        match self.call(&request, REPLY) {
             Ok(approval) => answer(&approval),
             Err(error) => Answer::Unavailable(error),
         }
     }
 
-    fn call(&self, request: &Value) -> Result<Value, String> {
+    /// Report a successful publication to the task's record. The write already
+    /// happened, so a queue that is down or slow must not turn it into a
+    /// failure: the report is best effort and bounded.
+    pub fn report(&self, publication: &Publication) {
+        let request = json!({ "op": "publication", "task": self.task, "publication": publication });
+        let _ = self.call(&request, Duration::from_secs(5));
+    }
+
+    fn call(&self, request: &Value, timeout: Duration) -> Result<Value, String> {
         let mut stream =
             UnixStream::connect(&self.socket).map_err(|error| format!("the approval queue is unreachable: {error}"))?;
-        stream.set_read_timeout(Some(REPLY)).map_err(|error| error.to_string())?;
+        stream.set_read_timeout(Some(timeout)).map_err(|error| error.to_string())?;
         stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(|error| error.to_string())?;
         let mut line = serde_json::to_vec(request).map_err(|error| error.to_string())?;
         line.push(b'\n');

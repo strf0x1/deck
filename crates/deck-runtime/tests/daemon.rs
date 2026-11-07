@@ -696,6 +696,27 @@ fn a_live_approvals_switch_applies_to_the_next_operation() {
 }
 
 #[test]
+fn a_publication_is_in_the_record_after_a_daemon_restart() {
+    use deck_runtime::Publication;
+    let (mut daemon, client) = Daemon::new("publication");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    let publication = Publication::PullRequest {
+        number: 7,
+        url: "https://github.com/owner/repo/pull/7".into(),
+        title: "the change".into(),
+        draft: true,
+    };
+    client.publication(&task.id, publication.clone()).unwrap();
+    assert_eq!(client.task(&task.id).unwrap().publication, Some(publication.clone()));
+    let log = std::fs::read_to_string(daemon.data.join("tasks").join(&task.id).join("events.jsonl")).unwrap();
+    assert!(log.contains("\"event\":\"publication\""), "{log}");
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    let client = daemon.restart();
+    assert_eq!(client.task(&task.id).unwrap().publication, Some(publication));
+}
+
+#[test]
 fn task_grants_survive_a_daemon_restart_and_do_not_widen_other_tasks() {
     use deck_runtime::approvals::{Decision, Scope, State};
     let (mut daemon, client) = Daemon::new("approval-durable");

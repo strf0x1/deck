@@ -502,6 +502,10 @@ impl Service {
                 self.runtime.usage(&task, requests, tokens)?;
                 Ok(json!(null))
             }
+            Request::Publication { task, publication } => {
+                self.runtime.publication(&task, publication)?;
+                Ok(json!(null))
+            }
             Request::SetBudget { task, requests, tokens } => {
                 self.runtime.set_budget(&task, requests, tokens)?;
                 Ok(json!(null))
