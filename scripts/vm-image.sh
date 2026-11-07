@@ -109,6 +109,17 @@ if [ ! -e /workspace/.deck-provisioned ]; then
   if mount -t virtiofs import /mnt/import 2>/dev/null; then
     cp -a /mnt/import/. /workspace/ || { echo "deck-guest: import copy failed" >&2; exit 1; }
     umount /mnt/import
+    # The markers below live on the workspace disk so a resume can see them,
+    # but they are Deck's files, not the project's. Exclude them locally so
+    # `git add -A` cannot commit them into a published branch (ADR 0008 §4);
+    # `.git/info/exclude` stays in the guest clone and is never published.
+    if [ -d /workspace/.git ]; then
+      mkdir -p /workspace/.git/info
+      for marker in /.deck-checkout /.deck-provisioned; do
+        grep -qxF "$marker" /workspace/.git/info/exclude 2>/dev/null \
+          || printf '%s\n' "$marker" >> /workspace/.git/info/exclude
+      done
+    fi
     # The checkout is prepared once, at first start (ADR 0008 §4). A resume
     # keeps the branch and the identity the first start wrote.
     if [ -n "$branch" ] && [ -d /workspace/.git ]; then
@@ -254,6 +265,7 @@ echo "CHECK origin=$(git remote get-url origin 2>/dev/null || echo none)"
 echo "CHECK identity=$(git config user.name 2>/dev/null) <$(git config user.email 2>/dev/null)>"
 [ -e .env ] && echo "CHECK env=present" || echo "CHECK env=absent"
 [ -e untracked.txt ] && echo "CHECK untracked=present" || echo "CHECK untracked=absent"
+git check-ignore -q .deck-checkout && git check-ignore -q .deck-provisioned && echo "CHECK markers=ignored" || echo "CHECK markers=tracked"
 # Wait for the relays the entry starts after provisioning.
 for port in "${DECK_WEB_PORT:-8082}" "${DECK_GITHUB_PORT:-8084}"; do
   i=0

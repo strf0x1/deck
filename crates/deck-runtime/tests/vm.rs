@@ -464,6 +464,7 @@ fn vm_guest_checkout_is_ready_to_publish() {
         "CHECK identity=Deck Test <deck-test@example.com>".into(),
         "CHECK env=absent".into(),
         "CHECK untracked=present".into(),
+        "CHECK markers=ignored".into(),
         "CHECK fetch=ok".into(),
         "CHECK commit=ok".into(),
         "CHECK commit-author=Deck Test <deck-test@example.com>".into(),
