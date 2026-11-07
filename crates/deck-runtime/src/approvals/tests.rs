@@ -24,11 +24,21 @@ fn incoming(task: &str, project: &str, destination: &str) -> Incoming {
             path: Some("/v1/chat/completions".into()),
             size: Some(0),
             identity: None,
+            summary: None,
         },
         reason: None,
         coverage: None,
         approvals: None,
     }
+}
+
+#[test]
+fn a_publish_summary_rides_in_the_details() {
+    let details: Details = serde_json::from_value(serde_json::json!({
+        "summary": { "subject": "Add the gateway", "count": 2 }
+    }))
+    .unwrap();
+    assert_eq!(details.summary, Some(Summary { subject: "Add the gateway".into(), count: 2 }));
 }
 
 fn fast() -> Settings {

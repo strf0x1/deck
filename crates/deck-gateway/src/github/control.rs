@@ -8,6 +8,7 @@
 //! window is attached. A failure to reach `deckd` is a denial for the same
 //! reason it is everywhere else: a decision is impossible without it.
 
+use super::ask::Summary;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -64,6 +65,7 @@ impl Control {
 
     /// Ask for one operation on one destination. `reason` is what the card
     /// shows about the request; it never contains a credential.
+    #[expect(clippy::too_many_arguments, reason = "one approval request has these fields")]
     pub fn ask(
         &self,
         operation: &str,
@@ -72,27 +74,9 @@ impl Control {
         credential: Option<&str>,
         identity: Option<&str>,
         coverage: Option<Coverage>,
+        summary: Option<&Summary>,
     ) -> Answer {
-        let mut request = json!({
-            "op": "approval",
-            "task": self.task,
-            "gateway": crate::github::GATEWAY,
-            "operation": operation,
-            "destination": destination,
-            "details": {},
-        });
-        if let Some(credential) = credential {
-            request["credential"] = json!(credential);
-        }
-        if let Some(identity) = identity {
-            request["details"]["identity"] = json!(identity);
-        }
-        if let Some(coverage) = coverage {
-            request["coverage"] = json!(coverage);
-        }
-        if let Some(reason) = reason {
-            request["reason"] = json!(reason);
-        }
+        let request = request(&self.task, operation, destination, reason, credential, identity, coverage, summary);
         match self.call(&request, REPLY) {
             Ok(approval) => answer(&approval),
             Err(error) => Answer::Unavailable(error),
@@ -123,6 +107,46 @@ impl Control {
             None => Ok(reply.ok),
         }
     }
+}
+
+/// The approval request `deckd` receives. The summary is the agent's own
+/// description of a publish, so it travels in `details`, where the card shows
+/// it as such and nothing compares it for a decision.
+#[expect(clippy::too_many_arguments, reason = "one approval request has these fields")]
+fn request(
+    task: &str,
+    operation: &str,
+    destination: &str,
+    reason: Option<String>,
+    credential: Option<&str>,
+    identity: Option<&str>,
+    coverage: Option<Coverage>,
+    summary: Option<&Summary>,
+) -> Value {
+    let mut request = json!({
+        "op": "approval",
+        "task": task,
+        "gateway": crate::github::GATEWAY,
+        "operation": operation,
+        "destination": destination,
+        "details": {},
+    });
+    if let Some(credential) = credential {
+        request["credential"] = json!(credential);
+    }
+    if let Some(identity) = identity {
+        request["details"]["identity"] = json!(identity);
+    }
+    if let Some(summary) = summary {
+        request["details"]["summary"] = json!(summary);
+    }
+    if let Some(coverage) = coverage {
+        request["coverage"] = json!(coverage);
+    }
+    if let Some(reason) = reason {
+        request["reason"] = json!(reason);
+    }
+    request
 }
 
 #[derive(serde::Deserialize)]
@@ -175,6 +199,28 @@ fn answer(approval: &Value) -> Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_publish_summary_is_the_agents_description_in_the_details() {
+        let summary = Summary { subject: "Add the gateway".into(), count: 2 };
+        let value = request(
+            "t-1",
+            "publish",
+            "owner/name#deck/t-1",
+            Some("publish a commit to deck/t-1".into()),
+            Some("DECK_GITHUB_TOKEN"),
+            None,
+            None,
+            Some(&summary),
+        );
+        assert_eq!(value["operation"], "publish");
+        assert_eq!(value["details"]["summary"]["subject"], "Add the gateway");
+        assert_eq!(value["details"]["summary"]["count"], 2);
+        assert!(value["details"].get("identity").is_none(), "a summary does not invent an identity");
+
+        let bare = request("t-1", "publish", "owner/name#deck/t-1", None, None, None, None, None);
+        assert!(bare["details"].get("summary").is_none());
+    }
 
     #[test]
     fn a_decision_is_read_from_either_shape_the_daemon_uses() {

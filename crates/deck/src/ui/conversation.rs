@@ -229,6 +229,20 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     div().text_color(Tokens::text_faint()).child(format!("credential {credential}"))
                 })),
         )
+        .children(item.details.summary.as_ref().map(|summary| {
+            div()
+                .debug_selector(|| "boundary-summary".into())
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(px(10.5)).text_color(Tokens::text_faint()).child("the agent's description"))
+                .child(div().text_size(px(12.)).text_color(Tokens::text_dim()).child(format!(
+                    "{} · {} commit{}",
+                    summary.subject,
+                    summary.count,
+                    if summary.count == 1 { "" } else { "s" }
+                )))
+        }))
         .children(
             (!detail.trim().is_empty())
                 .then(|| div().text_size(px(11.5)).text_color(Tokens::text_faint()).font_family(MONO).child(detail)),

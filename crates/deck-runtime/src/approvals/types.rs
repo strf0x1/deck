@@ -33,6 +33,19 @@ pub struct Details {
     /// Read operations use their gateway/operation/destination authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
+    /// What the agent says it is publishing (ADR 0008 §7). It is guest-
+    /// supplied description shown on the card; the gateway's bundle, not
+    /// this, decides which commit lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Summary>,
+}
+
+/// A publish's bounded guest-supplied description: the commit subject and how
+/// many commits are new.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Summary {
+    pub subject: String,
+    pub count: u64,
 }
 
 /// How broad an allowance is.
