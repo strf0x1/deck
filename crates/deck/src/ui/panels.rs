@@ -10,7 +10,7 @@ use super::root::{Deck, LIVE};
 use super::theme::{MONO, Tokens, icon, radius, size, tint};
 use gpui::{
     AnyElement, BoxShadow, Context, Div, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, Styled as _, div, point, px,
+    MouseDownEvent, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, point, px,
 };
 
 pub fn state_color(s: LaneState) -> Hsla {
@@ -74,7 +74,11 @@ pub fn lanes(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                         .child(deck.board.cards().len().to_string()),
                 )
                 .child(div().flex_1())
-                .child(icon_button("lanes-new", icon::PLUS)),
+                .child(
+                    icon_button("lanes-new", icon::PLUS)
+                        .debug_selector(|| "lanes-new".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
+                ),
         )
         .child(div().relative().h(px(deck.board.height())).children(cards))
 }

@@ -208,6 +208,10 @@ pub fn state(d: &Deck) -> Value {
         },
         "publication": d.open_publication().map(|(task, _)| task.to_string()),
         "publish_notice": d.publish_notice(),
+        "new_session": {
+            "creating": d.new_session_state().is_creating(),
+            "error": d.new_session_state().error(),
+        },
         "rail": {
             "width": rail.width.pos,
             "active": rail.active(),

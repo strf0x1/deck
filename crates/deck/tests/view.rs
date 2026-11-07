@@ -1069,6 +1069,67 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     cleanup_daemon(&data);
 }
 
+#[cfg(unix)]
+#[gpui::test]
+fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    let cwd = data.join("alpha");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd.clone(), cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let own = ready_on(&deck, &mut vcx, None);
+    prompt_fake(&deck, &mut vcx, "first");
+
+    // The header button: a second task with the same command and directory,
+    // which `run` alone would never create.
+    let button = vcx.debug_bounds("hdr-new").unwrap().center();
+    vcx.simulate_click(button, Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() != Some(own.as_str())));
+    let second = ready_on(&deck, &mut vcx, None);
+    assert_ne!(second, own);
+    assert!(said(&deck, &vcx).is_empty(), "a new session starts with an empty transcript");
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let record = daemon.task(&second).unwrap();
+    assert_eq!((record.spec.cwd.as_path(), record.state.clone()), (cwd.as_path(), State::Running));
+    assert_eq!(daemon.task(&own).unwrap().state, State::Running, "the previous session keeps running");
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.board().order().len(), 2, "the previous session is an ordinary card");
+        assert!(!d.new_session_state().is_creating());
+    });
+    prompt_fake(&deck, &mut vcx, "second");
+
+    // The column's own button does the same; then a card switches back.
+    let plus = vcx.debug_bounds("lanes-new").unwrap().center();
+    vcx.simulate_click(plus, Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() != Some(second.as_str())));
+    let third = ready_on(&deck, &mut vcx, None);
+    assert!(third != own && third != second);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 3));
+    vcx.simulate_click(point(px(200.), px(150. + PITCH)), Modifiers::none());
+    let back = ready_on(&deck, &mut vcx, None);
+    assert!(back == own || back == second, "the card held one of the earlier sessions");
+    let expect = if back == own { "first" } else { "second" };
+    assert_eq!(said(&deck, &vcx), vec![expect.to_string()], "its conversation is rebuilt by live attach");
+
+    cx.quit();
+    for id in [&own, &second, &third] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
 /// Wait until the window's session is ready on task `id` (any task when `None`).
 #[cfg(unix)]
 fn ready_on(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext, id: Option<&str>) -> String {

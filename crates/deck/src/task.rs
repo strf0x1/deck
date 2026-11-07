@@ -37,6 +37,15 @@ impl WindowTask {
         WindowTask::of(self.daemon.clone(), record)
     }
 
+    /// Create another task with this one's command and directory, without
+    /// starting it; [`WindowTask::open`] on its sibling starts it. It asks for
+    /// `create`, not `run`: `run` would find this task again. The GitHub
+    /// policy is resolved afresh, as at launch.
+    pub fn create_sibling(&self) -> Result<Task> {
+        let spec = self.daemon.task(&self.id)?.spec;
+        self.daemon.create(Spec { github: None, ..spec })
+    }
+
     fn of(daemon: DaemonClient, record: &Task) -> WindowTask {
         // ACP addresses the agent filesystem; task and project identity stay
         // in the host filesystem recorded by the daemon.

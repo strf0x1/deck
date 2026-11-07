@@ -81,6 +81,8 @@ pub struct Deck {
     pub(super) destroy_confirm: bool,
     /// Whether the agent advertised GitHub operations; `None` until ready.
     pub(super) agent_publishes: Option<bool>,
+    /// The New session buttons: idle, creating, or the last failure.
+    pub(super) new_session: super::new_session::NewSession,
     last_frame: Option<Instant>,
 }
 
@@ -123,6 +125,7 @@ impl Deck {
             publication_open: None,
             destroy_confirm: false,
             agent_publishes: None,
+            new_session: super::new_session::NewSession::Idle,
             last_frame: None,
         }
     }
@@ -134,6 +137,11 @@ impl Deck {
 
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    /// The New session control's state.
+    pub fn new_session_state(&self) -> &super::new_session::NewSession {
+        &self.new_session
     }
 
     pub fn board(&self) -> &Board {
