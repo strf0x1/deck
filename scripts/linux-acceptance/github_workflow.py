@@ -330,7 +330,6 @@ def main():
                         default=Path(os.environ.get('CONSTRUCT_REPO', str(Path(__file__).resolve().parents[2] / '../construct'))))
     parser.add_argument('--agent', default='/usr/local/bin/construct')
     parser.add_argument('--deck', type=Path, default=Path(os.environ.get('DECK_ACCEPTANCE_UI_EXECUTABLE', 'target/debug/deck')))
-    parser.add_argument('--keep-github', action='store_true', help='leave the run branches and pull requests in place')
     args = parser.parse_args()
 
     for name in ['DECK_VM_IMAGE', 'DECK_VM_JOURNAL', 'DECK_VM_KRUN', 'DECK_VM_EXECUTABLE',
