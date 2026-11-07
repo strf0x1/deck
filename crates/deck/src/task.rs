@@ -161,6 +161,14 @@ impl WindowTask {
         self.connect(task.session_id)
     }
 
+    /// Stop the agent if it is running; a no-op otherwise.
+    pub fn stop(&self) -> Result<()> {
+        if self.daemon.task(&self.id)?.state == State::Running {
+            self.daemon.stop(&self.id)?;
+        }
+        Ok(())
+    }
+
     fn connect(&self, session_id: Option<String>) -> Result<Connection> {
         let stream = self.daemon.attach(&self.id)?;
         match session_id {

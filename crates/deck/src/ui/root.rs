@@ -393,6 +393,7 @@ impl Render for Deck {
             .id("deck")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &crate::app::RestartTask, _, cx| this.restart(cx)))
+            .on_action(cx.listener(|this, _: &crate::app::StopTask, _, cx| this.stop(cx)))
             .on_key_down(cx.listener(|this, ev, _, cx| this.key(ev, cx)))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 if this.board.dragging().is_some() {

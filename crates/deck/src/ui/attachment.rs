@@ -103,6 +103,42 @@ impl Deck {
         .detach();
     }
 
+    /// Whether a task is connected and not already down.
+    pub fn can_stop(&self) -> bool {
+        self.task.is_some() && !matches!(self.session.status, Status::Down(_))
+    }
+
+    /// Stop the window's task and leave it stopped. The connection is dropped
+    /// and the generation bumped; a restart card replaces the conversation.
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if !self.can_stop() {
+            return;
+        }
+        let Some(task) = self.task.clone() else { return };
+        self.attachment += 1;
+        let generation = self.attachment;
+        self.client = None;
+        self.session.status = Status::Connecting;
+        self.sync_live_lane();
+        cx.notify();
+        let stopped = cx.background_executor().spawn(async move { task.stop() });
+        cx.spawn(async move |this, cx| {
+            let result = stopped.await;
+            let _ = this.update(cx, |deck, cx| {
+                if deck.attachment != generation {
+                    return;
+                }
+                match result {
+                    Ok(()) => deck.session.status = Status::Down("stopped".into()),
+                    Err(e) => deck.session.apply(Inbound::Failed(format!("stopping task: {e:#}"))),
+                }
+                deck.sync_live_lane();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Switch the window to the task card `lane` shows. The current task
     /// keeps running: its client and watch are dropped, which only detaches.
     /// The selected task then connects by launch's rules (`WindowTask::open`).

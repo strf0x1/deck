@@ -267,10 +267,21 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
 }
 
 fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
-    let title = if deck.session.status == Status::Detached {
-        "Your task is still running."
-    } else {
-        "The task connection needs to be restored."
+    let title = match &deck.session.status {
+        Status::Detached => "Your task is still running.",
+        Status::Down(detail) if detail.as_str() == "stopped" => "This task is stopped.",
+        _ => "The task connection needs to be restored.",
+    };
+    let action = match &deck.session.status {
+        Status::Down(detail) if detail.as_str() == "stopped" => "Restart",
+        _ => "Stop and restart",
+    };
+    let note = match &deck.session.status {
+        Status::Detached => "Restart to restore the conversation. Any unfinished turn will be interrupted.",
+        Status::Down(detail) if detail.as_str() == "stopped" => {
+            "Restart to start the agent again with its recorded history."
+        }
+        _ => "Restart to restore the conversation. Any unfinished turn will be interrupted.",
     };
     div()
         .flex()
@@ -280,20 +291,17 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .rounded(px(radius::BUBBLE))
         .bg(Tokens::raised())
         .child(title)
-        .child(
-            div()
-                .text_color(Tokens::text_dim())
-                .child("Restart to restore the conversation. Any unfinished turn will be interrupted."),
-        )
+        .child(div().text_color(Tokens::text_dim()).child(note))
         .child(
             div()
                 .id("restart-task")
+                .debug_selector(|| "restart-task".into())
                 .flex()
                 .items_center()
                 .gap(px(10.))
                 .cursor_pointer()
                 .text_color(Tokens::accent())
-                .child("Stop and restart")
+                .child(action)
                 .child(kbd(crate::app::RESTART_HINT))
                 .on_click(cx.listener(|this, _, _, cx| this.restart(cx))),
         )
