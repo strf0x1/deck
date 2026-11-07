@@ -301,6 +301,11 @@ fn the_fake_agent_admits_the_publish_and_the_draft_pr_and_asks_to_mark_ready() {
         "the reviewed write is identified: {update}"
     );
     assert!(update.get("coverage").is_none(), "ready-for-review is never admitted by default: {update}");
+    assert_eq!(
+        update["details"]["summary"],
+        json!({ "subject": "deck-fake-agent: Ship it", "count": 2 }),
+        "the ready card carries the publish summary #85 put in Details: {update}"
+    );
 
     // The publication reports record what landed, which is what the task
     // record (#82) folds into the latest publication.
