@@ -649,6 +649,13 @@ fn clone(source: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::copy(source, target).map(|_| ())
 }
 
+/// The GitHub gateway socket a VM task's run was started with; `None` for a
+/// task without one (no repository, a local task, or one never started).
+pub fn github_socket(data: &Path, id: &str) -> Option<PathBuf> {
+    let bytes = std::fs::read(data.join("tasks").join(id).join("vmm.json")).ok()?;
+    serde_json::from_slice::<vmm::Config>(&bytes).ok()?.gateway.github_socket
+}
+
 /// The credential names a VM task's gateway may fetch, from the `vmm.json`
 /// its run was started with. A task with no VMM config (a local task, or one
 /// never started) has none.

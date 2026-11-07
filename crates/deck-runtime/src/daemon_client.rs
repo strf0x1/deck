@@ -123,6 +123,14 @@ impl DaemonClient {
         self.request::<serde_json::Value>(Request::Publication { task: id.into(), publication }).map(|_| ())
     }
 
+    /// The task's publication and its live pull request state. `refresh`
+    /// asks for a read sooner than the interval; the daemon still bounds it.
+    /// Its own connection: a read waits on GitHub and must not hold up other
+    /// requests on a shared client.
+    pub fn pull_request(&self, id: &str, refresh: bool) -> Result<crate::pull_request::State> {
+        Self::at(self.paths.clone())?.request(Request::PullState { task: id.into(), refresh })
+    }
+
     /// Replace a task's live model budget; `None` is unlimited.
     pub fn set_budget(&self, id: &str, requests: Option<u64>, tokens: Option<u64>) -> Result<()> {
         self.request(Request::SetBudget { task: id.into(), requests, tokens })
