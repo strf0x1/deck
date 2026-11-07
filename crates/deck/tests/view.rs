@@ -124,6 +124,7 @@ fn tool_cards_expand_and_the_transcript_follows_until_scrolled_back(cx: &mut Tes
     });
     cx.run_until_parked();
     assert!(deck.read_with(&cx, |d, _| d.scrolled_back()), "scrolling up stops following");
+    settle(&deck, &mut cx);
     click_control(&mut cx, "jump-latest");
     assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "the pill returns to the end");
 }
@@ -174,6 +175,38 @@ fn a_finished_turn_lists_its_files_and_copy_buttons_copy(cx: &mut TestAppContext
     cx.executor().advance_clock(std::time::Duration::from_secs(2));
     cx.run_until_parked();
     assert_eq!(deck.read_with(&cx, |d, _| d.copied().map(str::to_owned)), None, "the check goes away");
+}
+
+#[gpui::test]
+fn cards_are_selected_and_opened_from_the_keyboard(cx: &mut TestAppContext) {
+    use deck_acp::{ToolCall, ToolKind, ToolStatus};
+
+    let (deck, mut cx) = open(cx);
+    let call = |id: &str, kind| ToolCall {
+        id: id.into(),
+        title: id.into(),
+        kind,
+        status: ToolStatus::Done,
+        ..ToolCall::default()
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        d.on_inbound(Inbound::UserMessage("go".into()), cx);
+        d.on_inbound(Inbound::Tool(call("x1", ToolKind::Execute)), cx);
+        d.on_inbound(Inbound::Message("between".into()), cx);
+        d.on_inbound(Inbound::Tool(call("x2", ToolKind::Execute)), cx);
+    });
+    cx.simulate_keystrokes("d r a f t alt-up");
+    assert_eq!(deck.read_with(&cx, |d, _| d.selected_card().map(str::to_owned)), Some("tool:x2".into()));
+    cx.simulate_keystrokes("alt-up tab");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.selected_card(), Some("tool:x1"), "alt-up steps back over prose");
+        assert!(d.is_expanded("tool:x1"), "tab opens the selected card");
+        assert_eq!(d.draft(), "draft", "card keys never reach the composer");
+    });
+    cx.simulate_keystrokes("escape");
+    assert_eq!(deck.read_with(&cx, |d, _| d.selected_card().map(str::to_owned)), None, "escape lets go first");
+    settle(&deck, &mut cx);
 }
 
 #[gpui::test]
@@ -419,6 +452,21 @@ fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));
     cx.simulate_click(bounds.center(), Modifiers::none());
     cx.run_until_parked();
+}
+
+/// Draw frames until no spring moves, as the control socket's `settle` does.
+/// Springs step by real time, so this sleeps a frame between draws.
+fn settle(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        if !deck.read_with(cx, |d, _| d.animating()) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the springs did not settle");
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
 }
 
 fn wait_view(cx: &mut VisualTestContext, mut ready: impl FnMut(&VisualTestContext) -> bool) {

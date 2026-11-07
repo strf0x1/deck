@@ -23,11 +23,26 @@ impl Deck {
         // A word at a time is alt on macOS and ctrl elsewhere; cmd moves by line.
         let word = m.alt || m.control;
         let command = m.control || m.platform;
+        // Cards before text: alt-up/down select, tab opens, escape lets go.
+        match ev.keystroke.key.as_str() {
+            "up" | "down" if m.alt && !m.shift => {
+                self.select_card(ev.keystroke.key == "up", cx);
+                return true;
+            }
+            "tab" => {
+                self.toggle_selected(cx);
+                return true;
+            }
+            "escape" if self.selected.is_some() => {
+                self.selected = None;
+                return true;
+            }
+            _ => {}
+        }
         let e = &mut self.editor;
         match ev.keystroke.key.as_str() {
             "enter" if shift || m.alt => e.insert("\n"),
             "enter" => self.submit(cx),
-            "tab" => {}
             "backspace" => e.backspace(word),
             "delete" => e.delete(word),
             "left" if m.platform => e.line_start(shift),

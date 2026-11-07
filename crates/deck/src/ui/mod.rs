@@ -1,8 +1,8 @@
 //! Deck's GPUI views. `root` is the window's view and owns all state;
-//! `chrome`, `panels`, `conversation`, `transcript_list`, `cards`, `turn_footer`, `prose`,
+//! `chrome`, `panels`, `conversation`, `transcript_list`, `cards`, `card_body`, `folds`, `turn_footer`, `prose`,
 //! `prompt` and `access_panel` render it, `composer` is the text field's
 //! element and `input` its keys and IME; `board`, `rail`, `session`,
-//! `transcript`, `markdown`, `diff`, `editor`, `access` and `spring` are pure
+//! `transcript`, `markdown`, `diff`, `highlight`, `motion`, `editor`, `access` and `spring` are pure
 //! state with their own tests; `theme` is the visual vocabulary.
 
 pub mod access;
@@ -11,6 +11,7 @@ mod access_panel;
 mod attachment;
 pub mod board;
 pub mod boundary;
+mod card_body;
 mod cards;
 mod chrome;
 mod composer;
@@ -19,8 +20,11 @@ mod copy;
 mod credentials;
 pub mod diff;
 pub mod editor;
+mod folds;
+pub mod highlight;
 mod input;
 pub mod markdown;
+pub mod motion;
 mod panels;
 mod prompt;
 mod prose;

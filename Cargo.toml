@@ -17,6 +17,7 @@ deck-runtime = { path = "crates/deck-runtime" }
 futures = "0.3"
 unicode-segmentation = "1.12"
 pulldown-cmark = { version = "0.13", default-features = false }
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 libc = "0.2"
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }

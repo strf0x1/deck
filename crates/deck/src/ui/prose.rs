@@ -4,14 +4,16 @@
 //!
 //! The design choice: prose stays unboxed, so the eye tells the agent's
 //! words from its work (the boxed tool cards) without reading either; only
-//! code, which is machine text, gets a box. Inline styles become per-run
-//! fonts, so inline code is set in the mono face, not just tinted.
+//! code, which is machine text, gets a box, and is highlighted
+//! (`highlight.rs`). Inline styles become per-run fonts, so inline code is
+//! set in the mono face, not just tinted.
 
+use super::highlight;
 use super::markdown::{Block, Inline, Mark, parse};
-use super::theme::{MONO, SANS, Tokens, radius, size, tint};
+use super::theme::{MONO, SANS, Tokens, radius, size, space, tint};
 use gpui::{
-    AnyElement, FontStyle, FontWeight, IntoElement, ParentElement as _, StrikethroughStyle, Styled as _, StyledText,
-    TextRun, UnderlineStyle, div, font, px, relative,
+    AnyElement, FontStyle, FontWeight, Hsla, IntoElement, ParentElement as _, StrikethroughStyle, Styled as _,
+    StyledText, TextRun, UnderlineStyle, div, font, px, relative,
 };
 
 pub fn prose(text: &str) -> AnyElement {
@@ -76,14 +78,42 @@ pub fn code(lang: &str, text: &str) -> AnyElement {
         .text_size(px(size::LABEL))
         .children((!lang.is_empty()).then(|| {
             div()
-                .px(px(12.))
+                .px(px(space::INSET))
                 .pt(px(7.))
                 .text_size(px(size::MICRO))
                 .text_color(Tokens::text_faint())
                 .child(lang.to_string())
         }))
-        .child(div().px(px(12.)).py(px(9.)).line_height(relative(1.45)).child(text.to_string()))
+        .child(div().px(px(space::INSET)).py(px(9.)).line_height(relative(1.45)).child(code_text(
+            text,
+            &highlight::lines(lang, text),
+            Tokens::text().into(),
+        )))
         .into_any_element()
+}
+
+/// `text` in the mono face with each highlighted range in its class's
+/// colour and the rest in `base`. `lines` has one entry per `\n`-split line.
+pub fn code_text(text: &str, lines: &[highlight::Line], base: Hsla) -> StyledText {
+    let run = |len: usize, color: Hsla| TextRun { len, font: font(MONO), color, ..TextRun::default() };
+    let mut runs = vec![];
+    let mut at = 0;
+    let mut start = 0;
+    for (line, spans) in text.split('\n').zip(lines.iter().chain(std::iter::repeat(&vec![]))) {
+        for (range, class) in spans {
+            let (a, b) = (start + range.start, start + range.end);
+            if a > at {
+                runs.push(run(a - at, base));
+            }
+            runs.push(run(b - a, Tokens::code(*class)));
+            at = b;
+        }
+        start += line.len() + 1;
+    }
+    if at < text.len() || runs.is_empty() {
+        runs.push(run(text.len() - at, base));
+    }
+    StyledText::new(text.to_string()).with_runs(runs)
 }
 
 /// One run per styled range, and plain runs between them.

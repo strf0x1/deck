@@ -7,6 +7,7 @@
 //! rail marker, the selected session, the send button. The accents themselves
 //! are vivid; their scarcity is what keeps them loud.
 
+use super::highlight::Class;
 use gpui::{Background, Hsla, Rgba, linear_color_stop, linear_gradient, rgba};
 
 /// Interface text.
@@ -147,6 +148,18 @@ impl Tokens {
     }
     pub fn red() -> Hsla {
         rgba(0xff6b6bff).into()
+    }
+    /// Code: the accents again, a little softer, plus one blue for types,
+    /// so highlighted code sits in the same palette as the window.
+    pub fn code(class: Class) -> Hsla {
+        match class {
+            Class::Comment => Self::text_faint().into(),
+            Class::String => rgba(0xb4e36ae6).into(),
+            Class::Keyword => rgba(0xb0a3ffff).into(),
+            Class::Number | Class::Constant => rgba(0xffc46eff).into(),
+            Class::Function => rgba(0x6fe3cdff).into(),
+            Class::Type => rgba(0x8ec5ffff).into(),
+        }
     }
 }
 
