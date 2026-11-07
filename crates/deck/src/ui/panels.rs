@@ -149,6 +149,19 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
                         .child(div().truncate().text_color(Tokens::text_faint()).child(c.lane.detail.clone())),
                 ),
         )
+        .children(c.lane.chip.as_ref().map(|(dot, label)| {
+            // Its own press: the card under it must not take it as a grab.
+            super::publication_panel::chip(*dot, label)
+                .debug_selector(move || format!("card-chip-{id}"))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_publication(id, cx);
+                    }),
+                )
+        }))
         .into_any_element()
 }
 

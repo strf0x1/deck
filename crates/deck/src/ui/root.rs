@@ -24,8 +24,8 @@ use gpui::{
 use std::sync::Arc;
 use std::time::Instant;
 
-/// The lane id of the live agent session; the others are placeholders until
-/// the host runtime exists.
+/// The lane id of this window's own task, the live agent session. Every other
+/// task `deckd` knows gets its own lane (`tasks.rs`).
 pub const LIVE: usize = 0;
 
 /// Space around and between the window's regions.
@@ -49,17 +49,24 @@ pub struct Deck {
     pub(super) _quit: Option<Subscription>,
     pub(super) client: Option<Arc<Client>>,
     pub(super) attachment: u64,
+    /// Lane ids for the daemon's tasks, the last task list, and each
+    /// task's publication as `deckd` last answered it.
+    pub(super) lanes: super::tasks::Lanes,
+    pub(super) tasks: Vec<deck_runtime::Task>,
+    pub(super) published: std::collections::HashMap<String, deck_runtime::pull_request::State>,
+    pub(super) task_refresh: Option<gpui::Task<()>>,
+    /// The task whose publication panel is open, and whether Destroy was
+    /// clicked once.
+    pub(super) publication_open: Option<String>,
+    pub(super) destroy_confirm: bool,
+    /// Whether the agent advertised GitHub operations; `None` until ready.
+    pub(super) agent_publishes: Option<bool>,
     last_frame: Option<Instant>,
 }
 
+/// Before the first task list arrives the column holds only the live card.
 fn lanes() -> Vec<Lane> {
-    let lane = |id, title: &str, detail: &str, state| Lane { id, title: title.into(), detail: detail.into(), state };
-    vec![
-        lane(LIVE, "agent", "connecting…", LaneState::Idle),
-        lane(1, "flaky test hunt", "vm · placeholder", LaneState::Working),
-        lane(2, "auth refactor", "vm · placeholder", LaneState::Review),
-        lane(3, "scratch", "placeholder", LaneState::Idle),
-    ]
+    vec![Lane { id: LIVE, title: "agent".into(), detail: "connecting…".into(), ..Lane::default() }]
 }
 
 impl Deck {
@@ -81,6 +88,13 @@ impl Deck {
             _quit: None,
             client: None,
             attachment: 0,
+            lanes: super::tasks::Lanes::default(),
+            tasks: Vec::new(),
+            published: std::collections::HashMap::new(),
+            task_refresh: None,
+            publication_open: None,
+            destroy_confirm: false,
+            agent_publishes: None,
             last_frame: None,
         }
     }
@@ -178,6 +192,12 @@ impl Deck {
             self.attachment += 1;
             self.client = None;
         }
+        // `Publishes` comes before `Ready` when the agent advertised it.
+        match ev {
+            Inbound::Publishes => self.agent_publishes = Some(true),
+            Inbound::Ready { .. } if self.agent_publishes.is_none() => self.agent_publishes = Some(false),
+            _ => {}
+        }
         self.session.apply(ev);
         self.sync_live_lane();
         self.scroll.scroll_to_bottom();
@@ -196,10 +216,12 @@ impl Deck {
             (Status::Down(e), _) => (LaneState::Idle, e.clone()),
         };
         let agent = self.session.agent.clone();
+        let chip = self.publication_of(LIVE).map(|v| (v.dot, v.label));
         if let Some(lane) = self.board.lane_mut(LIVE) {
             lane.title = agent;
             lane.state = state;
             lane.detail = detail;
+            lane.chip = chip;
         }
     }
 
@@ -243,6 +265,9 @@ impl Deck {
                 self.toggle_access(cx);
             }
             return cx.notify();
+        }
+        if self.publication_open.is_some() && k.key == "escape" {
+            return self.close_publication(cx);
         }
         if self.session.ask.is_some() && !self.boundary.is_reviewing() {
             match k.key.as_str() {

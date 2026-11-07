@@ -17,6 +17,8 @@ pub struct WindowTask {
     id: String,
     agent_cwd: PathBuf,
     boundary_enforced: bool,
+    /// A VM task whose project names a repository: it has a GitHub gateway.
+    publishes: bool,
 }
 
 impl WindowTask {
@@ -27,7 +29,9 @@ impl WindowTask {
         // ACP addresses the agent filesystem; task and project identity stay
         // in the host filesystem recorded by the daemon.
         let agent_cwd = if run.task.backend == "vm" { "/workspace".into() } else { run.task.spec.cwd.clone() };
-        let task = WindowTask { daemon, boundary_enforced: run.task.backend == "vm", id: run.task.id, agent_cwd };
+        let vm = run.task.backend == "vm";
+        let publishes = vm && run.task.spec.github.is_some();
+        let task = WindowTask { daemon, boundary_enforced: vm, publishes, id: run.task.id, agent_cwd };
         let connection = if run.started {
             Some(task.connect(run.task.session_id)?)
         } else if let Some(id) = run.task.session_id {
@@ -45,6 +49,27 @@ impl WindowTask {
 
     pub fn boundary_enforced(&self) -> bool {
         self.boundary_enforced
+    }
+
+    /// Whether this task has a GitHub gateway to publish through.
+    pub fn publishes(&self) -> bool {
+        self.publishes
+    }
+
+    /// Every task the daemon knows, for the sessions column.
+    pub fn tasks(&self) -> Result<Vec<deck_runtime::Task>> {
+        self.daemon.tasks()
+    }
+
+    /// A task's publication and live pull request state. The daemon bounds
+    /// how often this reaches GitHub.
+    pub fn pull_request(&self, id: &str, refresh: bool) -> Result<deck_runtime::pull_request::State> {
+        self.daemon.pull_request(id, refresh)
+    }
+
+    /// Destroy task `id`: offered only once its pull request is merged.
+    pub fn destroy(&self, id: &str) -> Result<()> {
+        self.daemon.destroy(id)
     }
 
     /// Persist a pointer to the conversation in the agent's own journal.

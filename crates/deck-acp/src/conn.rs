@@ -247,7 +247,8 @@ impl Conn {
                 } else {
                     (Pending::NewSession, "session/new")
                 };
-                Step { lines: vec![self.request(kind, method, params)], events: vec![] }
+                let events = if self.publishes_from_sandbox() { vec![Inbound::Publishes] } else { vec![] };
+                Step { lines: vec![self.request(kind, method, params)], events }
             }
             Pending::NewSession => match value["sessionId"].as_str() {
                 Some(sid) => {
@@ -641,7 +642,13 @@ mod tests {
             c.read(&format!(
                 r#"{{"id":1,"result":{{"agentInfo":{{"name":"construct"}},"agentCapabilities":{{"_meta":{meta}}}}}}}"#
             ));
-            c.publishes_from_sandbox()
+            let publishes = c.publishes_from_sandbox();
+            let (mut again, _) = Conn::start("/w".into());
+            let step = again.read(&format!(
+                r#"{{"id":1,"result":{{"agentInfo":{{"name":"construct"}},"agentCapabilities":{{"_meta":{meta}}}}}}}"#
+            ));
+            assert_eq!(step.events.contains(&Inbound::Publishes), publishes, "the event says what the flag says");
+            publishes
         };
         assert!(publishes(r#"{"com.sprawlcommons/deck":{"github_operations":1}}"#));
         assert!(publishes(r#"{"com.sprawlcommons/deck":{"github_operations":2}}"#), "a newer client speaks 1");

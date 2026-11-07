@@ -74,7 +74,17 @@ fn typing_and_answering_through_the_control_channel(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
-    let (_deck, mut cx, d) = open(cx);
+    let (deck, mut cx, d) = open(cx);
+    let tasks = ["a", "b", "c"]
+        .map(|id| {
+            serde_json::from_value(json!({
+                "id": id, "backend": "local", "spec": { "argv": ["x"], "cwd": format!("/src/{id}") },
+                "state": { "state": "running" }, "pid": null,
+            }))
+            .unwrap()
+        })
+        .to_vec();
+    deck.update(&mut cx, |d, cx| d.on_tasks(tasks, Default::default(), cx));
 
     let to = 150. + PITCH * 2.2;
     send(

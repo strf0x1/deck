@@ -36,6 +36,7 @@ settle.
 | `crates/deck/src/ui/chrome.rs`, `panels.rs`, `conversation.rs` | Render helpers: rail and header; sessions column; transcript, permission card, prompt. No state. |
 | `crates/deck/src/ui/session.rs`, `board.rs`, `rail.rs`, `boundary.rs`, `access.rs`, `spring.rs` | Pure state with unit tests: transcript folding, drag/reorder, rail open/close, the boundary card's pending items, the access panel's credential listing and revoke confirmation, spring physics. |
 | `crates/deck/src/ui/access_panel.rs`, `access_grants.rs`, `credentials.rs` | The access panel (header shield button): credentials, task grants and saved project rules, plus pending requests that return to the boundary card. Daemon calls (list, revoke) run off the UI thread; grant listings refresh while open. The panel changes from daemon replies and rejects stale listings. |
+| `crates/deck/src/ui/tasks.rs`, `publication.rs`, `publishing.rs`, `publication_panel.rs` | The sessions column from `deckd`'s task list (the window's own task is the live card), each task's publication chip and the read-only publication panel (ADR 0008 §8). `tasks.rs` and `publication.rs` are pure state with unit tests; `publishing.rs` refreshes tasks and `pull_state` off the UI thread every 15 s while the window is open; destroy is offered only after a merge, behind a second click. |
 | `crates/deck/src/ui/theme.rs` | Colour tokens, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours come only from here. |
 | `crates/deck/src/control/` | Dev-only control socket (`DECK_CONTROL`). `protocol.rs` the pure line grammar, `socket.rs` the listener threads, `drive.rs` dispatches commands as GPUI input on the window and reads `state`. |
 | `crates/deck/tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |
@@ -156,7 +157,8 @@ Commands: `type {text}`; `key {key, modifiers?}` (`enter`, `escape`,
 `backspace`, arrows, a single character; modifiers `ctrl`, `alt`, `shift`,
 `super`); `click {x,y}`; `move {x,y}`; `drag {from, to, steps?}` (one move per
 frame); `hover_rail`; `select_rail {index}`; `wait {ms}`; `settle` (until no
-spring moves, at most 2 s); `state` (board order, card ys, dragging; rail
+spring moves, at most 2 s); `state` (board order, cards with detail and
+publication chip, dragging; open publication panel, publish notice; rail
 width/active/pinned/expanded; session status, entries, ask; draft;
 animating); `geometry`. Coordinates are window-relative logical pixels, as
 in layout. Errors reply `{"ok":false,"error":…}`.

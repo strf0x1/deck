@@ -1,0 +1,148 @@
+//! The sessions column from `deckd`'s task list: one card per task that is not
+//! destroyed, the window's own task first as the live card.
+//!
+//! The design choice: lane ids are the window's, task ids are the daemon's,
+//! and [`Lanes`] is the only place that maps one to the other, so a task
+//! keeps its card (and the card its place and motion) across refreshes. The
+//! window's own card stays [`LIVE`]: its title and state come from the live
+//! session, not from the record.
+
+use super::board::{Lane, LaneState};
+use super::publication::{self, View};
+use super::root::LIVE;
+use deck_runtime::pull_request::State as Published;
+use deck_runtime::{State, Task};
+use std::collections::HashMap;
+
+/// What one task's card says, from its record and its publication.
+pub fn lane(id: usize, task: &Task, view: Option<&View>) -> Lane {
+    let project =
+        task.spec.cwd.file_name().map_or_else(|| task.spec.cwd.display().to_string(), |n| n.to_string_lossy().into());
+    let place = if task.backend == "vm" { " · vm" } else { "" };
+    // The dot's label already says Working; the detail says where.
+    let backend = if task.backend == "vm" { "vm" } else { "local" };
+    let (state, detail) = match &task.state {
+        _ if view.is_some_and(View::done) => (LaneState::Review, "done · merged".to_string()),
+        State::Running => (LaneState::Working, backend.to_string()),
+        State::Created => (LaneState::Idle, format!("created{place}")),
+        State::Stopped { clean: true, .. } => (LaneState::Idle, format!("stopped{place}")),
+        State::Stopped { reason, .. } => (LaneState::Waiting, format!("ended: {reason}")),
+        State::Failed { .. } => (LaneState::Waiting, "needs a restart".to_string()),
+        State::Destroyed => (LaneState::Idle, "destroyed".to_string()),
+    };
+    Lane { id, title: project, detail, state, chip: view.map(|v| (v.dot, v.label.clone())) }
+}
+
+/// Lane ids for task ids, stable for the window's life.
+#[derive(Default)]
+pub struct Lanes {
+    ids: HashMap<String, usize>,
+    next: usize,
+}
+
+impl Lanes {
+    fn id(&mut self, task: &str, own: Option<&str>) -> usize {
+        if own == Some(task) {
+            return LIVE;
+        }
+        if let Some(id) = self.ids.get(task) {
+            return *id;
+        }
+        // LIVE is 0, so other lanes start at 1.
+        self.next += 1;
+        self.ids.insert(task.to_string(), self.next);
+        self.next
+    }
+
+    /// The task a lane shows, or `None` for an unknown lane.
+    pub fn task(&self, lane: usize, own: Option<&str>) -> Option<String> {
+        if lane == LIVE {
+            return own.map(str::to_string);
+        }
+        self.ids.iter().find(|(_, id)| **id == lane).map(|(task, _)| task.clone())
+    }
+
+    /// The other tasks' lanes, in the daemon's order. The live lane is not
+    /// built here; its chip is set from `published` by the caller.
+    pub fn lanes(
+        &mut self,
+        tasks: &[Task],
+        own: Option<&str>,
+        published: &HashMap<String, Published>,
+        now_ms: u64,
+    ) -> Vec<Lane> {
+        tasks
+            .iter()
+            .filter(|t| t.state != State::Destroyed && own != Some(t.id.as_str()))
+            .map(|t| {
+                let view = published.get(&t.id).and_then(|p| publication::view(p, now_ms));
+                lane(self.id(&t.id, own), t, view.as_ref())
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deck_runtime::Publication;
+    use deck_runtime::pull_request::Live;
+    use serde_json::json;
+
+    fn task(id: &str, state: Value, backend: &str) -> Task {
+        serde_json::from_value(json!({
+            "id": id, "backend": backend, "spec": { "argv": ["construct", "acp"], "cwd": format!("/src/{id}-project") },
+            "state": state, "pid": null,
+        }))
+        .unwrap()
+    }
+    use serde_json::Value;
+
+    #[test]
+    fn each_record_becomes_a_card_with_its_project_state_and_place() {
+        let running = lane(1, &task("a", json!({ "state": "running" }), "vm"), None);
+        assert_eq!(
+            (running.title.as_str(), running.detail.as_str(), running.state),
+            ("a-project", "vm", LaneState::Working)
+        );
+        let crashed =
+            lane(2, &task("b", json!({ "state": "stopped", "clean": false, "reason": "exit 1" }), "local"), None);
+        assert_eq!((crashed.detail.as_str(), crashed.state), ("ended: exit 1", LaneState::Waiting));
+        assert_eq!(
+            lane(3, &task("c", json!({ "state": "stopped", "clean": true, "reason": "" }), "local"), None).detail,
+            "stopped"
+        );
+    }
+
+    #[test]
+    fn a_merged_pull_request_marks_the_card_done_and_shows_the_chip() {
+        let merged = Published {
+            publication: Some(Publication::PullRequest { number: 7, url: "u".into(), title: "t".into(), draft: false }),
+            live: Some(Live { pull_request: Some(json!({ "state": "closed", "merged": true })), ..Live::default() }),
+            fresh: false,
+        };
+        let view = publication::view(&merged, 0).unwrap();
+        let lane = lane(1, &task("a", json!({ "state": "running" }), "vm"), Some(&view));
+        assert_eq!((lane.state, lane.detail.as_str()), (LaneState::Review, "done · merged"));
+        assert_eq!(lane.chip, Some((publication::Dot::Merged, "#7".into())));
+    }
+
+    #[test]
+    fn lane_ids_are_stable_the_own_task_is_live_and_destroyed_tasks_leave() {
+        let mut lanes = Lanes::default();
+        let tasks = vec![
+            task("own", json!({ "state": "running" }), "vm"),
+            task("a", json!({ "state": "running" }), "vm"),
+            task("b", json!({ "state": "destroyed" }), "vm"),
+            task("c", json!({ "state": "created" }), "local"),
+        ];
+        let first: Vec<usize> = lanes.lanes(&tasks, Some("own"), &HashMap::new(), 0).iter().map(|l| l.id).collect();
+        assert_eq!(first.len(), 2, "the own task is the live card; a destroyed one has none");
+        assert!(!first.contains(&LIVE));
+        let again: Vec<usize> =
+            lanes.lanes(&tasks[1..], Some("own"), &HashMap::new(), 0).iter().map(|l| l.id).collect();
+        assert_eq!(again, first, "a refresh keeps each task's lane");
+        assert_eq!(lanes.task(first[0], Some("own")).as_deref(), Some("a"));
+        assert_eq!(lanes.task(LIVE, Some("own")).as_deref(), Some("own"));
+    }
+}
