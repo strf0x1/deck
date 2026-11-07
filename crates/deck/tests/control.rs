@@ -11,7 +11,7 @@
 use deck::control::{self, Request, protocol};
 use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
-use deck_acp::{Inbound, PermissionOption};
+use deck_acp::{Inbound, Location, PermissionOption, ToolCall, ToolContent, ToolKind, ToolStatus, ToolUpdate};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
 use serde_json::{Value, json};
@@ -70,6 +70,34 @@ fn typing_and_answering_through_the_control_channel(cx: &mut TestAppContext) {
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["session"]["ask"]["title"], json!("shell ls"));
     send(&mut cx, &d, json!({ "cmd": "key", "key": "1" }));
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["session"]["ask"], Value::Null);
+}
+
+#[gpui::test]
+fn state_reports_a_tool_calls_kind_diffs_and_locations(cx: &mut TestAppContext) {
+    let (deck, mut cx, d) = open(cx);
+    let edit = ToolCall {
+        id: "e1".into(),
+        title: "edit src/lib.rs".into(),
+        kind: ToolKind::Edit,
+        locations: vec![Location { path: "src/lib.rs".into(), line: Some(2) }],
+        ..ToolCall::default()
+    };
+    let diff = ToolContent::Diff { path: "src/lib.rs".into(), old: Some("a".into()), new: "b".into() };
+    let done = ToolUpdate {
+        id: "e1".into(),
+        status: Some(ToolStatus::Done),
+        content: Some(vec![diff]),
+        ..ToolUpdate::default()
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Tool(edit), cx);
+        d.on_inbound(Inbound::ToolUpdate(done), cx);
+    });
+    assert_eq!(
+        send(&mut cx, &d, json!({ "cmd": "state" }))["session"]["entries"],
+        json!([{ "tool": "edit src/lib.rs", "id": "e1", "kind": "edit", "status": "done",
+            "diffs": 1, "locations": ["src/lib.rs"] }])
+    );
 }
 
 #[gpui::test]

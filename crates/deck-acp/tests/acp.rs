@@ -3,7 +3,7 @@
 //! turn: handshake, a streamed prompt, a permission answer that reaches the
 //! agent, and a tool that reports failed because the answer was reject.
 
-use deck_acp::{Client, Inbound, ToolStatus, TurnState};
+use deck_acp::{Client, Inbound, ToolCall, ToolContent, ToolKind, ToolStatus, ToolUpdate, TurnState};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{TryRecvError, UnboundedReceiver};
 use futures::executor::block_on;
@@ -43,14 +43,22 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
 
     let mut text = String::new();
     let mut tool_seen = false;
+    let mut tools: Vec<ToolCall> = vec![];
     let request = loop {
         match next(rx) {
             Inbound::Message(t) => text.push_str(&t),
-            Inbound::Tool { id, title, status } => {
-                assert_eq!(id, "t1");
-                assert_eq!(title, "shell git push origin deck/spike");
-                assert_eq!(status, ToolStatus::Running);
+            Inbound::Tool(call) if call.id == "t1" => {
+                assert_eq!(call.title, "shell git push origin deck/spike");
+                assert_eq!(call.kind, ToolKind::Execute);
+                assert_eq!(call.status, ToolStatus::Running);
+                assert_eq!(call.input, Some(serde_json::json!({ "command": "git push origin deck/spike" })));
                 tool_seen = true;
+            }
+            Inbound::Tool(call) => tools.push(call),
+            Inbound::ToolUpdate(update) => {
+                if let Some(call) = tools.iter_mut().find(|c| c.id == update.id) {
+                    call.apply(update);
+                }
             }
             Inbound::Permission { request, title, options } => {
                 assert_eq!(title, "shell git push origin deck/spike");
@@ -61,6 +69,14 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
         }
     };
     assert!(tool_seen, "the live tool appears before its permission question");
+    let [read, edit] = &tools[..] else { panic!("a read and an edit before the question: {tools:?}") };
+    assert_eq!((read.kind, read.status), (ToolKind::Read, ToolStatus::Done));
+    assert_eq!(read.locations[0].path, "src/lib.rs");
+    assert!(matches!(&read.content[..], [ToolContent::Text(t)] if t.contains("greet")));
+    assert_eq!((edit.kind, edit.status), (ToolKind::Edit, ToolStatus::Done));
+    assert_eq!(edit.locations[0].line, Some(2));
+    assert!(matches!(&edit.content[..], [ToolContent::Diff { path, old: Some(_), new }]
+        if path == "src/lib.rs" && new.contains("hello")));
     assert!(text.contains("You said \"ship it\""), "{text}");
 
     client.answer(&request, Some("reject")).unwrap();
@@ -68,7 +84,9 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
     loop {
         match next(rx) {
             Inbound::Message(t) => text.push_str(&t),
-            Inbound::ToolStatus { status: ToolStatus::Failed, .. } => failed_tool = true,
+            Inbound::ToolUpdate(ToolUpdate { id, status: Some(ToolStatus::Failed), .. }) if id == "t1" => {
+                failed_tool = true
+            }
             Inbound::Turn { state: TurnState::Idle { stop_reason: Some(stop) }, .. } | Inbound::TurnEnded(stop) => {
                 assert_eq!(stop, "end_turn");
                 break;
@@ -328,8 +346,9 @@ fn client_load_restores_a_cut_off_first_turn_without_repeating_it() {
         text,
         "You said \"first unfinished turn\". Checking the workspace first.\nTurn interrupted when the agent stopped. Nothing was retried."
     );
-    assert_eq!(events.iter().filter(|event| matches!(event, Inbound::Tool { .. })).count(), 1);
-    assert!(events.contains(&Inbound::ToolStatus { id: "t1".into(), status: ToolStatus::Failed }));
+    assert_eq!(events.iter().filter(|event| matches!(event, Inbound::Tool(c) if c.id == "t1")).count(), 1);
+    assert!(events.iter().any(|event| matches!(event,
+        Inbound::ToolUpdate(ToolUpdate { id, status: Some(ToolStatus::Failed), .. }) if id == "t1")));
     assert!(!events.iter().any(|event| matches!(event, Inbound::Permission { .. } | Inbound::TurnEnded(_))));
     drop(client);
     assert!(second.wait().unwrap().success());

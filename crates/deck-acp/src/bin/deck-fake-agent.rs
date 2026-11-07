@@ -1,6 +1,7 @@
 //! A scripted ACP agent for tests and for driving deck without a model.
-//! Each prompt: a thought, a streamed reply, one tool call that asks
-//! permission, then a final line saying what it was told.
+//! Each prompt: a thought, a file read and an edit (with ACP `locations` and
+//! `diff` content), a streamed reply, one tool call that asks permission,
+//! then a final line saying what it was told.
 //!
 //! `DECK_GITHUB_URL` switches a prompt to the publication turn: a local
 //! commit, then `refs`, `publish`, `create_pr`, `review` and a

@@ -96,8 +96,8 @@ fn transcript(deck: &Deck) -> impl IntoElement {
         ),
         Entry::Agent(t) => div().max_w(relative(0.86)).line_height(relative(1.5)).child(t.clone()),
         Entry::Thought(t) => div().italic().text_color(Tokens::text_faint()).child(t.clone()),
-        Entry::Tool { title, status, .. } => {
-            let (g, color) = match status {
+        Entry::Tool(tool) => {
+            let (g, color) = match tool.call.status {
                 ToolStatus::Running => (icon::SPIN, Tokens::mint()),
                 ToolStatus::Done => (icon::CHECK, Tokens::lime()),
                 ToolStatus::Failed => (icon::CROSS, Tokens::red()),
@@ -115,7 +115,11 @@ fn transcript(deck: &Deck) -> impl IntoElement {
                     .bg(Tokens::raised())
                     .child(glyph(g, 10.).text_color(color))
                     .child(
-                        div().font_family(MONO).text_size(px(11.5)).text_color(Tokens::text_dim()).child(title.clone()),
+                        div()
+                            .font_family(MONO)
+                            .text_size(px(11.5))
+                            .text_color(Tokens::text_dim())
+                            .child(tool.call.title.clone()),
                     ),
             )
         }

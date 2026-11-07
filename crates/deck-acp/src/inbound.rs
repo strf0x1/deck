@@ -1,6 +1,7 @@
 //! Typed events and ACP payload decoding at the protocol boundary. Views
 //! receive domain state rather than reading Construct's metadata themselves.
 
+use crate::tool::{self, ToolCall, ToolUpdate};
 use serde_json::Value;
 
 /// What the UI learns from the agent.
@@ -23,9 +24,9 @@ pub enum Inbound {
     /// Streamed reasoning text.
     Thought(String),
     /// A tool call and its current state, including a final state in replay.
-    Tool { id: String, title: String, status: ToolStatus },
-    /// A tool call changed status.
-    ToolStatus { id: String, status: ToolStatus },
+    Tool(ToolCall),
+    /// Some of a tool call's fields changed; apply with [`ToolCall::apply`].
+    ToolUpdate(ToolUpdate),
     /// The agent asks before running a tool. Answer with
     /// [`crate::conn::Conn::answer`] using the same `request`.
     Permission { request: Value, title: String, options: Vec<PermissionOption> },
@@ -41,13 +42,6 @@ pub enum TurnState {
     Working,
     Waiting,
     Idle { stop_reason: Option<String> },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolStatus {
-    Running,
-    Done,
-    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,29 +71,13 @@ pub(crate) fn parse_turn(value: &Value) -> Option<(u64, TurnState)> {
 /// A `session/update` payload as an event, if deck shows it.
 pub(crate) fn update(u: &Value) -> Option<Inbound> {
     let text = || u["content"]["text"].as_str().map(str::to_string);
-    let id = || u["toolCallId"].as_str().unwrap_or_default().to_string();
     match u["sessionUpdate"].as_str()? {
         "user_message_chunk" => Some(Inbound::UserMessage(text()?)),
         "agent_message_chunk" => Some(Inbound::Message(text()?)),
         "agent_thought_chunk" => Some(Inbound::Thought(text()?)),
-        "tool_call" => Some(Inbound::Tool {
-            id: id(),
-            title: u["title"].as_str().unwrap_or("tool").to_string(),
-            status: tool_status(u["status"].as_str().unwrap_or("pending")),
-        }),
-        "tool_call_update" => {
-            let status = tool_status(u["status"].as_str()?);
-            Some(Inbound::ToolStatus { id: id(), status })
-        }
+        "tool_call" => Some(Inbound::Tool(tool::call(u))),
+        "tool_call_update" => Some(Inbound::ToolUpdate(tool::update(u))),
         _ => None,
-    }
-}
-
-fn tool_status(status: &str) -> ToolStatus {
-    match status {
-        "completed" => ToolStatus::Done,
-        "failed" => ToolStatus::Failed,
-        _ => ToolStatus::Running,
     }
 }
 

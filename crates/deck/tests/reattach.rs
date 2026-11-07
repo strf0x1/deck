@@ -168,8 +168,8 @@ fn construct_waiting_reopen_continues_the_original_tool() {
     next.answer();
     next.idle();
     assert_eq!(next.text(), "done");
-    assert_eq!(next.session.entries.iter().filter(|e| matches!(e, Entry::Tool { .. })).count(), 1);
-    assert!(next.session.entries.iter().any(|e| matches!(e, Entry::Tool { status: ToolStatus::Done, .. })));
+    assert_eq!(next.session.entries.iter().filter(|e| matches!(e, Entry::Tool(_))).count(), 1);
+    assert!(next.session.entries.iter().any(|e| matches!(e, Entry::Tool(t) if t.call.status == ToolStatus::Done)));
     next.assert_user_once();
     assert_eq!(f.model_calls(), 2);
     f.assert_no_recovery();
