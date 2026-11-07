@@ -15,7 +15,7 @@ use gpui::{
 use gpui_platform::application;
 use std::path::PathBuf;
 
-actions!(deck, [Quit, RestartTask]);
+actions!(deck, [Quit, RestartTask, StopTask]);
 
 /// The app-wide quit key.
 pub const QUIT_KEY: &str = if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl-q" };
@@ -24,10 +24,18 @@ pub const QUIT_KEY: &str = if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl
 pub const RESTART_KEY: &str = if cfg!(target_os = "macos") { "cmd-r" } else { "ctrl-r" };
 pub const RESTART_HINT: &str = if cfg!(target_os = "macos") { "⌘R" } else { "ctrl R" };
 
+/// Stop the window's task and leave it stopped.
+pub const STOP_KEY: &str = if cfg!(target_os = "macos") { "cmd-." } else { "ctrl-." };
+pub const STOP_HINT: &str = if cfg!(target_os = "macos") { "⌘." } else { "ctrl ." };
+
 /// App-level actions and keys: quit, and quit once the last window closes.
 pub fn bind(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.bind_keys([KeyBinding::new(QUIT_KEY, Quit, None), KeyBinding::new(RESTART_KEY, RestartTask, None)]);
+    cx.bind_keys([
+        KeyBinding::new(QUIT_KEY, Quit, None),
+        KeyBinding::new(RESTART_KEY, RestartTask, None),
+        KeyBinding::new(STOP_KEY, StopTask, None),
+    ]);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
             cx.quit();

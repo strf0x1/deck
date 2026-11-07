@@ -817,6 +817,76 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
 }
 
 #[cfg(unix)]
+#[gpui::test]
+fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-stop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let cwd = std::env::temp_dir();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), github: None }).unwrap().task;
+    cx.update(deck::app::bind);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    assert!(deck.read_with(&vcx, |d, _| d.can_stop()), "the detached task is stoppable");
+    let stop = vcx.debug_bounds("hdr-stop").expect("the stop button is shown").center();
+    vcx.simulate_click(stop, Modifiers::none());
+    vcx.run_until_parked();
+    assert!(matches!(daemon.task(&original.id).unwrap().state, State::Stopped { .. }));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.session().status, Status::Down("stopped".into()));
+        assert!(d.can_restart());
+    });
+    assert!(vcx.debug_bounds("restart-task").is_some(), "the stopped task shows its restart card");
+    vcx.simulate_keystrokes(deck::app::RESTART_KEY);
+    vcx.run_until_parked();
+    assert_eq!(daemon.task(&original.id).unwrap().state, State::Running);
+    cx.quit();
+    daemon.stop(&original.id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn the_stop_binding_stops_the_task(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-stop-key-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let cwd = std::env::temp_dir();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), github: None }).unwrap().task;
+    cx.update(deck::app::bind);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes(deck::app::STOP_KEY);
+    vcx.run_until_parked();
+    assert!(matches!(daemon.task(&original.id).unwrap().state, State::Stopped { .. }));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.session().status, Status::Down("stopped".into()));
+        assert!(d.can_restart());
+    });
+    cx.quit();
+    daemon.destroy(&original.id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
 fn cleanup_daemon(data: &std::path::Path) {
     let paths = deck_runtime::paths::Paths::for_data(data).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
