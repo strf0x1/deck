@@ -1307,6 +1307,18 @@ fn api(
 
 /// A gateway with a GitHub socket and whatever policy the case needs.
 fn with_github(name: &str, api: &str, remote: &str, control: Option<(&Path, &str)>, token: Option<&str>) -> Gateway {
+    with_github_grants(name, api, remote, control, token, &[])
+}
+
+/// The same, with the grant files the gateway watches for live operations.
+fn with_github_grants(
+    name: &str,
+    api: &str,
+    remote: &str,
+    control: Option<(&Path, &str)>,
+    token: Option<&str>,
+    grants: &[&Path],
+) -> Gateway {
     let dir = scratch(name);
     let mut command = Command::new(env!("CARGO_BIN_EXE_deck-gateway"));
     command
@@ -1330,6 +1342,7 @@ fn with_github(name: &str, api: &str, remote: &str, control: Option<(&Path, &str
         .arg("t-1")
         .arg("--upstream")
         .arg("http://127.0.0.1:9/v1")
+        .args(grants.iter().flat_map(|grant| ["--grants", grant.to_str().unwrap()]))
         .arg("--model")
         .arg("allowed")
         .arg("--secret")
@@ -2204,6 +2217,145 @@ fn a_revoked_github_token_refuses_the_next_operation_before_github() {
     assert_eq!(seen.lock().unwrap().len(), before, "nothing reached GitHub");
     gateway.deckd.set("DECK_GATEWAY_TEST_GITHUB", "ghp-new");
     assert!(refs().starts_with("HTTP/1.1 200 OK"), "a new value restores service");
+}
+
+/// A fake API that reads one request, reports it, then holds the response
+/// until the gateway ends the connection. The second receiver says whether the
+/// gateway closed it.
+fn holding_api() -> (String, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Receiver<bool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (arrived, request_seen) = std::sync::mpsc::channel();
+    let (closed, closed_seen) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = http::read(&mut BufReader::new(stream.try_clone().unwrap()));
+        let _ = arrived.send(());
+        let mut byte = [0u8; 1];
+        let _ = closed.send(matches!(stream.read(&mut byte), Ok(0) | Err(_)));
+    });
+    (base, request_seen, closed_seen)
+}
+
+/// A fake queue that admits one GitHub write with `scope`, as `deckd` does
+/// from the persisted rule the gateway also watches.
+fn admitting_queue(name: &str, scope: &'static str) -> PathBuf {
+    let (socket, _seen) = interactive_queue(name, move |request| match request["op"].as_str() {
+        Some("approval") => serde_json::json!({ "id": "g1", "state": { "allowed": scope } }),
+        _ => Value::Null,
+    });
+    socket
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+fn github_rule(id: &str, scope: &str, operation: &str, destination: &str, expires_ms: Option<u64>) -> Value {
+    let mut rule = serde_json::json!({
+        "id": id, "task": "t-1", "gateway": "github", "operation": operation,
+        "destination": destination, "credential": "DECK_GATEWAY_TEST_GITHUB", "scope": scope
+    });
+    if let Some(expires) = expires_ms {
+        rule["expires_ms"] = serde_json::json!(expires);
+    }
+    rule
+}
+
+fn github_grant_file(name: &str, rules: &[Value]) -> PathBuf {
+    let dir = scratch(name);
+    let path = dir.join("grants.json");
+    std::fs::write(&path, serde_json::json!(rules).to_string()).unwrap();
+    path
+}
+
+/// One `create_pr` on the task's branch, which the fake API below holds.
+fn create_pull_request(github: &PathBuf) -> String {
+    let body = r#"{"operation":"create_pr","head":"deck/t-1","base":"main","title":"ship it","draft":false}"#;
+    send(github, &format!("POST /operations/pull_request HTTP/1.1\r\ncontent-length: {}\r\n\r\n{body}", body.len()))
+}
+
+#[test]
+fn removing_a_github_grant_cancels_its_running_operation() {
+    let (api, arrived, closed) = holding_api();
+    let queue = admitting_queue("gh-grant-cancel-queue", "task");
+    let grants = github_grant_file(
+        "gh-grant-cancel-file",
+        &[github_rule("g1", "task", "create_pr", "owner/repo#deck/t-1", None)],
+    );
+    let gateway = with_github_grants(
+        "gh-grant-cancel-gw",
+        &api,
+        "https://github.com/owner/repo",
+        Some((&queue, "t-1")),
+        Some("ghp-token"),
+        &[&grants],
+    );
+    let github = gateway.ready.github.clone().unwrap();
+    let guest = std::thread::spawn(move || create_pull_request(&github));
+    arrived.recv_timeout(Duration::from_secs(5)).expect("the admitted operation reached GitHub");
+    let started = Instant::now();
+    std::fs::remove_file(&grants).unwrap();
+    assert!(closed.recv_timeout(Duration::from_secs(2)).unwrap(), "the held GitHub connection was closed");
+    let response = guest.join().unwrap();
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(response.contains("the authorizing GitHub grant was revoked or expired"), "{response}");
+    assert!(response.contains(r#""retryable":false"#), "{response}");
+    assert!(started.elapsed() < Duration::from_secs(2), "cancellation waits for no API timeout");
+}
+
+#[test]
+fn an_expiring_github_grant_cancels_its_running_operation() {
+    let (api, arrived, closed) = holding_api();
+    let queue = admitting_queue("gh-grant-expire-queue", "timed");
+    let grants = github_grant_file(
+        "gh-grant-expire-file",
+        &[github_rule("g1", "timed", "create_pr", "owner/repo#deck/t-1", Some(now_ms() + 1200))],
+    );
+    let gateway = with_github_grants(
+        "gh-grant-expire-gw",
+        &api,
+        "https://github.com/owner/repo",
+        Some((&queue, "t-1")),
+        Some("ghp-token"),
+        &[&grants],
+    );
+    let github = gateway.ready.github.clone().unwrap();
+    let guest = std::thread::spawn(move || create_pull_request(&github));
+    arrived.recv_timeout(Duration::from_secs(5)).expect("the admitted operation reached GitHub");
+    assert!(closed.recv_timeout(Duration::from_secs(3)).unwrap(), "the expired grant closed the connection");
+    let response = guest.join().unwrap();
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(response.contains("the authorizing GitHub grant was revoked or expired"), "{response}");
+}
+
+#[test]
+fn removing_an_unrelated_github_grant_does_not_cancel_a_running_operation() {
+    let (api, arrived, closed) = holding_api();
+    let queue = admitting_queue("gh-grant-unrelated-queue", "task");
+    let authorizing = github_rule("g1", "task", "create_pr", "owner/repo#deck/t-1", None);
+    let unrelated = github_rule("g2", "task", "publish", "owner/repo#deck/t-1", None);
+    let grants = github_grant_file("gh-grant-unrelated-file", &[authorizing.clone(), unrelated]);
+    let gateway = with_github_grants(
+        "gh-grant-unrelated-gw",
+        &api,
+        "https://github.com/owner/repo",
+        Some((&queue, "t-1")),
+        Some("ghp-token"),
+        &[&grants],
+    );
+    let github = gateway.ready.github.clone().unwrap();
+    let guest = std::thread::spawn(move || create_pull_request(&github));
+    arrived.recv_timeout(Duration::from_secs(5)).expect("the admitted operation reached GitHub");
+    // Keep the authorizing rule and drop every other one.
+    std::fs::write(&grants, serde_json::json!([authorizing]).to_string()).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(closed.try_recv().is_err(), "an unrelated removal must not cancel the operation");
+    std::fs::remove_file(&grants).unwrap();
+    assert!(closed.recv_timeout(Duration::from_secs(2)).unwrap());
+    let response = guest.join().unwrap();
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(response.contains("the authorizing GitHub grant was revoked or expired"), "{response}");
 }
 
 #[test]

@@ -22,6 +22,7 @@ pub use control::{Answer, Control, Coverage, Publication};
 pub use policy::{Ask, Operation};
 
 use crate::credential::{Broker, Credential, Registration};
+use crate::grants::{Grants, Registration as GrantRegistration};
 use crate::http::{self, ReadError, Request};
 use crate::web::Events;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +60,9 @@ pub struct GitHub {
     /// The broker each operation fetches its token from, and the credential
     /// name. `None` refuses every operation as unavailable.
     credentials: Option<(Arc<Broker>, String)>,
+    /// The persisted rules that admitted running operations. `None` watches
+    /// nothing, which is a gateway started without grant files.
+    grants: Option<Arc<Grants>>,
     /// The last summary of each branch this task published. A publish in
     /// `own-branch` mode is admitted with no card, so its #85 summary would
     /// otherwise never be shown; a later pull request card carries it.
@@ -66,16 +70,27 @@ pub struct GitHub {
 }
 
 /// One operation's token and its registration with the broker. Dropping it
-/// drops the value; a revocation meanwhile sets `cancel`.
+/// drops the value; a revocation meanwhile sets `cancel` and stops `client`.
+/// `grant_revoked` says which of the two revoked it, so the refusal names the
+/// authority the user actually removed.
 struct Held {
     credential: Credential,
     cancel: Arc<AtomicBool>,
+    grant_revoked: Arc<AtomicBool>,
+    client: Client,
     _registration: Registration,
 }
 
 impl GitHub {
     pub fn new(client: Client, control: Option<Control>, status: Arc<Events>) -> Self {
-        Self { client, control, status, credentials: None, summaries: Mutex::new(HashMap::new()) }
+        Self { client, control, status, credentials: None, grants: None, summaries: Mutex::new(HashMap::new()) }
+    }
+
+    /// The grant files this gateway watches. A gateway without one cannot
+    /// verify a persisted admission, so it watches nothing.
+    pub fn with_grants(mut self, grants: Arc<Grants>) -> Self {
+        self.grants = Some(grants);
+        self
     }
 
     /// Whether the operation is a write to the task's own branch, before the
@@ -107,13 +122,26 @@ impl GitHub {
         };
         let credential = broker.fetch(name).map_err(|refusal| Failure::credential(&refusal))?;
         let cancel = Arc::new(AtomicBool::new(false));
+        // One client per operation, so a revocation shuts this operation's
+        // requests without disturbing another's.
+        let client = self.client.authorized(credential.value(), cancel.clone());
         let registration = broker
             .register(&credential, {
                 let cancel = cancel.clone();
-                move || cancel.store(true, Ordering::Release)
+                let client = client.clone();
+                move || {
+                    cancel.store(true, Ordering::Release);
+                    client.stop();
+                }
             })
             .map_err(|refusal| Failure::credential(&refusal))?;
-        Ok(Held { credential, cancel, _registration: registration })
+        Ok(Held {
+            credential,
+            cancel,
+            grant_revoked: Arc::new(AtomicBool::new(false)),
+            client,
+            _registration: registration,
+        })
     }
 
     /// Serve one guest connection: read the head, run the operation, answer.
@@ -235,8 +263,7 @@ impl GitHub {
         let mut head = None;
         if let (Operation::UpdatePullRequest, Some(number)) = (operation, ask.number) {
             let token = self.fetch()?;
-            let client = self.client.authorized(token.credential.value(), token.cancel.clone());
-            match client.owns_pull_request(number) {
+            match token.client.owns_pull_request(number) {
                 Ok(owned) => head = Some(owned),
                 Err(problem) => return Err(self.stopped(&token).unwrap_or_else(|| self.failed(&domain, problem))),
             }
@@ -253,7 +280,7 @@ impl GitHub {
             let Some(token) = held.as_ref() else {
                 return Err(Failure::error(502, "deck_github_failed", "no credential was fetched", true));
             };
-            let public = self.client.authorized(token.credential.value(), token.cancel.clone()).visibility();
+            let public = token.client.visibility();
             if let Some(failure) = self.stopped(token) {
                 return Err(failure);
             }
@@ -264,7 +291,7 @@ impl GitHub {
             Operation::UpdatePullRequest => head.as_deref().and_then(|branch| self.summary_for(branch)),
             _ => None,
         };
-        self.decide(
+        let scope = self.decide(
             operation,
             &domain,
             &reason(ask, operation),
@@ -276,12 +303,11 @@ impl GitHub {
             Some(token) => token,
             None => self.fetch()?,
         };
-        let result = self.perform(
-            &self.client.authorized(token.credential.value(), token.cancel.clone()),
-            ask,
-            operation,
-            bundle,
-        );
+        // Hold the rule that admitted this operation until it ends; deleting
+        // or expiring it meanwhile stops `git` and the API through the same
+        // flag a credential revocation sets.
+        let _grant = self.watch_grant(&token, operation, &domain, scope.as_deref())?;
+        let result = self.perform(&token.client, ask, operation, bundle);
         // The write happened; record what it published even if the token was
         // revoked while it ran. A report that cannot be delivered does not
         // change the operation's outcome.
@@ -345,9 +371,50 @@ impl GitHub {
         control.report(&publication);
     }
 
-    /// The revocation failure, when this operation's token was revoked.
+    /// The revocation failure, when this operation's token or grant was
+    /// revoked. A grant revocation is the boundary's refusal, not a
+    /// credential one: the token value itself is still valid.
     fn stopped(&self, token: &Held) -> Option<Failure> {
-        token.cancel.load(Ordering::Acquire).then(|| Failure::credential(&token.credential.revoked()))
+        if !token.cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(match token.grant_revoked.load(Ordering::Acquire) {
+            true => Failure::denied(None, false, "the authorizing GitHub grant was revoked or expired"),
+            false => Failure::credential(&token.credential.revoked()),
+        })
+    }
+
+    /// Hold the persisted rule that admitted this operation until it ends.
+    /// Once and `default` admissions have no rule, and a gateway without
+    /// grant files cannot verify one. A rule that is gone at registration was
+    /// revoked between the decision and the dial, so nothing reaches GitHub.
+    fn watch_grant(
+        &self,
+        token: &Held,
+        operation: Operation,
+        destination: &str,
+        scope: Option<&str>,
+    ) -> Result<Option<GrantRegistration>, Failure> {
+        let Some(grants) = &self.grants else { return Ok(None) };
+        let Some(scope) = scope.filter(|scope| matches!(*scope, "timed" | "task" | "project")) else {
+            return Ok(None);
+        };
+        let credential = self.credentials.as_ref().map(|(_, name)| name.as_str());
+        let Some(permit) = grants.github(operation.name(), destination, credential, scope) else {
+            return Err(Failure::denied(None, false, "the authorizing GitHub grant was revoked or expired"));
+        };
+        grants
+            .register(Some(permit), {
+                let cancel = token.cancel.clone();
+                let grant_revoked = token.grant_revoked.clone();
+                let client = token.client.clone();
+                move || {
+                    grant_revoked.store(true, Ordering::Release);
+                    cancel.store(true, Ordering::Release);
+                    client.stop();
+                }
+            })
+            .map_err(|_| Failure::denied(None, false, "the authorizing GitHub grant was revoked or expired"))
     }
 
     /// Run the admitted operation with its own token.
@@ -401,9 +468,9 @@ impl GitHub {
         identity: Option<&str>,
         coverage: Option<Coverage>,
         summary: Option<&ask::Summary>,
-    ) -> Result<(), Failure> {
+    ) -> Result<Option<String>, Failure> {
         if !operation.asks() {
-            return Ok(());
+            return Ok(None);
         }
         let Some(control) = &self.control else {
             return Err(Failure::error(
@@ -429,7 +496,7 @@ impl GitHub {
                 if scope == "default" {
                     self.status.observe_in(GATEWAY, &id, destination, "allowed", Some("default"), Some(reason));
                 }
-                Ok(())
+                Ok(Some(scope))
             }
             Answer::Pending(id) => {
                 self.status.observe_in(GATEWAY, &id, destination, "pending", None, Some(reason));

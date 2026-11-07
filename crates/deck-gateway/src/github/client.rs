@@ -47,8 +47,13 @@ pub struct Settings {
     pub git: Option<PathBuf>,
 }
 
+#[derive(Clone)]
 pub struct Client {
     settings: Settings,
+    /// The per-operation agent's configuration. Each authorized operation
+    /// gets its own connection pool, so revoking it can shut only the
+    /// operations it authorized.
+    config: ureq::config::Config,
     agent: ureq::Agent,
     /// Every publish shares one scratch repository and its refs, and the
     /// gateway serves each connection on its own thread, so publishes take
@@ -70,7 +75,7 @@ impl Client {
             .timeout_global(Some(Duration::from_secs(60)))
             .timeout_connect(Some(Duration::from_secs(20)))
             .build();
-        Self { settings, agent: config.new_agent(), publishing: Arc::new(Mutex::new(())), cancel: None }
+        Self { settings, agent: config.new_agent(), config, publishing: Arc::new(Mutex::new(())), cancel: None }
     }
 
     /// This client for one operation: `token` is the value `deckd` handed out
@@ -78,10 +83,17 @@ impl Client {
     pub fn authorized(&self, token: &str, cancel: Arc<AtomicBool>) -> Self {
         Self {
             settings: Settings { token: Some(token.to_string()), ..self.settings.clone() },
-            agent: self.agent.clone(),
+            agent: self.config.new_agent(),
+            config: self.config.clone(),
             publishing: self.publishing.clone(),
             cancel: Some(cancel),
         }
+    }
+
+    /// Interrupt this operation's requests in flight, as a revocation does.
+    /// The agent refuses new connections afterwards; the client is not reused.
+    pub(crate) fn stop(&self) {
+        self.agent.clone().shutdown();
     }
 
     pub fn settings(&self) -> &Settings {

@@ -114,6 +114,36 @@ fn model_grants_match_exact_names_operations_and_the_decided_scope() {
     assert!(grants.web("provider", 443, "connect").is_none());
 }
 
+fn github_grant(id: &str, operation: &str, destination: &str, credential: &str, scope: &str) -> serde_json::Value {
+    json!({
+        "id": id, "task": "t", "gateway": "github", "operation": operation,
+        "destination": destination, "credential": credential, "scope": scope
+    })
+}
+
+#[test]
+fn github_grants_match_the_admitted_operation_destination_credential_and_scope() {
+    let path = file("github");
+    let exact = github_grant("exact", "create_pr", "o/r#deck/t1", "KEY", "task");
+    let mut project = github_grant("project", "create_pr", "o/r", "KEY", "project");
+    project["task"] = json!(null);
+    project["project"] = json!("/project");
+    let mut expired = github_grant("expired", "create_pr", "o/r#deck/t2", "KEY", "timed");
+    expired["expires_ms"] = json!(1);
+    std::fs::write(&path, json!([exact, project, expired]).to_string()).unwrap();
+    let grants = Grants::new(vec![path], "t".into(), Some("/project".into()));
+    assert!(grants.github("create_pr", "o/r#deck/t1", Some("KEY"), "task").is_some());
+    assert!(grants.github("create_pr", "o/r#deck/other", Some("KEY"), "project").is_some());
+    assert!(
+        grants.github("create_pr", "o/r#deck/t2", Some("KEY"), "timed").is_none(),
+        "an expired rule admits nothing"
+    );
+    assert!(grants.github("create_pr", "o/rx#a", Some("KEY"), "project").is_none(), "the prefix ends at a name");
+    assert!(grants.github("create_pr", "o/r", Some("KEY"), "project").is_none(), "a project rule covers details only");
+    assert!(grants.github("create_pr", "o/r#deck/t1", Some("OTHER"), "task").is_none());
+    assert!(grants.github("update_pr", "o/r#deck/t1", Some("KEY"), "task").is_none());
+}
+
 #[test]
 fn legacy_model_rules_cannot_authorize_a_credential_and_web_rules_cannot_change_binding() {
     let path = file("credential-legacy");

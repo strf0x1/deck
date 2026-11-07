@@ -162,6 +162,9 @@ pub fn serve(config: Config) -> Result<()> {
 
     let budget = config.budget_file.as_ref().and_then(|path| Budget::load(path)).unwrap_or(config.budget);
     let status = Status::new(config.control.clone());
+    // A gateway started without grant files has no persisted rule it could
+    // verify, so GitHub operations are admitted but not watched.
+    let watches_grants = !config.grants.is_empty();
     let grants = Arc::new(Grants::new(config.grants, config.task, config.project));
     grants.watch().context("starting the live grant monitor")?;
     let web = web_settings(config.web.as_ref(), config.control.clone(), grants.clone())?;
@@ -171,7 +174,13 @@ pub fn serve(config: Config) -> Result<()> {
     // with it, and its watch closes the ones whose value is revoked.
     let credentials = Broker::new(config.control.clone());
     credentials.watch().context("starting the credential watch")?;
-    let github = github_settings(config.github.as_ref(), config.control.clone(), credentials.clone(), events.clone());
+    let github = github_settings(
+        config.github.as_ref(),
+        config.control.clone(),
+        credentials.clone(),
+        events.clone(),
+        watches_grants.then(|| grants.clone()),
+    );
     let model = Arc::new(Model::new(Settings {
         upstream: config.upstream,
         models: Models::new(config.models),
@@ -276,6 +285,7 @@ fn github_settings(
     control: Option<Control>,
     credentials: Arc<Broker>,
     events: Arc<WebEvents>,
+    grants: Option<Arc<Grants>>,
 ) -> Option<Arc<GitHub>> {
     let settings = settings?;
     let control =
@@ -289,7 +299,11 @@ fn github_settings(
         scratch: settings.scratch.clone(),
         git: settings.git.clone(),
     });
-    Some(Arc::new(GitHub::new(client, control, events).with_credentials(credentials, settings.secret.clone())))
+    let github = GitHub::new(client, control, events).with_credentials(credentials, settings.secret.clone());
+    Some(Arc::new(match grants {
+        Some(grants) => github.with_grants(grants),
+        None => github,
+    }))
 }
 
 fn bind(path: &Path) -> Result<UnixListener> {
