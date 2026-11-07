@@ -10,6 +10,12 @@ initializes a new attachment and loads the recorded session. Construct replays t
 state, and renews unanswered permission requests. A streaming or waiting turn
 continues in the same agent. A completed turn opens idle.
 
+Clicking another task's card in the sessions column switches the window to
+it by the same rules: the current task is detached (its ACP stream and
+boundary watch are dropped; the agent keeps running), a running task is
+live-attached, and a stopped or created one is resumed or started first. The
+previous task becomes an ordinary card in the selected card's slot.
+
 Agents without live attach, or tasks without a recorded session, open as
 **Running, detached**. **Stop and restart**, bound to Cmd-R on macOS and Ctrl-R on
 Linux, stops the process and loads its recorded session in a new one.

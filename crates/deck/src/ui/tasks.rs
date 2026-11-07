@@ -62,6 +62,23 @@ impl Lanes {
         self.ids.iter().find(|(_, id)| **id == lane).map(|(task, _)| task.clone())
     }
 
+    /// The window switches from task `from` to the task lane `lane` shows.
+    /// The selected task becomes [`LIVE`], and `from` takes the selected
+    /// card's lane, so the column keeps its shape: the two cards trade what
+    /// they show. Returns the selected task, or `None` for the live lane or
+    /// an unknown one.
+    pub fn switch(&mut self, from: Option<&str>, lane: usize) -> Option<String> {
+        if lane == LIVE {
+            return None;
+        }
+        let to = self.task(lane, from)?;
+        self.ids.remove(&to);
+        if let Some(from) = from {
+            self.ids.insert(from.to_string(), lane);
+        }
+        Some(to)
+    }
+
     /// The other tasks' lanes, in the daemon's order. The live lane is not
     /// built here; its chip is set from `published` by the caller.
     pub fn lanes(
@@ -144,5 +161,27 @@ mod tests {
         assert_eq!(again, first, "a refresh keeps each task's lane");
         assert_eq!(lanes.task(first[0], Some("own")).as_deref(), Some("a"));
         assert_eq!(lanes.task(LIVE, Some("own")).as_deref(), Some("own"));
+    }
+
+    #[test]
+    fn switching_trades_the_live_lane_with_the_selected_card() {
+        let mut lanes = Lanes::default();
+        let tasks = vec![
+            task("own", json!({ "state": "running" }), "local"),
+            task("a", json!({ "state": "running" }), "local"),
+            task("b", json!({ "state": "running" }), "local"),
+        ];
+        let before = lanes.lanes(&tasks, Some("own"), &HashMap::new(), 0);
+        let (a, b) = (before[0].id, before[1].id);
+        assert_eq!(lanes.switch(Some("own"), LIVE), None, "the live card is already the window's");
+        assert_eq!(lanes.switch(Some("own"), 99), None, "an unknown lane selects nothing");
+        assert_eq!(lanes.switch(Some("own"), b).as_deref(), Some("b"));
+        let after = lanes.lanes(&tasks, Some("b"), &HashMap::new(), 0);
+        let shown: Vec<(usize, &str)> = after.iter().map(|l| (l.id, l.title.as_str())).collect();
+        assert_eq!(shown, vec![(b, "own-project"), (a, "a-project")], "the previous task takes b's card");
+        assert_eq!(lanes.task(LIVE, Some("b")).as_deref(), Some("b"));
+        // And back: the first task is live again, b returns to its card.
+        assert_eq!(lanes.switch(Some("b"), b).as_deref(), Some("own"));
+        assert_eq!(lanes.task(b, Some("own")).as_deref(), Some("b"));
     }
 }

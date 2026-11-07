@@ -1,11 +1,11 @@
 //! The window's connection to a task owned by `deckd`. Dropping this handle
 //! disconnects the window; only an explicit restart stops the agent.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use deck_acp::{Client, Inbound};
 use deck_runtime::approvals::{Approval, Decision, Grant};
 use deck_runtime::broker::Listed;
-use deck_runtime::{DaemonClient, Spec, State, Watch};
+use deck_runtime::{DaemonClient, Spec, State, Task, Watch};
 use futures::channel::mpsc;
 use std::path::{Path, PathBuf};
 
@@ -26,21 +26,51 @@ impl WindowTask {
     pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
         let daemon = DaemonClient::connect_or_start(data)?;
         let run = daemon.run(Spec { argv, cwd, github: None })?;
+        let task = WindowTask::of(daemon, &run.task);
+        let connection = task.connection(run.started, run.task.session_id)?;
+        Ok((task, connection))
+    }
+
+    /// The window's handle on task `record`, over another task's daemon
+    /// connection. Nothing is asked of the daemon until [`WindowTask::open`].
+    pub fn sibling(&self, record: &Task) -> WindowTask {
+        WindowTask::of(self.daemon.clone(), record)
+    }
+
+    fn of(daemon: DaemonClient, record: &Task) -> WindowTask {
         // ACP addresses the agent filesystem; task and project identity stay
         // in the host filesystem recorded by the daemon.
-        let agent_cwd = if run.task.backend == "vm" { "/workspace".into() } else { run.task.spec.cwd.clone() };
-        let vm = run.task.backend == "vm";
-        let publishes = vm && run.task.spec.github.is_some();
-        let task = WindowTask { daemon, boundary_enforced: vm, publishes, id: run.task.id, agent_cwd };
-        let connection = if run.started {
-            Some(task.connect(run.task.session_id)?)
-        } else if let Some(id) = run.task.session_id {
-            let stream = task.daemon.attach(&task.id)?;
-            Some(Client::attach(task.agent_cwd.clone(), stream.reader, stream.writer, id)?)
+        let vm = record.backend == "vm";
+        let agent_cwd = if vm { "/workspace".into() } else { record.spec.cwd.clone() };
+        let publishes = vm && record.spec.github.is_some();
+        WindowTask { daemon, boundary_enforced: vm, publishes, id: record.id.clone(), agent_cwd }
+    }
+
+    /// Connect to this task by the rules launch uses: a running agent is
+    /// live-attached when it has a recorded session (and stays detached
+    /// otherwise); a stopped or created one is resumed or started first.
+    pub fn open(&self) -> Result<Option<Connection>> {
+        let record = self.daemon.task(&self.id)?;
+        if record.state == State::Running {
+            return self.connection(false, record.session_id);
+        }
+        let record = if record.resumable() {
+            self.daemon.resume(&self.id)?
+        } else if record.startable() {
+            self.daemon.start(&self.id)?
         } else {
-            None
+            bail!("task {} cannot run again: {:?}", self.id, record.state);
         };
-        Ok((task, connection))
+        self.connection(true, record.session_id)
+    }
+
+    fn connection(&self, started: bool, session_id: Option<String>) -> Result<Option<Connection>> {
+        if started {
+            return self.connect(session_id).map(Some);
+        }
+        let Some(id) = session_id else { return Ok(None) };
+        let stream = self.daemon.attach(&self.id)?;
+        Ok(Some(Client::attach(self.agent_cwd.clone(), stream.reader, stream.writer, id)?))
     }
 
     pub fn id(&self) -> &str {
@@ -57,7 +87,7 @@ impl WindowTask {
     }
 
     /// Every task the daemon knows, for the sessions column.
-    pub fn tasks(&self) -> Result<Vec<deck_runtime::Task>> {
+    pub fn tasks(&self) -> Result<Vec<Task>> {
         self.daemon.tasks()
     }
 

@@ -871,3 +871,104 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     drop(daemon);
     cleanup_daemon(&data);
 }
+
+/// Wait until the window's session is ready on task `id` (any task when `None`).
+#[cfg(unix)]
+fn ready_on(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext, id: Option<&str>) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        let ready = deck.read_with(cx, |d, _| {
+            (d.session().status == Status::Ready && id.is_none_or(|id| d.task_id() == Some(id)))
+                .then(|| d.task_id().map(str::to_owned))
+                .flatten()
+        });
+        if let Some(ready) = ready {
+            return ready;
+        }
+        let status = deck.read_with(cx, |d, _| format!("{:?} on {:?}", d.session().status, d.task_id()));
+        assert!(std::time::Instant::now() < deadline, "the window never became ready on {id:?}: {status}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Send `text` to the fake agent and allow its tool call, until the turn ends.
+#[cfg(unix)]
+fn prompt_fake(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext, text: &str) {
+    cx.simulate_input(text);
+    cx.simulate_keystrokes("enter");
+    wait_view(cx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    cx.simulate_keystrokes("1");
+    let id = deck.read_with(cx, |d, _| d.task_id().map(str::to_owned));
+    ready_on(deck, cx, id.as_deref());
+}
+
+#[cfg(unix)]
+fn said(deck: &gpui::Entity<Deck>, cx: &VisualTestContext) -> Vec<String> {
+    deck.read_with(cx, |d, _| {
+        d.session().entries.iter().filter_map(|e| if let Entry::You(t) = e { Some(t.clone()) } else { None }).collect()
+    })
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    let spec = |name: &str| {
+        let cwd = data.join(name);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let journal = format!("DECK_FAKE_STATE={}", data.join(format!("journal-{name}")).display());
+        let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+        Spec { argv, cwd, github: None }
+    };
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    // The second task has never run: selecting it starts it.
+    let other = daemon.create(spec("beta")).unwrap().id;
+    let alpha = spec("alpha");
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, alpha.argv, alpha.cwd, cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let own = ready_on(&deck, &mut vcx, None);
+    prompt_fake(&deck, &mut vcx, "first");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 2));
+    let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
+
+    // The second card sits one pitch below the live card.
+    let card = point(px(200.), px(150. + PITCH));
+    vcx.simulate_click(card, Modifiers::none());
+    assert_eq!(deck.read_with(&vcx, |d, _| d.board().dragging()), None, "a click is not a drag");
+    ready_on(&deck, &mut vcx, Some(&other));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.board().order(), vec![deck::ui::root::LIVE, lane], "the column keeps its shape");
+        assert_eq!(d.board().cards()[1].lane.title, "alpha", "the previous task is an ordinary card");
+    });
+    assert!(said(&deck, &vcx).is_empty(), "the transcript is the selected task's");
+    assert_eq!(daemon.task(&own).unwrap().state, State::Running, "switching away only detaches");
+    prompt_fake(&deck, &mut vcx, "second");
+    assert_eq!(said(&deck, &vcx), vec!["second".to_string()]);
+
+    // Back: the first task's conversation is rebuilt by live attach.
+    vcx.simulate_click(card, Modifiers::none());
+    ready_on(&deck, &mut vcx, Some(&own));
+    assert_eq!(said(&deck, &vcx), vec!["first".to_string()]);
+    assert_eq!(deck.read_with(&vcx, |d, _| d.board().cards()[1].lane.title.clone()), "beta");
+    vcx.simulate_click(card, Modifiers::none());
+    ready_on(&deck, &mut vcx, Some(&other));
+    assert_eq!(said(&deck, &vcx), vec!["second".to_string()]);
+
+    cx.quit();
+    for id in [&own, &other] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
