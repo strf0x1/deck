@@ -87,6 +87,48 @@ fn a_long_draft_wraps_and_a_click_places_the_caret(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn tool_cards_expand_and_the_transcript_follows_until_scrolled_back(cx: &mut TestAppContext) {
+    use deck_acp::{ToolCall, ToolContent, ToolKind, ToolStatus};
+    use gpui::{ScrollDelta, ScrollWheelEvent, point};
+
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        for i in 0..30 {
+            d.on_inbound(Inbound::UserMessage(format!("question {i}")), cx);
+            d.on_inbound(Inbound::Message(format!("answer **{i}**\n\n- one\n- two")), cx);
+        }
+        let old: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+        let new = old.replace("line 3\n", "line three\n").replace("line 30\n", "line thirty\n");
+        let edit = ToolCall {
+            id: "e1".into(),
+            title: "edit src/lib.rs".into(),
+            kind: ToolKind::Edit,
+            status: ToolStatus::Done,
+            content: vec![ToolContent::Diff { path: "src/lib.rs".into(), old: Some(old), new }],
+            ..ToolCall::default()
+        };
+        d.on_inbound(Inbound::Tool(edit), cx);
+    });
+    cx.run_until_parked();
+    assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "new output is followed");
+
+    click_control(&mut cx, "card-tool:e1");
+    assert!(deck.read_with(&cx, |d, _| d.is_expanded("tool:e1")), "the header opens the card");
+
+    let pane = cx.debug_bounds("transcript").unwrap();
+    cx.simulate_event(ScrollWheelEvent {
+        position: pane.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
+        ..ScrollWheelEvent::default()
+    });
+    cx.run_until_parked();
+    assert!(deck.read_with(&cx, |d, _| d.scrolled_back()), "scrolling up stops following");
+    click_control(&mut cx, "jump-latest");
+    assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "the pill returns to the end");
+}
+
+#[gpui::test]
 fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppContext) {
     use deck_acp::{ToolKind, ToolStatus, conn::Conn};
 

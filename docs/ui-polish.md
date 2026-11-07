@@ -82,6 +82,12 @@ The model name and cost wait on the agent reporting them.
   laid out, it follows new output while you are at the bottom, and a
   "jump to latest" pill appears when you have scrolled up.
 
+Landed: `ui/markdown.rs`, `diff.rs`, `transcript.rs` (pure, tested),
+`prose.rs`, `cards.rs`, `transcript_list.rs`. `similar` was not needed: a
+bounded LCS over the trimmed middle covers agent edits. An edit with no
+ACP `diff` is previewed from its arguments (Construct's `edit` and
+`write`), without file line numbers.
+
 ### 3 — Density without overload
 
 - A per-turn footer: files changed with total `+/−`, each linking to its

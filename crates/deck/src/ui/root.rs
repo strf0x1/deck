@@ -21,8 +21,10 @@ use deck_runtime::Watch;
 use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
-    ParentElement as _, Render, ScrollHandle, Styled as _, Subscription, Window, div, px,
+    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
 };
+use gpui::{FollowMode, ListState};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -48,7 +50,11 @@ pub struct Deck {
     pub(super) selecting: bool,
     /// The window's task as `deckd` last listed it, for the status row.
     pub(super) workspace: Option<super::prompt::Workspace>,
-    pub(super) scroll: ScrollHandle,
+    /// The transcript's virtualized list, the signature of each row it
+    /// last measured, and the rows the user expanded (`transcript.rs`).
+    pub(super) transcript: ListState,
+    pub(super) row_sigs: Vec<u64>,
+    pub(super) expanded: HashSet<String>,
     pub(super) agent_cmd: String,
     /// A connection to the daemon-owned task. Window shutdown detaches it.
     pub(super) task: Option<WindowTask>,
@@ -92,7 +98,9 @@ impl Deck {
             composer: composer::Layout::default(),
             selecting: false,
             workspace: None,
-            scroll: ScrollHandle::new(),
+            transcript: super::transcript_list::following(),
+            row_sigs: Vec::new(),
+            expanded: HashSet::new(),
             agent_cmd: String::new(),
             task: None,
             watch: None,
@@ -216,7 +224,6 @@ impl Deck {
         }
         self.session.apply(ev);
         self.sync_live_lane();
-        self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
@@ -255,7 +262,8 @@ impl Deck {
         self.editor.take();
         self.session.sent(&text);
         self.sync_live_lane();
-        self.scroll.scroll_to_bottom();
+        // Sending is a request to see the answer: follow the tail again.
+        self.transcript.set_follow_mode(FollowMode::Tail);
         cx.notify();
     }
 
@@ -363,6 +371,7 @@ impl Focusable for Deck {
 impl Render for Deck {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick(window);
+        self.sync_transcript();
         div()
             .id("deck")
             .track_focus(&self.focus)
