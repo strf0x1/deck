@@ -61,6 +61,13 @@ fn ignored(project: &Path) -> Result<Option<HashSet<PathBuf>>> {
     Ok(Some(ignored))
 }
 
+/// Whether `project` is inside a checkout, even when `git` cannot run: a
+/// `.git` at or above it is the evidence. Used only to fail closed when the
+/// ignored list cannot be read.
+fn is_checkout(project: &Path) -> bool {
+    project.ancestors().any(|path| path.join(".git").exists())
+}
+
 /// Copy `project` into `target`, skipping `ignored` (relative paths). A
 /// directory in `ignored` is skipped whole, which is what `--directory`
 /// promises: every path under it is ignored too.
@@ -145,6 +152,16 @@ mod tests {
         assert!(!target.join(".env").exists(), "an ignored file never reaches the guest");
         assert!(!target.join("src/.env").exists());
         assert!(!target.join("node_modules").exists(), "an ignored directory is skipped whole");
+    }
+
+    #[test]
+    fn a_parent_git_directory_marks_a_subdirectory_as_a_checkout() {
+        let root = scratch("ancestor");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        assert!(is_checkout(&root));
+        assert!(is_checkout(&root.join("src/deep")));
+        assert!(!is_checkout(&scratch("plain-ancestor")));
     }
 
     #[test]
