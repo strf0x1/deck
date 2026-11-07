@@ -369,7 +369,12 @@ impl Render for Deck {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.board.release();
+                    // A press that never became a drag selects the card.
+                    if let Some(lane) = this.board.release()
+                        && lane != LIVE
+                    {
+                        this.select(lane, cx);
+                    }
                     cx.notify();
                 }),
             )

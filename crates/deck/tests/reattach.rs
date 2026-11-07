@@ -78,6 +78,30 @@ fn fake_detached_completion_reopens_idle_and_stop_closes_before_signalling() {
 }
 
 #[test]
+fn opening_a_stopped_task_by_id_resumes_it_and_loads_its_history() {
+    let mut f = Fixture::fake("open-stopped");
+    let mut first = f.open();
+    first.prompt("ship it");
+    first.until(|a| a.session.ask.is_some());
+    first.answer();
+    first.idle();
+    let id = f.id.clone().unwrap();
+    let record = f.daemon.task(&id).unwrap();
+    // A sibling of another window's task, as a card selection builds it.
+    let sibling = first.task.sibling(&record);
+    first.detach();
+    f.daemon.stop(&id).unwrap();
+    assert!(matches!(f.daemon.task(&id).unwrap().state, State::Stopped { .. }));
+
+    let (client, rx) = sibling.open().unwrap().expect("a resumed task connects");
+    let mut next = support::Attached::new(sibling, client, rx);
+    next.until(|a| !a.sid.is_empty());
+    assert_eq!(f.daemon.task(&id).unwrap().state, State::Running);
+    assert_eq!(next.text(), "You said \"ship it\". Checking the workspace first.\npermission: allow");
+    next.assert_user_once();
+}
+
+#[test]
 fn daemon_crash_mid_turn_is_adopted_and_reopened_without_restarting_the_agent() {
     let mut f = Fixture::fake("adopt-stream");
     let mut first = f.open();

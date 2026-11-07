@@ -122,7 +122,7 @@ impl Fixture {
         }
         self.id = Some(task.id().into());
         let (client, rx) = connection.unwrap();
-        let mut attached = Attached { task, client: Some(client), rx, session: Session::new(), sid: String::new() };
+        let mut attached = Attached::new(task, client, rx);
         attached.until(|a| !a.sid.is_empty());
         attached
     }
@@ -192,6 +192,10 @@ pub struct Attached {
 
 #[expect(clippy::unwrap_used, reason = "test actions must succeed")]
 impl Attached {
+    pub fn new(task: WindowTask, client: Client, rx: futures::channel::mpsc::UnboundedReceiver<Inbound>) -> Self {
+        Attached { task, client: Some(client), rx, session: Session::new(), sid: String::new() }
+    }
+
     pub fn until(&mut self, mut check: impl FnMut(&Self) -> bool) {
         let deadline = Instant::now() + WAIT;
         while !check(self) {

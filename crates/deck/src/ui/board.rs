@@ -13,6 +13,8 @@ use super::spring::Spring;
 pub const CARD_H: f32 = 64.;
 pub const GAP: f32 = 8.;
 pub const PITCH: f32 = CARD_H + GAP;
+/// How far the pointer may travel before a press on a card is a drag, not a click.
+pub const CLICK_SLOP: f32 = 4.;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LaneState {
@@ -44,6 +46,9 @@ struct Drag {
     id: usize,
     /// Pointer y minus the card's y at grab time.
     grab: f32,
+    /// Pointer y at grab time, and whether it has since left [`CLICK_SLOP`].
+    start: f32,
+    moved: bool,
 }
 
 pub struct Board {
@@ -115,11 +120,15 @@ impl Board {
     pub fn grab(&mut self, id: usize, pointer_y: f32) {
         let Some(card) = self.cards.iter_mut().find(|c| c.lane.id == id) else { return };
         card.lift.target = 1.;
-        self.drag = Some(Drag { id, grab: pointer_y - card.y.pos });
+        self.drag = Some(Drag { id, grab: pointer_y - card.y.pos, start: pointer_y, moved: false });
     }
 
     pub fn move_to(&mut self, pointer_y: f32) {
-        let Some(drag) = &self.drag else { return };
+        let Some(drag) = &mut self.drag else { return };
+        drag.moved |= (pointer_y - drag.start).abs() > CLICK_SLOP;
+        if !drag.moved {
+            return;
+        }
         let Some(from) = self.cards.iter().position(|c| c.lane.id == drag.id) else { return };
         let y = (pointer_y - drag.grab).clamp(-PITCH * 0.5, self.height() - CARD_H + PITCH * 0.5);
         self.cards[from].y.set(y);
@@ -131,12 +140,15 @@ impl Board {
         self.retarget();
     }
 
-    pub fn release(&mut self) {
-        let Some(drag) = self.drag.take() else { return };
+    /// Put the held card down. Returns its id when the press never left
+    /// [`CLICK_SLOP`]: that was a click on the card, not a drag.
+    pub fn release(&mut self) -> Option<usize> {
+        let drag = self.drag.take()?;
         if let Some(card) = self.cards.iter_mut().find(|c| c.lane.id == drag.id) {
             card.lift.target = 0.;
         }
         self.retarget();
+        (!drag.moved).then_some(drag.id)
     }
 
     /// Every card not under the pointer chases its slot.
@@ -211,6 +223,21 @@ mod tests {
         b.move_to(PITCH + 25.);
         let held = b.cards().iter().find(|c| c.lane.id == 1).map(|c| c.y.pos);
         assert_eq!(held, Some(PITCH + 20.));
+    }
+
+    #[test]
+    fn a_press_that_stays_within_the_slop_is_a_click_and_moves_nothing() {
+        let mut b = Board::new(lanes(3));
+        b.grab(1, PITCH + 10.);
+        b.move_to(PITCH + 10. + CLICK_SLOP);
+        assert_eq!(b.cards()[1].y.pos, PITCH, "a jitter does not move the card");
+        assert_eq!(b.release(), Some(1));
+        b.grab(1, PITCH + 10.);
+        b.move_to(PITCH + 10. + CLICK_SLOP + 1.);
+        b.move_to(PITCH + 10.);
+        assert_eq!(b.release(), None, "a drag that came back is still a drag");
+        assert_eq!(b.order(), vec![0, 1, 2]);
+        assert_eq!(b.release(), None, "nothing held");
     }
 
     #[test]
