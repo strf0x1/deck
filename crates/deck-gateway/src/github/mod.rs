@@ -29,9 +29,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The most a request head may be; the same bound every listener applies.
 const MAX_HEAD: usize = crate::http::MAX_HEAD;
 use serde_json::json;
+use std::collections::HashMap;
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The gateway kind approvals, grants and events carry, and the framed kind
@@ -58,6 +59,10 @@ pub struct GitHub {
     /// The broker each operation fetches its token from, and the credential
     /// name. `None` refuses every operation as unavailable.
     credentials: Option<(Arc<Broker>, String)>,
+    /// The last summary of each branch this task published. A publish in
+    /// `own-branch` mode is admitted with no card, so its #85 summary would
+    /// otherwise never be shown; a later pull request card carries it.
+    summaries: Mutex<HashMap<String, ask::Summary>>,
 }
 
 /// One operation's token and its registration with the broker. Dropping it
@@ -70,7 +75,7 @@ struct Held {
 
 impl GitHub {
     pub fn new(client: Client, control: Option<Control>, status: Arc<Events>) -> Self {
-        Self { client, control, status, credentials: None }
+        Self { client, control, status, credentials: None, summaries: Mutex::new(HashMap::new()) }
     }
 
     /// Whether the operation is a write to the task's own branch, before the
@@ -254,7 +259,19 @@ impl GitHub {
             }
             coverage = Some(Coverage { own_branch: true, public });
         }
-        self.decide(operation, &domain, &reason(ask, operation), identity.as_deref(), coverage, ask.summary.as_ref())?;
+        let remembered = match operation {
+            Operation::PullRequest => self.summary_for(&ask.head),
+            Operation::UpdatePullRequest => head.as_deref().and_then(|branch| self.summary_for(branch)),
+            _ => None,
+        };
+        self.decide(
+            operation,
+            &domain,
+            &reason(ask, operation),
+            identity.as_deref(),
+            coverage,
+            remembered.as_ref().or(ask.summary.as_ref()),
+        )?;
         let token = match held {
             Some(token) => token,
             None => self.fetch()?,
@@ -270,6 +287,13 @@ impl GitHub {
         // change the operation's outcome.
         if let Ok(body) = &result {
             self.report(operation, ask, body);
+            // Keep the publish's #85 summary for the pull request card that
+            // follows; a card is the only place the user can read it.
+            if operation == Operation::Publish
+                && let Some(summary) = &ask.summary
+            {
+                self.remember(&ask.branch, summary);
+            }
         }
         // A revoked token's operation is reported as revoked, whatever git or
         // the API made of being stopped; a ref already pushed stays pushed.
@@ -277,6 +301,18 @@ impl GitHub {
             return Err(failure);
         }
         result.map(|body| (domain.clone(), body)).map_err(|problem| self.failed(&domain, problem))
+    }
+
+    /// Record the publish summary a later pull request card carries.
+    fn remember(&self, branch: &str, summary: &ask::Summary) {
+        let mut summaries = self.summaries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        summaries.insert(branch.to_string(), summary.clone());
+    }
+
+    /// The last publish summary for `branch`, when this task published it.
+    fn summary_for(&self, branch: &str) -> Option<ask::Summary> {
+        let summaries = self.summaries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        summaries.get(branch).cloned()
     }
 
     /// Report a successful publish, create or update to the task's record.
