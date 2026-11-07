@@ -19,14 +19,8 @@ pub struct Item {
     pub label: &'static str,
 }
 
-/// The rail's destinations, top to bottom. Only Sessions is real so far.
-pub const ITEMS: [Item; 5] = [
-    Item { icon: icon::SESSIONS, label: "Sessions" },
-    Item { icon: icon::AGENTS, label: "Agents" },
-    Item { icon: icon::FLOWS, label: "Flows" },
-    Item { icon: icon::FILES, label: "Files" },
-    Item { icon: icon::HISTORY, label: "History" },
-];
+/// The rail's destinations, top to bottom. Sessions is the only one for now.
+pub const ITEMS: [Item; 1] = [Item { icon: icon::SESSIONS, label: "Sessions" }];
 
 pub struct Rail {
     pub width: Spring,
@@ -138,10 +132,10 @@ mod tests {
     #[test]
     fn selecting_slides_the_marker_and_ignores_unknown_items() {
         let mut r = Rail::new();
-        r.select(3);
+        r.select(0);
         settle(&mut r);
-        assert_eq!((r.active(), r.marker.pos), (3, 3. * ITEM_H));
-        r.select(99);
-        assert_eq!(r.active(), 3);
+        assert_eq!((r.active(), r.marker.pos), (0, 0.));
+        r.select(1);
+        assert_eq!(r.active(), 0);
     }
 }

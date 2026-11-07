@@ -152,7 +152,7 @@ c() { printf '%s\n' "$1" | socat -t 30 - UNIX-CONNECT:"$DECK_CONTROL"; }
 c '{"cmd":"type","text":"Ship the spike"}'; c '{"cmd":"key","key":"enter"}'
 c '{"cmd":"key","key":"1"}'                     # answer the permission card
 c '{"cmd":"drag","from":{"x":200,"y":150},"to":{"x":200,"y":310},"steps":20}'
-c '{"cmd":"hover_rail"}'; c '{"cmd":"select_rail","index":3}'
+c '{"cmd":"hover_rail"}'; c '{"cmd":"select_rail","index":0}'
 c '{"cmd":"settle"}'; c '{"cmd":"state"}' | jq .
 ```
 

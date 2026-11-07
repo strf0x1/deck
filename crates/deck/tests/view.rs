@@ -690,15 +690,25 @@ fn the_rail_opens_under_the_pointer_and_selects_by_click(cx: &mut TestAppContext
     cx.run_until_parked();
     assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()));
 
-    // The fourth icon (Files), inside the closed rail.
-    let files = point(px(36.), px(217.));
-    cx.simulate_mouse_move(files, None, Modifiers::none());
+    // The first icon (Sessions), inside the closed rail.
+    let (x, y) = Deck::rail_item_center(0);
+    let sessions = point(px(x), px(y));
+    cx.simulate_mouse_move(sessions, None, Modifiers::none());
     assert!(deck.read_with(&cx, |d, _| d.rail().expanded()), "hovering the rail opens it");
-    cx.simulate_click(files, Modifiers::none());
-    assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), 3);
+    cx.simulate_click(sessions, Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), 0);
 
     cx.simulate_mouse_move(point(px(700.), px(300.)), None, Modifiers::none());
     assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()), "leaving the rail closes it");
+}
+
+#[gpui::test]
+fn the_rail_shows_only_sessions(cx: &mut TestAppContext) {
+    let (_deck, mut cx) = open(cx);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("rail-item-0").is_some(), "the rail renders Sessions");
+    assert!(cx.debug_bounds("rail-item-1").is_none(), "the rail has no second destination");
+    assert!(cx.debug_bounds("rail-settings").is_none(), "the rail has no Settings item");
 }
 
 #[gpui::test]
