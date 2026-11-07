@@ -537,3 +537,55 @@ fn a_released_construct_keeps_the_bare_names_working() {
 fn a_reverse_dns_only_construct_works_without_the_bare_names() {
     one_namespace("reverse");
 }
+
+/// The GitHub capability is advertised under the current key only, and only
+/// when this process has a gateway to call (contract 1.2.0 §11.1).
+#[test]
+fn the_github_capability_needs_a_gateway_and_has_no_legacy_form() {
+    use serde_json::{Value, json};
+
+    fn meta(env: &[(&str, &str)]) -> Value {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::process::{Command, Stdio};
+
+        hang_guard();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+            .env("DECK_FAKE_DELAY_MS", "0")
+            .env_remove("DECK_GITHUB_URL")
+            .env_remove("DECK_BOUNDARY_URL")
+            .env_remove("DECK_FAKE_NAMES")
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        writeln!(
+            input,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": { "_meta": { "com.sprawlcommons/construct": { "events": true } } },
+            }})
+        )
+        .unwrap();
+        let reply = loop {
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value["id"] == json!(1) && value.get("method").is_none() {
+                break value;
+            }
+        };
+        drop(input);
+        assert!(child.wait().unwrap().success());
+        reply["result"]["agentCapabilities"]["_meta"].clone()
+    }
+
+    let without = meta(&[]);
+    assert!(without["com.sprawlcommons/deck"]["github_operations"].is_null(), "{without}");
+    let with = meta(&[("DECK_GITHUB_URL", "http://127.0.0.1:9")]);
+    assert_eq!(with["com.sprawlcommons/deck"]["github_operations"], json!(1), "{with}");
+    assert!(with["deck"]["github_operations"].is_null(), "the capability has no legacy form: {with}");
+}
