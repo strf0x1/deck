@@ -1,0 +1,47 @@
+{
+  "date": "2026-11-07",
+  "deck_revision": "2e564b29b9175621aa4238be4c5d29b0193e1b3a",
+  "construct_revision": "255de548bad491239428e4efb723580f548977d7",
+  "deck_dirty": [
+    "M scripts/linux-acceptance/github_workflow.py",
+    " M scripts/vm-image.sh",
+    "?? .DS_Store",
+    "?? docs/research/"
+  ],
+  "repository": "strf0x1/deck-acceptance-scratch-public",
+  "task": "1a1b4e33a3a-695a-0",
+  "branch": "deck/1a1b4e33a3a-695a-0",
+  "pull_request": 2,
+  "commits": {
+    "first": "92fd4dbaeb4cc3bc2026661e7742e0b1d4576f92",
+    "second": "1af4485d9d631217b5c2e7750b80cd685511cf34"
+  },
+  "port": 54582,
+  "binaries": {
+    "DECK_VM_EXECUTABLE": "772821f72813277dd4f99dbbfec1d353c84e4374e34fb54fe3d806b2928857a8",
+    "DECK_GATEWAY_EXECUTABLE": "aa4dd59622b81355324743f96727e23ab584ec9bb7c7b179254421b20cd30884",
+    "DECK_VM_KRUN": "075a20fdf5e30bc2a9e9bc82927e404526c35140192220e5bfd9a81f7abfe408",
+    "DECK_ACCEPTANCE_UI_EXECUTABLE": "490b5e14ca5e6ce4d9566bc48f4e8a1aa038858bfd658f429ab25951f338e9e2"
+  },
+  "guest_construct_sha256": "710c0fb8ac51166e8b5b1395f35bc8cafec5fc8bebdcebb9adbd8d6d098f4221",
+  "guest_images_sha256": {
+    "base.img": "77ba164e3a0e46719d92a0092b1b401780ad2ea5e90d9f24ad56e5c519f4c27d",
+    "journal.img": "86887880e6a463af39c393adddc0ea98918aafd69d2c09553c8b1b1a134eee68"
+  },
+  "credentials": [
+    "DECK_GITHUB_TOKEN sha256:57069cbd5641 file /Users/brandonbosch/Library/Application Support/deck-acceptance/macos/github-workflow-2026-11-06/credentials.json active",
+    "OPENAI_API_KEY sha256:901bce8a3b26 file /Users/brandonbosch/Library/Application Support/deck-acceptance/macos/github-workflow-2026-11-06/credentials.json active"
+  ],
+  "harness_sha256": {
+    "github_workflow.py": "57b219671f791ba46821dfa1a23084276ff9de1e2701dfa3a808fda19c89a7ed",
+    "support.py": "d2887fb99268f00e6c5155e698644fa9ac74be7026c14dccdeffee25d75aa495"
+  },
+  "fixture_limits": [
+    "the model is scripted: the tool steps and the text reply each turn are fixed by the driver; a refusal is proven by Construct's tool result and by the one publish call in that turn, not by model reasoning",
+    "the scratch checks are real GitHub-hosted Actions jobs started by the push and the pull request; the driver waits for them to complete and records their conclusions",
+    "the credential store holds the local gh user token (repo scope), not a fine-grained token restricted to the scratch repository: fine-grained tokens can only be minted in the web UI. The token never leaves the host store; the harness uses the same account's gh auth to verify GitHub",
+    "host: darwin/arm64",
+    "the pull request number and commit shas come from the turns; reruns reuse the scratch repository",
+    "the scratch repository is public and the project file opts in to own-branch writes (ADR 0008 \u00a73): the default-scope cases exercise that explicit opt-in, not the private-repository inference"
+  ]
+}

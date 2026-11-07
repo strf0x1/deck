@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """ADR 0008 §9 acceptance: real Construct in a VM publishes to a scratch repository.
 
-Requires the documented Linux VM environment (DECK_VM_IMAGE, DECK_VM_JOURNAL,
-DECK_VM_KRUN, DECK_VM_EXECUTABLE, DECK_GATEWAY_EXECUTABLE), a visible Hyprland
-session, `DECK_ACCEPTANCE_UI_EXECUTABLE` (the built Deck window), a
-`DECK_CREDENTIALS` file store holding `DECK_GITHUB_TOKEN`, and a host checkout
-of a private scratch repository at `--project` whose `origin` points at it.
-`--construct-dev` is the built construct-dev that serves the scripted model.
+Requires the documented VM environment (DECK_VM_IMAGE, DECK_VM_JOURNAL,
+DECK_VM_KRUN, DECK_VM_EXECUTABLE, DECK_GATEWAY_EXECUTABLE), a visible desktop
+(Hyprland on Linux, the logged-in session on macOS), `DECK_ACCEPTANCE_UI_EXECUTABLE`
+(the built Deck window), a `DECK_CREDENTIALS` file store holding
+`DECK_GITHUB_TOKEN`, and a host checkout of a scratch repository at `--project`
+whose `origin` points at it. `--construct-dev` is the built construct-dev that
+serves the scripted model.
+
+A private repository runs the default approval mode. A public one asks for a
+card on every write by default, so the run writes the project file's explicit
+`own-branch-public` opt-in first, and its workflow can be a real GitHub-hosted
+job whose check run the chip reports.
 
 The model is scripted (`construct-dev serve`), so it cannot reason about a
 reply: each turn's steps are written by this driver, and the tool results the
@@ -23,6 +29,8 @@ from pathlib import Path
 import shlex
 import socket
 import subprocess
+import sys
+import tempfile
 import time
 
 from support import Daemon, Evidence
@@ -145,13 +153,23 @@ class Window:
         self.agent = agent
         self.environment = environment
         self.pid = None
+        self.process = None
 
     def launch(self):
-        command = 'cd ' + shlex.quote(str(self.project)) + ' && exec ' + shlex.join([
-            'env', f'DECK_DATA={self.data}', f'DECK_CONTROL={self.control_path}',
-            str(self.executable), '--', *self.agent])
-        dispatch = 'hl.dsp.exec_cmd(' + json.dumps(shlex.join(['sh', '-c', command])) + ', { no_initial_focus = true })'
-        subprocess.run(['hyprctl', 'dispatch', dispatch], check=True, capture_output=True, env=self.environment)
+        environment = dict(self.environment, DECK_DATA=str(self.data), DECK_CONTROL=str(self.control_path))
+        if sys.platform == 'darwin':
+            # No compositor dispatch on macOS: the window is a normal child in
+            # the logged-in session, and it starts deckd (the sibling binary)
+            # with this environment.
+            self.process = subprocess.Popen([str(self.executable), '--', *self.agent],
+                                            cwd=self.project, env=environment,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            command = 'cd ' + shlex.quote(str(self.project)) + ' && exec ' + shlex.join([
+                'env', f'DECK_DATA={self.data}', f'DECK_CONTROL={self.control_path}',
+                str(self.executable), '--', *self.agent])
+            dispatch = 'hl.dsp.exec_cmd(' + json.dumps(shlex.join(['sh', '-c', command])) + ', { no_initial_focus = true })'
+            subprocess.run(['hyprctl', 'dispatch', dispatch], check=True, capture_output=True, env=self.environment)
         self.until(lambda state: state['session']['status'] == 'ready', 240)
         self.pid = self.control(cmd='geometry')['pid']
 
@@ -193,6 +211,11 @@ class Window:
 
     def screenshot(self, path):
         geometry = self.control(cmd='geometry')
+        if sys.platform == 'darwin':
+            bounds = geometry['bounds']
+            region = f"{bounds['x']},{bounds['y']},{bounds['w']},{bounds['h']}"
+            subprocess.run(['screencapture', '-x', '-o', f'-R{region}', str(path)], check=True, env=self.environment)
+            return geometry
         clients = json.loads(sh('hyprctl', 'clients', '-j', env=self.environment))
         window = next(client for client in clients if client['pid'] == geometry['pid'])
         region = f"{window['at'][0]},{window['at'][1]} {window['size'][0]}x{window['size'][1]}"
@@ -206,9 +229,17 @@ class Window:
         if self.pid is None:
             return
         try:
-            self.key('q', modifiers=['ctrl'])
+            # cmd-q on macOS, ctrl-q elsewhere (the app's quit binding).
+            self.key('q', modifiers=['super' if sys.platform == 'darwin' else 'ctrl'])
         except (OSError, ValueError):
             subprocess.run(['kill', str(self.pid)], capture_output=True)
+        if self.process is not None:
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                self.process.wait(timeout=10)
+            return
         for _ in range(100):
             if not Path(f'/proc/{self.pid}').exists():
                 return
@@ -333,9 +364,16 @@ def main():
     args = parser.parse_args()
 
     for name in ['DECK_VM_IMAGE', 'DECK_VM_JOURNAL', 'DECK_VM_KRUN', 'DECK_VM_EXECUTABLE',
-                 'DECK_GATEWAY_EXECUTABLE', 'DECK_CREDENTIALS', 'XDG_RUNTIME_DIR']:
+                 'DECK_GATEWAY_EXECUTABLE', 'DECK_CREDENTIALS']:
         if not os.environ.get(name):
             raise SystemExit(f'{name} must be set (scripts/linux-acceptance/README.md)')
+    if sys.platform == 'darwin':
+        # Unix socket paths must stay under ~104 bytes, and the daemon the
+        # harness starts and the daemon the window starts must agree on the
+        # runtime directory, so it goes into os.environ before both copy it.
+        os.environ.setdefault('XDG_RUNTIME_DIR', tempfile.mkdtemp(prefix='deck-acceptance-', dir='/tmp'))
+    elif not os.environ.get('XDG_RUNTIME_DIR'):
+        raise SystemExit('XDG_RUNTIME_DIR must be set (scripts/linux-acceptance/README.md)')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     project = args.project.resolve()
@@ -343,17 +381,19 @@ def main():
     evidence = Evidence(output)
     environment = dict(os.environ)
     runtime = Path(environment['XDG_RUNTIME_DIR'])
-    if not environment.get('HYPRLAND_INSTANCE_SIGNATURE'):
-        instances = sorted((runtime / 'hypr').glob('*'), key=lambda path: path.stat().st_mtime)
-        if not instances:
-            raise SystemExit('HYPRLAND_INSTANCE_SIGNATURE is unset and no Hyprland instance is running')
-        environment['HYPRLAND_INSTANCE_SIGNATURE'] = instances[-1].name
-    environment.setdefault('WAYLAND_DISPLAY', 'wayland-1')
+    if sys.platform != 'darwin':
+        if not environment.get('HYPRLAND_INSTANCE_SIGNATURE'):
+            instances = sorted((runtime / 'hypr').glob('*'), key=lambda path: path.stat().st_mtime)
+            if not instances:
+                raise SystemExit('HYPRLAND_INSTANCE_SIGNATURE is unset and no Hyprland instance is running')
+            environment['HYPRLAND_INSTANCE_SIGNATURE'] = instances[-1].name
+        environment.setdefault('WAYLAND_DISPLAY', 'wayland-1')
 
     # Preconditions: the fixture the run may publish to, and nothing in the
     # project file that changes the approval mode.
     visibility = sh('gh', 'repo', 'view', repository, '--json', 'visibility', '-q', '.visibility').lower()
-    evidence.check('fixture: scratch repository is private', visibility == 'private', visibility)
+    evidence.check('fixture: the scratch repository visibility is recorded',
+                   visibility in ('private', 'public'), visibility)
     origin = sh('git', '-C', str(project), 'remote', 'get-url', 'origin')
     evidence.check('fixture: project origin names the scratch repository',
                    repository.split('/')[1] in origin and 'github.com' in origin, origin)
@@ -363,7 +403,19 @@ def main():
     ignored = subprocess.run(['git', '-C', str(project), 'check-ignore', '.env'], capture_output=True, text=True).stdout.strip()
     evidence.check('fixture: the project .env is git-ignored', ignored == '.env', ignored)
     project_file = project / '.deck/project.toml'
-    evidence.check('fixture: the main run starts with no project file', not project_file.exists(), str(project_file))
+    approvals = 'own-branch' if visibility == 'private' else 'own-branch-public'
+    if approvals == 'own-branch-public':
+        # A public repository asks on every write unless the project opts in
+        # to own-branch writes (ADR 0008 §3), so this run declares it.
+        project_file.parent.mkdir(parents=True, exist_ok=True)
+        project_file.write_text('[github]\napprovals = "own-branch-public"\n')
+        evidence.check('fixture: the public project opts in to own-branch writes',
+                       project_file.read_text() == '[github]\napprovals = "own-branch-public"\n', approvals)
+        ignored_deck = subprocess.run(['git', '-C', str(project), 'check-ignore', '.deck'],
+                                      capture_output=True, text=True).stdout.strip()
+        evidence.check('fixture: the project .deck directory is git-ignored', ignored_deck == '.deck', ignored_deck)
+    else:
+        evidence.check('fixture: the main run starts with no project file', not project_file.exists(), str(project_file))
     workflow = sh('gh', 'api', f'repos/{repository}/contents/.github/workflows/ci.yml?ref=main',
                   '--jq', '.path')
     evidence.check('fixture: main has a trivial CI workflow', workflow == '.github/workflows/ci.yml', workflow)
@@ -402,7 +454,7 @@ def main():
         evidence.check('window: the task recorded the inferred GitHub policy',
                        tasks[0]['spec'].get('github', {}).get('repository') == repository and
                        tasks[0]['spec']['github'].get('base') == 'main' and
-                       tasks[0]['spec']['github'].get('approvals') == 'own-branch', tasks[0]['spec'].get('github'))
+                       tasks[0]['spec']['github'].get('approvals') == approvals, tasks[0]['spec'].get('github'))
         evidence.check('window: a capable agent shows no publish notice', state['publish_notice'] is None,
                        state['publish_notice'])
 
@@ -535,10 +587,18 @@ def main():
         window.control(cmd='settle')
         window.screenshot(output / '05-running.png')
         head = pull['head']['sha']
-        workflows = json.loads(github(f'repos/{repository}/actions/runs?head_sha={head}&per_page=100'))
-        queued = [run['id'] for run in workflows.get('workflow_runs', []) if run.get('status') != 'completed']
-        for run in queued:
-            subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repository}/actions/runs/{run}/cancel'],
+        runs = []
+        for _ in range(120):
+            workflows = json.loads(github(f'repos/{repository}/actions/runs?head_sha={head}&per_page=100'))
+            runs = workflows.get('workflow_runs', [])
+            if runs and all(run.get('status') == 'completed' for run in runs):
+                break
+            time.sleep(2)
+        evidence.check('fixture: the GitHub-hosted checks completed on their own',
+                       bool(runs) and all(run.get('status') == 'completed' for run in runs),
+                       [(run.get('name'), run.get('status'), run.get('conclusion')) for run in runs])
+        for run in (run for run in runs if run.get('status') != 'completed'):
+            subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repository}/actions/runs/{run["id"]}/cancel'],
                            check=False, capture_output=True, text=True)
         state, result = wait_chip(window, ('checks failing', 'ready'), 240, output, '05-chip-result')
         labels = [label for _, label in result]
@@ -591,7 +651,8 @@ def main():
         evidence.check('case 9: the stopped task still opens its publication panel', open_publication(window, task),
                        window.state()['publication'])
         window.screenshot(output / '09-stopped.png')
-        window.control(cmd='key', key='r', modifiers=['ctrl'])
+        # The app's restart binding: cmd-r on macOS, ctrl-r elsewhere.
+        window.control(cmd='key', key='r', modifiers=['super' if sys.platform == 'darwin' else 'ctrl'])
         resumed = window.until(lambda state: state['session']['status'] == 'ready', 180)
         evidence.check('case 9: resume restores the session and keeps the chip',
                        resumed['board']['cards'][0]['chip'] == screenshot_before and
@@ -694,16 +755,22 @@ def main():
             'fixture_limits': [
                 'the model is scripted: the tool steps and the text reply each turn are fixed by the driver; '
                 'a refusal is proven by Construct\'s tool result and by the one publish call in that turn, not by model reasoning',
-                'GitHub-hosted Actions jobs do not start in the private scratch repository for this account (a minimal '
-                'workflow there also fails in ~3 s with no steps; this repository\'s public CI runs normally), so '
-                'the scratch CI targets a self-hosted runner and its check stays queued; the harness cancels '
-                'the queued runs to produce the completed conclusion. The deck reads real GitHub check runs; no real CI ran',
+                ('the scratch checks are real GitHub-hosted Actions jobs started by the push and the pull request; '
+                 'the driver waits for them to complete and records their conclusions'
+                 if visibility == 'public' else
+                 'GitHub-hosted Actions jobs do not start in the private scratch repository for this account (a minimal '
+                 'workflow there also fails in ~3 s with no steps; this repository\'s public CI runs normally), so '
+                 'the scratch CI targets a self-hosted runner and its check stays queued; the harness cancels '
+                 'the queued runs to produce the completed conclusion. The deck reads real GitHub check runs; no real CI ran'),
                 'the credential store holds the local gh user token (repo scope), not a fine-grained token restricted to '
                 'the scratch repository: fine-grained tokens can only be minted in the web UI. The token never leaves the '
                 'host store; the harness uses the same account\'s gh auth to verify GitHub',
-                'Linux/x86_64 only; macOS was not run',
+                f'host: {sys.platform}/{os.uname().machine}',
                 'the pull request number and commit shas come from the turns; reruns reuse the scratch repository',
-            ],
+            ] + ([
+                'the scratch repository is public and the project file opts in to own-branch writes (ADR 0008 §3): '
+                'the default-scope cases exercise that explicit opt-in, not the private-repository inference',
+            ] if visibility == 'public' else []),
         }
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     finally:
