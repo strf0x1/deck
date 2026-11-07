@@ -20,7 +20,6 @@
 use crate::control::Control;
 use crate::credential::Broker;
 use crate::github::GitHub;
-use crate::github::status::Events as GitHubEvents;
 use crate::grants::Grants;
 use crate::http;
 use crate::model::{Model, Settings};
@@ -172,7 +171,7 @@ pub fn serve(config: Config) -> Result<()> {
     // with it, and its watch closes the ones whose value is revoked.
     let credentials = Broker::new(config.control.clone());
     credentials.watch().context("starting the credential watch")?;
-    let github = github_settings(config.github.as_ref(), config.control.clone(), credentials.clone());
+    let github = github_settings(config.github.as_ref(), config.control.clone(), credentials.clone(), events.clone());
     let model = Arc::new(Model::new(Settings {
         upstream: config.upstream,
         models: Models::new(config.models),
@@ -276,6 +275,7 @@ fn github_settings(
     settings: Option<&GitHubSettings>,
     control: Option<Control>,
     credentials: Arc<Broker>,
+    events: Arc<WebEvents>,
 ) -> Option<Arc<GitHub>> {
     let settings = settings?;
     let control =
@@ -289,10 +289,7 @@ fn github_settings(
         scratch: settings.scratch.clone(),
         git: settings.git.clone(),
     });
-    Some(Arc::new(
-        GitHub::new(client, control, Arc::new(GitHubEvents::new()))
-            .with_credentials(credentials, settings.secret.clone()),
-    ))
+    Some(Arc::new(GitHub::new(client, control, events).with_credentials(credentials, settings.secret.clone())))
 }
 
 fn bind(path: &Path) -> Result<UnixListener> {

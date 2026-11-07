@@ -113,6 +113,11 @@ pub(crate) enum Request {
     AccessGrants {
         task: String,
     },
+    /// The task's effective GitHub approval mode, re-read from its project
+    /// file so the panel reflects a switch before the next write.
+    GithubApprovals {
+        task: String,
+    },
     /// A confirmed removal. Project rules also remove matching task grants.
     RevokeAccessGrant {
         task: String,
@@ -173,6 +178,7 @@ impl Request {
             | Self::Grants { task: id }
             | Self::RevokeGrant { task: id, .. }
             | Self::AccessGrants { task: id }
+            | Self::GithubApprovals { task: id }
             | Self::RevokeAccessGrant { task: id, .. }
             | Self::Credential { task: id, .. }
             | Self::CredentialWatch { task: id }

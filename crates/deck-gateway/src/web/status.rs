@@ -1,11 +1,12 @@
-//! Boundary events for this task, produced by the web gateway (ADR 0004 §6).
+//! Boundary events for this task, produced by the web and GitHub gateways
+//! (ADR 0004 §6, ADR 0008 §6).
 //!
-//! The design choice: the web gateway owns a sequence of its own, because a
-//! CONNECT never carries an HTTP body and a client that reports "CONNECT
-//! failed: 403" never shows the approval id. The agent reads the event to
-//! learn which destination was blocked, why, and what the user decided. Only
-//! this gateway writes here; the status endpoint on the extension port serves
-//! the events of every kind it can see.
+//! The design choice: the gateways share one sequence, because a CONNECT never
+//! carries an HTTP body and a client that reports "CONNECT failed: 403" never
+//! shows the approval id. The agent reads the event to learn which destination
+//! was blocked, why, and what the user decided — or, for a GitHub write the
+//! approval mode admitted without a card, that it crossed the boundary. The
+//! status endpoint on the extension port serves these beside the model's.
 
 use serde::Serialize;
 use std::sync::{Mutex, MutexGuard};
@@ -45,9 +46,24 @@ impl Events {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Note what happened to one item. A decision is final: a later report
-    /// cannot reopen an item the agent already saw resolved.
+    /// Note what happened to one item for this gateway. A decision is final: a
+    /// later report cannot reopen an item the agent already saw resolved.
     pub fn observe(&self, id: &str, destination: &str, state: &str, scope: Option<&str>, reason: Option<&str>) {
+        self.observe_in(crate::web::GATEWAY, id, destination, state, scope, reason);
+    }
+
+    /// The same, naming the gateway that produced the event. The GitHub
+    /// gateway shares this sequence so its default admissions and blocks reach
+    /// the boundary endpoint (ADR 0008 §6).
+    pub fn observe_in(
+        &self,
+        gateway: &str,
+        id: &str,
+        destination: &str,
+        state: &str,
+        scope: Option<&str>,
+        reason: Option<&str>,
+    ) {
         let mut inner = self.lock();
         match inner.events.iter().rposition(|event| event.approval_id == id) {
             Some(index) => {
@@ -68,8 +84,10 @@ impl Events {
                 return;
             }
             // An allowed request with no prior block succeeded inside the hold,
-            // so the agent has nothing to learn from an event.
-            None if matches!(state, "allowed" | "expired" | "withdrawn") => return,
+            // so the agent has nothing to learn — except a default admission,
+            // which is the record of a write no card showed.
+            None if matches!(state, "expired" | "withdrawn") => return,
+            None if state == "allowed" && scope != Some("default") => return,
             None => {}
         }
         inner.seq += 1;
@@ -77,7 +95,7 @@ impl Events {
         inner.events.push(Event {
             seq,
             approval_id: id.to_owned(),
-            gateway: crate::web::GATEWAY.into(),
+            gateway: gateway.to_owned(),
             destination: destination.to_owned(),
             state: state.to_owned(),
             scope: scope.map(str::to_owned),
@@ -121,10 +139,15 @@ mod tests {
     }
 
     #[test]
-    fn a_request_that_never_had_a_block_leaves_no_event() {
+    fn a_request_that_never_had_a_block_leaves_no_event_except_a_default_admission() {
         let events = Events::new();
         events.observe("a1", "crates.io:443", "allowed", Some("project"), None);
         events.observe("a2", "pypi.org:443", "withdrawn", None, None);
         assert!(events.since(0).is_empty());
+        events.observe_in(crate::github::GATEWAY, "g1", "o/r#deck/t-1", "allowed", Some("default"), None);
+        let seen = events.since(0);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].gateway, "github");
+        assert_eq!(seen[0].scope.as_deref(), Some("default"));
     }
 }

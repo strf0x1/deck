@@ -76,6 +76,13 @@ impl WindowTask {
         self.daemon.access_grants(&self.id)
     }
 
+    /// This task's effective GitHub approval mode, when its project names a
+    /// repository. The daemon re-reads the project file, so a switch shows up
+    /// before the next write.
+    pub fn github_approvals(&self) -> Result<Option<deck_runtime::github::Approvals>> {
+        self.daemon.github_approvals(&self.id)
+    }
+
     pub fn revoke_grant(&self, id: &str) -> Result<()> {
         self.daemon.revoke_access_grant(&self.id, id)
     }

@@ -200,6 +200,7 @@ fn connection(
                         | Request::Grants { .. }
                         | Request::RevokeGrant { .. }
                         | Request::AccessGrants { .. }
+                        | Request::GithubApprovals { .. }
                         | Request::RevokeAccessGrant { .. }
                 ) =>
             {
@@ -295,7 +296,14 @@ fn approval(
         Request::Approval { task, ask } => {
             let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?;
             let project = record.spec.cwd.to_string_lossy().into_owned();
-            let incoming = ask.into_incoming(task, project, record.session_id.clone());
+            // The recorded mode is the base; the project file is re-read so a
+            // switch to `ask` governs the next operation without a restart.
+            let approvals = record
+                .spec
+                .github
+                .as_ref()
+                .map(|policy| crate::github::live_approvals(&record.spec.cwd, policy.approvals));
+            let incoming = ask.into_incoming(task, project, record.session_id.clone(), approvals);
             Ok(serde_json::to_value(boundary.submit_while(incoming, connected)?)?)
         }
         Request::Approvals { task } => Ok(serde_json::to_value(boundary.pending(&task)?)?),
@@ -314,6 +322,15 @@ fn approval(
         Request::AccessGrants { task } => {
             let project = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?.spec.cwd;
             Ok(serde_json::to_value(boundary.access_grants(&task, &project.to_string_lossy())?)?)
+        }
+        Request::GithubApprovals { task } => {
+            let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?;
+            let mode = record
+                .spec
+                .github
+                .as_ref()
+                .map(|policy| crate::github::live_approvals(&record.spec.cwd, policy.approvals));
+            Ok(serde_json::to_value(mode)?)
         }
         Request::RevokeAccessGrant { task, id } => {
             // Keep task creation serialized until the project revoke ends,
@@ -500,6 +517,7 @@ impl Service {
             | Request::Grants { .. }
             | Request::RevokeGrant { .. }
             | Request::AccessGrants { .. }
+            | Request::GithubApprovals { .. }
             | Request::RevokeAccessGrant { .. }
             | Request::Credential { .. }
             | Request::CredentialWatch { .. }

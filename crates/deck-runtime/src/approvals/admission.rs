@@ -13,6 +13,51 @@ mod cancellation_tests;
 /// Detect a caller that disappeared without waiting for a human decision.
 const CALLER_CHECK: Duration = Duration::from_millis(100);
 
+/// The mode admits a covered write without a card. This is a decision per
+/// operation, not a grant: nothing is stored, and no allowance is used. The
+/// gateway supplies the two host facts it alone can read (its own-branch
+/// classification and the repository's visibility); the mode comes from the
+/// task's live project file through `deckd`.
+fn default_admission(inner: &mut Inner, request: &Incoming, now: u64) -> Option<Approval> {
+    if request.gateway != super::GITHUB {
+        return None;
+    }
+    let coverage = request.coverage?;
+    // The two operations whose destination names a branch can be checked
+    // here; an update's destination names a pull request, whose head the
+    // gateway already checked. This keeps a wiring mistake from admitting a
+    // shared branch even when the gateway says it is covered.
+    let own_branch = match request.operation.as_str() {
+        "publish" | "create_pr" => {
+            request.destination.rsplit_once('#').is_some_and(|(_, detail)| detail == format!("deck/{}", request.task))
+        }
+        "update_pr" => true,
+        _ => return None,
+    };
+    if !coverage.own_branch || !own_branch || !request.approvals?.admits_own_branch(coverage.public) {
+        return None;
+    }
+    inner.seq += 1;
+    Some(Approval {
+        id: format!("{:x}-{:x}", now, inner.seq),
+        task: request.task.clone(),
+        project: request.project.clone(),
+        session: request.session.clone(),
+        gateway: request.gateway.clone(),
+        operation: request.operation.clone(),
+        destination: request.destination.clone(),
+        credential: request.credential.clone(),
+        details: request.details.clone(),
+        reason: request.reason.clone(),
+        created_ms: now,
+        expires_ms: now,
+        grant_expires_ms: None,
+        policy: inner.version,
+        state: State::Allowed(Scope::Default),
+        waiters: 0,
+    })
+}
+
 impl Boundary {
     /// Ask for a scope, consuming any matching Once allowance atomically.
     /// Without a grant, share a pending card and hold only while a capable
@@ -28,6 +73,9 @@ impl Boundary {
         let mut inner = self.lock();
         let deadline = now_ms().saturating_add(millis(self.settings.hold));
         self.load_task(&mut inner, &request.task)?;
+        if let Some(approval) = default_admission(&mut inner, &request, now_ms()) {
+            return Ok(approval);
+        }
         loop {
             if !connected() {
                 bail!("the approval request's caller disconnected");

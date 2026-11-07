@@ -1510,7 +1510,12 @@ fn a_publish_pushes_only_the_task_branch_and_a_secret_is_never_echoed() {
     // The remote now has the branch, and only it.
     let out = Command::new("git").arg("--git-dir").arg(&remote).arg("branch").arg("--list").output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "deck/t-1");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "a push uses git, not the API: {seen:?}");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a push uses git; its one API read is the visibility check: {seen:?}"
+    );
+    assert_eq!(seen.lock().unwrap()[0].target, "/repos/owner/repo");
 }
 
 #[test]
@@ -1643,7 +1648,95 @@ fn a_denied_publish_reports_the_approval_and_never_reaches_git() {
     assert!(response.contains("\"retryable\":false"), "{response}");
     let branches = Command::new("git").arg("--git-dir").arg(&remote).arg("branch").arg("--list").output().unwrap();
     assert_eq!(String::from_utf8_lossy(&branches.stdout).trim(), "", "nothing was pushed");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "only the visibility read reached GitHub");
+}
+
+/// A fake daemon that answers like the approval queue's own-branch admission
+/// and records every ask, so a gateway case can check both what the gateway
+/// sent and whether it proceeded.
+fn admission_queue(name: &str, mode: &'static str) -> (PathBuf, Arc<Mutex<Vec<Value>>>) {
+    let dir = scratch(name);
+    let socket = dir.join("deckd.sock");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut line = String::new();
+            if BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let coverage = &request["coverage"];
+            let own = coverage["own_branch"].as_bool().unwrap_or(false);
+            let public = coverage["public"].as_bool();
+            let admitted = mode != "ask" && own && (mode == "own-branch-public" || public == Some(false));
+            let state = match admitted {
+                true => serde_json::json!({ "allowed": "default" }),
+                false => serde_json::json!("pending"),
+            };
+            let reply = serde_json::json!({
+                "ok": { "id": "g1", "gateway": "github", "operation": request["operation"],
+                        "destination": request["destination"], "state": state }
+            });
+            let _ = stream.write_all(format!("{reply}\n").as_bytes());
+            log.lock().unwrap().push(request);
+        }
+    });
+    (socket, seen)
+}
+
+#[test]
+fn a_covered_publish_is_admitted_only_for_a_private_repository() {
+    for (case, repository, admitted, public) in [
+        ("private", r#"{"private":true}"#, true, Some(false)),
+        ("public", r#"{"private":false}"#, false, Some(true)),
+        ("unreadable", r#"!404 {"message":"Not Found"}"#, false, None),
+    ] {
+        // Short names: macOS's temporary directory plus a socket name can
+        // exceed SUN_LEN with a longer test fixture.
+        let (dir, remote) = bare(&format!("v-{case}"));
+        let (api, _, _) = api(move |request| match request.target.as_str() {
+            "/repos/owner/repo" => repository.into(),
+            _ => "{}".into(),
+        });
+        let (queue, asked) = admission_queue(&format!("v-{case}-q"), "own-branch");
+        let gateway = with_github(&format!("v-{case}-g"), &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+        let github = gateway.ready.github.clone().unwrap();
+        let bytes = bundle(&dir, "deck/t-1", case, &dir.join("none"));
+        let response = publish(&github, "deck/t-1", &bytes);
+        if admitted {
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{case}: {response}");
+            let events =
+                send_kind(&gateway.ready.extension, "boundary", "GET /events?after=0 HTTP/1.1\r\nhost: relay\r\n\r\n");
+            assert!(events.contains(r#""scope":"default""#), "{case}: {events}");
+            assert!(events.contains(r#""gateway":"github""#), "{case}: {events}");
+        } else {
+            assert!(response.starts_with("HTTP/1.1 403"), "{case}: {response}");
+            assert!(response.contains("\"approval_id\":\"g1\""), "{case}: {response}");
+        }
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "{case}: one ask: {asked:?}");
+        assert_eq!(asked[0]["coverage"]["own_branch"], true, "{case}");
+        assert_eq!(asked[0]["coverage"]["public"], serde_json::to_value(public).unwrap(), "{case}");
+    }
+}
+
+#[test]
+fn own_branch_public_admits_a_public_repository_explicitly() {
+    let (dir, remote) = bare("v-open");
+    let (api, _, _) = api(|request| match request.target.as_str() {
+        "/repos/owner/repo" => r#"{"private":false}"#.into(),
+        _ => "{}".into(),
+    });
+    let (queue, asked) = admission_queue("v-open-q", "own-branch-public");
+    let gateway = with_github("v-open-g", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let bytes = bundle(&dir, "deck/t-1", "open", &dir.join("none"));
+    assert!(publish(&github, "deck/t-1", &bytes).starts_with("HTTP/1.1 200 OK"));
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked[0]["coverage"], serde_json::json!({ "own_branch": true, "public": true }));
 }
 
 #[test]

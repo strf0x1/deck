@@ -217,11 +217,12 @@ impl Client {
         Ok(summary(&reply).to_string())
     }
 
-    /// Whether pull request `number` is one this task may change: its head is
-    /// a branch the task may write, in this repository rather than a fork.
-    /// Asked before the approval card, so the user is never asked about a pull
-    /// request the gateway would refuse anyway.
-    pub fn owns_pull_request(&self, number: u64) -> Result<(), Problem> {
+    /// The head branch of pull request `number`, when it is one this task may
+    /// change: a branch the task may write, in this repository rather than a
+    /// fork. Asked before the approval card, so the user is never asked about
+    /// a pull request the gateway would refuse anyway, and so the queue can
+    /// tell the task's own draft pull request from a shared branch.
+    pub fn owns_pull_request(&self, number: u64) -> Result<String, Problem> {
         let path = format!("{}pulls/{number}", self.prefix());
         let reply = self.call("GET", &path, None)?;
         let head = reply.pointer("/head/ref").and_then(Value::as_str).unwrap_or_default();
@@ -237,7 +238,20 @@ impl Client {
                 "pull request {number} is from {head:?}, not a branch this task may write"
             )));
         }
-        Ok(())
+        Ok(head.to_owned())
+    }
+
+    /// Whether the repository is public, or `None` when its visibility cannot
+    /// be read. A read with the operation's own token, before a write the
+    /// approval mode would otherwise admit without a card: an unreadable
+    /// repository gets the card, not the benefit of the doubt (ADR 0008 §6).
+    pub fn visibility(&self) -> Option<bool> {
+        let path =
+            format!("{}{}{}", self.settings.api.trim_end_matches('/'), API_PREFIX, self.settings.policy.repository());
+        let reply = self.call("GET", &path, None).ok()?;
+        let private = reply.get("private").and_then(Value::as_bool)?;
+        let internal = reply.get("visibility").and_then(Value::as_str) == Some("internal");
+        Some(!private && !internal)
     }
 
     /// A pull request's state: head commit, draft, mergeability, and the

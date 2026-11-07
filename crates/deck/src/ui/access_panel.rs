@@ -151,10 +151,39 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 "Local process · host network access is not restricted by these grants."
             })
         }))
+        .children(access.approvals().map(approval_mode))
+        .children(access.approvals_error().map(error))
         .children(access.confirming().map(|target| confirm(target, access.busy(), cx)))
         .children(access.revoked().map(notice))
         .children(access.revoke_error().map(error))
         .child(contents)
+        .into_any_element()
+}
+
+/// The task's GitHub approval mode and what it means for the next write.
+fn approval_mode(mode: deck_runtime::github::Approvals) -> AnyElement {
+    use deck_runtime::github::Approvals;
+    let (label, detail) = match mode {
+        Approvals::OwnBranch => (
+            "own-branch",
+            "This task's branch, its draft pull request, and updates to it need no card. \
+             Ready for review, shared branches and public repositories still ask.",
+        ),
+        Approvals::Ask => ("ask", "Every GitHub write asks for a card."),
+        Approvals::OwnBranchPublic => (
+            "own-branch-public",
+            "As own-branch, and a public repository does not ask. \
+             Pushing there discloses the branch to everyone.",
+        ),
+    };
+    div()
+        .debug_selector(|| "access-approvals".into())
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .child(div().text_size(px(12.5)).text_color(Tokens::text_dim()).child(format!("GitHub approvals: {label}")))
+        .child(div().text_size(px(11.5)).text_color(Tokens::text_faint()).child(detail))
         .into_any_element()
 }
 

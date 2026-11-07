@@ -7,6 +7,7 @@
 
 use deck_runtime::approvals::{Grant, Scope};
 use deck_runtime::broker::Listed;
+use deck_runtime::github::Approvals;
 
 pub const NOT_CANCELLED: &str = "Revoking stops Deck using this value. It does not cancel the key at the provider.";
 
@@ -56,6 +57,9 @@ pub struct Access {
     credentials_error: Option<String>,
     grants_error: Option<String>,
     revoke_error: Option<String>,
+    approvals: Option<Approvals>,
+    approvals_error: Option<String>,
+    approvals_request: u64,
 }
 
 impl Access {
@@ -96,6 +100,14 @@ impl Access {
         self.revoke_error.as_deref()
     }
 
+    pub fn approvals(&self) -> Option<Approvals> {
+        self.approvals
+    }
+
+    pub fn approvals_error(&self) -> Option<&str> {
+        self.approvals_error.as_deref()
+    }
+
     pub fn toggle(&mut self) -> bool {
         self.open = !self.open;
         if !self.open {
@@ -109,6 +121,25 @@ impl Access {
     fn invalidate(&mut self) {
         self.credentials_request += 1;
         self.grants_request += 1;
+        self.approvals_request += 1;
+    }
+
+    pub fn begin_approvals(&mut self) -> u64 {
+        self.approvals_request += 1;
+        self.approvals_request
+    }
+
+    pub fn approvals_listed(&mut self, ticket: u64, result: Result<Option<Approvals>, String>) {
+        if ticket != self.approvals_request {
+            return;
+        }
+        match result {
+            Ok(mode) => {
+                self.approvals = mode;
+                self.approvals_error = None;
+            }
+            Err(why) => self.approvals_error = Some(why),
+        }
     }
 
     pub fn begin_credentials(&mut self) -> u64 {
@@ -241,13 +272,13 @@ pub fn grant_scope(grant: &Grant, now_ms: u64) -> String {
         Scope::Timed => "5 minutes",
         Scope::Task => "Task",
         Scope::Project => "Project",
+        Scope::Default => "Default",
     };
     match grant.expires_ms {
         None => match grant.scope {
             Scope::Project => "Project · no expiry".into(),
             Scope::Task => "Task · until stopped".into(),
-            Scope::Once => scope.into(),
-            Scope::Timed => scope.into(),
+            Scope::Once | Scope::Timed | Scope::Default => scope.into(),
         },
         Some(expiry) if expiry <= now_ms => format!("{scope} · expired"),
         Some(expiry) => {

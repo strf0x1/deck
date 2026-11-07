@@ -368,7 +368,9 @@ impl Boundary {
                 Scope::Once => Some(now + millis(self.settings.once)),
                 Scope::Timed => Some(now + millis(self.settings.timed)),
                 Scope::Task => Some(now + millis(self.settings.task)),
-                Scope::Project => None,
+                // Only a decision creates a grant; a default admission is
+                // returned before the queue ever sees a card.
+                Scope::Project | Scope::Default => None,
             },
             reviewed: (scope == Scope::Once).then(|| Reviewed { identity: item.details.identity.clone() }),
         };
@@ -386,6 +388,7 @@ impl Boundary {
             Scope::Once => {
                 inner.grants.entry(item.task.clone()).or_default().push(grant);
             }
+            Scope::Default => {}
         }
         Ok(expires_ms)
     }
