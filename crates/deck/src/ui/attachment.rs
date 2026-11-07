@@ -9,12 +9,13 @@
 //! later task.
 
 use super::boundary::Boundary;
+use super::new_session::NewSession;
 use super::root::{Deck, LIVE};
 use super::session::{Session, Status};
 use crate::task::{Connection, WindowTask};
 use deck_acp::Inbound;
-use deck_runtime::Watch;
 use deck_runtime::approvals::Approval;
+use deck_runtime::{Task, Watch};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::Context;
@@ -108,9 +109,54 @@ impl Deck {
     pub fn select(&mut self, lane: usize, cx: &mut Context<Self>) {
         let Some(current) = self.task.clone() else { return };
         let Some(id) = self.lanes.task(lane, Some(current.id())).filter(|_| lane != LIVE) else { return };
-        let Some(record) = self.tasks.iter().find(|t| t.id == id) else { return };
-        let next = current.sibling(record);
+        let Some(record) = self.tasks.iter().find(|t| t.id == id).cloned() else { return };
+        // The previous task's card takes the selected one's slot.
         self.lanes.switch(Some(current.id()), lane);
+        self.switch_to(&current, &record, cx);
+    }
+
+    /// Start a new session: another task with this window's command and
+    /// directory, then switch to it like a selected card. The current task
+    /// keeps running and becomes an ordinary card. One at a time; a failed
+    /// create leaves the window where it was and says why in the header.
+    pub fn new_session(&mut self, cx: &mut Context<Self>) {
+        if self.new_session.is_creating() {
+            return;
+        }
+        let Some(current) = self.task.clone() else { return };
+        self.new_session = NewSession::Creating;
+        cx.notify();
+        let generation = self.attachment;
+        let created = cx.background_executor().spawn({
+            let current = current.clone();
+            async move { current.create_sibling() }
+        });
+        cx.spawn(async move |this, cx| {
+            let created = created.await;
+            let _ = this.update(cx, |deck, cx| {
+                match created {
+                    // A switch, a restart or quit since the click owns the
+                    // window: the new task stays a card for the next refresh.
+                    Ok(_) if deck.attachment != generation => deck.new_session = NewSession::Idle,
+                    Ok(record) => {
+                        deck.new_session = NewSession::Idle;
+                        deck.tasks.push(record.clone());
+                        deck.switch_to(&current, &record, cx);
+                    }
+                    Err(e) => deck.new_session = NewSession::Failed(format!("{e:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Point the window at task `record`: detach from the current task, reset
+    /// everything that belonged to its session, and connect by launch's rules
+    /// (`WindowTask::open`), which starts a task that has never run.
+    fn switch_to(&mut self, current: &WindowTask, record: &Task, cx: &mut Context<Self>) {
+        let next = current.sibling(record);
+        self.new_session = NewSession::Idle;
         self.attachment += 1;
         let generation = self.attachment;
         self.client = None;
@@ -127,7 +173,6 @@ impl Deck {
         if self.access.is_open() {
             self.toggle_access(cx);
         }
-        // The previous task's card takes the selected one's slot.
         let (tasks, published) = (self.tasks.clone(), std::mem::take(&mut self.published));
         self.on_tasks(tasks, published, cx);
         let opened = cx.background_executor().spawn(async move { (next.watch(), next.open()) });

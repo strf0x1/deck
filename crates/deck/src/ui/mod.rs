@@ -2,7 +2,7 @@
 //! `chrome`, `panels`, `conversation`, `transcript_list`, `cards`, `card_body`, `folds`, `turn_footer`, `prose`,
 //! `prompt` and `access_panel` render it, `composer` is the text field's
 //! element and `input` its keys and IME; `board`, `rail`, `session`,
-//! `transcript`, `markdown`, `diff`, `highlight`, `motion`, `editor`, `access` and `spring` are pure
+//! `transcript`, `markdown`, `diff`, `highlight`, `motion`, `editor`, `access`, `new_session` and `spring` are pure
 //! state with their own tests; `theme` is the visual vocabulary.
 
 pub mod access;
@@ -25,6 +25,7 @@ pub mod highlight;
 mod input;
 pub mod markdown;
 pub mod motion;
+pub mod new_session;
 mod panels;
 mod prompt;
 mod prose;

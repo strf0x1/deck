@@ -271,6 +271,22 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .text_color(Tokens::amber())
                 .child(notice)
         }))
+        .children(deck.new_session_state().error().map(|e| {
+            div()
+                .debug_selector(|| "hdr-new-error".into())
+                .max_w(px(320.))
+                .h(px(30.))
+                .px(px(11.))
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .rounded_full()
+                .border_1()
+                .border_color(Tokens::edge())
+                .text_size(px(size::SMALL))
+                .text_color(Tokens::red())
+                .child(format!("New session failed: {e}"))
+        }))
         .child(icon_button("hdr-bell", icon::BELL))
         .child(
             icon_button("hdr-access", icon::SHIELD)
@@ -290,9 +306,11 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .text_color(Tokens::ink())
                 .text_size(px(size::BODY))
                 .font_weight(FontWeight::MEDIUM)
+                .debug_selector(|| "hdr-new".into())
                 .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.new_session(cx)))
                 .child(glyph(icon::PLUS, 11.))
-                .child("New session"),
+                .child(deck.new_session_state().label()),
         )
 }
 
