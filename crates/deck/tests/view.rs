@@ -5,7 +5,7 @@
 
 use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
-use deck::ui::session::{Entry, Status};
+use deck::ui::session::{Entry, Status, Timing};
 use deck_acp::{Inbound, PermissionOption};
 use deck_runtime::approvals::{Approval, Details, Summary};
 use gpui::{AppContext as _, Focusable as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
@@ -49,7 +49,7 @@ fn typing_a_prompt_and_answering_a_permission_by_key(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppContext) {
-    use deck_acp::{ToolStatus, conn::Conn};
+    use deck_acp::{ToolKind, ToolStatus, conn::Conn};
 
     let (deck, mut cx) = open(cx);
     let (mut conn, _) = Conn::load("/w".into(), "saved".into());
@@ -62,14 +62,34 @@ fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppCont
     }
     cx.run_until_parked();
     deck.read_with(&cx, |d, _| {
+        let order: Vec<String> = d
+            .session()
+            .entries
+            .iter()
+            .map(|e| match e {
+                Entry::You(t) => format!("you: {t}"),
+                Entry::Agent(t) => format!("agent: {t}"),
+                Entry::Tool(t) => format!("tool: {}", t.call.id),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(order, ["you: read files", "tool: call_1", "tool: call_2", "agent: done"]);
+        let tools: Vec<_> = d
+            .session()
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool(t) => Some((t.call.title.as_str(), t.call.kind, t.call.status, t.timing)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            d.session().entries,
+            tools,
             vec![
-                Entry::You("read files".into()),
-                Entry::Tool { id: "call_1".into(), title: "read note.txt".into(), status: ToolStatus::Done },
-                Entry::Tool { id: "call_2".into(), title: "read missing.txt".into(), status: ToolStatus::Failed },
-                Entry::Agent("done".into()),
-            ]
+                ("read note.txt", ToolKind::Read, ToolStatus::Done, Timing::Unknown),
+                ("read missing.txt", ToolKind::Read, ToolStatus::Failed, Timing::Unknown),
+            ],
+            "replayed calls keep their kind and final state, with no duration"
         );
         assert_eq!(d.session().status, Status::Ready);
     });
