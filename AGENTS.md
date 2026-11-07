@@ -262,6 +262,9 @@ release-tag form remains the default; a candidate commit is not a release.
   Bump deliberately: change both revs in the root `[workspace.dependencies]`,
   re-seed the lock from that tag, run the checks, and look at the window.
 - Read GPUI's own examples at the pinned tag for API questions; docs.rs lags.
+- No widget kits: gpui-kit pins a different GPUI (`gpui-pre`), so widgets
+  are built here on the Zed pin (ADR 0009). `docs/ui-polish.md` is the
+  current UI plan.
 - Window blur is the compositor's call. On Hyprland, blur must be enabled
   (`decoration:blur:enabled`) or set per window for class `deck`.
 - On macOS there is no compositor rule to write: GPUI draws
