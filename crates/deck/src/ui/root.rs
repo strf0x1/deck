@@ -7,12 +7,12 @@
 //! frame only while something still moves, so an idle window draws nothing.
 
 use super::access::Access;
-use super::board::{Board, Lane, LaneState};
+use super::board::{Board, Lane};
 use super::boundary::Boundary;
 use super::composer;
 use super::editor::Editor;
 use super::rail::Rail;
-use super::session::{Session, Status};
+use super::session::Session;
 use super::theme::{SANS, Tokens, size};
 use super::{chrome, conversation, panels};
 use crate::task::WindowTask;
@@ -245,18 +245,15 @@ impl Deck {
     }
 
     pub(super) fn sync_live_lane(&mut self) {
-        let (state, detail) = match (&self.session.status, &self.session.ask) {
-            _ if self.boundary.pending().is_some() => (LaneState::Waiting, "asks: external access".into()),
-            (_, Some(ask)) => (LaneState::Waiting, format!("asks: {}", ask.title)),
-            (Status::Connecting, _) => (LaneState::Idle, "connecting…".into()),
-            (Status::Ready, _) => (LaneState::Idle, "ready".into()),
-            (Status::Waiting, _) => (LaneState::Waiting, "waiting for permission".into()),
-            (Status::Working, _) => (LaneState::Working, "working".into()),
-            (Status::Detached, _) => (LaneState::Working, "running · detached".into()),
-            (Status::Down(e), _) => (LaneState::Idle, e.clone()),
-        };
+        let view = self.publication_of(LIVE);
+        let (state, detail) = super::tasks::live(
+            &self.session.status,
+            self.session.ask.as_ref().map(|ask| ask.title.as_str()),
+            self.boundary.pending().is_some(),
+            view.as_ref(),
+        );
         let agent = self.session.agent.clone();
-        let chip = self.publication_of(LIVE).map(|v| (v.dot, v.label));
+        let chip = view.map(|v| (v.dot, v.label));
         if let Some(lane) = self.board.lane_mut(LIVE) {
             lane.title = agent;
             lane.state = state;
