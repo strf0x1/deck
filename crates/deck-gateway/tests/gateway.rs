@@ -1694,14 +1694,15 @@ fn a_covered_publish_is_admitted_only_for_a_private_repository() {
         ("public", r#"{"private":false}"#, false, Some(true)),
         ("unreadable", r#"!404 {"message":"Not Found"}"#, false, None),
     ] {
-        let (dir, remote) = bare(&format!("gh-visibility-{case}"));
+        // Short names: macOS's temporary directory plus a socket name can
+        // exceed SUN_LEN with a longer test fixture.
+        let (dir, remote) = bare(&format!("v-{case}"));
         let (api, _, _) = api(move |request| match request.target.as_str() {
             "/repos/owner/repo" => repository.into(),
             _ => "{}".into(),
         });
-        let (queue, asked) = admission_queue(&format!("gh-visibility-{case}-queue"), "own-branch");
-        let gateway =
-            with_github(&format!("gh-visibility-{case}-gw"), &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+        let (queue, asked) = admission_queue(&format!("v-{case}-q"), "own-branch");
+        let gateway = with_github(&format!("v-{case}-g"), &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
         let github = gateway.ready.github.clone().unwrap();
         let bytes = bundle(&dir, "deck/t-1", case, &dir.join("none"));
         let response = publish(&github, "deck/t-1", &bytes);
@@ -1724,13 +1725,13 @@ fn a_covered_publish_is_admitted_only_for_a_private_repository() {
 
 #[test]
 fn own_branch_public_admits_a_public_repository_explicitly() {
-    let (dir, remote) = bare("gh-visibility-open");
+    let (dir, remote) = bare("v-open");
     let (api, _, _) = api(|request| match request.target.as_str() {
         "/repos/owner/repo" => r#"{"private":false}"#.into(),
         _ => "{}".into(),
     });
-    let (queue, asked) = admission_queue("gh-visibility-open-queue", "own-branch-public");
-    let gateway = with_github("gh-visibility-open-gw", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+    let (queue, asked) = admission_queue("v-open-q", "own-branch-public");
+    let gateway = with_github("v-open-g", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
     let github = gateway.ready.github.clone().unwrap();
     let bytes = bundle(&dir, "deck/t-1", "open", &dir.join("none"));
     assert!(publish(&github, "deck/t-1", &bytes).starts_with("HTTP/1.1 200 OK"));
