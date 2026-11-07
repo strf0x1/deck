@@ -46,6 +46,21 @@ fn send(cx: &mut VisualTestContext, tx: &UnboundedSender<Request>, cmd: Value) -
     panic!("no reply to {cmd}");
 }
 
+/// Send one command line and return its raw reply without asserting success.
+fn send_raw(cx: &mut VisualTestContext, tx: &UnboundedSender<Request>, cmd: Value) -> Value {
+    let (reply, answer) = mpsc::channel();
+    let parsed = protocol::parse(&cmd.to_string()).unwrap();
+    tx.unbounded_send(Request { cmd: parsed, reply }).unwrap();
+    for _ in 0..2000 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        cx.run_until_parked();
+        if let Ok(v) = answer.try_recv() {
+            return v;
+        }
+    }
+    panic!("no reply to {cmd}");
+}
+
 #[gpui::test]
 fn typing_and_answering_through_the_control_channel(cx: &mut TestAppContext) {
     let (deck, mut cx, d) = open(cx);
@@ -126,8 +141,10 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
 
     send(&mut cx, &d, json!({ "cmd": "hover_rail" }));
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(true));
-    send(&mut cx, &d, json!({ "cmd": "select_rail", "index": 3 }));
-    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["active"], json!(3));
+    send(&mut cx, &d, json!({ "cmd": "select_rail", "index": 0 }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["active"], json!(0));
+    let err = send_raw(&mut cx, &d, json!({ "cmd": "select_rail", "index": 1 }));
+    assert_eq!(err["ok"], json!(false), "there is no rail item 1");
     send(&mut cx, &d, json!({ "cmd": "move", "x": 700, "y": 300 }));
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(false));
 

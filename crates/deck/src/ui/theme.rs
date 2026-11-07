@@ -19,10 +19,7 @@ pub const MONO: &str = "JetBrainsMono Nerd Font";
 pub mod icon {
     pub const SESSIONS: &str = "\u{f009}";
     pub const AGENTS: &str = "\u{f1b3}";
-    pub const FLOWS: &str = "\u{f0e8}";
     pub const FILES: &str = "\u{f114}";
-    pub const HISTORY: &str = "\u{f1da}";
-    pub const SETTINGS: &str = "\u{f013}";
     pub const SEARCH: &str = "\u{f002}";
     pub const PLUS: &str = "\u{f067}";
     pub const BELL: &str = "\u{f0a2}";

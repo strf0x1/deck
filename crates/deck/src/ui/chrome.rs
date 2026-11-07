@@ -46,6 +46,7 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
     let items = ITEMS.iter().enumerate().map(|(i, item)| {
         let badge = (i == 0 && waiting).then(Tokens::amber);
         rail_item(("rail-item", i), item, r.active() == i, badge, label_a)
+            .debug_selector(move || format!("rail-item-{i}"))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.rail.select(i);
                 cx.notify();
@@ -72,7 +73,6 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
         );
 
     let pin = Item { icon: icon::PIN, label: if r.pinned() { "Unpin" } else { "Keep open" } };
-    let settings = Item { icon: icon::SETTINGS, label: "Settings" };
 
     div()
         .id("rail")
@@ -113,13 +113,12 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
                 .child(mark(label_a))
                 .child(div().relative().flex().flex_col().child(marker).children(items))
                 .child(div().flex_1())
-                .child(rail_item("rail-pin", &pin, false, None, label_a).when_pinned(r.pinned()).on_click(cx.listener(
-                    |this, _, _, cx| {
+                .child(rail_item("rail-pin", &pin, false, None, label_a).when_pinned(r.pinned()).on_click(
+                    cx.listener(|this, _, _, cx| {
                         this.rail.toggle_pin();
                         cx.notify();
-                    },
-                )))
-                .child(rail_item("rail-settings", &settings, false, None, label_a)),
+                    }),
+                )),
         )
 }
 
@@ -213,23 +212,6 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(
-            div()
-                .w(px(340.))
-                .h_full()
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .rounded(px(radius::CARD))
-                .border_1()
-                .border_color(Tokens::edge())
-                .bg(Tokens::raised())
-                .text_color(Tokens::text_faint())
-                .child(glyph(icon::SEARCH, 12.))
-                .child(div().flex_1().text_size(px(size::BODY)).child("Search sessions, files, commands…"))
-                .child(kbd("ctrl K")),
-        )
         .child(div().flex_1())
         .child(
             div()
