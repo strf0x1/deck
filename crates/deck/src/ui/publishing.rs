@@ -61,6 +61,8 @@ impl Deck {
             self.board.cards().iter().filter(|c| c.lane.id == LIVE).map(|c| c.lane.clone()).collect();
         lanes.extend(self.lanes.lanes(&tasks, own.as_deref(), &published, now));
         self.board.sync(lanes);
+        // One small file read for the branch, every refresh, not every frame.
+        self.workspace = tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);
         self.tasks = tasks;
         self.published = published;
         self.sync_live_lane();

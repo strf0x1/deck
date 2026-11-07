@@ -32,6 +32,7 @@ pub mod icon {
     pub const SPIN: &str = "\u{f1ce}";
     pub const SHIELD: &str = "\u{f132}";
     pub const PIN: &str = "\u{f08d}";
+    pub const BRANCH: &str = "\u{f126}";
 }
 
 pub struct Tokens;

@@ -77,7 +77,14 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .pt(px(4.))
                 .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
                 .children(s.ask.as_ref().map(|_| ask(deck, cx)))
-                .child(if deck.can_restart() { restart(deck, cx) } else { prompt(deck).into_any_element() }),
+                // Access takes the keyboard, so the field it would block is not shown.
+                .children((!deck.access.is_open()).then(|| {
+                    if deck.can_restart() {
+                        restart(deck, cx)
+                    } else {
+                        super::prompt::prompt(deck, cx).into_any_element()
+                    }
+                })),
         )
 }
 
@@ -361,53 +368,4 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .on_click(cx.listener(|this, _, _, cx| this.restart(cx))),
         )
         .into_any_element()
-}
-
-fn prompt(deck: &Deck) -> impl IntoElement {
-    let ready = deck.session.can_prompt();
-    let has_draft = !deck.draft.is_empty();
-    let caret = div()
-        .flex_none()
-        .w(px(2.))
-        .h(px(17.))
-        .rounded(px(1.))
-        .bg(tint(Tokens::accent(), if ready { 0.9 } else { 0.25 }));
-    // A draft is followed by the caret; the hint sits just after it.
-    let (first, second) = if has_draft {
-        (div().min_w_0().truncate().child(deck.draft.clone()).into_any_element(), caret.into_any_element())
-    } else {
-        let hint = if ready { "Tell the agent what to do…" } else { "Waiting for the agent…" };
-        (caret.into_any_element(), div().pl(px(6.)).text_color(Tokens::text_faint()).child(hint).into_any_element())
-    };
-    let (send_bg, send_fg): (Hsla, Hsla) = if ready && has_draft {
-        (Tokens::accent(), Tokens::ink().into())
-    } else {
-        (Tokens::raised().into(), Tokens::text_faint().into())
-    };
-    div()
-        .h(px(52.))
-        .pl(px(16.))
-        .pr(px(8.))
-        .flex()
-        .items_center()
-        .gap(px(1.))
-        .rounded(px(16.))
-        .border_1()
-        .border_color(if ready { Tokens::edge_strong() } else { Tokens::edge() })
-        .bg(Tokens::raised())
-        .child(first)
-        .child(second)
-        .child(div().flex_1())
-        .child(div().pr(px(10.)).text_size(px(11.)).text_color(Tokens::text_faint()).child("enter to send"))
-        .child(
-            div()
-                .size(px(36.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(11.))
-                .bg(send_bg)
-                .text_color(send_fg)
-                .child(glyph(icon::SEND, 13.)),
-        )
 }
