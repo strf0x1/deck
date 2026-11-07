@@ -108,7 +108,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(6.))
+            .gap(px(space::TIGHT))
             .child(
                 div().text_size(px(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("What should we work on?"),
             )
@@ -140,7 +140,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .id("jump-latest")
                 .debug_selector(|| "jump-latest".into())
                 .h(px(28.))
-                .px(px(12.))
+                .px(px(space::INSET))
                 .flex()
                 .items_center()
                 .gap(px(7.))

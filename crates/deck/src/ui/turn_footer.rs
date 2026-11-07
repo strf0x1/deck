@@ -44,7 +44,7 @@ pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyEle
                 .flex()
                 .gap(px(5.))
                 .px(px(7.))
-                .py(px(2.))
+                .py(px(space::HAIR))
                 .rounded(px(radius::CHIP))
                 .bg(Tokens::raised())
                 .hover(|s| s.bg(Tokens::raised_hover()))

@@ -10,7 +10,7 @@ use super::board::LaneState;
 use super::panels::{glyph, state_color};
 use super::rail::{COLLAPSED, ITEM_H, ITEMS, Item};
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, radius, size, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, point, px,
@@ -146,7 +146,7 @@ fn mark(label_a: f32) -> impl IntoElement {
         )
         .child(
             div()
-                .pl(px(6.))
+                .pl(px(space::TIGHT))
                 .opacity(label_a)
                 .whitespace_nowrap()
                 .font_weight(FontWeight::SEMIBOLD)
@@ -211,15 +211,15 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .h(px(40.))
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(px(space::STACK))
         .child(div().flex_1())
         .child(
             div()
                 .h(px(30.))
-                .px(px(12.))
+                .px(px(space::INSET))
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .rounded_full()
                 .border_1()
                 .border_color(Tokens::edge())
@@ -279,10 +279,10 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
             div()
                 .id("hdr-stop")
                 .h(px(32.))
-                .px(px(12.))
+                .px(px(space::INSET))
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .rounded(px(radius::CONTROL))
                 .border_1()
                 .border_color(Tokens::edge())
@@ -298,10 +298,10 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
             div()
                 .id("hdr-new")
                 .h(px(32.))
-                .px(px(14.))
+                .px(px(space::PAD))
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .rounded(px(radius::CONTROL))
                 .bg(Tokens::text())
                 .text_color(Tokens::ink())
@@ -331,7 +331,7 @@ pub fn icon_button(id: &'static str, g: &'static str) -> gpui::Stateful<gpui::Di
 
 pub fn kbd(keys: &'static str) -> impl IntoElement {
     div()
-        .px(px(6.))
+        .px(px(space::TIGHT))
         .py(px(1.))
         .rounded(px(radius::CHIP))
         .border_1()

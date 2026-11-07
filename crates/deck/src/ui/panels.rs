@@ -7,7 +7,7 @@
 use super::board::{CARD_H, Card, LaneState};
 use super::chrome::icon_button;
 use super::root::{Deck, LIVE};
-use super::theme::{MONO, Tokens, icon, radius, size, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, BoxShadow, Context, Div, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, point, px,
@@ -55,14 +55,14 @@ pub fn lanes(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(14.))
-        .p(px(12.))
+        .gap(px(space::ROW))
+        .p(px(space::INSET))
         .child(
             div()
-                .pl(px(6.))
+                .pl(px(space::TIGHT))
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child("Sessions"))
                 .child(
                     div()
@@ -100,10 +100,10 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
         .left(px(lift * 8.))
         .w_full()
         .h(px(CARD_H))
-        .px(px(12.))
+        .px(px(space::INSET))
         .flex()
         .items_center()
-        .gap(px(12.))
+        .gap(px(space::SECTION))
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(edge)
@@ -144,7 +144,7 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(px(space::TIGHT))
                         .text_size(px(size::SMALL))
                         .text_color(Tokens::text_dim())
                         .child(div().flex_none().size(px(6.)).rounded_full().bg(color))

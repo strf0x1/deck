@@ -45,7 +45,7 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                 .child(
                     div()
                         .max_w(relative(0.72))
-                        .px(px(14.))
+                        .px(px(space::PAD))
                         .py(px(9.))
                         .rounded(px(radius::BUBBLE))
                         .border_1()

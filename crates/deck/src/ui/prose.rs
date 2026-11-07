@@ -28,7 +28,7 @@ fn block(b: &Block) -> AnyElement {
     match b {
         Block::Paragraph(i) => div().line_height(relative(1.55)).child(styled(i)).into_any_element(),
         Block::Heading(level, i) => div()
-            .pt(px(4.))
+            .pt(px(space::DETAIL))
             .font_weight(FontWeight::SEMIBOLD)
             .text_size(px(match level {
                 1 => size::DISPLAY,
@@ -39,7 +39,7 @@ fn block(b: &Block) -> AnyElement {
             .into_any_element(),
         Block::Code { lang, text } => code(lang, text),
         Block::Quote(inner) => div()
-            .pl(px(12.))
+            .pl(px(space::INSET))
             .border_l_2()
             .border_color(Tokens::edge_strong())
             .text_color(Tokens::text_dim())
@@ -56,12 +56,12 @@ fn block(b: &Block) -> AnyElement {
                 };
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(px(space::LINE))
                     .child(div().flex_none().min_w(px(16.)).text_color(Tokens::text_faint()).child(marker))
                     .child(div().flex_1().min_w_0().child(blocks(item, 6.)))
             }))
             .into_any_element(),
-        Block::Rule => div().h(px(1.)).my(px(4.)).bg(Tokens::edge()).into_any_element(),
+        Block::Rule => div().h(px(1.)).my(px(space::DETAIL)).bg(Tokens::edge()).into_any_element(),
     }
 }
 

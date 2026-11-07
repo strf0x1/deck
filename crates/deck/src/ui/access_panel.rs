@@ -8,7 +8,7 @@
 use super::access::{NOT_CANCELLED, Revoke};
 use super::panels::glyph;
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, radius, size, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -40,8 +40,8 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .px(px(12.))
+                .gap(px(space::TIGHT))
+                .px(px(space::INSET))
                 .py(px(9.))
                 .rounded(px(radius::CONTROL))
                 .bg(Tokens::raised())
@@ -49,7 +49,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(px(space::SECTION))
                         .child(
                             div()
                                 .debug_selector(move || format!("access-credential-name-{i}"))
@@ -65,7 +65,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .flex_none()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(px(space::TIGHT))
                                 .text_size(px(size::SMALL))
                                 .text_color(Tokens::text_dim())
                                 .child(div().size(px(6.)).rounded_full().bg(color))
@@ -114,13 +114,13 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .overflow_y_scroll()
         .flex()
         .flex_col()
-        .gap(px(14.))
+        .gap(px(space::ROW))
         .child(super::access_grants::sections(deck, cx))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Credentials"))
                 .child(
                     div()
@@ -138,14 +138,14 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .min_h_0()
         .flex()
         .flex_col()
-        .gap(px(14.))
-        .px(px(22.))
-        .py(px(18.))
+        .gap(px(space::ROW))
+        .px(px(space::PANE))
+        .py(px(space::PANE_V))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .child(glyph(icon::SHIELD, 13.).text_color(Tokens::text_dim()))
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Access"))
                 .child(div().flex_1())
@@ -212,8 +212,8 @@ fn confirm(target: &Revoke, busy: bool, cx: &mut Context<Deck>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(10.))
-        .p(px(14.))
+        .gap(px(space::STACK))
+        .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::red(), 0.35))
@@ -224,7 +224,7 @@ fn confirm(target: &Revoke, busy: bool, cx: &mut Context<Deck>) -> AnyElement {
         .child(
             div()
                 .flex()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .child(
                     button("access-revoke-confirm", if busy { "Revoking…" } else { "Revoke" }, Tokens::red())
                         .debug_selector(|| "access-revoke-confirm".into())
@@ -250,8 +250,8 @@ fn notice(target: &Revoke) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
-        .p(px(14.))
+        .gap(px(space::TIGHT))
+        .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.35))
@@ -267,7 +267,7 @@ pub(super) fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<
     div()
         .id(id.into())
         .h(px(28.))
-        .px(px(12.))
+        .px(px(space::INSET))
         .flex()
         .items_center()
         .rounded(px(radius::CONTROL))

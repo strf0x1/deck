@@ -10,7 +10,7 @@ use super::chrome::kbd;
 use super::panels::{glyph, pane};
 use super::root::Deck;
 use super::session::Status;
-use super::theme::{MONO, Tokens, icon, radius, size, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use deck_runtime::approvals::Decision;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -39,7 +39,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .px(px(20.))
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .border_b_1()
                 .border_color(Tokens::edge())
                 .child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(s.agent.clone()))
@@ -71,9 +71,9 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .p(px(14.))
-                .pt(px(4.))
+                .gap(px(space::STACK))
+                .p(px(space::PAD))
+                .pt(px(space::DETAIL))
                 .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
                 .children(s.ask.as_ref().map(|_| ask(deck, cx)))
                 // Access takes the keyboard, so the field it would block is not shown.
@@ -113,10 +113,10 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         div()
             .id(("boundary-option", i))
             .h(px(30.))
-            .px(px(12.))
+            .px(px(space::INSET))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(space::LINE))
             .rounded(px(radius::CONTROL))
             .border_1()
             .border_color(edge)
@@ -137,8 +137,8 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .p(px(14.))
+        .gap(px(space::SECTION))
+        .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.35))
@@ -147,7 +147,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .child(glyph(icon::SHIELD, 13.).text_color(Tokens::amber()))
                 .child(div().font_weight(FontWeight::MEDIUM).child("External access needs you"))
                 .child(div().flex_1())
@@ -157,7 +157,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .px(px(10.))
                 .py(px(7.))
                 .rounded(px(radius::CONTROL))
@@ -174,7 +174,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .debug_selector(|| "boundary-summary".into())
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(px(space::HAIR))
                 .child(
                     div().text_size(px(size::MICRO)).text_color(Tokens::text_faint()).child("the agent's description"),
                 )
@@ -200,7 +200,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         } else {
             "the agent has moved on"
         }))
-        .child(div().flex().flex_wrap().gap(px(8.)).children(buttons))
+        .child(div().flex().flex_wrap().gap(px(space::LINE)).children(buttons))
         .into_any_element()
 }
 
@@ -217,10 +217,10 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         div()
             .id(("opt", i))
             .h(px(30.))
-            .px(px(12.))
+            .px(px(space::INSET))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(space::LINE))
             .rounded(px(radius::CONTROL))
             .border_1()
             .border_color(edge)
@@ -236,8 +236,8 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .p(px(14.))
+        .gap(px(space::SECTION))
+        .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.35))
@@ -246,7 +246,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .child(glyph(icon::SHIELD, 13.).text_color(Tokens::amber()))
                 .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} wants to run", deck.session.agent)))
                 .child(div().flex_1())
@@ -262,7 +262,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .text_size(px(size::LABEL))
                 .child(ask.title.clone()),
         )
-        .child(div().flex().gap(px(8.)).children(buttons))
+        .child(div().flex().gap(px(space::LINE)).children(buttons))
         .into_any_element()
 }
 
@@ -286,8 +286,8 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(10.))
-        .p(px(14.))
+        .gap(px(space::STACK))
+        .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .bg(Tokens::raised())
         .child(title)
@@ -298,7 +298,7 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .debug_selector(|| "restart-task".into())
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .cursor_pointer()
                 .text_color(Tokens::accent())
                 .child(action)
