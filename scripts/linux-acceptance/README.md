@@ -185,3 +185,44 @@ keeps the original project path. The user keyring and desktop settings are untou
 
 Results, failures, exact product patch and inspected screenshots are in the
 [2026-11-06 report](../../docs/acceptance/2026-11-06-timed-linux.md).
+
+## The GitHub workflow (ADR 0008 §9)
+
+`github_workflow.py` runs the ADR 0008 §9 checklist against a **private**
+scratch GitHub repository: real Construct in a VM, its scripted model, and the
+real Deck window driven through `DECK_CONTROL`. It needs the VM environment
+above, a visible Hyprland session (`hyprctl`, `grim`, `socat`), a built
+`construct-dev` for the scripted endpoint, and a `DECK_CREDENTIALS` file store
+holding `DECK_GITHUB_TOKEN` and a synthetic `OPENAI_API_KEY`. The token is
+never read by the driver; the manifest holds the store's names and
+fingerprints only.
+
+```sh
+export DECK_ACCEPTANCE_UI_EXECUTABLE=$DECK_ACCEPTANCE_ROOT/bin/deck
+export CONSTRUCT_DEV=../construct/target/debug/construct-dev
+python3 scripts/linux-acceptance/github_workflow.py \
+  --output "$DECK_ACCEPTANCE_ROOT/github-new" \
+  --project /path/to/private/scratch/checkout
+```
+
+`--project` is a host checkout whose `origin` points at the private scratch
+repository; the driver infers the repository and base exactly as Deck does at
+task create, and writes a git-ignored `.env` there if it is missing. The
+repository must be private (a public one asks for every write by design) and
+have a workflow so checks exist.
+
+The driver starts one scripted endpoint per turn on a fixed port (so the
+task's gateway endpoint never changes), restarts it with the next turn's
+steps, and keeps the serve request dumps as the tool-result evidence: the
+window's transcript shows tool titles, not their output. It also reads
+`tasks/<id>/pull_request.json` and the window's `state` as the view evidence.
+
+Fixture boundary: GitHub-hosted Actions jobs do not start in the private
+scratch repository for this account (a minimal `echo` workflow there also
+fails in about three seconds with no steps; the repository's public CI runs
+normally), so the scratch workflow targets a self-hosted runner and its check
+stays `queued`; the driver cancels the queued runs to produce the completed
+(state `cancelled`) conclusion the panel lists. The deck reads real GitHub
+check runs through the task's gateway; no real CI job ran. See the
+[2026-11-06 report](../../docs/acceptance/2026-11-06-github-workflow.md) for
+every case, screenshot and limit.
