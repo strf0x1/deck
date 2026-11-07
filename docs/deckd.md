@@ -300,6 +300,17 @@ folded into `task.json` as the task's publication and survives a stop or a
 daemon restart. Delivery is best effort after the write: a queue that cannot
 be reached does not turn a publish that happened into a failure.
 
+A window reads the live state with `pull_state {task, refresh}`. `deckd`
+answers with the recorded publication and its last read of the task's
+branch (`refs`) or pull request (`review`: state, mergeable, checks), made
+through the task's own GitHub gateway socket from `vmm.json`. Only those two
+reads exist on this path, so it cannot write. A read happens only while the
+task runs and at most every 15 s per task (`refresh` may come sooner, never
+within 2 s of the last); one is in flight per task, and a failure keeps the
+last good state with the error and backs off up to 5 minutes. The last read is
+kept in `tasks/<id>/pull_request.json` with its time, so a stopped task, or
+one after a daemon restart, still shows it.
+
 A whole GitHub profile is one decision: `github_profile {task, project?,
 repository, operations, revoke}` writes one durable project rule per operation
 for the repository, and a revoke removes exactly those.

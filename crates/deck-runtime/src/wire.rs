@@ -75,6 +75,13 @@ pub(crate) enum Request {
         task: String,
         publication: crate::lifecycle::Publication,
     },
+    /// The task's publication and its live pull request state, read through
+    /// its gateway when due (ADR 0008 §8). Reads only.
+    PullState {
+        task: String,
+        #[serde(default)]
+        refresh: bool,
+    },
     /// Approve a whole web profile for a project: one decision instead of one
     /// per destination. Expands to project rules before the reply.
     WebProfile {
@@ -178,6 +185,7 @@ impl Request {
             | Self::WithdrawApproval { task: id, .. }
             | Self::ModelUsage { task: id, .. }
             | Self::Publication { task: id, .. }
+            | Self::PullState { task: id, .. }
             | Self::WebProfile { task: id, .. }
             | Self::GitHubProfile { task: id, .. }
             | Self::SetBudget { task: id, .. }

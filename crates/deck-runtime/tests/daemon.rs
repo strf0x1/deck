@@ -1373,3 +1373,85 @@ fn reusable_control_approvals_preserve_the_credential_name() {
         client.stop(&task.id).unwrap();
     }
 }
+
+/// A stand-in for a running task's GitHub gateway socket: answers `review`
+/// for pull request 7 and records every request line it is sent.
+#[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
+fn stub_gateway(socket: &std::path::Path) -> Arc<std::sync::Mutex<Vec<String>>> {
+    let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            log.lock().unwrap().push(line.trim().to_string());
+            // Read the rest of the request before answering, as the gateway does.
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            std::io::Read::read_exact(&mut reader, &mut vec![0; length]).unwrap();
+            let body = r#"{"number":7,"title":"t","state":"open","draft":true,"merged":false,"checks":null}"#;
+            let mut stream = stream;
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+        }
+    });
+    seen
+}
+
+#[test]
+fn pull_request_state_is_read_through_the_tasks_gateway_and_kept_after_stop() {
+    let (daemon, client) = Daemon::new("pull-request");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    client.start(&task.id).unwrap();
+    // Nothing published: nothing to read, and nothing is asked.
+    let empty = client.pull_request(&task.id, true).unwrap();
+    assert_eq!((empty.publication, empty.live, empty.fresh), (None, None, false));
+
+    let socket = daemon.data.join("g.sock");
+    let seen = stub_gateway(&socket);
+    let dir = daemon.data.join("tasks").join(&task.id);
+    let vmm = serde_json::json!({
+        "task": task.id, "data": daemon.data, "lock_fd": -1, "disk": "/x", "journal": "/x", "socket": "/x",
+        "forward": "/x", "console": "/x", "guest": "/x", "argv": [], "env": [], "vcpus": 1, "ram_mib": 1,
+        "library": "/x",
+        "gateway": {
+            "executable": "/x", "model_socket": "/x", "extension_socket": "/x", "model_port": 1, "extension_port": 2,
+            "github_socket": socket, "github_scratch": "/x", "upstream": "http://x", "models": [],
+            "budget_file": "/x", "secret": "K", "control": "/x", "task": task.id,
+        },
+    });
+    std::fs::write(dir.join("vmm.json"), vmm.to_string()).unwrap();
+    let pull = deck_runtime::Publication::PullRequest {
+        number: 7,
+        url: "https://github.com/o/r/pull/7".into(),
+        title: "t".into(),
+        draft: true,
+    };
+    client.publication(&task.id, pull.clone()).unwrap();
+
+    let read = client.pull_request(&task.id, false).unwrap();
+    assert!(read.fresh);
+    assert_eq!(read.publication.as_ref(), Some(&pull));
+    let live = read.live.clone().unwrap();
+    assert_eq!(live.pull_request.as_ref().map(|pr| pr["number"].clone()), Some(serde_json::json!(7)), "{live:?}");
+    let again = client.pull_request(&task.id, false).unwrap();
+    assert!(!again.fresh, "within the interval the last read answers");
+
+    client.stop(&task.id).unwrap();
+    let stopped = client.pull_request(&task.id, true).unwrap();
+    assert!(!stopped.fresh);
+    assert_eq!(stopped.live, read.live, "a stopped task keeps its last read and its time");
+    // Only reads went to the gateway, and only one of them.
+    assert_eq!(*seen.lock().unwrap(), ["POST /operations/pull_request/review HTTP/1.1"]);
+    client.destroy(&task.id).unwrap();
+}

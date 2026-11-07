@@ -70,6 +70,7 @@ pub fn serve(options: Options) -> Result<()> {
         boundary: boundary.clone(),
         broker: broker.clone(),
     }));
+    let reader = Arc::new(crate::pull_request::Reader::default());
     let clients = Arc::new(AtomicUsize::new(0));
     let mut idle_since = Instant::now();
     loop {
@@ -80,9 +81,10 @@ pub fn serve(options: Options) -> Result<()> {
                 let service = service.clone();
                 let boundary = boundary.clone();
                 let broker = broker.clone();
+                let reader = reader.clone();
                 std::thread::spawn(move || {
                     let _connected = Connected(client_count);
-                    if let Err(e) = connection(socket, service, boundary, broker) {
+                    if let Err(e) = connection(socket, service, boundary, broker, reader) {
                         eprintln!("deckd: client: {e:#}");
                     }
                 });
@@ -109,6 +111,7 @@ fn connection(
     service: Arc<Mutex<Service>>,
     boundary: Arc<Boundary>,
     broker: Arc<Broker>,
+    reader: Arc<crate::pull_request::Reader>,
 ) -> Result<()> {
     socket.set_nonblocking(false)?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -154,6 +157,13 @@ fn connection(
                 let (snapshot, rx) = broker.watch(names);
                 wire::write(&mut socket, &Reply { ok: Some(json!({ "revoked": snapshot })), error: None })?;
                 return credential_watch(socket, rx);
+            }
+            Ok(request @ Request::PullState { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::PullState { task, refresh } => pull_request(&service, &reader, &task, refresh),
+                    _ => unreachable!("matched a pull request read"),
+                });
+                wire::write(&mut socket, &reply(result))?;
             }
             Ok(request @ Request::Credentials { .. }) => {
                 let result = request.validate().and_then(|()| match request {
@@ -351,6 +361,23 @@ fn approval(
     }
 }
 
+/// A task's publication and live pull request state. The record is read under
+/// the service lock; the gateway read happens without it.
+fn pull_request(
+    service: &Mutex<Service>,
+    reader: &crate::pull_request::Reader,
+    task: &str,
+    refresh: bool,
+) -> Result<Value> {
+    let (dir, publication, socket) = {
+        let service = service.lock().unwrap_or_else(|e| e.into_inner());
+        let record = service.runtime.task(task)?;
+        let socket = (record.state == State::Running).then(|| crate::vm::github_socket(&service.data, task)).flatten();
+        (service.data.join("tasks").join(task), record.publication, socket)
+    };
+    Ok(serde_json::to_value(reader.state(task, &dir, publication, socket, refresh))?)
+}
+
 /// One credential value for one gateway operation. The task must be running
 /// and the name in its `vmm.json` set; the store is read without the service
 /// lock. The reply carries the value and is never logged; the log line names
@@ -502,6 +529,7 @@ impl Service {
                 self.runtime.usage(&task, requests, tokens)?;
                 Ok(json!(null))
             }
+            Request::PullState { .. } => unreachable!("handled before service dispatch"),
             Request::Publication { task, publication } => {
                 self.runtime.publication(&task, publication)?;
                 Ok(json!(null))
