@@ -14,6 +14,7 @@ deck-acp.workspace = true
 deck-runtime.workspace = true
 futures.workspace = true
 unicode-segmentation.workspace = true
+pulldown-cmark.workspace = true
 serde_json.workspace = true
 gpui.workspace = true
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }

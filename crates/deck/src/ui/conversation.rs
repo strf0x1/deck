@@ -2,20 +2,19 @@
 //! permission question when one is open, and the prompt field.
 //!
 //! The design choice: the transcript is mostly uncoloured. The user's turns
-//! carry the accent as a faint wash, tool calls are quiet mono rows whose
-//! only colour is their status glyph, and a permission question is the one
-//! place amber appears, so a glance at the pane finds what needs attention.
+//! carry the accent as a faint wash, tool cards spend colour only on their
+//! status glyph and diff lines, and a permission question is the one place
+//! amber appears, so a glance at the pane finds what needs attention.
 
 use super::chrome::kbd;
 use super::panels::{glyph, pane};
 use super::root::Deck;
-use super::session::{Entry, Status};
+use super::session::Status;
 use super::theme::{MONO, Tokens, icon, tint};
-use deck_acp::ToolStatus;
 use deck_runtime::approvals::Decision;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px, relative,
+    StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
 pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
@@ -66,7 +65,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         } else if deck.open_publication().is_some() {
             super::publication_panel::panel(deck, cx)
         } else {
-            transcript(deck).into_any_element()
+            super::transcript_list::transcript(deck, cx)
         })
         .child(
             div()
@@ -86,78 +85,6 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                     }
                 })),
         )
-}
-
-fn transcript(deck: &Deck) -> impl IntoElement {
-    let rows = deck.session.entries.iter().map(|e| match e {
-        Entry::You(t) => div().flex().justify_end().child(
-            div()
-                .max_w(relative(0.72))
-                .px(px(14.))
-                .py(px(9.))
-                .rounded(px(14.))
-                .border_1()
-                .border_color(tint(Tokens::accent(), 0.22))
-                .bg(tint(Tokens::accent(), 0.12))
-                .child(t.clone()),
-        ),
-        Entry::Agent(t) => div().max_w(relative(0.86)).line_height(relative(1.5)).child(t.clone()),
-        Entry::Thought(t) => div().italic().text_color(Tokens::text_faint()).child(t.clone()),
-        Entry::Tool(tool) => {
-            let (g, color) = match tool.call.status {
-                ToolStatus::Running => (icon::SPIN, Tokens::mint()),
-                ToolStatus::Done => (icon::CHECK, Tokens::lime()),
-                ToolStatus::Failed => (icon::CROSS, Tokens::red()),
-            };
-            div().flex().child(
-                div()
-                    .px(px(10.))
-                    .py(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(9.))
-                    .rounded(px(10.))
-                    .border_1()
-                    .border_color(Tokens::edge())
-                    .bg(Tokens::raised())
-                    .child(glyph(g, 10.).text_color(color))
-                    .child(
-                        div()
-                            .font_family(MONO)
-                            .text_size(px(11.5))
-                            .text_color(Tokens::text_dim())
-                            .child(tool.call.title.clone()),
-                    ),
-            )
-        }
-        Entry::Note(t) => div().text_color(Tokens::red()).child(t.clone()),
-    });
-    let empty = (deck.session.entries.is_empty() && deck.session.status != Status::Detached).then(|| {
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
-            .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("What should we work on?"))
-            .child(
-                div().text_color(Tokens::text_faint()).child("The agent's work, tool calls and questions land here."),
-            )
-    });
-    div()
-        .id("transcript")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .track_scroll(&deck.scroll)
-        .flex()
-        .flex_col()
-        .gap(px(14.))
-        .px(px(22.))
-        .py(px(18.))
-        .children(empty)
-        .children(rows)
 }
 
 /// The host boundary card: an external operation that needs a human

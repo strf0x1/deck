@@ -33,6 +33,13 @@ pub mod icon {
     pub const SHIELD: &str = "\u{f132}";
     pub const PIN: &str = "\u{f08d}";
     pub const BRANCH: &str = "\u{f126}";
+    pub const EDIT: &str = "\u{f040}";
+    pub const TRASH: &str = "\u{f1f8}";
+    pub const MOVE: &str = "\u{f0ec}";
+    pub const GLOBE: &str = "\u{f0ac}";
+    pub const WRENCH: &str = "\u{f0ad}";
+    pub const BULB: &str = "\u{f0eb}";
+    pub const DOWN: &str = "\u{f063}";
 }
 
 pub struct Tokens;

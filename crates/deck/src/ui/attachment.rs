@@ -117,6 +117,9 @@ impl Deck {
         self.watch = None;
         self.task = Some(next.clone());
         self.session = Session::new();
+        self.expanded.clear();
+        self.row_sigs.clear();
+        self.transcript = super::transcript_list::following();
         self.boundary = Boundary::new();
         self.agent_publishes = None;
         self.editor = super::editor::Editor::new();
