@@ -119,7 +119,8 @@ impl Deck {
         self.session = Session::new();
         self.boundary = Boundary::new();
         self.agent_publishes = None;
-        self.draft.clear();
+        self.editor = super::editor::Editor::new();
+        self.workspace = None;
         if self.access.is_open() {
             self.toggle_access(cx);
         }

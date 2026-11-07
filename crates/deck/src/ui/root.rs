@@ -9,6 +9,8 @@
 use super::access::Access;
 use super::board::{Board, Lane, LaneState};
 use super::boundary::Boundary;
+use super::composer;
+use super::editor::Editor;
 use super::rail::Rail;
 use super::session::{Session, Status};
 use super::theme::{SANS, Tokens};
@@ -39,7 +41,13 @@ pub struct Deck {
     pub(super) boundary: Boundary,
     pub(super) access: Access,
     pub(super) access_refresh: Option<gpui::Task<()>>,
-    pub(super) draft: String,
+    pub(super) editor: Editor,
+    /// What the composer drew last, for hit tests and up/down moves.
+    pub(super) composer: composer::Layout,
+    /// A mouse press in the composer is selecting text.
+    pub(super) selecting: bool,
+    /// The window's task as `deckd` last listed it, for the status row.
+    pub(super) workspace: Option<super::prompt::Workspace>,
     pub(super) scroll: ScrollHandle,
     pub(super) agent_cmd: String,
     /// A connection to the daemon-owned task. Window shutdown detaches it.
@@ -80,7 +88,10 @@ impl Deck {
             boundary: Boundary::new(),
             access: Access::new(),
             access_refresh: None,
-            draft: String::new(),
+            editor: Editor::new(),
+            composer: composer::Layout::default(),
+            selecting: false,
+            workspace: None,
             scroll: ScrollHandle::new(),
             agent_cmd: String::new(),
             task: None,
@@ -117,7 +128,12 @@ impl Deck {
     }
 
     pub fn draft(&self) -> &str {
-        &self.draft
+        self.editor.text()
+    }
+
+    /// The composer's selection, as byte offsets into [`Deck::draft`].
+    pub fn draft_selection(&self) -> std::ops::Range<usize> {
+        self.editor.selection()
     }
 
     pub fn boundary(&self) -> &Boundary {
@@ -226,7 +242,7 @@ impl Deck {
     }
 
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        let text = self.draft.trim().to_string();
+        let text = self.editor.text().trim().to_string();
         if text.is_empty() || !self.session.can_prompt() {
             return;
         }
@@ -236,7 +252,7 @@ impl Deck {
             self.session.apply(Inbound::Failed(format!("{e:#}")));
             return cx.notify();
         }
-        self.draft.clear();
+        self.editor.take();
         self.session.sent(&text);
         self.sync_live_lane();
         self.scroll.scroll_to_bottom();
@@ -256,20 +272,26 @@ impl Deck {
         cx.notify();
     }
 
+    /// Keys for whatever holds the keyboard: an open panel, a question, a
+    /// boundary card, else the composer. Anything but the composer stops the
+    /// key here, so typed text never reaches the field behind a card.
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
         // While Access is open, hidden prompt and approval shortcuts cannot
         // consume typing. Review returns to the existing boundary card.
         if self.access.is_open() {
+            cx.stop_propagation();
             if k.key == "escape" && !self.access.cancel() {
                 self.toggle_access(cx);
             }
             return cx.notify();
         }
         if self.publication_open.is_some() && k.key == "escape" {
+            cx.stop_propagation();
             return self.close_publication(cx);
         }
         if self.session.ask.is_some() && !self.boundary.is_reviewing() {
+            cx.stop_propagation();
             match k.key.as_str() {
                 "escape" => self.choose(None, cx),
                 d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) && d != "0" => {
@@ -281,6 +303,7 @@ impl Deck {
             return;
         }
         if self.boundary.pending().is_some() {
+            cx.stop_propagation();
             match k.key.as_str() {
                 "1" => self.decide_boundary(Decision::Once, cx),
                 "2" => self.decide_boundary(Decision::Timed, cx),
@@ -292,26 +315,11 @@ impl Deck {
             return;
         }
         if self.can_restart() {
-            return;
+            return cx.stop_propagation();
         }
-        match k.key.as_str() {
-            "enter" => self.submit(cx),
-            "backspace" => {
-                self.draft.pop();
-                cx.notify();
-            }
-            "escape" => {
-                if let Some(c) = &self.client {
-                    let _ = c.cancel();
-                }
-            }
-            _ if k.modifiers.control || k.modifiers.platform || k.modifiers.alt => {}
-            _ => {
-                if let Some(ch) = &k.key_char {
-                    self.draft.push_str(ch);
-                    cx.notify();
-                }
-            }
+        if self.edit(ev, cx) {
+            cx.stop_propagation();
+            cx.notify();
         }
     }
 
@@ -369,6 +377,7 @@ impl Render for Deck {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    this.selecting = false;
                     // A press that never became a drag selects the card.
                     if let Some(lane) = this.board.release()
                         && lane != LIVE

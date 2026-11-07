@@ -60,6 +60,10 @@ No visible change; everything later depends on it.
 - A status row under it: agent and model, working directory, branch, task
   state, and cost or context use when the agent reports them.
 
+Landed: the field (`ui/editor.rs`, `composer.rs`, `input.rs`) and a status
+row with agent, backend, directory, branch and the task's token count.
+The model name and cost wait on the agent reporting them.
+
 ### 2 — A transcript you can skim
 
 - Agent messages rendered from markdown (`pulldown-cmark` to a pure
