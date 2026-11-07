@@ -156,10 +156,10 @@ fn the_request_parser_agrees_with_every_request_fixture() {
 #[test]
 fn publish_framing_cases_get_the_matrixs_conclusion() {
     let schemas = validators();
-    let (_, remote) = bare("gh-contract-framing");
+    let (_, remote) = bare("ghc-frame");
     let (api, _, _) = api(|_| r#"{"private":true}"#.into());
-    let queue = agreement("gh-contract-framing-queue");
-    let gateway = with_github("gh-contract-framing-gw", &api, &url(&remote), Some((&queue, "t-123")), Some("t"));
+    let queue = agreement("ghc-frame-q");
+    let gateway = with_github("ghc-frame-gw", &api, &url(&remote), Some((&queue, "t-123")), Some("t"));
     let socket = gateway.ready.github.clone().unwrap();
     // In order: the full bundle creates the branch, so the incremental one's
     // prerequisite is on it and fast-forwards nothing.
@@ -181,7 +181,7 @@ fn publish_framing_cases_get_the_matrixs_conclusion() {
 #[test]
 fn every_reply_a_gateway_sends_is_the_contracts_shape() {
     let schemas = validators();
-    let (_, remote) = bare("gh-contract-replies");
+    let (_, remote) = bare("ghc-reply");
     let head = "a".repeat(40);
     let base = "b".repeat(40);
     let pull = format!(
@@ -200,8 +200,8 @@ fn every_reply_a_gateway_sends_is_the_contracts_shape() {
         (_, t) if t.ends_with("/pulls") || t.ends_with("/pulls/7") => pull.clone(),
         _ => r#"{"private":true}"#.into(),
     });
-    let queue = agreement("gh-contract-replies-queue");
-    let gateway = with_github("gh-contract-replies-gw", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
+    let queue = agreement("ghc-reply-q");
+    let gateway = with_github("ghc-reply-gw", &api, &url(&remote), Some((&queue, "t-1")), Some("t"));
     let socket = gateway.ready.github.clone().unwrap();
     let call = |path: &str, body: Value, schema: &str| {
         conforms(&schemas, &post(&socket, path, body.to_string().as_bytes()), schema)
