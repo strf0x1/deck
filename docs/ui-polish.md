@@ -96,6 +96,12 @@ ACP `diff` is previewed from its arguments (Construct's `edit` and
   `px()` sizes.
 - Hover actions: copy a message, copy a command, open a file.
 
+Landed: turn footers (`ui/turn_footer.rs`), hover copy buttons
+(`ui/copy.rs`; copying a path stands in for opening a file, since a VM
+task's paths are not the host's), and `size`, `radius` and `space` tokens.
+Every text size and radius comes from a token; spacing tokens cover the
+transcript and cards, and the other panes still use literal padding.
+
 ### 4 — Finish
 
 - Syntax highlighting in diffs and code blocks (`syntect` + `two-face`,

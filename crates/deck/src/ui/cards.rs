@@ -7,12 +7,13 @@
 //! of reads one row of file chips; clicking the header expands the rest.
 //! Colour stays in the status glyph and the diff's added and removed lines.
 
+use super::copy;
 use super::diff::{self, Row as DiffRow};
 use super::panels::glyph;
 use super::prose;
 use super::root::Deck;
 use super::session::{Entry, Tool};
-use super::theme::{MONO, Tokens, icon, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use super::transcript::{self, Row};
 use deck_acp::{ToolKind, ToolStatus};
 use gpui::{
@@ -33,16 +34,20 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
     let open = deck.expanded.contains(&key);
     match row {
         Row::Reads(range) => reads(&entries[range.clone()], key, open, cx),
+        Row::Summary(turn) => super::turn_footer::footer(deck, turn.clone(), cx),
         Row::One(i) => match &entries[*i] {
             Entry::You(t) => div()
                 .flex()
                 .justify_end()
+                .items_center()
+                .gap(px(space::TIGHT))
+                .child(copy::button(deck, key, t.clone(), cx))
                 .child(
                     div()
                         .max_w(relative(0.72))
                         .px(px(14.))
                         .py(px(9.))
-                        .rounded(px(14.))
+                        .rounded(px(radius::BUBBLE))
                         .border_1()
                         .border_color(tint(Tokens::accent(), 0.22))
                         .bg(tint(Tokens::accent(), 0.12))
@@ -50,9 +55,14 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                         .child(t.clone()),
                 )
                 .into_any_element(),
-            Entry::Agent(t) => div().max_w(relative(0.9)).child(prose::prose(t)).into_any_element(),
+            Entry::Agent(t) => div()
+                .flex()
+                .gap(px(space::TIGHT))
+                .child(div().flex_1().min_w_0().max_w(relative(0.9)).child(prose::prose(t)))
+                .child(copy::button(deck, key, t.clone(), cx))
+                .into_any_element(),
             Entry::Thought(t) => thought(t, key, open, cx),
-            Entry::Tool(tool) => card(tool, key, open, cx),
+            Entry::Tool(tool) => card(deck, tool, key, open, cx),
             Entry::Note(t) => div().text_color(Tokens::red()).child(t.clone()).into_any_element(),
         },
     }
@@ -108,7 +118,7 @@ fn frame() -> Div {
     div()
         .flex()
         .flex_col()
-        .rounded(px(12.))
+        .rounded(px(radius::CARD))
         .border_1()
         .border_color(Tokens::edge())
         .bg(Tokens::raised())
@@ -116,21 +126,21 @@ fn frame() -> Div {
 }
 
 fn mono() -> Div {
-    div().font_family(MONO).text_size(px(11.5))
+    div().font_family(MONO).text_size(px(size::SMALL))
 }
 
 fn more(n: usize, what: &str, open: bool) -> Div {
     div()
-        .px(px(12.))
+        .px(px(space::INSET))
         .py(px(5.))
         .border_t_1()
         .border_color(Tokens::edge())
-        .text_size(px(11.))
+        .text_size(px(size::SMALL))
         .text_color(Tokens::text_faint())
         .child(if open { "show less".to_string() } else { format!("{n} more {what} ⌄") })
 }
 
-fn card(tool: &Tool, key: String, open: bool, cx: &mut Context<Deck>) -> AnyElement {
+fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck>) -> AnyElement {
     let call = &tool.call;
     let (g, color) = status(call.status);
     let (kg, label) = kind(call.kind);
@@ -141,12 +151,18 @@ fn card(tool: &Tool, key: String, open: bool, cx: &mut Context<Deck>) -> AnyElem
         ToolKind::Read | ToolKind::Search => transcript::paths(call).join(", "),
         _ => changes.first().map(|c| c.path.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| call.title.clone()),
     };
+    // What a copy button on the header copies: the command, or the path.
+    let copyable = match call.kind {
+        ToolKind::Execute => transcript::command(call),
+        _ => changes.first().map(|c| c.path.clone()).filter(|p| !p.is_empty()),
+    };
+    let copy = copyable.map(|text| copy::button(deck, format!("{key}:subject"), text, cx));
     let selector = format!("card-{key}");
     let header = div()
         .id(key.clone())
         .debug_selector(move || selector)
-        .h(px(34.))
-        .px(px(12.))
+        .h(px(space::HEADER))
+        .px(px(space::INSET))
         .flex()
         .items_center()
         .gap(px(9.))
@@ -154,12 +170,13 @@ fn card(tool: &Tool, key: String, open: bool, cx: &mut Context<Deck>) -> AnyElem
         .on_click(toggle(key, cx))
         .child(glyph(g, 10.).text_color(color))
         .child(glyph(kg, 10.).text_color(Tokens::text_faint()))
-        .child(div().flex_none().text_size(px(12.)).text_color(Tokens::text_dim()).child(label))
+        .child(div().flex_none().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(label))
         .child(mono().flex_1().min_w_0().truncate().text_color(Tokens::text()).child(subject))
         .when(added + removed > 0, |d| {
             d.child(mono().flex_none().text_color(Tokens::lime()).child(format!("+{added}")))
                 .child(mono().flex_none().text_color(Tokens::red()).child(format!("−{removed}")))
         })
+        .children(copy)
         .children(transcript::took(tool).map(|t| mono().flex_none().text_color(Tokens::text_faint()).child(t)));
     let body = match call.kind {
         ToolKind::Execute => output_body(&transcript::output(call), open),
@@ -179,7 +196,7 @@ fn diff_body(changes: &[transcript::Change], open: bool) -> AnyElement {
         if changes.len() > 1 {
             out = out.child(
                 mono()
-                    .px(px(12.))
+                    .px(px(space::INSET))
                     .pt(px(if n == 0 { 2. } else { 8. }))
                     .pb(px(2.))
                     .text_color(Tokens::text_dim())
@@ -196,7 +213,7 @@ fn diff_line(row: DiffRow<'_>, numbered: bool) -> Div {
     let line = match row {
         DiffRow::Gap(n) => {
             return mono()
-                .px(px(12.))
+                .px(px(space::INSET))
                 .py(px(1.))
                 .text_color(Tokens::text_faint())
                 .child(format!("⋯ {n} unchanged line{}", if n == 1 { "" } else { "s" }));
@@ -212,7 +229,7 @@ fn diff_line(row: DiffRow<'_>, numbered: bool) -> Div {
         if numbered { line.new.or(line.old).map(|n| n.to_string()).unwrap_or_default() } else { String::new() };
     mono()
         .flex()
-        .px(px(12.))
+        .px(px(space::INSET))
         .line_height(px(18.))
         .when_some(bg, |d, bg| d.bg(bg))
         // A diff built from an edit's arguments has no file line numbers to show.
@@ -229,7 +246,7 @@ fn output_body(text: &str, open: bool) -> Option<AnyElement> {
     let body = mono()
         .flex()
         .flex_col()
-        .px(px(12.))
+        .px(px(space::INSET))
         .py(px(7.))
         .border_t_1()
         .border_color(Tokens::edge())
@@ -259,7 +276,7 @@ fn reads(entries: &[Entry], key: String, open: bool, cx: &mut Context<Deck>) -> 
             .flex_none()
             .px(px(7.))
             .py(px(2.))
-            .rounded(px(6.))
+            .rounded(px(radius::CHIP))
             .bg(Tokens::raised_hover())
             .text_color(Tokens::text_dim())
             .child(transcript::file_name(p).to_string())
@@ -267,8 +284,8 @@ fn reads(entries: &[Entry], key: String, open: bool, cx: &mut Context<Deck>) -> 
     let shown = 4;
     let header = div()
         .id(key.clone())
-        .min_h(px(34.))
-        .px(px(12.))
+        .min_h(px(space::HEADER))
+        .px(px(space::INSET))
         .flex()
         .items_center()
         .gap(px(9.))
@@ -279,7 +296,7 @@ fn reads(entries: &[Entry], key: String, open: bool, cx: &mut Context<Deck>) -> 
         .child(
             div()
                 .flex_none()
-                .text_size(px(12.))
+                .text_size(px(size::LABEL))
                 .text_color(Tokens::text_dim())
                 .child(format!("Looked at {}", tools.len())),
         )
@@ -298,16 +315,22 @@ fn reads(entries: &[Entry], key: String, open: bool, cx: &mut Context<Deck>) -> 
                 }),
         );
     let list = open.then(|| {
-        mono().flex().flex_col().px(px(12.)).py(px(6.)).gap(px(3.)).border_t_1().border_color(Tokens::edge()).children(
-            tools.iter().map(|t| {
+        mono()
+            .flex()
+            .flex_col()
+            .px(px(space::INSET))
+            .py(px(6.))
+            .gap(px(3.))
+            .border_t_1()
+            .border_color(Tokens::edge())
+            .children(tools.iter().map(|t| {
                 let (g, color) = status(t.call.status);
                 div()
                     .flex()
                     .gap(px(8.))
                     .child(glyph(g, 9.).text_color(color))
                     .child(div().text_color(Tokens::text_dim()).child(t.call.title.clone()))
-            }),
-        )
+            }))
     });
     frame().child(header).children(list).into_any_element()
 }

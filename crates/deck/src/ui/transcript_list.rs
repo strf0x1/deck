@@ -10,7 +10,7 @@
 use super::panels::glyph;
 use super::root::Deck;
 use super::session::Status;
-use super::theme::{Tokens, icon};
+use super::theme::{Tokens, icon, size, space};
 use gpui::{
     AnyElement, Context, FollowMode, FontWeight, InteractiveElement as _, IntoElement, ListAlignment, ListState,
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, list, px,
@@ -24,6 +24,17 @@ pub(super) fn following() -> ListState {
 }
 
 impl Deck {
+    /// Open the card that draws entry `entry` and scroll it into view.
+    pub(super) fn reveal(&mut self, entry: usize, cx: &mut Context<Self>) {
+        let rows = super::transcript::rows(&self.session.entries, self.session.idle());
+        let Some(ix) = super::transcript::row_of(&rows, entry) else { return };
+        self.expanded.insert(rows[ix].key(&self.session.entries));
+        // Measure the opened card before scrolling to it.
+        self.sync_transcript();
+        self.transcript.scroll_to_reveal_item(ix);
+        cx.notify();
+    }
+
     /// Expand or fold a transcript row.
     pub(super) fn toggle(&mut self, key: &str, cx: &mut Context<Self>) {
         if !self.expanded.remove(key) {
@@ -37,7 +48,7 @@ impl Deck {
     /// change can be missed; while streaming it is the last row alone.
     pub(super) fn sync_transcript(&mut self) {
         let entries = &self.session.entries;
-        let rows = super::transcript::rows(entries);
+        let rows = super::transcript::rows(entries, self.session.idle());
         let sigs = super::transcript::signatures(entries, &rows, &self.expanded);
         let first = super::transcript::first_change(&self.row_sigs, &sigs);
         if first < self.row_sigs.len() || first < sigs.len() {
@@ -68,7 +79,9 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .items_center()
             .justify_center()
             .gap(px(6.))
-            .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("What should we work on?"))
+            .child(
+                div().text_size(px(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("What should we work on?"),
+            )
             .child(
                 div().text_color(Tokens::text_faint()).child("The agent's work, tool calls and questions land here."),
             )
@@ -77,18 +90,18 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let rows = list(
         deck.transcript.clone(),
         cx.processor(|this, ix: usize, _, cx| {
-            let rows = super::transcript::rows(&this.session.entries);
+            let rows = super::transcript::rows(&this.session.entries, this.session.idle());
             let Some(row) = rows.get(ix) else { return div().into_any_element() };
-            // Rows sit 14px apart, inside the pane's 22px side margins.
             div()
-                .px(px(22.))
-                .pt(px(if ix == 0 { 18. } else { 14. }))
+                .group(super::copy::ROW)
+                .px(px(space::MARGIN))
+                .pt(px(if ix == 0 { 18. } else { space::ROW }))
                 .child(super::cards::row(this, row, cx))
                 .into_any_element()
         }),
     )
     .size_full()
-    .pb(px(14.));
+    .pb(px(space::ROW));
     let jump = deck.scrolled_back().then(|| {
         div().absolute().bottom(px(12.)).w_full().flex().justify_center().child(
             div()
@@ -103,7 +116,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .border_1()
                 .border_color(Tokens::edge_strong())
                 .bg(Tokens::float())
-                .text_size(px(11.5))
+                .text_size(px(size::SMALL))
                 .text_color(Tokens::text_dim())
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {

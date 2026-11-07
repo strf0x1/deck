@@ -13,7 +13,7 @@ use super::composer;
 use super::editor::Editor;
 use super::rail::Rail;
 use super::session::{Session, Status};
-use super::theme::{SANS, Tokens};
+use super::theme::{SANS, Tokens, size};
 use super::{chrome, conversation, panels};
 use crate::task::WindowTask;
 use deck_acp::{Client, Inbound};
@@ -55,6 +55,8 @@ pub struct Deck {
     pub(super) transcript: ListState,
     pub(super) row_sigs: Vec<u64>,
     pub(super) expanded: HashSet<String>,
+    /// The copy button showing its check (`copy.rs`).
+    pub(super) copied: Option<String>,
     pub(super) agent_cmd: String,
     /// A connection to the daemon-owned task. Window shutdown detaches it.
     pub(super) task: Option<WindowTask>,
@@ -101,6 +103,7 @@ impl Deck {
             transcript: super::transcript_list::following(),
             row_sigs: Vec::new(),
             expanded: HashSet::new(),
+            copied: None,
             agent_cmd: String::new(),
             task: None,
             watch: None,
@@ -403,7 +406,7 @@ impl Render for Deck {
             .p(px(GUTTER))
             .bg(Tokens::base())
             .font_family(SANS)
-            .text_size(px(13.5))
+            .text_size(px(size::BODY))
             .text_color(Tokens::text())
             .child(div().flex_none().w(px(chrome::RAIL_SLOT)))
             .child(

@@ -11,7 +11,7 @@
 use super::composer::Field;
 use super::panels::glyph;
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, tint};
 use gpui::{
     Context, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px,
@@ -133,14 +133,14 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(11.))
+        .rounded(px(radius::CONTROL))
         .bg(send_bg)
         .text_color(send_fg)
         .child(glyph(icon::SEND, 13.));
     div()
         .flex()
         .flex_col()
-        .rounded(px(16.))
+        .rounded(px(radius::FIELD))
         .border_1()
         .border_color(if ready { Tokens::edge_strong() } else { Tokens::edge() })
         .bg(Tokens::raised())
@@ -172,7 +172,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .border_t_1()
         .border_color(Tokens::edge())
         .font_family(MONO)
-        .text_size(px(11.))
+        .text_size(px(size::SMALL))
         .text_color(Tokens::text_dim())
         .child(item(icon::AGENTS, deck.session.agent.clone(), false))
         .children(

@@ -40,6 +40,48 @@ pub mod icon {
     pub const WRENCH: &str = "\u{f0ad}";
     pub const BULB: &str = "\u{f0eb}";
     pub const DOWN: &str = "\u{f063}";
+    pub const COPY: &str = "\u{f0c5}";
+}
+
+/// Text sizes by role. Six steps: views pick a role, never a number.
+pub mod size {
+    /// Key hints, language labels, counters on chips.
+    pub const MICRO: f32 = 10.5;
+    /// Mono detail: tool subjects, diffs, output, the status row.
+    pub const SMALL: f32 = 11.5;
+    /// Interface labels: buttons, card kinds, pills.
+    pub const LABEL: f32 = 12.5;
+    /// Reading text: prose, the prompt, the transcript.
+    pub const BODY: f32 = 13.5;
+    /// Pane titles and second-level headings.
+    pub const TITLE: f32 = 15.;
+    /// The empty state and first-level headings.
+    pub const DISPLAY: f32 = 17.;
+}
+
+/// Corner radii by role, from the smallest mark to a pane.
+pub mod radius {
+    pub const MARK: f32 = 2.;
+    pub const CHIP: f32 = 6.;
+    pub const CONTROL: f32 = 10.;
+    pub const CARD: f32 = 12.;
+    pub const BUBBLE: f32 = 14.;
+    pub const FIELD: f32 = 16.;
+    pub const PANE: f32 = 18.;
+}
+
+/// Spacing by role for the transcript and prompt, so density is tuned here.
+pub mod space {
+    /// Between transcript rows.
+    pub const ROW: f32 = 14.;
+    /// The transcript's side margins.
+    pub const MARGIN: f32 = 22.;
+    /// Inside a card or a field.
+    pub const INSET: f32 = 12.;
+    /// Between items on one line.
+    pub const TIGHT: f32 = 6.;
+    /// A card header's height.
+    pub const HEADER: f32 = 34.;
 }
 
 pub struct Tokens;

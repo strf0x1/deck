@@ -10,7 +10,7 @@ use super::board::LaneState;
 use super::panels::{glyph, state_color};
 use super::rail::{COLLAPSED, ITEM_H, ITEMS, Item};
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, tint};
 use gpui::{
     BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, point, px,
@@ -58,9 +58,18 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
         .left_0()
         .right_0()
         .h(px(ITEM_H))
-        .rounded(px(10.))
+        .rounded(px(radius::CONTROL))
         .bg(Tokens::raised_hover())
-        .child(div().absolute().left(px(-6.)).top(px(12.)).w(px(3.)).h(px(16.)).rounded(px(2.)).bg(Tokens::accent()));
+        .child(
+            div()
+                .absolute()
+                .left(px(-6.))
+                .top(px(12.))
+                .w(px(3.))
+                .h(px(16.))
+                .rounded(px(radius::MARK))
+                .bg(Tokens::accent()),
+        );
 
     let pin = Item { icon: icon::PIN, label: if r.pinned() { "Unpin" } else { "Keep open" } };
     let settings = Item { icon: icon::SETTINGS, label: "Settings" };
@@ -72,7 +81,7 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
         .bottom(px(inset))
         .left(px(inset))
         .w(px(r.width.pos))
-        .rounded(px(16.))
+        .rounded(px(radius::FIELD))
         .border_1()
         .border_color(Tokens::edge())
         .bg(Tokens::panel())
@@ -124,7 +133,7 @@ fn mark(label_a: f32) -> impl IntoElement {
             div().flex_none().w(px(COLLAPSED - 12.)).flex().justify_center().child(
                 div()
                     .size(px(30.))
-                    .rounded(px(9.))
+                    .rounded(px(radius::CONTROL))
                     .border_1()
                     .border_color(Tokens::edge_strong())
                     .bg(Tokens::raised_hover())
@@ -132,7 +141,7 @@ fn mark(label_a: f32) -> impl IntoElement {
                     .items_center()
                     .justify_center()
                     .font_weight(FontWeight::BOLD)
-                    .text_size(px(15.))
+                    .text_size(px(size::TITLE))
                     .child("d"),
             ),
         )
@@ -142,7 +151,7 @@ fn mark(label_a: f32) -> impl IntoElement {
                 .opacity(label_a)
                 .whitespace_nowrap()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_size(px(15.))
+                .text_size(px(size::TITLE))
                 .child("deck"),
         )
 }
@@ -161,7 +170,7 @@ fn rail_item(
         .h(px(ITEM_H))
         .flex()
         .items_center()
-        .rounded(px(10.))
+        .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .text_color(fg)
         .hover(|s| s.text_color(Tokens::text()))
@@ -180,7 +189,7 @@ fn rail_item(
                 .pl(px(6. + 10. * (1. - label_a)))
                 .opacity(label_a)
                 .whitespace_nowrap()
-                .text_size(px(13.))
+                .text_size(px(size::BODY))
                 .font_weight(if active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
                 .child(item.label),
         )
@@ -212,13 +221,13 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .rounded(px(12.))
+                .rounded(px(radius::CARD))
                 .border_1()
                 .border_color(Tokens::edge())
                 .bg(Tokens::raised())
                 .text_color(Tokens::text_faint())
                 .child(glyph(icon::SEARCH, 12.))
-                .child(div().flex_1().text_size(px(13.)).child("Search sessions, files, commands…"))
+                .child(div().flex_1().text_size(px(size::BODY)).child("Search sessions, files, commands…"))
                 .child(kbd("ctrl K")),
         )
         .child(div().flex_1())
@@ -234,7 +243,7 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .border_color(Tokens::edge())
                 .text_color(Tokens::text_dim())
                 .child(div().size(px(7.)).rounded_full().bg(dot))
-                .child(div().font_family(MONO).text_size(px(11.)).child(agent_label(&deck.agent_cmd))),
+                .child(div().font_family(MONO).text_size(px(size::SMALL)).child(agent_label(&deck.agent_cmd))),
         )
         .children(deck.publication_of(super::root::LIVE).map(|view| {
             super::publication_panel::chip(view.dot, &format!("{} · {}", view.label, view.dot.label()))
@@ -258,7 +267,7 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .rounded_full()
                 .border_1()
                 .border_color(Tokens::edge())
-                .text_size(px(11.5))
+                .text_size(px(size::SMALL))
                 .text_color(Tokens::amber())
                 .child(notice)
         }))
@@ -276,10 +285,10 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .rounded(px(10.))
+                .rounded(px(radius::CONTROL))
                 .bg(Tokens::text())
                 .text_color(Tokens::ink())
-                .text_size(px(13.))
+                .text_size(px(size::BODY))
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
                 .child(glyph(icon::PLUS, 11.))
@@ -294,7 +303,7 @@ pub fn icon_button(id: &'static str, g: &'static str) -> gpui::Stateful<gpui::Di
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(10.))
+        .rounded(px(radius::CONTROL))
         .text_color(Tokens::text_dim())
         .cursor_pointer()
         .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text()))
@@ -305,11 +314,11 @@ pub fn kbd(keys: &'static str) -> impl IntoElement {
     div()
         .px(px(6.))
         .py(px(1.))
-        .rounded(px(5.))
+        .rounded(px(radius::CHIP))
         .border_1()
         .border_color(Tokens::edge())
         .font_family(MONO)
-        .text_size(px(10.))
+        .text_size(px(size::MICRO))
         .text_color(Tokens::text_faint())
         .child(keys)
 }

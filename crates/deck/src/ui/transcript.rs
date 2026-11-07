@@ -21,6 +21,8 @@ pub enum Row {
     One(usize),
     /// Two or more consecutive read or search calls.
     Reads(Range<usize>),
+    /// The footer of a finished turn that changed files: the turn's entries.
+    Summary(Range<usize>),
 }
 
 impl Row {
@@ -32,6 +34,15 @@ impl Row {
                 _ => format!("entry:{i}"),
             },
             Row::Reads(r) => format!("reads:{}", r.start),
+            Row::Summary(r) => format!("turn:{}", r.start),
+        }
+    }
+
+    /// The entries this row draws.
+    pub fn range(&self) -> Range<usize> {
+        match self {
+            Row::One(i) => *i..*i + 1,
+            Row::Reads(r) | Row::Summary(r) => r.clone(),
         }
     }
 }
@@ -40,10 +51,23 @@ fn lookup(entry: &Entry) -> bool {
     matches!(entry, Entry::Tool(t) if matches!(t.call.kind, ToolKind::Read | ToolKind::Search))
 }
 
-pub fn rows(entries: &[Entry]) -> Vec<Row> {
+/// The rows to draw. A turn runs from one prompt to the next; a finished
+/// turn (one a later prompt follows, or the last when the agent is `idle`)
+/// that changed files ends with a [`Row::Summary`].
+pub fn rows(entries: &[Entry], idle: bool) -> Vec<Row> {
     let mut rows = vec![];
+    let mut turn = 0;
+    let close = |rows: &mut Vec<Row>, range: Range<usize>| {
+        if !touched(&entries[range.clone()]).is_empty() {
+            rows.push(Row::Summary(range));
+        }
+    };
     let mut i = 0;
     while i < entries.len() {
+        if matches!(entries[i], Entry::You(_)) && i > turn {
+            close(&mut rows, turn..i);
+            turn = i;
+        }
         let run = entries[i..].iter().take_while(|e| lookup(e)).count();
         if run >= 2 {
             rows.push(Row::Reads(i..i + run));
@@ -53,7 +77,48 @@ pub fn rows(entries: &[Entry]) -> Vec<Row> {
             i += 1;
         }
     }
+    if idle && turn < entries.len() {
+        close(&mut rows, turn..entries.len());
+    }
     rows
+}
+
+/// A file a turn changed: lines added and removed over its successful
+/// edits, and the entry of the last edit that touched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Touch {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub entry: usize,
+}
+
+/// The files `entries` changed, in the order first touched; indices are
+/// relative to the slice. A failed edit changed nothing.
+pub fn touched(entries: &[Entry]) -> Vec<Touch> {
+    let mut out: Vec<Touch> = vec![];
+    for (i, e) in entries.iter().enumerate() {
+        let Entry::Tool(t) = e else { continue };
+        if t.call.status != deck_acp::ToolStatus::Done {
+            continue;
+        }
+        for c in changes(&t.call) {
+            match out.iter_mut().find(|x| x.path == c.path) {
+                Some(x) => {
+                    x.added += c.diff.added;
+                    x.removed += c.diff.removed;
+                    x.entry = i;
+                }
+                None => out.push(Touch { path: c.path, added: c.diff.added, removed: c.diff.removed, entry: i }),
+            }
+        }
+    }
+    out
+}
+
+/// The row that draws entry `entry`.
+pub fn row_of(rows: &[Row], entry: usize) -> Option<usize> {
+    rows.iter().position(|r| !matches!(r, Row::Summary(_)) && r.range().contains(&entry))
 }
 
 /// A hash of everything `row` draws, so a changed row is re-measured.
@@ -62,11 +127,8 @@ pub fn signatures(entries: &[Entry], rows: &[Row], expanded: &HashSet<String>) -
         .map(|row| {
             let mut h = DefaultHasher::new();
             expanded.contains(&row.key(entries)).hash(&mut h);
-            let range = match row {
-                Row::One(i) => *i..*i + 1,
-                Row::Reads(r) => r.clone(),
-            };
-            range.hash(&mut h);
+            let range = row.range();
+            (matches!(row, Row::Summary(_)), &range).hash(&mut h);
             for e in &entries[range] {
                 shape(e, &mut h);
             }
@@ -219,20 +281,58 @@ mod tests {
             tool("r3", ToolKind::Read),
             Entry::Agent("done".into()),
         ];
-        assert_eq!(rows(&e), vec![Row::One(0), Row::Reads(1..4), Row::One(4), Row::One(5), Row::One(6)]);
+        assert_eq!(rows(&e, false), vec![Row::One(0), Row::Reads(1..4), Row::One(4), Row::One(5), Row::One(6)]);
         assert_eq!(Row::One(4).key(&e), "tool:e1");
+    }
+
+    #[test]
+    fn a_finished_turn_that_changed_files_gets_a_summary() {
+        let edit = |id: &str, path: &str, status: ToolStatus| {
+            Entry::Tool(Tool {
+                call: ToolCall {
+                    id: id.into(),
+                    kind: ToolKind::Edit,
+                    status,
+                    content: vec![ToolContent::Diff {
+                        path: path.into(),
+                        old: Some("a\n".into()),
+                        new: "b\nc\n".into(),
+                    }],
+                    ..ToolCall::default()
+                },
+                timing: Timing::Unknown,
+            })
+        };
+        let e = vec![
+            Entry::You("one".into()),
+            edit("e1", "a.rs", ToolStatus::Done),
+            edit("e2", "b.rs", ToolStatus::Failed),
+            edit("e3", "a.rs", ToolStatus::Done),
+            Entry::You("two".into()),
+            edit("e4", "c.rs", ToolStatus::Done),
+        ];
+        let working = rows(&e, false);
+        assert_eq!(working[4], Row::Summary(0..4), "the first turn is over once another prompt follows");
+        assert!(!working.contains(&Row::Summary(4..6)), "the live turn has no footer yet");
+        assert_eq!(rows(&e, true).last(), Some(&Row::Summary(4..6)));
+        assert_eq!(
+            touched(&e[0..4]),
+            vec![Touch { path: "a.rs".into(), added: 4, removed: 2, entry: 3 }],
+            "a failed edit changed nothing, a file edited twice is one line"
+        );
+        assert_eq!(row_of(&working, 3), Some(3));
     }
 
     #[test]
     fn streaming_changes_only_the_last_signature_and_expanding_changes_its_row() {
         let mut e = vec![Entry::You("go".into()), tool("e1", ToolKind::Edit), Entry::Agent("a".into())];
         let none = HashSet::new();
-        let before = signatures(&e, &rows(&e), &none);
+        let before = signatures(&e, &rows(&e, false), &none);
         e[2] = Entry::Agent("ab".into());
-        let after = signatures(&e, &rows(&e), &none);
+        let after = signatures(&e, &rows(&e, false), &none);
         assert_eq!(first_change(&before, &after), 2);
         let open = HashSet::from(["tool:e1".to_string()]);
-        assert_eq!(first_change(&after, &signatures(&e, &rows(&e), &open)), 1);
+        assert_eq!(first_change(&after, &signatures(&e, &rows(&e, false), &open)), 1);
         assert_eq!(first_change(&after, &after[..2]), 2);
     }
 

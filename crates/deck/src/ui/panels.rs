@@ -7,7 +7,7 @@
 use super::board::{CARD_H, Card, LaneState};
 use super::chrome::icon_button;
 use super::root::{Deck, LIVE};
-use super::theme::{MONO, Tokens, icon, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, tint};
 use gpui::{
     AnyElement, BoxShadow, Context, Div, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, ParentElement as _, Styled as _, div, point, px,
@@ -38,7 +38,7 @@ pub fn glyph(g: &'static str, size: f32) -> Div {
 
 /// One pane of glass: the sessions column and the conversation both sit on this.
 pub fn pane() -> Div {
-    div().relative().rounded(px(18.)).border_1().border_color(Tokens::edge()).bg(Tokens::panel())
+    div().relative().rounded(px(radius::PANE)).border_1().border_color(Tokens::edge()).bg(Tokens::panel())
 }
 
 pub fn lanes(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
@@ -69,7 +69,7 @@ pub fn lanes(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                         .px(px(7.))
                         .rounded_full()
                         .bg(Tokens::raised())
-                        .text_size(px(11.))
+                        .text_size(px(size::SMALL))
                         .text_color(Tokens::text_dim())
                         .child(deck.board.cards().len().to_string()),
                 )
@@ -100,7 +100,7 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(12.))
-        .rounded(px(14.))
+        .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(edge)
         .bg(bg)
@@ -120,7 +120,7 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
             div()
                 .flex_none()
                 .size(px(36.))
-                .rounded(px(10.))
+                .rounded(px(radius::CONTROL))
                 .bg(tile_bg)
                 .text_color(tile_fg)
                 .flex()
@@ -141,7 +141,7 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
                         .flex()
                         .items_center()
                         .gap(px(6.))
-                        .text_size(px(11.5))
+                        .text_size(px(size::SMALL))
                         .text_color(Tokens::text_dim())
                         .child(div().flex_none().size(px(6.)).rounded_full().bg(color))
                         .child(div().flex_none().child(state_label(c.lane.state)))

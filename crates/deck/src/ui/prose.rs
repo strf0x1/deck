@@ -8,7 +8,7 @@
 //! fonts, so inline code is set in the mono face, not just tinted.
 
 use super::markdown::{Block, Inline, Mark, parse};
-use super::theme::{MONO, SANS, Tokens, tint};
+use super::theme::{MONO, SANS, Tokens, radius, size, tint};
 use gpui::{
     AnyElement, FontStyle, FontWeight, IntoElement, ParentElement as _, StrikethroughStyle, Styled as _, StyledText,
     TextRun, UnderlineStyle, div, font, px, relative,
@@ -29,9 +29,9 @@ fn block(b: &Block) -> AnyElement {
             .pt(px(4.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_size(px(match level {
-                1 => 17.,
-                2 => 15.5,
-                _ => 14.,
+                1 => size::DISPLAY,
+                2 => size::TITLE,
+                _ => size::BODY,
             }))
             .child(styled(i))
             .into_any_element(),
@@ -68,14 +68,19 @@ pub fn code(lang: &str, text: &str) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .rounded(px(10.))
+        .rounded(px(radius::CONTROL))
         .border_1()
         .border_color(Tokens::edge())
         .bg(Tokens::raised())
         .font_family(MONO)
-        .text_size(px(12.))
+        .text_size(px(size::LABEL))
         .children((!lang.is_empty()).then(|| {
-            div().px(px(12.)).pt(px(7.)).text_size(px(10.5)).text_color(Tokens::text_faint()).child(lang.to_string())
+            div()
+                .px(px(12.))
+                .pt(px(7.))
+                .text_size(px(size::MICRO))
+                .text_color(Tokens::text_faint())
+                .child(lang.to_string())
         }))
         .child(div().px(px(12.)).py(px(9.)).line_height(relative(1.45)).child(text.to_string()))
         .into_any_element()

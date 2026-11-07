@@ -10,7 +10,7 @@ use super::chrome::kbd;
 use super::panels::{glyph, pane};
 use super::root::Deck;
 use super::session::Status;
-use super::theme::{MONO, Tokens, icon, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, tint};
 use deck_runtime::approvals::Decision;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -42,8 +42,8 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .gap(px(10.))
                 .border_b_1()
                 .border_color(Tokens::edge())
-                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(s.agent.clone()))
-                .child(div().text_size(px(12.)).text_color(Tokens::text_faint()).child("live session"))
+                .child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(s.agent.clone()))
+                .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_faint()).child("live session"))
                 .child(div().flex_1())
                 .child(
                     div()
@@ -54,7 +54,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                         .gap(px(7.))
                         .rounded_full()
                         .bg(Tokens::raised())
-                        .text_size(px(11.5))
+                        .text_size(px(size::SMALL))
                         .text_color(Tokens::text_dim())
                         .child(div().size(px(6.)).rounded_full().bg(color))
                         .child(status),
@@ -117,16 +117,16 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .flex()
             .items_center()
             .gap(px(8.))
-            .rounded(px(9.))
+            .rounded(px(radius::CONTROL))
             .border_1()
             .border_color(edge)
             .bg(bg)
             .text_color(fg)
-            .text_size(px(12.5))
+            .text_size(px(size::LABEL))
             .font_weight(FontWeight::MEDIUM)
             .cursor_pointer()
             .child(*name)
-            .child(div().font_family(MONO).text_size(px(10.)).opacity(0.55).child(format!("{}", i + 1)))
+            .child(div().font_family(MONO).text_size(px(size::MICRO)).opacity(0.55).child(format!("{}", i + 1)))
             .on_click(cx.listener(move |this, _, _, cx| this.decide_boundary(decision, cx)))
     });
     let detail = format!(
@@ -139,7 +139,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex_col()
         .gap(px(12.))
         .p(px(14.))
-        .rounded(px(14.))
+        .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.35))
         .bg(tint(Tokens::amber(), 0.06))
@@ -160,10 +160,10 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(8.))
                 .px(px(10.))
                 .py(px(7.))
-                .rounded(px(8.))
+                .rounded(px(radius::CONTROL))
                 .bg(Tokens::raised())
                 .font_family(MONO)
-                .text_size(px(12.))
+                .text_size(px(size::LABEL))
                 .child(format!("{} · {}", item.gateway, item.destination))
                 .children(item.credential.as_ref().map(|credential| {
                     div().text_color(Tokens::text_faint()).child(format!("credential {credential}"))
@@ -175,8 +175,10 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(10.5)).text_color(Tokens::text_faint()).child("the agent's description"))
-                .child(div().text_size(px(12.)).text_color(Tokens::text_dim()).child(format!(
+                .child(
+                    div().text_size(px(size::MICRO)).text_color(Tokens::text_faint()).child("the agent's description"),
+                )
+                .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(format!(
                     "{} · {} commit{}",
                     summary.subject,
                     summary.count,
@@ -184,15 +186,16 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 )))
         }))
         .children(
-            (!detail.trim().is_empty())
-                .then(|| div().text_size(px(11.5)).text_color(Tokens::text_faint()).font_family(MONO).child(detail)),
+            (!detail.trim().is_empty()).then(|| {
+                div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).font_family(MONO).child(detail)
+            }),
         )
         .children(
             item.reason
                 .as_ref()
-                .map(|reason| div().text_size(px(12.)).text_color(Tokens::text_dim()).child(reason.clone())),
+                .map(|reason| div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(reason.clone())),
         )
-        .child(div().text_size(px(11.5)).text_color(Tokens::text_faint()).child(if item.waiters > 0 {
+        .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(if item.waiters > 0 {
             "the agent is waiting for this decision"
         } else {
             "the agent has moved on"
@@ -218,16 +221,16 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .flex()
             .items_center()
             .gap(px(8.))
-            .rounded(px(9.))
+            .rounded(px(radius::CONTROL))
             .border_1()
             .border_color(edge)
             .bg(bg)
             .text_color(fg)
-            .text_size(px(12.5))
+            .text_size(px(size::LABEL))
             .font_weight(FontWeight::MEDIUM)
             .cursor_pointer()
             .child(o.name.clone())
-            .child(div().font_family(MONO).text_size(px(10.)).opacity(0.55).child(format!("{}", i + 1)))
+            .child(div().font_family(MONO).text_size(px(size::MICRO)).opacity(0.55).child(format!("{}", i + 1)))
             .on_click(cx.listener(move |this, _, _, cx| this.choose(Some(i), cx)))
     });
     div()
@@ -235,7 +238,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex_col()
         .gap(px(12.))
         .p(px(14.))
-        .rounded(px(14.))
+        .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.35))
         .bg(tint(Tokens::amber(), 0.06))
@@ -253,10 +256,10 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             div()
                 .px(px(10.))
                 .py(px(7.))
-                .rounded(px(8.))
+                .rounded(px(radius::CONTROL))
                 .bg(Tokens::raised())
                 .font_family(MONO)
-                .text_size(px(12.))
+                .text_size(px(size::LABEL))
                 .child(ask.title.clone()),
         )
         .child(div().flex().gap(px(8.)).children(buttons))
@@ -274,7 +277,7 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex_col()
         .gap(px(10.))
         .p(px(14.))
-        .rounded(px(14.))
+        .rounded(px(radius::BUBBLE))
         .bg(Tokens::raised())
         .child(title)
         .child(
