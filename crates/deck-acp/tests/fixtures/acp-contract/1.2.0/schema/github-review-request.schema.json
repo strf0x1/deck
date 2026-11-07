@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-review-request.schema.json",
+  "title": "GitHub `review` request",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "review"
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "operation",
+    "number"
+  ],
+  "additionalProperties": false
+}

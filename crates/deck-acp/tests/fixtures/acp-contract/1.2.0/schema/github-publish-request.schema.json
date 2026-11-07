@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-publish-request.schema.json",
+  "title": "GitHub `publish` request JSON head",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "publish"
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "summary": {
+      "type": "object",
+      "description": "Guest-supplied description shown on an approval card; never decides what lands.",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "subject",
+        "count"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "operation",
+    "branch"
+  ],
+  "additionalProperties": false
+}

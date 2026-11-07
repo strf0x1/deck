@@ -19,3 +19,7 @@ libc.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Conformance with the vendored shared contract (CONTRACT.lock), offline.
+jsonschema = { version = "0.60.2", default-features = false }

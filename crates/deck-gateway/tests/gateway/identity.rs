@@ -18,10 +18,14 @@ fn github_approval_identity_tracks_publish_and_pull_request_edits() {
     }
     for operation in ["create_pr", "update_pr"] {
         for body in ["draft-one", "draft-two"] {
-            let ask = serde_json::json!({
-                "operation": operation, "head": "deck/t-1", "base": "main", "number": 7,
-                "title": "Reviewed title", "body": body, "identity": "guest-identity",
-            });
+            let ask = match operation {
+                "create_pr" => serde_json::json!({
+                    "operation": operation, "head": "deck/t-1", "base": "main", "title": "Reviewed title", "body": body,
+                }),
+                _ => {
+                    serde_json::json!({ "operation": operation, "number": 7, "title": "Reviewed title", "body": body })
+                }
+            };
             let path =
                 if operation == "create_pr" { "/operations/pull_request" } else { "/operations/pull_request/update" };
             let response = send(
@@ -31,6 +35,14 @@ fn github_approval_identity_tracks_publish_and_pull_request_edits() {
             assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
         }
     }
+    // The identity is the host's: a guest that names one is refused before
+    // anyone is asked (requests are closed, contract 1.2.0 §11.2).
+    let forged = r#"{"operation":"create_pr","head":"deck/t-1","base":"main","title":"t","identity":"guest"}"#;
+    let response = send(
+        github,
+        &format!("POST /operations/pull_request HTTP/1.1\r\ncontent-length: {}\r\n\r\n{forged}", forged.len()),
+    );
+    assert!(response.starts_with("HTTP/1.1 400") && response.contains("deck_bad_request"), "{response}");
     let seen = seen.lock().unwrap();
     let approvals: Vec<_> = seen.iter().filter(|request| request["op"] == "approval").collect();
     assert_eq!(approvals.len(), 7);

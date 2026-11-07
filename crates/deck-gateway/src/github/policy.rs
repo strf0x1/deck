@@ -8,7 +8,7 @@
 //! that names an operation outside it is answered by name, so an agent learns
 //! it is not permitted instead of retrying a 404.
 
-use serde::{Deserialize, Serialize};
+pub use super::ask::{Ask, MAX_SUBJECT, Summary, Unparsed};
 
 /// The gateway kind approvals, grants and events carry.
 pub const GATEWAY: &str = "github";
@@ -146,6 +146,15 @@ impl Policy {
         branch == Self::task_branch(task) || self.branches.iter().any(|allowed| allowed == branch)
     }
 
+    /// Every branch this task may write, its own first. `refs` reports it so
+    /// the guest learns where to publish before its branch exists.
+    pub fn writable_branches(&self, task: &str) -> Vec<String> {
+        let own = Self::task_branch(task);
+        let mut all = vec![own.clone()];
+        all.extend(self.branches.iter().filter(|branch| **branch != own).cloned());
+        all
+    }
+
     /// Whether a pull request may target `base`: the configured base only.
     pub fn accepts_base(&self, base: &str) -> bool {
         base == self.base
@@ -211,38 +220,6 @@ pub fn requested(operation: &str) -> Result<Operation, String> {
     Err(format!("{operation:?} is not a Deck GitHub operation"))
 }
 
-/// One bounded request body. An action asks for exactly one operation; a
-/// publish request adds the branch and a bundle on the connection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Ask {
-    pub operation: String,
-    #[serde(default)]
-    pub branch: String,
-    #[serde(default)]
-    pub base: String,
-    #[serde(default)]
-    pub head: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub body: String,
-    #[serde(default)]
-    pub empty_body: bool,
-    #[serde(default)]
-    pub draft: Option<bool>,
-    #[serde(default)]
-    pub number: Option<u64>,
-}
-
-impl Ask {
-    pub fn parse(bytes: &[u8]) -> Result<(Self, Operation), String> {
-        let ask: Self =
-            serde_json::from_slice(bytes).map_err(|error| format!("the request is not a JSON object: {error}"))?;
-        let operation = requested(&ask.operation)?;
-        Ok((ask, operation))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +271,9 @@ mod tests {
         assert!(!policy.writable("deck/*", "t-123"));
         assert_eq!(Policy::task_branch("t-123"), "deck/t-123");
 
-        let shared = Policy::new("o/r", "main", ["deck/shared".to_string()]).unwrap();
+        let shared = Policy::new("o/r", "main", ["deck/shared".to_string(), "deck/t-123".to_string()]).unwrap();
+        assert_eq!(shared.writable_branches("t-123"), ["deck/t-123", "deck/shared"], "own first, no repeat");
+        assert_eq!(policy.writable_branches("t-123"), ["deck/t-123"]);
         assert!(shared.writable("deck/shared", "t-123"));
         assert!(shared.writable("deck/t-123", "t-123"));
     }
@@ -316,14 +295,5 @@ mod tests {
             assert!(branch_name(bad).is_none(), "{bad}");
         }
         assert!(Policy::new("o/r", "not a branch", Vec::new()).is_err());
-    }
-
-    #[test]
-    fn an_ask_carries_its_operation() {
-        let (ask, operation) = Ask::parse(br#"{"operation":"create_pr","base":"main","title":"t"}"#).unwrap();
-        assert_eq!(operation, Operation::PullRequest);
-        assert_eq!(ask.base, "main");
-        assert!(Ask::parse(br#"{"operation":"merge"}"#).unwrap_err().contains("not a Deck"));
-        assert!(Ask::parse(b"[]").is_err());
     }
 }

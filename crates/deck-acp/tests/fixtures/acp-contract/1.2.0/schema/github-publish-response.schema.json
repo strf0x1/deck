@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-publish-response.schema.json",
+  "title": "GitHub publish success",
+  "type": "object",
+  "properties": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[a-z0-9._-]{1,100}/[a-z0-9._-]{1,100}$",
+      "description": "owner/name, lowercased."
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created": {
+      "type": "boolean"
+    },
+    "domain": {
+      "type": "string",
+      "description": "The destination the gateway recorded, e.g. owner/name#deck/t-123."
+    }
+  },
+  "required": [
+    "repository",
+    "branch",
+    "commit",
+    "previous",
+    "created"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "created": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "previous": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "previous": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
+      }
+    }
+  ]
+}

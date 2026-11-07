@@ -8,6 +8,7 @@
 //! the same as a blocked fetch. Nothing here is a proxy: a path that is not
 //! in the table is a 404, not a forwarded request.
 
+mod ask;
 pub mod bundle;
 pub mod client;
 pub mod control;
@@ -38,7 +39,7 @@ use std::time::{Duration, Instant};
 pub use policy::{GATEWAY, KIND, PROFILE};
 
 /// A request's JSON head. A pull request body is the largest thing in it.
-const MAX_ASK: usize = 64 * 1024;
+pub const MAX_ASK: usize = 64 * 1024;
 /// The gateway answers one request per connection; a publish is the slow one.
 const READ: Duration = Duration::from_secs(60);
 /// The total request-head budget. Recompute the socket timeout for each byte
@@ -121,7 +122,7 @@ impl GitHub {
                 Ok(None) => return Ok(()),
                 Err(ReadError::Refused { status, message }) => {
                     let _ = drain(&mut stream);
-                    return reply(&mut stream, status, json!({ "error": message }));
+                    return reply(&mut stream, status, refusal(BAD_REQUEST, &message));
                 }
                 Err(ReadError::Io(error)) => return Err(error),
             }
@@ -130,18 +131,26 @@ impl GitHub {
         // bundles retain their existing independent bounds.
         stream.set_read_timeout(Some(READ))?;
         if request.method != "POST" {
-            return reply(&mut stream, 405, json!({ "error": "the GitHub operations take POST" }));
+            return reply(&mut stream, 405, refusal(BAD_REQUEST, "the GitHub operations take POST"));
         }
         // A bounded body is read for every path, so a mismatch is answered
         // after the request is complete and the client never sees a stall.
         let Some(operation) =
             crate::github::policy::operations().find(|candidate| candidate.path() == request.target).copied()
         else {
-            return reply(
-                &mut stream,
-                404,
-                json!({ "error": format!("{} is not a Deck GitHub operation", request.target) }),
-            );
+            // `/operations/merge` and its kin are answered by name, like the
+            // same names in a body; any other path is simply not served.
+            let named = request.target.strip_prefix("/operations/").unwrap_or_default();
+            return match policy::requested(named) {
+                Err(message) if Operation::refused().contains(&named) => {
+                    reply(&mut stream, 403, refusal(NOT_PERMITTED, &message))
+                }
+                _ => reply(
+                    &mut stream,
+                    404,
+                    refusal(NOT_PERMITTED, &format!("{} is not a Deck GitHub operation", request.target)),
+                ),
+            };
         };
         // A publish's body is one JSON head followed by the length-framed
         // bundle; every other operation's body is only the JSON head.
@@ -153,18 +162,21 @@ impl GitHub {
             return reply(
                 &mut stream,
                 413,
-                json!({ "error": format!("the operation's JSON exceeds {MAX_ASK} bytes") }),
+                refusal(BAD_REQUEST, &format!("the operation's JSON exceeds {MAX_ASK} bytes")),
             );
         }
         let (ask, parsed) = match Ask::parse(&request.body) {
             Ok(parsed) => parsed,
-            Err(error) => return reply(&mut stream, 400, json!({ "error": error })),
+            Err(policy::Unparsed::NotPermitted(message)) => {
+                return reply(&mut stream, 403, refusal(NOT_PERMITTED, &message));
+            }
+            Err(policy::Unparsed::Invalid(message)) => return reply(&mut stream, 400, refusal(BAD_REQUEST, &message)),
         };
         if parsed != operation {
             return reply(
                 &mut stream,
                 400,
-                json!({ "error": format!("{} is served at {}", parsed.name(), operation.path()) }),
+                refusal(BAD_REQUEST, &format!("{} is served at {}", parsed.name(), operation.path())),
             );
         }
         let bundle = match operation.carries_bundle() {
@@ -172,7 +184,7 @@ impl GitHub {
                 Ok(bytes) => Some(bytes),
                 Err(ReadError::Refused { status, message }) => {
                     let _ = drain(&mut stream);
-                    return reply(&mut stream, status, json!({ "error": message }));
+                    return reply(&mut stream, status, refusal(BAD_REQUEST, &message));
                 }
                 Err(ReadError::Io(error)) => return Err(error),
             },
@@ -234,7 +246,7 @@ impl GitHub {
                 held = Some(self.fetch()?);
             }
             let Some(token) = held.as_ref() else {
-                return Err(Failure::error(502, "deck_github_failed", "no credential was fetched"));
+                return Err(Failure::error(502, "deck_github_failed", "no credential was fetched", true));
             };
             let public = self.client.authorized(token.credential.value(), token.cancel.clone()).visibility();
             if let Some(failure) = self.stopped(token) {
@@ -317,7 +329,7 @@ impl GitHub {
             }
             Operation::Refs => client.refs(),
             Operation::PullRequest => {
-                client.pull_request(&ask.head, &ask.base, &ask.title, &ask.body, ask.draft.unwrap_or(true))
+                client.pull_request(&ask.head, &ask.base, &ask.title, ask.body(), ask.draft.unwrap_or(true))
             }
             Operation::UpdatePullRequest => {
                 let number =
@@ -326,9 +338,7 @@ impl GitHub {
                     number,
                     (!ask.base.is_empty()).then_some(ask.base.as_str()),
                     (!ask.title.is_empty()).then_some(ask.title.as_str()),
-                    ask.empty_body
-                        .then_some(ask.body.as_str())
-                        .or_else(|| (!ask.body.is_empty()).then_some(ask.body.as_str())),
+                    ask.body.as_deref(),
                     ask.draft,
                 )
             }
@@ -363,6 +373,7 @@ impl GitHub {
                 403,
                 "deck_boundary_denied",
                 &format!("{destination} needs approval, but this task has no approval queue"),
+                false,
             ));
         };
         let credential = self.credentials.as_ref().map(|(_, name)| name.as_str());
@@ -394,7 +405,7 @@ impl GitHub {
                     &format!("{} on {destination} was denied by the user's boundary policy", operation.name()),
                 ))
             }
-            Answer::Unavailable(why) => Err(Failure::error(502, "deck_boundary_unavailable", &why)),
+            Answer::Unavailable(why) => Err(Failure::error(502, "deck_boundary_unavailable", &why, true)),
         }
     }
 }
@@ -420,6 +431,18 @@ fn reason(ask: &Ask, operation: Operation) -> String {
     }
 }
 
+/// The codes the gateway itself answers with before an operation runs
+/// (contract 1.2.0 §11.5).
+const BAD_REQUEST: &str = "deck_bad_request";
+const NOT_PERMITTED: &str = "deck_not_permitted";
+
+/// Every non-2xx body: `error.{message,type,code}` and `retryable`, false
+/// unless the caller sets it. Transport refusals use it too, so a client
+/// parses one shape.
+fn refusal(code: &str, message: &str) -> serde_json::Value {
+    json!({ "error": { "message": message, "type": code, "code": code }, "retryable": false })
+}
+
 /// A refusal the agent can read. The `deck_boundary_denied` body is the same
 /// shape the model and web gateways use, so Construct reports it the same way.
 struct Failure {
@@ -439,15 +462,15 @@ impl Failure {
         Self { status: 403, body }
     }
 
-    fn error(status: u16, code: &str, message: &str) -> Self {
-        Self { status, body: json!({ "error": { "message": message, "type": code, "code": code } }) }
+    fn error(status: u16, code: &str, message: &str, retryable: bool) -> Self {
+        let mut body = refusal(code, message);
+        body["retryable"] = json!(retryable);
+        Self { status, body }
     }
 
     /// A broker refusal: nothing was injected and nothing reached GitHub.
     fn credential(refusal: &crate::credential::Refusal) -> Self {
-        let mut failure = Self::error(refusal.status(), refusal.code(), refusal.message());
-        failure.body["retryable"] = json!(refusal.retryable());
-        failure
+        Self::error(refusal.status(), refusal.code(), refusal.message(), refusal.retryable())
     }
 }
 
@@ -697,10 +720,8 @@ mod tests {
             base: "main".into(),
             head: "deck/t-1".into(),
             title: "t".into(),
-            body: "b".into(),
-            empty_body: false,
-            draft: None,
-            number: None,
+            body: Some("b".into()),
+            ..Ask::default()
         };
         assert_eq!(reason(&ask, Operation::PullRequest), "open a pull request from deck/t-1 to main");
     }

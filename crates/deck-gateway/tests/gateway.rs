@@ -35,6 +35,9 @@ mod model_grants;
 #[path = "gateway/identity.rs"]
 mod identity;
 
+#[path = "gateway/contract.rs"]
+mod contract;
+
 /// A fake `deckd` in front of a test's own queue fixture: it answers
 /// `credential` and `credential_watch` as the broker does, and forwards every
 /// other line to `upstream`, so each fixture stays one concern.
@@ -1604,8 +1607,8 @@ fn merge_is_refused_by_name_and_a_pull_request_asks_the_queue() {
             std::str::from_utf8(br#"{"operation":"merge","number":7}"#).unwrap()
         ),
     );
-    assert!(merge.starts_with("HTTP/1.1 400"), "{merge}");
-    assert!(merge.contains("not a Deck GitHub operation"), "{merge}");
+    assert!(merge.starts_with("HTTP/1.1 403"), "{merge}");
+    assert!(merge.contains("deck_not_permitted") && merge.contains("not a Deck GitHub operation"), "{merge}");
     assert!(merge.contains("may publish"), "{merge}");
     // A pull request asks the queue first, then creates it with the host token.
     let ask = br#"{"operation":"create_pr","head":"deck/t-1","base":"main","title":"Add the thing","body":"It works","draft":true}"#;

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-review-response.schema.json",
+  "title": "GitHub review success: pull request state and checks",
+  "type": "object",
+  "properties": {
+    "merged": {
+      "type": "boolean"
+    },
+    "checks": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "runs": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "queued, in_progress, completed, or a future GitHub value."
+                  },
+                  "conclusion": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "status",
+                  "conclusion"
+                ],
+                "additionalProperties": true
+              }
+            }
+          },
+          "required": [
+            "total",
+            "runs"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "domain": {
+      "type": "string",
+      "description": "The destination the gateway recorded, e.g. owner/name#deck/t-123."
+    }
+  },
+  "required": [
+    "merged",
+    "checks"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-pull-request.schema.json"
+    }
+  ]
+}

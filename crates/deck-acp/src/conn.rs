@@ -9,8 +9,8 @@
 use super::VERSION;
 use super::inbound::{Inbound, TurnState, parse_turn, permission, update};
 use super::names::{
-    BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, LEGACY_BOUNDARY_METHOD, LEGACY_CONSTRUCT_META, LEGACY_DECK_META,
-    LEGACY_TURN_METHOD, TURN_METHOD,
+    BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, GITHUB_OPERATIONS, GITHUB_OPERATIONS_VERSION, LEGACY_BOUNDARY_METHOD,
+    LEGACY_CONSTRUCT_META, LEGACY_DECK_META, LEGACY_TURN_METHOD, TURN_METHOD,
 };
 use super::rpc::{self, Incoming};
 use serde_json::{Value, json};
@@ -56,6 +56,8 @@ pub struct Conn {
     live: bool,
     /// The boundary notification method the agent advertised, if any.
     boundary: Option<&'static str>,
+    /// The GitHub operation API version the agent's tools speak; 0 is none.
+    github_operations: u64,
     questions: HashSet<Value>,
     turn: Option<(u64, TurnState)>,
     agent: String,
@@ -91,6 +93,7 @@ impl Conn {
             initialized: false,
             live: false,
             boundary: None,
+            github_operations: 0,
             questions: HashSet::new(),
             turn: None,
         };
@@ -153,6 +156,12 @@ impl Conn {
         let mut params = params.clone();
         params["sessionId"] = json!(sid);
         Some(rpc::notification(method, params))
+    }
+
+    /// Whether the agent's tools can publish through Deck's GitHub gateway.
+    /// Deck uses it only to say so when they cannot; it grants nothing.
+    pub fn publishes_from_sandbox(&self) -> bool {
+        self.github_operations >= GITHUB_OPERATIONS_VERSION
     }
 
     /// The reply to a permission request: the chosen option, or cancelled.
@@ -218,6 +227,8 @@ impl Conn {
                 } else {
                     None
                 };
+                // Current key only: the capability is newer than the bare names.
+                self.github_operations = meta[DECK_META][GITHUB_OPERATIONS].as_u64().unwrap_or(0);
                 if matches!(self.target, Target::Attach(_)) && !self.live {
                     return Step { lines: vec![], events: vec![Inbound::Detached] };
                 }
@@ -621,6 +632,23 @@ mod tests {
         assert_eq!(params["sessionId"], json!("s1"));
         assert_eq!(params["approval_id"], json!("a1"));
         assert_eq!(params["outcome"], json!("allowed"));
+    }
+
+    #[test]
+    fn github_operations_is_read_under_the_current_deck_key_only() {
+        let publishes = |meta: &str| {
+            let (mut c, _) = Conn::start("/w".into());
+            c.read(&format!(
+                r#"{{"id":1,"result":{{"agentInfo":{{"name":"construct"}},"agentCapabilities":{{"_meta":{meta}}}}}}}"#
+            ));
+            c.publishes_from_sandbox()
+        };
+        assert!(publishes(r#"{"com.sprawlcommons/deck":{"github_operations":1}}"#));
+        assert!(publishes(r#"{"com.sprawlcommons/deck":{"github_operations":2}}"#), "a newer client speaks 1");
+        assert!(!publishes(r#"{"deck":{"github_operations":1}}"#), "the capability has no bare form");
+        assert!(!publishes(r#"{"com.sprawlcommons/deck":{"github_operations":true}}"#));
+        assert!(!publishes(r#"{"com.sprawlcommons/deck":{"github_operations":0}}"#));
+        assert!(!publishes(r#"{"com.sprawlcommons/deck":{"boundary":true}}"#));
     }
 
     #[test]

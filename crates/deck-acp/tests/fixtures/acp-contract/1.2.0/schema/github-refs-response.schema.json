@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-refs-response.schema.json",
+  "title": "GitHub refs success: branches and the host policy",
+  "type": "object",
+  "properties": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[a-z0-9._-]{1,100}/[a-z0-9._-]{1,100}$",
+      "description": "owner/name, lowercased."
+    },
+    "base": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "task_branch": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "writable": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+        "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Every branch this task may write; always contains task_branch."
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+            "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "task_branch": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch",
+          "commit",
+          "task_branch"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "domain": {
+      "type": "string",
+      "description": "The destination the gateway recorded, e.g. owner/name#deck/t-123."
+    }
+  },
+  "required": [
+    "repository",
+    "base",
+    "task_branch",
+    "writable",
+    "branches"
+  ],
+  "additionalProperties": true
+}
