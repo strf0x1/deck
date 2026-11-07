@@ -301,12 +301,21 @@ json=$(printf '{"operation":"publish","branch":"%s","summary":{"subject":"checko
 jlen=$(printf '%s' "$json" | wc -c | tr -d ' ')
 blen=$(wc -c < /tmp/check.bundle | tr -d ' ')
 total=$((jlen + 4 + blen))
+# Publish over a bash socket, not `socat`: a publish waits on GitHub, and
+# `socat` tears the connection down shortly after its input ends; the relay
+# ends both directions when the request side does. Keeping the socket open
+# until the gateway answers is what a real client does.
 {
   printf 'POST /operations/publish HTTP/1.1\r\nHost: deck\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n' "$total"
   printf '%s' "$json"
   LC_ALL=C gawk -v n="$blen" 'BEGIN { printf "%c%c%c%c", int(n/16777216)%256, int(n/65536)%256, int(n/256)%256, n%256 }'
   cat /tmp/check.bundle
-} | socat - "TCP:127.0.0.1:${DECK_GITHUB_PORT:-8084}" > /tmp/publish.out 2>/tmp/publish.err
+} > /tmp/publish.req
+timeout 120 bash -c "
+  exec 3<>/dev/tcp/127.0.0.1/${DECK_GITHUB_PORT:-8084}
+  cat /tmp/publish.req >&3
+  cat <&3
+" > /tmp/publish.out 2>/tmp/publish.err
 if grep -q '^HTTP/1.1 200' /tmp/publish.out; then
   echo "CHECK publish=ok"
   grep -o '"branch":"[^"]*"' /tmp/publish.out | sed 's/^"branch":"//; s/"$//' | sed 's/^/CHECK publish-branch=/'
