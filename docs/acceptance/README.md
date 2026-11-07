@@ -1,17 +1,25 @@
-# Linux acceptance evidence
+# Acceptance evidence
 
-The latest run is [the GitHub workflow acceptance](2026-11-06-github-workflow.md):
-the ADR 0008 §9 checklist with real Construct `255de54` in a VM, its scripted
-model, a private scratch GitHub repository and the real Deck window.
-**52/52 assertions pass**, including the optional merge and two-click Destroy.
+The latest run is [the GitHub workflow on macOS](2026-11-07-github-workflow-macos.md):
+the ADR 0008 §9 checklist on macOS 27.0/arm64 with real Construct `255de54` in
+a VM, its scripted model, a **public** scratch repository and the real Deck
+window. **54/54 assertions pass**, including a real GitHub-hosted check run
+that starts, shows `checks running`, and completes `success` in the chip and
+panel. It fixes the guest checkout marker's durability in
+`scripts/vm-image.sh` and teaches the driver macOS window launch, screenshots
+and the `cmd-r` restart key.
+
+The preceding run is [the Linux GitHub workflow acceptance](2026-11-06-github-workflow.md):
+the same checklist with a private scratch GitHub repository. **52/52
+assertions pass**, including the optional merge and two-click Destroy.
 It finds #105 (open, guest checkout markers), #106 (marking ready through REST
 did nothing; fixed in the same PR) and #107 (open, a merged pull request's own
 card still says idle). Its check results are a GitHub-side fixture:
-GitHub-hosted Actions jobs do not start in the private scratch repository for
-this account, so the scratch check stays queued and is cancelled to give deckd
-a completed conclusion.
+GitHub-hosted Actions jobs do not start in that private repository for this
+account, so the scratch check stays queued and is cancelled to give deckd a
+completed conclusion.
 
-The preceding run is [the live timed-grant pass](2026-11-06-timed-linux.md):
+The run before that is [the live timed-grant pass](2026-11-06-timed-linux.md):
 **159/161 final assertions pass**, plus a separate **10/11** private-store
 repeat. It finds #76–#78 and reproduces #71. Timed/public/UI results need the
 documented local #76 fix; UI also uses a fixture path workaround for #78.
@@ -21,7 +29,8 @@ This does not accept unmodified merged main. Workspace checks pass with
 The fully passing run before that is [the merged #66/#67 rerun](2026-11-05-final-linux-rerun.md)
 at `337db12`: **107/107 live assertions pass**, with **389 workspace tests
 passing**. Its manifest records the host binary and harness hashes. This is
-an opt-in Linux/KVM acceptance suite, separate from the default Cargo tests.
+an opt-in VM acceptance suite (Linux/KVM, macOS/libkrun), separate from the
+default Cargo tests.
 
 The subsequent [credential-retry slice](2026-11-05-credential-retry.md) records
 its separate validation, live development macOS checks and an intermittent private
@@ -48,7 +57,7 @@ The suite exercises:
 
 Fixture boundaries and untested cases are part of each report. A passing
 suite does not accept the entire ADR 0004 product scope, the scoped-reuse
-approval amendment, or macOS behavior.
+approval amendment, or macOS behavior beyond the checklist that was run there.
 
 Historical runs explain the findings and fixes:
 

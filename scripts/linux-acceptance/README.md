@@ -205,11 +205,13 @@ python3 scripts/linux-acceptance/github_workflow.py \
   --project /path/to/private/scratch/checkout
 ```
 
-`--project` is a host checkout whose `origin` points at the private scratch
+`--project` is a host checkout whose `origin` points at the scratch
 repository; the driver infers the repository and base exactly as Deck does at
-task create, and writes a git-ignored `.env` there if it is missing. The
-repository must be private (a public one asks for every write by design) and
-have a workflow so checks exist.
+task create, and writes a git-ignored `.env` there if it is missing, and a
+workflow so checks exist. A private repository runs the default approval mode.
+A public one asks on every write by default, so the driver writes the project
+file's `own-branch-public` opt-in (ADR 0008 §3); its checks can then be real
+GitHub-hosted jobs.
 
 The driver starts one scripted endpoint per turn on a fixed port (so the
 task's gateway endpoint never changes), restarts it with the next turn's
@@ -217,8 +219,48 @@ steps, and keeps the serve request dumps as the tool-result evidence: the
 window's transcript shows tool titles, not their output. It also reads
 `tasks/<id>/pull_request.json` and the window's `state` as the view evidence.
 
-Fixture boundary: GitHub-hosted Actions jobs do not start in the private
-scratch repository for this account (a minimal `echo` workflow there also
+### macOS
+
+The same driver runs on macOS/arm64 with libkrun; there is no Hyprland. Build
+the pinned libkrun 1.19.7 dylib (`docs/vm-spike.md`), Docker (a build tool),
+`libkrunfw` from Homebrew, and a Construct revision that advertises
+`github_operations` — `v0.4.0`'s tag predates it, so build `origin/main`:
+
+```sh
+# Guest Construct (the image's /usr/local/bin/construct).
+docker run --rm --platform linux/arm64 -v /path/to/construct:/src:ro \
+  -v "$PWD/target/construct-build:/out" -w /src rust:1.91-bookworm bash -c \
+  'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libdbus-1-dev >/dev/null &&
+   CARGO_TARGET_DIR=/tmp/target cargo build --release -p construct &&
+   cp /tmp/target/release/construct /out/construct'
+python3 scripts/linux-acceptance/build_image.py \
+  --construct-binary target/construct-build/construct --output target/vm-v040
+cargo build --bin deck --bin deckd --bin deck-gateway --bin deck-egress
+mkdir -p "$DECK_ACCEPTANCE_ROOT/bin"
+cp target/debug/{deck,deckd,deck-gateway,deck-egress} "$DECK_ACCEPTANCE_ROOT/bin/"
+scripts/vm-sign.sh "$DECK_ACCEPTANCE_ROOT/bin/deckd"
+```
+
+`DECK_ACCEPTANCE_UI_EXECUTABLE` must name the copied `deck`, because the
+window starts the `deckd` beside it; signing `target/debug/deckd` instead
+also works but has to be repeated after every relink. Set `DECK_VM_KRUN` to
+the built `libkrun.1.19.7.dylib` and run the driver as above.
+
+A public scratch repository verifies real GitHub-hosted checks: the driver
+writes the project file's `own-branch-public` opt-in (a public repository asks
+on every write by default), waits for the runs to complete, and records their
+conclusions. The window runs in the logged-in session, so the launching shell
+needs Screen Recording permission for `screencapture`; quit, restart and the
+runtime directory are handled per platform (cmd-q/cmd-r, a short `/tmp` path
+for sockets).
+
+The guest entry syncs the workspace after provisioning it. A stop kills the
+VMM without a guest poweroff, and without that sync a resume finds no
+`.deck-provisioned` marker, cannot import again (the first boot consumed the
+share), and exits before opening the ACP stream.
+
+Fixture boundary, private repository: GitHub-hosted Actions jobs do not start
+in that private scratch repository for this account (a minimal `echo` workflow there also
 fails in about three seconds with no steps; the repository's public CI runs
 normally), so the scratch workflow targets a self-hosted runner and its check
 stays `queued`; the driver cancels the queued runs to produce the completed

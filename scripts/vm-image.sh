@@ -138,6 +138,11 @@ if [ ! -e /workspace/.deck-provisioned ]; then
       mark "checkout ${branch}"
     fi
     touch /workspace/.deck-provisioned
+    # A stop kills the VMM without a guest poweroff, so the marker and the
+    # checkout have to be on the disk before the agent runs: otherwise a
+    # resume finds no marker, cannot import again (the first boot consumed
+    # the share) and exits before opening the ACP stream.
+    sync
     mark "provisioned"
   elif [ "$import_required" = "1" ]; then
     echo "deck-guest: import share missing" >&2
