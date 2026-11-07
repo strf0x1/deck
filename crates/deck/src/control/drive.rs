@@ -10,6 +10,7 @@
 use super::protocol::{self, Command, Mods, Point, Press};
 use crate::ui::root::Deck;
 use crate::ui::session::{Entry, Status};
+use deck_acp::ToolContent;
 use gpui::{
     AnyWindowHandle, AppContext as _, AsyncApp, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, WindowHandle, point, px,
@@ -181,8 +182,16 @@ pub fn state(d: &Deck) -> Value {
             Entry::You(t) => json!({ "you": t }),
             Entry::Agent(t) => json!({ "agent": t }),
             Entry::Thought(t) => json!({ "thought": t }),
-            Entry::Tool { id, title, status } => {
-                json!({ "tool": title, "id": id, "status": format!("{status:?}").to_lowercase() })
+            Entry::Tool(tool) => {
+                let c = &tool.call;
+                json!({
+                    "tool": c.title,
+                    "id": c.id,
+                    "kind": format!("{:?}", c.kind).to_lowercase(),
+                    "status": format!("{:?}", c.status).to_lowercase(),
+                    "diffs": c.content.iter().filter(|x| matches!(x, ToolContent::Diff { .. })).count(),
+                    "locations": c.locations.iter().map(|l| &l.path).collect::<Vec<_>>(),
+                })
             }
             Entry::Note(t) => json!({ "note": t }),
         })

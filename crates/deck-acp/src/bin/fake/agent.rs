@@ -161,6 +161,13 @@ impl<W: Write> Agent<W> {
             "content": [{ "type": "content", "content": { "type": "text", "text": text } }] }));
     }
 
+    /// A read and an edit before the streamed reply (see [`super::turn::look_and_edit`]).
+    fn look_and_edit(&mut self) {
+        for update in super::turn::look_and_edit(self.number) {
+            self.update(update);
+        }
+    }
+
     /// The scripted publication turn (ADR 0008 §9). A gateway refusal is the
     /// failing step's text, not a retry: the fake exists to show the card and
     /// the transcript, not to recover from either.
@@ -284,6 +291,7 @@ impl<W: Write> Agent<W> {
                     self.finish("end_turn");
                 } else {
                     self.chunk("agent_thought_chunk", "planning a small change");
+                    self.look_and_edit();
                 }
             }
             None => {
@@ -350,7 +358,8 @@ impl<W: Write> Agent<W> {
         } else {
             turn.waiting = true;
             self.update(json!({ "sessionUpdate": "tool_call", "toolCallId": format!("t{}", self.number),
-                "title": "shell git push origin deck/spike", "kind": "execute", "status": "pending" }));
+                "title": "shell git push origin deck/spike", "kind": "execute", "status": "pending",
+                "rawInput": { "command": "git push origin deck/spike" } }));
             self.notice();
             if self.attached == self.attachment {
                 self.ask();

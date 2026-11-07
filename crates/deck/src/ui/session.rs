@@ -3,19 +3,56 @@
 //!
 //! The design choice: pure state, folded from [`Inbound`] events, with no
 //! GPUI types, so a whole turn is testable as a list of events in and
-//! entries out.
+//! entries out. The clock is an argument ([`Session::apply_at`]) for the
+//! same reason: tool durations are measured, not read from the agent.
 
-use deck_acp::{Inbound, PermissionOption, ToolStatus, TurnState};
+use deck_acp::{Inbound, PermissionOption, ToolCall, ToolStatus, ToolUpdate, TurnState};
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     You(String),
     Agent(String),
     Thought(String),
-    Tool { id: String, title: String, status: ToolStatus },
+    Tool(Tool),
     Note(String),
+}
+
+/// A tool call in the transcript, with how long it ran when this window saw
+/// it run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tool {
+    pub call: ToolCall,
+    pub timing: Timing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timing {
+    /// Replayed already finished, so this window never saw it run.
+    Unknown,
+    /// Running since this instant. A call that was already running when the
+    /// window attached counts from the attach, so it reads short.
+    Since(Instant),
+    /// Ran for this long.
+    Took(Duration),
+}
+
+impl Tool {
+    fn new(call: ToolCall, now: Instant) -> Self {
+        let timing = if call.status == ToolStatus::Running { Timing::Since(now) } else { Timing::Unknown };
+        Tool { call, timing }
+    }
+
+    fn update(&mut self, update: ToolUpdate, now: Instant) {
+        self.call.apply(update);
+        self.timing = match (self.timing, self.call.status) {
+            (Timing::Since(start), ToolStatus::Done | ToolStatus::Failed) => Timing::Took(now - start),
+            (Timing::Unknown, ToolStatus::Running) => Timing::Since(now),
+            (timing, _) => timing,
+        };
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +115,11 @@ impl Session {
     }
 
     pub fn apply(&mut self, ev: Inbound) {
+        self.apply_at(ev, Instant::now());
+    }
+
+    /// [`Session::apply`] with the clock given, for tests.
+    pub fn apply_at(&mut self, ev: Inbound, now: Instant) {
         match ev {
             Inbound::Ready { agent, session_id, turn } => {
                 self.agent = agent;
@@ -108,14 +150,14 @@ impl Session {
                 Some(Entry::Thought(s)) => s.push_str(&t),
                 _ => self.entries.push(Entry::Thought(t)),
             },
-            Inbound::Tool { id, title, status } => self.entries.push(Entry::Tool { id, title, status }),
-            Inbound::ToolStatus { id, status } => {
+            Inbound::Tool(call) => self.entries.push(Entry::Tool(Tool::new(call, now))),
+            Inbound::ToolUpdate(update) => {
                 let tool = self.entries.iter_mut().rev().find_map(|e| match e {
-                    Entry::Tool { id: tid, status, .. } if *tid == id => Some(status),
+                    Entry::Tool(tool) if tool.call.id == update.id => Some(tool),
                     _ => None,
                 });
-                if let Some(s) = tool {
-                    *s = status;
+                if let Some(tool) = tool {
+                    tool.update(update, now);
                 }
             }
             Inbound::Permission { request, title, options } => {
@@ -178,9 +220,37 @@ impl Default for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deck_acp::{ToolContent, ToolKind};
+
+    fn call(id: &str, status: ToolStatus) -> ToolCall {
+        ToolCall { id: id.into(), title: "read".into(), status, ..ToolCall::default() }
+    }
+
+    #[test]
+    fn a_tool_keeps_its_content_and_how_long_it_ran() {
+        let start = Instant::now();
+        let mut s = Session::new();
+        let edit = ToolCall { kind: ToolKind::Edit, ..call("e", ToolStatus::Running) };
+        s.apply_at(Inbound::Tool(edit), start);
+        s.apply_at(Inbound::Tool(call("replayed", ToolStatus::Done)), start);
+        let diff = ToolContent::Diff { path: "a.rs".into(), old: Some("x".into()), new: "y".into() };
+        let later = start + Duration::from_millis(1500);
+        let content = ToolUpdate { id: "e".into(), content: Some(vec![diff.clone()]), ..ToolUpdate::default() };
+        s.apply_at(Inbound::ToolUpdate(content), later);
+        let Some(Entry::Tool(tool)) = s.entries.first() else { panic!("{:?}", s.entries) };
+        assert_eq!(tool.timing, Timing::Since(start), "content alone does not finish a call");
+        let done = ToolUpdate { id: "e".into(), status: Some(ToolStatus::Done), ..ToolUpdate::default() };
+        s.apply_at(Inbound::ToolUpdate(done), later);
+        let [Entry::Tool(edit), Entry::Tool(replayed)] = &s.entries[..] else { panic!("{:?}", s.entries) };
+        assert_eq!(edit.call.kind, ToolKind::Edit);
+        assert_eq!(edit.call.content, vec![diff]);
+        assert_eq!(edit.timing, Timing::Took(Duration::from_millis(1500)));
+        assert_eq!(replayed.timing, Timing::Unknown);
+    }
 
     #[test]
     fn chunks_merge_and_tools_update_in_place() {
+        let now = Instant::now();
         let mut s = Session::new();
         s.apply(Inbound::Ready { agent: "construct".into(), session_id: "x".into(), turn: None });
         assert!(s.can_prompt());
@@ -190,11 +260,11 @@ mod tests {
             Inbound::Thought("plan".into()),
             Inbound::Message("a".into()),
             Inbound::Message("b".into()),
-            Inbound::Tool { id: "t".into(), title: "read".into(), status: ToolStatus::Running },
-            Inbound::ToolStatus { id: "t".into(), status: ToolStatus::Done },
+            Inbound::Tool(call("t", ToolStatus::Running)),
+            Inbound::ToolUpdate(ToolUpdate { id: "t".into(), status: Some(ToolStatus::Done), ..ToolUpdate::default() }),
             Inbound::TurnEnded("end_turn".into()),
         ] {
-            s.apply(ev);
+            s.apply_at(ev, now);
         }
         assert_eq!(
             s.entries,
@@ -202,7 +272,7 @@ mod tests {
                 Entry::You("go".into()),
                 Entry::Thought("plan".into()),
                 Entry::Agent("ab".into()),
-                Entry::Tool { id: "t".into(), title: "read".into(), status: ToolStatus::Done },
+                Entry::Tool(Tool { call: call("t", ToolStatus::Done), timing: Timing::Took(Duration::ZERO) }),
             ]
         );
         assert!(s.can_prompt());

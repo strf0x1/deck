@@ -328,7 +328,7 @@ fn name(kind: &Pending) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToolStatus;
+    use crate::{ToolCall, ToolStatus};
 
     fn handshake() -> Conn {
         let (mut c, init) = Conn::start(PathBuf::from("/w"));
@@ -555,7 +555,12 @@ mod tests {
         let tool = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"t","title":"read x","status":"in_progress"}}}"#;
         assert_eq!(
             c.read(tool).events,
-            vec![Inbound::Tool { id: "t".into(), title: "read x".into(), status: ToolStatus::Running }]
+            vec![Inbound::Tool(ToolCall {
+                id: "t".into(),
+                title: "read x".into(),
+                status: ToolStatus::Running,
+                ..ToolCall::default()
+            })]
         );
         let end = r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#;
         assert_eq!(c.read(end).events, vec![Inbound::TurnEnded("end_turn".into())]);
@@ -578,9 +583,34 @@ mod tests {
             let line = rpc::notification("session/update", json!({ "sessionId": "s1", "update": update }));
             assert_eq!(
                 c.read(&line).events,
-                vec![Inbound::Tool { id: "t".into(), title: "read x".into(), status: expected }]
+                vec![Inbound::Tool(ToolCall {
+                    id: "t".into(),
+                    title: "read x".into(),
+                    status: expected,
+                    ..ToolCall::default()
+                })]
             );
         }
+    }
+
+    #[test]
+    fn tool_updates_carry_content_even_without_a_status() {
+        let mut c = handshake();
+        let update = json!({ "sessionUpdate": "tool_call_update", "toolCallId": "e1",
+            "content": [{ "type": "diff", "path": "a.rs", "oldText": "x", "newText": "y" }] });
+        let line = rpc::notification("session/update", json!({ "sessionId": "s1", "update": update }));
+        assert_eq!(
+            c.read(&line).events,
+            vec![Inbound::ToolUpdate(crate::ToolUpdate {
+                id: "e1".into(),
+                content: Some(vec![crate::ToolContent::Diff {
+                    path: "a.rs".into(),
+                    old: Some("x".into()),
+                    new: "y".into()
+                }]),
+                ..crate::ToolUpdate::default()
+            })]
+        );
     }
 
     #[test]
