@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::{audit_revoked, load_projects, save_projects, save_task, task_grants};
 
 /// One attached window's claim on a task. Dropping it detaches the window.
@@ -180,16 +180,17 @@ impl Boundary {
         self.notify(&mut inner, &item);
         inner.items.insert(id.to_owned(), item);
 
-        let deadline = now.saturating_add(millis(wait));
+        let until = Instant::now() + wait;
         loop {
             let now = now_ms();
             let Some(current) = inner.items.get(id) else { break };
-            if !current.state.pending() || current.expires_ms <= now || now >= deadline {
+            let left = until.saturating_duration_since(Instant::now());
+            if !current.state.pending() || current.expires_ms <= now || left.is_zero() {
                 break;
             }
-            let left = deadline.saturating_sub(now).min(current.expires_ms.saturating_sub(now)).max(1);
-            let (guard, _) =
-                self.wake.wait_timeout(inner, Duration::from_millis(left)).unwrap_or_else(|e| e.into_inner());
+            let left =
+                left.min(Duration::from_millis(current.expires_ms.saturating_sub(now))).max(Duration::from_millis(1));
+            let (guard, _) = self.wake.wait_timeout(inner, left).unwrap_or_else(|e| e.into_inner());
             inner = guard;
             self.prune(&mut inner, now_ms());
         }

@@ -429,6 +429,34 @@ fn a_wait_times_out_on_its_own_deadline_and_leaves_the_item_pending() {
 }
 
 #[test]
+fn a_wait_is_not_cut_short_by_unrelated_wakes() {
+    let dir = scratch("wait-wakes");
+    let boundary = std::sync::Arc::new(Boundary::with_settings(&dir, steady()).unwrap());
+    let item = boundary.submit(incoming("t", "/w", "m")).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waker = {
+        let boundary = std::sync::Arc::clone(&boundary);
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                boundary.wake.notify_all();
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        })
+    };
+    for _ in 0..50 {
+        let started = std::time::Instant::now();
+        let outcome = boundary.wait("t", &item.id, Duration::from_millis(20)).unwrap();
+        assert_eq!(outcome.state, State::Pending);
+        assert!(started.elapsed() >= Duration::from_millis(20), "a wake ended the wait early");
+    }
+    assert_eq!(boundary.status("t", &item.id).unwrap().unwrap().state, State::Pending);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    waker.join().unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn withdrawal_closes_a_pending_item_and_grants_nothing() {
     let dir = scratch("withdraw");
     let boundary = Boundary::with_settings(&dir, steady()).unwrap();
