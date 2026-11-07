@@ -53,6 +53,14 @@ pub struct Config {
     /// The project to copy into the guest's workspace on first boot.
     #[serde(default)]
     pub import: Option<PathBuf>,
+    /// Whether a first boot must find the import. A resume has no share but
+    /// the guest's marker, so the flag only matters when provisioning failed.
+    #[serde(default)]
+    pub import_required: bool,
+    /// The checkout the guest prepares after import (ADR 0008 §4). It travels
+    /// as the guest entry's argv, never the agent's environment.
+    #[serde(default)]
+    pub checkout: Option<Checkout>,
     /// The guest entry script. `DECK_AGENT` in `env` names the agent it runs.
     pub guest: String,
     pub argv: Vec<String>,
@@ -66,6 +74,20 @@ pub struct Config {
     pub library: PathBuf,
     /// The per-task egress gateway, started before boot (ADR 0004).
     pub gateway: Gateway,
+}
+
+/// What the guest entry needs to prepare the imported checkout: the branch to
+/// create at the imported HEAD, the repository `origin` is rewritten to, and
+/// the host identity commits carry. The gateway still refuses any other ref,
+/// so a wrong branch makes publication fail, not widen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Checkout {
+    pub branch: String,
+    pub repository: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
 }
 
 /// The host-side gateway process and the sockets libkrun maps to guest vsock
@@ -219,7 +241,8 @@ pub fn run(config: &Path) -> Result<()> {
         krun.guest_vsock_port(ctx, port, socket).context("forwarding the GitHub gateway port")?;
     }
     krun.workdir(ctx, "/workspace")?;
-    krun.exec(ctx, &config.guest, &config.argv, &guest_env(&config)).context("configuring the guest command")?;
+    krun.exec(ctx, &config.guest, &guest_argv(&config), &guest_env(&config))
+        .context("configuring the guest command")?;
     let shutdown = krun.shutdown_eventfd(ctx).context("enabling guest shutdown")?;
     install_signals(shutdown)?;
     eprintln!("vmm: configured at {} ms", started.elapsed().as_millis());
@@ -582,6 +605,30 @@ extern "C" fn on_term(_: c_int) {
     }
 }
 
+/// The guest entry's argv: the ACP port, then the checkout labels. They are
+/// the entry's own arguments, so the agent never inherits the branch name.
+fn guest_argv(config: &Config) -> Vec<String> {
+    checkout_argv(&config.argv, config.checkout.as_ref(), config.import_required)
+}
+
+fn checkout_argv(argv: &[String], checkout: Option<&Checkout>, import: bool) -> Vec<String> {
+    let mut argv = argv.to_vec();
+    if let Some(checkout) = checkout {
+        argv.extend(["--branch".into(), checkout.branch.clone()]);
+        argv.extend(["--repository".into(), checkout.repository.clone()]);
+        if !checkout.name.is_empty() {
+            argv.extend(["--name".into(), checkout.name.clone()]);
+        }
+        if !checkout.email.is_empty() {
+            argv.extend(["--email".into(), checkout.email.clone()]);
+        }
+    }
+    if import {
+        argv.push("--import-required".into());
+    }
+    argv
+}
+
 fn guest_env(config: &Config) -> Vec<String> {
     let mut env = vec![
         "PATH=/usr/local/bin:/usr/bin:/bin".into(),
@@ -740,6 +787,38 @@ mod tests {
         assert_eq!(restored.grants, vec![PathBuf::from("/task/grants.json")]);
         assert_eq!(restored.project.as_deref(), Some("/project"));
         assert!(restored.web_socket.is_none());
+    }
+
+    #[test]
+    fn the_checkout_travels_as_the_guest_entrys_argv() {
+        let checkout = Checkout {
+            branch: "deck/t-1".into(),
+            repository: "owner/name".into(),
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+        };
+        let argv = checkout_argv(&["1024".into()], Some(&checkout), true);
+        assert_eq!(
+            argv,
+            [
+                "1024",
+                "--branch",
+                "deck/t-1",
+                "--repository",
+                "owner/name",
+                "--name",
+                "Ada",
+                "--email",
+                "ada@example.com",
+                "--import-required",
+            ]
+        );
+        assert_eq!(checkout_argv(&["1024".into()], None, false), ["1024"]);
+        let bare = Checkout { name: String::new(), email: String::new(), ..checkout };
+        assert_eq!(
+            checkout_argv(&["1024".into()], Some(&bare), false),
+            ["1024", "--branch", "deck/t-1", "--repository", "owner/name"]
+        );
     }
 
     #[test]

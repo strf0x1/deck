@@ -82,21 +82,67 @@ cp "$scratch/deck-egress" "$scratch/rootfs/usr/local/bin/deck-egress"
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-egress"
 cat > "$scratch/rootfs/usr/local/bin/deck-guest" <<'GUEST'
 #!/bin/sh
-# deck's guest entry: provision the workspace once, mount the journal disk,
-# then hand ACP to the host over vsock. The guest opens the connection, so
-# the connection is the readiness signal: no listener port, no fixed delay.
+# deck's guest entry: provision the workspace once, prepare the checkout for
+# publication, mount the journal disk, then hand ACP to the host over vsock.
+# The guest opens the connection, so the connection is the readiness signal:
+# no listener port, no fixed delay.
 set -u
 port=${1:-1024}
+[ $# -gt 0 ] && shift
+branch= repository= name= email= import_required=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --branch) branch=${2:-}; shift 2 || shift ;;
+    --repository) repository=${2:-}; shift 2 || shift ;;
+    --name) name=${2:-}; shift 2 || shift ;;
+    --email) email=${2:-}; shift 2 || shift ;;
+    --import-required) import_required=1; shift ;;
+    *) shift ;;
+  esac
+done
 # /proc/uptime is free to read, unlike `date`, so the marks do not distort the
 # launch they measure.
 mark() { read -r up _ </proc/uptime; echo "deck-guest: $1 at ${up}s"; }
 mark "start port=$port"
 mkdir -p /workspace /mnt/import /root/.construct /tmp
-if [ ! -e /workspace/.deck-provisioned ] && mount -t virtiofs import /mnt/import 2>/dev/null; then
-  cp -a /mnt/import/. /workspace/ 2>/dev/null || true
-  touch /workspace/.deck-provisioned
-  umount /mnt/import
-  mark "provisioned"
+if [ ! -e /workspace/.deck-provisioned ]; then
+  if mount -t virtiofs import /mnt/import 2>/dev/null; then
+    cp -a /mnt/import/. /workspace/ || { echo "deck-guest: import copy failed" >&2; exit 1; }
+    umount /mnt/import
+    # The checkout is prepared once, at first start (ADR 0008 §4). A resume
+    # keeps the branch and the identity the first start wrote.
+    if [ -n "$branch" ] && [ -d /workspace/.git ]; then
+      git config --global --get-all safe.directory 2>/dev/null | grep -qx /workspace \
+        || git config --global --add safe.directory /workspace
+      if [ -n "$repository" ]; then
+        if git -C /workspace remote get-url origin >/dev/null 2>&1; then
+          git -C /workspace remote set-url origin "https://github.com/${repository}.git" \
+            || { echo "deck-guest: origin rewrite failed" >&2; exit 1; }
+        else
+          git -C /workspace remote add origin "https://github.com/${repository}.git" \
+            || { echo "deck-guest: origin add failed" >&2; exit 1; }
+        fi
+      fi
+      if git -C /workspace rev-parse --verify HEAD >/dev/null 2>&1; then
+        if git -C /workspace rev-parse --verify "refs/heads/${branch}" >/dev/null 2>&1; then
+          git -C /workspace checkout "${branch}" \
+            || { echo "deck-guest: checkout ${branch} failed" >&2; exit 1; }
+        else
+          git -C /workspace checkout -b "${branch}" \
+            || { echo "deck-guest: branch ${branch} failed" >&2; exit 1; }
+        fi
+      fi
+      [ -n "$name" ] && git -C /workspace config user.name "$name"
+      [ -n "$email" ] && git -C /workspace config user.email "$email"
+      touch /workspace/.deck-checkout
+      mark "checkout ${branch}"
+    fi
+    touch /workspace/.deck-provisioned
+    mark "provisioned"
+  elif [ "$import_required" = "1" ]; then
+    echo "deck-guest: import share missing" >&2
+    exit 1
+  fi
 fi
 if [ -b /dev/vdb ]; then
   if mount -t ext4 /dev/vdb /root/.construct 2>/dev/null; then
@@ -169,6 +215,90 @@ mark "connecting port=$port"
 exec /usr/bin/socat "SYSTEM:${DECK_AGENT} ${DECK_ARGS}" "VSOCK-CONNECT:2:${port}"
 GUEST
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest"
+# Test-only guest entry for crates/deck-runtime/tests/vm.rs: start the real
+# entry, wait for the checkout, run the publication checks, then keep the
+# guest alive for as long as the agent runs.
+cat > "$scratch/rootfs/usr/local/bin/deck-guest-checkout-test" <<'CHECKOUT'
+#!/bin/sh
+set -u
+/usr/local/bin/deck-guest "$@" &
+guest=$!
+i=0
+while [ ! -e /workspace/.deck-checkout ] && [ ! -e /workspace/.deck-provisioned ] && [ "$i" -lt 300 ]; do
+  sleep 0.1
+  i=$((i+1))
+done
+/usr/local/bin/deck-checkout-check
+wait "$guest"
+CHECKOUT
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest-checkout-test"
+# Test-only: prove the guest checkout is ready to publish (ADR 0008 §4).
+cat > "$scratch/rootfs/usr/local/bin/deck-checkout-check" <<'CHECK'
+#!/bin/sh
+set -u
+cd /workspace || exit 1
+export GIT_TERMINAL_PROMPT=0
+export http_proxy="http://127.0.0.1:${DECK_WEB_PORT:-8082}"
+export https_proxy="$http_proxy"
+export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$http_proxy"
+export no_proxy="127.0.0.1,localhost" NO_PROXY="$no_proxy"
+export DECK_GITHUB_URL="http://127.0.0.1:${DECK_GITHUB_PORT:-8084}"
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)
+echo "CHECK branch=$branch"
+echo "CHECK origin=$(git remote get-url origin 2>/dev/null || echo none)"
+echo "CHECK identity=$(git config user.name 2>/dev/null) <$(git config user.email 2>/dev/null)>"
+[ -e .env ] && echo "CHECK env=present" || echo "CHECK env=absent"
+[ -e untracked.txt ] && echo "CHECK untracked=present" || echo "CHECK untracked=absent"
+# Wait for the relays the entry starts after provisioning.
+for port in "${DECK_WEB_PORT:-8082}" "${DECK_GITHUB_PORT:-8084}"; do
+  i=0
+  while [ "$i" -lt 100 ]; do
+    socat -u /dev/null "TCP:127.0.0.1:${port}" 2>/dev/null && break
+    sleep 0.1
+    i=$((i+1))
+  done
+done
+if git fetch origin >/tmp/fetch.log 2>&1; then
+  echo "CHECK fetch=ok"
+else
+  echo "CHECK fetch=fail"
+  cat /tmp/fetch.log
+fi
+echo "checkout check" > checkout-check.txt
+git add checkout-check.txt
+if git commit -m "checkout check" >/tmp/commit.log 2>&1; then
+  echo "CHECK commit=ok"
+else
+  echo "CHECK commit=fail"
+  cat /tmp/commit.log
+fi
+echo "CHECK commit-author=$(git log -1 --format='%an <%ae>')"
+if git bundle create /tmp/check.bundle "refs/heads/${branch}" >/tmp/bundle.log 2>&1; then
+  echo "CHECK bundle=ok"
+else
+  echo "CHECK bundle=fail"
+  cat /tmp/bundle.log
+fi
+json=$(printf '{"operation":"publish","branch":"%s","summary":{"subject":"checkout check","count":1}}' "$branch")
+jlen=$(printf '%s' "$json" | wc -c | tr -d ' ')
+blen=$(wc -c < /tmp/check.bundle | tr -d ' ')
+total=$((jlen + 4 + blen))
+{
+  printf 'POST /operations/publish HTTP/1.1\r\nHost: deck\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n' "$total"
+  printf '%s' "$json"
+  LC_ALL=C gawk -v n="$blen" 'BEGIN { printf "%c%c%c%c", int(n/16777216)%256, int(n/65536)%256, int(n/256)%256, n%256 }'
+  cat /tmp/check.bundle
+} | socat - "TCP:127.0.0.1:${DECK_GITHUB_PORT:-8084}" > /tmp/publish.out 2>/tmp/publish.err
+if grep -q '^HTTP/1.1 200' /tmp/publish.out; then
+  echo "CHECK publish=ok"
+  grep -o '"branch":"[^"]*"' /tmp/publish.out | sed 's/^"branch":"//; s/"$//' | sed 's/^/CHECK publish-branch=/'
+else
+  echo "CHECK publish=fail"
+  cat /tmp/publish.out /tmp/publish.err
+fi
+echo "CHECK-DONE"
+CHECK
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-checkout-check"
 # A readable file outside /workspace, for the permission-ask measurement.
 echo outside > "$scratch/rootfs/root/outside.txt"
 cat > "$scratch/rootfs/usr/local/bin/deck-flush" <<'FLUSH'
