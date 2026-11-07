@@ -100,6 +100,11 @@ impl Session {
         self.status == Status::Ready
     }
 
+    /// No turn is running: the last turn is finished.
+    pub fn idle(&self) -> bool {
+        matches!(self.status, Status::Ready | Status::Down(_))
+    }
+
     /// Record a prompt the user sent.
     pub fn sent(&mut self, text: &str) {
         self.entries.push(Entry::You(text.to_string()));

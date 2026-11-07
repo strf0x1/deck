@@ -8,7 +8,7 @@
 use super::access::{NOT_CANCELLED, Revoke};
 use super::panels::glyph;
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, tint};
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -39,7 +39,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(6.))
                 .px(px(12.))
                 .py(px(9.))
-                .rounded(px(10.))
+                .rounded(px(radius::CONTROL))
                 .bg(Tokens::raised())
                 .child(
                     div()
@@ -52,7 +52,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .flex_1()
                                 .min_w_0()
                                 .font_family(MONO)
-                                .text_size(px(12.5))
+                                .text_size(px(size::LABEL))
                                 .child(item.name.clone()),
                         )
                         .child(
@@ -62,7 +62,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
-                                .text_size(px(11.5))
+                                .text_size(px(size::SMALL))
                                 .text_color(Tokens::text_dim())
                                 .child(div().size(px(6.)).rounded_full().bg(color))
                                 .child(label),
@@ -80,7 +80,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .w_full()
                         .whitespace_normal()
                         .font_family(MONO)
-                        .text_size(px(11.5))
+                        .text_size(px(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child(detail),
                 )
@@ -110,7 +110,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(div().font_weight(FontWeight::MEDIUM).child("Credentials"))
                 .child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(px(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child("Values stay on the host. This lists names and fingerprints only."),
                 )
@@ -133,7 +133,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .items_center()
                 .gap(px(10.))
                 .child(glyph(icon::SHIELD, 13.).text_color(Tokens::text_dim()))
-                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).child("Access"))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Access"))
                 .child(div().flex_1())
                 .child(
                     button("access-refresh", "Refresh", Tokens::text_dim())
@@ -145,11 +145,13 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 ),
         )
         .children(deck.task.as_ref().map(|task| {
-            div().flex_none().text_size(px(11.5)).text_color(Tokens::text_faint()).child(if task.boundary_enforced() {
-                "VM · external access is enforced by host gateways."
-            } else {
-                "Local process · host network access is not restricted by these grants."
-            })
+            div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(
+                if task.boundary_enforced() {
+                    "VM · external access is enforced by host gateways."
+                } else {
+                    "Local process · host network access is not restricted by these grants."
+                },
+            )
         }))
         .children(access.approvals().map(approval_mode))
         .children(access.approvals_error().map(error))
@@ -182,8 +184,10 @@ fn approval_mode(mode: deck_runtime::github::Approvals) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(3.))
-        .child(div().text_size(px(12.5)).text_color(Tokens::text_dim()).child(format!("GitHub approvals: {label}")))
-        .child(div().text_size(px(11.5)).text_color(Tokens::text_faint()).child(detail))
+        .child(
+            div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(format!("GitHub approvals: {label}")),
+        )
+        .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(detail))
         .into_any_element()
 }
 
@@ -193,13 +197,13 @@ fn confirm(target: &Revoke, busy: bool, cx: &mut Context<Deck>) -> AnyElement {
         .flex_col()
         .gap(px(10.))
         .p(px(14.))
-        .rounded(px(14.))
+        .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::red(), 0.35))
         .bg(tint(Tokens::red(), 0.06))
         .flex_none()
         .child(div().font_weight(FontWeight::MEDIUM).child(format!("Revoke {}?", target.label())))
-        .child(div().text_size(px(12.5)).text_color(Tokens::text_dim()).child(target.explanation()))
+        .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(target.explanation()))
         .child(
             div()
                 .flex()
@@ -231,13 +235,13 @@ fn notice(target: &Revoke) -> AnyElement {
         .flex_col()
         .gap(px(6.))
         .p(px(14.))
-        .rounded(px(14.))
+        .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.35))
         .bg(tint(Tokens::amber(), 0.06))
         .flex_none()
         .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} revoked", target.label())))
-        .child(div().text_size(px(12.5)).text_color(Tokens::text_dim()).child(text))
+        .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(text))
         .into_any_element()
 }
 
@@ -249,12 +253,12 @@ pub(super) fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<
         .px(px(12.))
         .flex()
         .items_center()
-        .rounded(px(9.))
+        .rounded(px(radius::CONTROL))
         .border_1()
         .border_color(tint(fg, 0.3))
         .bg(Tokens::raised())
         .text_color(fg)
-        .text_size(px(12.5))
+        .text_size(px(size::LABEL))
         .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
         .child(label.to_owned())

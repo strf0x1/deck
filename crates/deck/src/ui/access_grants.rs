@@ -7,7 +7,7 @@
 use super::access::grant_scope;
 use super::access_panel::{button, error};
 use super::root::Deck;
-use super::theme::{MONO, Tokens};
+use super::theme::{MONO, Tokens, radius, size};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -23,7 +23,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .items_center()
             .gap(px(12.))
             .p(px(12.))
-            .rounded(px(10.))
+            .rounded(px(radius::CONTROL))
             .bg(Tokens::raised())
             .child(
                 div()
@@ -33,8 +33,8 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(div().font_family(MONO).text_size(px(12.5)).child(grant.destination.clone()))
-                    .child(div().text_size(px(11.5)).text_color(Tokens::text_dim()).child(format!(
+                    .child(div().font_family(MONO).text_size(px(size::LABEL)).child(grant.destination.clone()))
+                    .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(format!(
                         "{} · {} · {}",
                         grant.gateway,
                         grant.operation,
@@ -54,7 +54,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .items_center()
             .gap(px(12.))
             .p(px(12.))
-            .rounded(px(10.))
+            .rounded(px(radius::CONTROL))
             .bg(Tokens::raised())
             .child(
                 div()
@@ -64,8 +64,8 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(div().font_family(MONO).text_size(px(12.5)).child(item.destination.clone()))
-                    .child(div().text_size(px(11.5)).text_color(Tokens::text_dim()).child(format!(
+                    .child(div().font_family(MONO).text_size(px(size::LABEL)).child(item.destination.clone()))
+                    .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(format!(
                         "{} · {} · {}",
                         item.gateway,
                         item.operation,
@@ -104,7 +104,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(div().font_weight(FontWeight::MEDIUM).child("Additional access"))
                 .child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(px(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child("Grants for this task and saved rules for its project."),
                 )

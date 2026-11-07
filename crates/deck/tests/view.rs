@@ -129,6 +129,54 @@ fn tool_cards_expand_and_the_transcript_follows_until_scrolled_back(cx: &mut Tes
 }
 
 #[gpui::test]
+fn a_finished_turn_lists_its_files_and_copy_buttons_copy(cx: &mut TestAppContext) {
+    use deck_acp::{ToolCall, ToolContent, ToolKind, ToolStatus};
+
+    let (deck, mut cx) = open(cx);
+    let edit = |id: &str, path: &str| ToolCall {
+        id: id.into(),
+        title: format!("edit {path}"),
+        kind: ToolKind::Edit,
+        status: ToolStatus::Done,
+        content: vec![ToolContent::Diff { path: path.into(), old: Some("a\n".into()), new: "b\n".into() }],
+        ..ToolCall::default()
+    };
+    let run = ToolCall {
+        id: "x1".into(),
+        title: "shell cargo test".into(),
+        kind: ToolKind::Execute,
+        status: ToolStatus::Done,
+        input: Some(json!({ "command": "cargo test" })),
+        ..ToolCall::default()
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        d.on_inbound(Inbound::UserMessage("rename it".into()), cx);
+        d.on_inbound(Inbound::Tool(edit("e1", "src/lib.rs")), cx);
+        d.on_inbound(Inbound::Tool(edit("e2", "src/main.rs")), cx);
+        d.on_inbound(Inbound::Tool(run), cx);
+        d.on_inbound(Inbound::Message("Renamed.".into()), cx);
+        d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx);
+    });
+    click_control(&mut cx, "touched-main.rs");
+    assert!(deck.read_with(&cx, |d, _| d.is_expanded("tool:e2")), "a footer chip opens its edit card");
+    assert!(!deck.read_with(&cx, |d, _| d.is_expanded("tool:e1")));
+
+    // The header's copy button copies the command and does not fold the card.
+    let copy = cx.debug_bounds("copy-tool:x1:subject").unwrap();
+    cx.simulate_mouse_move(copy.center(), None, Modifiers::none());
+    click_control(&mut cx, "copy-tool:x1:subject");
+    assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("cargo test"));
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.copied(), Some("tool:x1:subject"), "the button shows its check");
+        assert!(!d.is_expanded("tool:x1"), "copying is not a click on the header");
+    });
+    cx.executor().advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(deck.read_with(&cx, |d, _| d.copied().map(str::to_owned)), None, "the check goes away");
+}
+
+#[gpui::test]
 fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppContext) {
     use deck_acp::{ToolKind, ToolStatus, conn::Conn};
 
