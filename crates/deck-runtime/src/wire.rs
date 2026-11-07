@@ -70,6 +70,11 @@ pub(crate) enum Request {
         requests: u64,
         tokens: u64,
     },
+    /// A successful GitHub publication reported by the task's gateway.
+    Publication {
+        task: String,
+        publication: crate::lifecycle::Publication,
+    },
     /// Approve a whole web profile for a project: one decision instead of one
     /// per destination. Expands to project rules before the reply.
     WebProfile {
@@ -172,6 +177,7 @@ impl Request {
             | Self::ApprovalWait { task: id, .. }
             | Self::WithdrawApproval { task: id, .. }
             | Self::ModelUsage { task: id, .. }
+            | Self::Publication { task: id, .. }
             | Self::WebProfile { task: id, .. }
             | Self::GitHubProfile { task: id, .. }
             | Self::SetBudget { task: id, .. }

@@ -17,7 +17,7 @@ pub mod problem;
 pub mod publish;
 
 pub use client::Client;
-pub use control::{Answer, Control, Coverage};
+pub use control::{Answer, Control, Coverage, Publication};
 pub use policy::{Ask, Operation};
 
 use crate::credential::{Broker, Credential, Registration};
@@ -253,12 +253,48 @@ impl GitHub {
             operation,
             bundle,
         );
+        // The write happened; record what it published even if the token was
+        // revoked while it ran. A report that cannot be delivered does not
+        // change the operation's outcome.
+        if let Ok(body) = &result {
+            self.report(operation, ask, body);
+        }
         // A revoked token's operation is reported as revoked, whatever git or
         // the API made of being stopped; a ref already pushed stays pushed.
         if let Some(failure) = self.stopped(&token) {
             return Err(failure);
         }
         result.map(|body| (domain.clone(), body)).map_err(|problem| self.failed(&domain, problem))
+    }
+
+    /// Report a successful publish, create or update to the task's record.
+    /// The body is the gateway's own reply, so only fields it built are read.
+    fn report(&self, operation: Operation, ask: &Ask, body: &str) {
+        let Some(control) = &self.control else { return };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else { return };
+        let publication = match operation {
+            Operation::Publish => {
+                let (Some(branch), Some(commit)) = (
+                    value.get("branch").and_then(serde_json::Value::as_str),
+                    value.get("commit").and_then(serde_json::Value::as_str),
+                ) else {
+                    return;
+                };
+                Publication::Branch { branch: bounded(branch, 200), commit: bounded(commit, 64) }
+            }
+            Operation::PullRequest | Operation::UpdatePullRequest => {
+                let Some(number) = value.get("number").and_then(serde_json::Value::as_u64) else { return };
+                let url = value.get("html_url").and_then(serde_json::Value::as_str).unwrap_or_default();
+                let title = value.get("title").and_then(serde_json::Value::as_str).unwrap_or_default();
+                let draft = value
+                    .get("draft")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or_else(|| ask.draft.unwrap_or(operation == Operation::PullRequest));
+                Publication::PullRequest { number, url: bounded(url, MAX_URL), title: bounded(title, MAX_TITLE), draft }
+            }
+            Operation::Refs | Operation::Review => return,
+        };
+        control.report(&publication);
     }
 
     /// The revocation failure, when this operation's token was revoked.
@@ -361,6 +397,16 @@ impl GitHub {
             Answer::Unavailable(why) => Err(Failure::error(502, "deck_boundary_unavailable", &why)),
         }
     }
+}
+
+/// The most of a pull request title or URL the task record carries.
+const MAX_TITLE: usize = 1024;
+const MAX_URL: usize = 2048;
+
+/// `text` cut to at most `max` characters, keeping the record bounded even
+/// though the agent supplied the title.
+fn bounded(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
 }
 
 /// What the card shows about a request: the operation and what it touches,

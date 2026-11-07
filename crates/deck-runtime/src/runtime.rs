@@ -153,6 +153,18 @@ impl Runtime {
         inner.store.append(&mut task, Event::Usage { requests, tokens })
     }
 
+    /// Record the task's latest successful publication. It is accounting, not
+    /// a lifecycle transition, so it is accepted after a stop and never wakes
+    /// state subscribers (ADR 0008 §8). A repeated report is free.
+    pub fn publication(&self, id: &str, publication: crate::lifecycle::Publication) -> Result<()> {
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if task.publication.as_ref() == Some(&publication) {
+            return Ok(());
+        }
+        inner.store.append(&mut task, Event::Publication { publication })
+    }
+
     /// Record the first use of a credential value by a run's gateway.
     pub fn credential_used(&self, id: &str, name: &str, fingerprint: &str) -> Result<()> {
         let inner = self.lock();

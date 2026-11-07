@@ -118,6 +118,11 @@ impl DaemonClient {
         self.request(Request::ModelUsage { task: id.into(), requests, tokens })
     }
 
+    /// Record a successful GitHub publication on the task's record.
+    pub fn publication(&self, id: &str, publication: crate::lifecycle::Publication) -> Result<()> {
+        self.request::<serde_json::Value>(Request::Publication { task: id.into(), publication }).map(|_| ())
+    }
+
     /// Replace a task's live model budget; `None` is unlimited.
     pub fn set_budget(&self, id: &str, requests: Option<u64>, tokens: Option<u64>) -> Result<()> {
         self.request(Request::SetBudget { task: id.into(), requests, tokens })

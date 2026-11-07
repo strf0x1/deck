@@ -41,6 +41,18 @@ pub struct Usage {
     pub tokens: u64,
 }
 
+/// What a task last published, as its GitHub gateway reported it (ADR 0008
+/// §8). The record keeps the latest successful write; live pull request state
+/// is read separately through the task's own gateway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Publication {
+    /// A push to a branch: the branch and the commit it now points at.
+    Branch { branch: String, commit: String },
+    /// A created or updated pull request.
+    PullRequest { number: u64, url: String, title: String, draft: bool },
+}
+
 /// Why a task needs the user before it can run again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
@@ -106,6 +118,11 @@ pub enum Event {
         name: String,
         fingerprint: String,
     },
+    /// A successful publication reported by the task's GitHub gateway
+    /// (ADR 0008 §8). Accounting, not a lifecycle transition.
+    Publication {
+        publication: Publication,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -133,6 +150,10 @@ pub struct Task {
     /// The model gateway's latest totals, retained across runs.
     #[serde(default)]
     pub usage: Usage,
+    /// The last successful publication, retained across stops and daemon
+    /// restarts (ADR 0008 §8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<Publication>,
 }
 
 impl Task {
@@ -150,6 +171,7 @@ impl Task {
             holder: None,
             session_id: None,
             usage: Usage::default(),
+            publication: None,
         })
     }
 
@@ -183,6 +205,13 @@ impl Task {
             if self.state != State::Running {
                 bail!("task {}: `credential_used` cannot follow {}", self.id, describe(&self.state));
             }
+            return Ok(());
+        }
+        if let Event::Publication { publication } = ev {
+            if self.state == State::Destroyed {
+                bail!("task {}: `publication` cannot follow destroyed", self.id);
+            }
+            self.publication = Some(publication.clone());
             return Ok(());
         }
         let next = match (&self.state, ev) {
@@ -238,6 +267,7 @@ fn name(ev: &Event) -> &'static str {
         Event::Session { .. } => "session",
         Event::Usage { .. } => "usage",
         Event::CredentialUsed { .. } => "credential_used",
+        Event::Publication { .. } => "publication",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -292,6 +322,33 @@ mod tests {
         let t = fold(&[created(), started(), used.clone()]).unwrap();
         assert_eq!(t.state, State::Running, "accounting changes no state");
         assert!(fold(&[created(), used]).is_err());
+    }
+
+    #[test]
+    fn a_publication_is_the_latest_successful_write_and_survives_a_stop() {
+        let branch =
+            Event::Publication { publication: Publication::Branch { branch: "deck/t".into(), commit: "a".repeat(40) } };
+        let pull = Event::Publication {
+            publication: Publication::PullRequest {
+                number: 7,
+                url: "https://github.com/o/r/pull/7".into(),
+                title: "the change".into(),
+                draft: true,
+            },
+        };
+        let t = fold(&[created(), started(), branch.clone(), stopped(true)]).unwrap();
+        assert_eq!(t.publication, Some(Publication::Branch { branch: "deck/t".into(), commit: "a".repeat(40) }));
+        let t = fold(&[created(), started(), branch.clone(), stopped(true), pull.clone()]).unwrap();
+        assert_eq!(
+            t.publication,
+            Some(Publication::PullRequest {
+                number: 7,
+                url: "https://github.com/o/r/pull/7".into(),
+                title: "the change".into(),
+                draft: true,
+            })
+        );
+        assert!(fold(&[created(), Event::Destroyed, pull]).is_err());
     }
 
     #[test]

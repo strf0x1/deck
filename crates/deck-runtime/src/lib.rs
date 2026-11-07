@@ -36,7 +36,7 @@ mod wire;
 
 pub use backend::{Backend, Exited, Instance, Stream};
 pub use daemon_client::{DaemonClient, RunResult, Watch};
-pub use lifecycle::{Event, Failure, Spec, State, Task};
+pub use lifecycle::{Event, Failure, Publication, Spec, State, Task};
 pub use local::Local;
 pub use runtime::{GRACE, Notice, Runtime};
 pub use vm::Vm;
