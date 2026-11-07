@@ -254,7 +254,7 @@ impl GitHub {
             }
             coverage = Some(Coverage { own_branch: true, public });
         }
-        self.decide(operation, &domain, &reason(ask, operation), identity.as_deref(), coverage)?;
+        self.decide(operation, &domain, &reason(ask, operation), identity.as_deref(), coverage, ask.summary.as_ref())?;
         let token = match held {
             Some(token) => token,
             None => self.fetch()?,
@@ -364,6 +364,7 @@ impl GitHub {
         reason: &str,
         identity: Option<&str>,
         coverage: Option<Coverage>,
+        summary: Option<&ask::Summary>,
     ) -> Result<(), Failure> {
         if !operation.asks() {
             return Ok(());
@@ -377,7 +378,15 @@ impl GitHub {
             ));
         };
         let credential = self.credentials.as_ref().map(|(_, name)| name.as_str());
-        match control.ask(operation.name(), destination, Some(reason.to_string()), credential, identity, coverage) {
+        match control.ask(
+            operation.name(),
+            destination,
+            Some(reason.to_string()),
+            credential,
+            identity,
+            coverage,
+            summary,
+        ) {
             Answer::Allowed(id, scope) => {
                 // A default admission is the record of a write no card showed;
                 // every other allow already has a card the agent saw.

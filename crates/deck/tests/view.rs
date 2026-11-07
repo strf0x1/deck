@@ -7,7 +7,7 @@ use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
 use deck::ui::session::{Entry, Status};
 use deck_acp::{Inbound, PermissionOption};
-use deck_runtime::approvals::{Approval, Details};
+use deck_runtime::approvals::{Approval, Details, Summary};
 use gpui::{AppContext as _, Focusable as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use serde_json::json;
 
@@ -138,6 +138,7 @@ fn approval(id: &str) -> Approval {
             path: Some("/v1/chat/completions".into()),
             size: Some(0),
             identity: None,
+            summary: None,
         },
         reason: None,
         created_ms: 0,
@@ -147,6 +148,68 @@ fn approval(id: &str) -> Approval {
         state: deck_runtime::approvals::State::Pending,
         waiters: 0,
     }
+}
+
+fn github_approval(id: &str, operation: &str, destination: &str, reason: &str, summary: Option<Summary>) -> Approval {
+    Approval {
+        id: id.into(),
+        task: "t".into(),
+        project: "/w".into(),
+        session: None,
+        gateway: "github".into(),
+        operation: operation.into(),
+        destination: destination.into(),
+        credential: Some("DECK_GITHUB_TOKEN".into()),
+        details: Details { summary, ..Default::default() },
+        reason: Some(reason.into()),
+        created_ms: 0,
+        expires_ms: 0,
+        grant_expires_ms: None,
+        policy: 0,
+        state: deck_runtime::approvals::State::Pending,
+        waiters: 1,
+    }
+}
+
+#[gpui::test]
+fn a_ready_for_review_card_renders_without_a_publish_summary(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_boundary(github_approval("ready", "update_pr", "owner/name#pr7", "update pull request 7", None), cx)
+    });
+    deck.read_with(&cx, |d, _| {
+        let pending = d.boundary().pending().expect("the ready-for-review card is shown");
+        assert_eq!(pending.operation, "update_pr");
+        assert_eq!(pending.destination, "owner/name#pr7");
+        assert!(pending.details.summary.is_none(), "an update_pr card carries no publish summary");
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("boundary-summary").is_none(), "there is nothing to label as the agent's description");
+}
+
+#[gpui::test]
+fn a_public_repo_publish_card_shows_the_agents_description(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_boundary(
+            github_approval(
+                "public",
+                "publish",
+                "owner/name#deck/t-1",
+                "publish a commit to deck/t-1",
+                Some(Summary { subject: "Add the gateway".into(), count: 1 }),
+            ),
+            cx,
+        )
+    });
+    deck.read_with(&cx, |d, _| {
+        let pending = d.boundary().pending().expect("the public-repo card is shown");
+        assert_eq!(pending.operation, "publish");
+        assert_eq!(pending.destination, "owner/name#deck/t-1");
+        assert_eq!(pending.details.summary.as_ref().map(|summary| summary.count), Some(1));
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("boundary-summary").is_some(), "the agent's description is under the destination");
 }
 
 #[gpui::test]
