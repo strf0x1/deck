@@ -5,11 +5,13 @@
 //! and [`Lanes`] is the only place that maps one to the other, so a task
 //! keeps its card (and the card its place and motion) across refreshes. The
 //! window's own card stays [`LIVE`]: its title and state come from the live
-//! session, not from the record.
+//! session, not from the record, except that a merged publication marks it
+//! done.
 
 use super::board::{Lane, LaneState};
 use super::publication::{self, View};
 use super::root::LIVE;
+use super::session::Status;
 use deck_runtime::pull_request::State as Published;
 use deck_runtime::{State, Task};
 use std::collections::HashMap;
@@ -31,6 +33,28 @@ pub fn lane(id: usize, task: &Task, view: Option<&View>) -> Lane {
         State::Destroyed => (LaneState::Idle, "destroyed".to_string()),
     };
     Lane { id, title: project, detail, state, chip: view.map(|v| (v.dot, v.label.clone())) }
+}
+
+/// The window's own card: the live session's state, except that a pending
+/// question or boundary card needs the user first, and a merged publication
+/// means the task is done (ADR 0008 §8).
+pub fn live(status: &Status, ask: Option<&str>, boundary_pending: bool, view: Option<&View>) -> (LaneState, String) {
+    if boundary_pending {
+        (LaneState::Waiting, "asks: external access".to_string())
+    } else if let Some(ask) = ask {
+        (LaneState::Waiting, format!("asks: {ask}"))
+    } else if view.is_some_and(View::done) {
+        (LaneState::Review, "done · merged".to_string())
+    } else {
+        match status {
+            Status::Connecting => (LaneState::Idle, "connecting…".to_string()),
+            Status::Ready => (LaneState::Idle, "ready".to_string()),
+            Status::Waiting => (LaneState::Waiting, "waiting for permission".to_string()),
+            Status::Working => (LaneState::Working, "working".to_string()),
+            Status::Detached => (LaneState::Working, "running · detached".to_string()),
+            Status::Down(e) => (LaneState::Idle, e.clone()),
+        }
+    }
 }
 
 /// Lane ids for task ids, stable for the window's life.
@@ -142,6 +166,24 @@ mod tests {
         let lane = lane(1, &task("a", json!({ "state": "running" }), "vm"), Some(&view));
         assert_eq!((lane.state, lane.detail.as_str()), (LaneState::Review, "done · merged"));
         assert_eq!(lane.chip, Some((publication::Dot::Merged, "#7".into())));
+    }
+
+    #[test]
+    fn the_live_card_waits_for_whoever_needs_it_then_reads_done_once_merged() {
+        let merged = Published {
+            publication: Some(Publication::PullRequest { number: 7, url: "u".into(), title: "t".into(), draft: false }),
+            live: Some(Live { pull_request: Some(json!({ "state": "closed", "merged": true })), ..Live::default() }),
+            fresh: false,
+        };
+        let view = publication::view(&merged, 0).unwrap();
+        assert_eq!(live(&Status::Ready, None, false, None), (LaneState::Idle, "ready".into()));
+        assert_eq!(live(&Status::Working, None, false, None), (LaneState::Working, "working".into()));
+        assert_eq!(live(&Status::Ready, None, false, Some(&view)), (LaneState::Review, "done · merged".into()));
+        assert_eq!(
+            live(&Status::Ready, Some("shell rm"), false, Some(&view)),
+            (LaneState::Waiting, "asks: shell rm".into())
+        );
+        assert_eq!(live(&Status::Ready, None, true, Some(&view)), (LaneState::Waiting, "asks: external access".into()));
     }
 
     #[test]

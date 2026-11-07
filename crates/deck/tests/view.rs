@@ -1069,6 +1069,48 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     cleanup_daemon(&data);
 }
 
+#[gpui::test]
+fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) {
+    use deck::ui::board::LaneState;
+    use deck_runtime::pull_request::{Live, State as Published};
+    use deck_runtime::{DaemonClient, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-own-merged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), github: None }).unwrap().task;
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, data.clone(), cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(task.id.as_str())));
+    let pull = json!({ "kind": "pull_request", "number": 9, "url": "https://github.com/o/r/pull/9", "title": "t", "draft": false });
+    let merged = Published {
+        publication: Some(serde_json::from_value(pull).unwrap()),
+        live: Some(Live {
+            read_at_ms: 1,
+            pull_request: Some(json!({ "state": "closed", "merged": true })),
+            ..Live::default()
+        }),
+        fresh: false,
+    };
+    let record = daemon.task(&task.id).unwrap();
+    deck.update(&mut vcx, |d, cx| d.on_tasks(vec![record], [(task.id.clone(), merged)].into(), cx));
+    let (state, detail) = deck.read_with(&vcx, |d, _| {
+        let card = d.board().cards().iter().find(|c| c.lane.id == deck::ui::root::LIVE).unwrap();
+        (card.lane.state, card.lane.detail.clone())
+    });
+    assert_eq!((state, detail.as_str()), (LaneState::Review, "done · merged"));
+    cx.quit();
+    daemon.stop(&task.id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
 #[cfg(unix)]
 #[gpui::test]
 fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContext) {
