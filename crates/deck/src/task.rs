@@ -136,6 +136,12 @@ impl WindowTask {
         self.daemon.revoke_credential(name).map(|_| ())
     }
 
+    /// Permit another OS read after a cancelled or refused one. False when
+    /// there was no completed denial to clear.
+    pub fn retry_credential(&self, name: &str) -> Result<bool> {
+        self.daemon.retry_credential(name)
+    }
+
     pub fn grants(&self) -> Result<Vec<Grant>> {
         self.daemon.access_grants(&self.id)
     }

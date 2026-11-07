@@ -57,6 +57,8 @@ pub struct Access {
     credentials_error: Option<String>,
     grants_error: Option<String>,
     revoke_error: Option<String>,
+    retrying: Option<String>,
+    retry_message: Option<String>,
     approvals: Option<Approvals>,
     approvals_error: Option<String>,
     approvals_request: u64,
@@ -100,6 +102,17 @@ impl Access {
         self.revoke_error.as_deref()
     }
 
+    /// The credential whose retry is in flight, if any.
+    pub fn retrying(&self) -> Option<&str> {
+        self.retrying.as_deref()
+    }
+
+    /// What the last retry reply said: a failure, or that there was nothing
+    /// to retry.
+    pub fn retry_message(&self) -> Option<&str> {
+        self.retry_message.as_deref()
+    }
+
     pub fn approvals(&self) -> Option<Approvals> {
         self.approvals
     }
@@ -113,6 +126,7 @@ impl Access {
         if !self.open {
             self.confirming = None;
             self.revoked = None;
+            self.retry_message = None;
             self.invalidate();
         }
         self.open
@@ -261,6 +275,30 @@ impl Access {
                 self.revoke_error = Some(why);
             }
         }
+    }
+
+    /// Start a retry for a paused credential. False when one is already in
+    /// flight or the listing no longer shows that name as paused.
+    pub fn begin_retry(&mut self, name: &str) -> bool {
+        if self.retrying.is_some() || !self.credentials.iter().any(|item| item.name == name && item.paused) {
+            return false;
+        }
+        self.retrying = Some(name.into());
+        self.retry_message = None;
+        true
+    }
+
+    /// A successful retry clears the pause; the subsequent listing shows the
+    /// new state. `false` means the daemon had no completed denial to clear.
+    pub fn retry_done(&mut self, result: Result<bool, String>) {
+        if self.retrying.take().is_none() {
+            return;
+        }
+        self.retry_message = match result {
+            Ok(true) => None,
+            Ok(false) => Some("Nothing to retry".into()),
+            Err(why) => Some(why),
+        };
     }
 }
 

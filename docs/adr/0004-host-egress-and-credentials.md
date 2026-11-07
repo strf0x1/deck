@@ -1226,10 +1226,11 @@ The implementation is not done until these have tests where practical.
       interaction-unavailable and Linux locked-store errors remain transient.
       Apple's [cancellation](https://developer.apple.com/documentation/security/errSecUserCanceled)
       and [authentication failure](https://developer.apple.com/documentation/security/errSecAuthFailed)
-      statuses distinguish those cases. A dedicated Access-panel retry action,
-      interactive Linux refusal classification, and live Keychain verification
-      with the supported signing identity remain pending. No ACP field changes
-      are introduced by the host-only CLI/control operation.
+      statuses distinguish those cases. The Access panel offers the same retry
+      for a paused credential. Interactive Linux refusal classification and
+      live Keychain verification with the supported signing identity remain
+      pending. No ACP field changes are introduced by the host-only
+      CLI/control operation.
 
     The timed scope reaches agent-visible boundary status and notifications.
     Names and payloads are settled in released shared contract 1.1.0 §5.4.

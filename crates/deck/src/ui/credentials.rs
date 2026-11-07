@@ -113,6 +113,30 @@ impl Deck {
         self.toggle_access(cx);
     }
 
+    /// Permit another OS read for a paused credential, then refresh the
+    /// listing so the row shows the new state.
+    pub fn retry_credential(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self.access.begin_retry(name) {
+            return cx.notify();
+        }
+        let Some(task) = self.task.clone() else {
+            self.access.retry_done(Err("no task is attached to retry through".into()));
+            return cx.notify();
+        };
+        cx.notify();
+        let name = name.to_string();
+        let done = cx.background_executor().spawn(async move { task.retry_credential(&name) });
+        cx.spawn(async move |this, cx| {
+            let result = done.await.map_err(|e| format!("retrying the credential: {e:#}"));
+            let _ = this.update(cx, |deck, cx| {
+                deck.access.retry_done(result);
+                deck.refresh_access(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn confirm_revoke(&mut self, cx: &mut Context<Self>) {
         let Some(target) = self.access.begin_revoke() else {
             return;

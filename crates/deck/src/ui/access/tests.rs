@@ -83,7 +83,13 @@ fn credentials_still_require_a_live_value_and_keep_the_provider_warning() {
     let ticket = access.begin_credentials();
     access.credentials_listed(
         ticket,
-        Ok(vec![Listed { name: "KEY".into(), fingerprint: Some("sha256:a".into()), revoked: false, error: None }]),
+        Ok(vec![Listed {
+            name: "KEY".into(),
+            fingerprint: Some("sha256:a".into()),
+            revoked: false,
+            error: None,
+            paused: false,
+        }]),
     );
     assert!(!access.ask_credential("missing"));
     assert!(access.ask_credential("KEY"));
@@ -92,6 +98,61 @@ fn credentials_still_require_a_live_value_and_keep_the_provider_warning() {
     access.revoke_done(Err("no daemon".into()));
     assert!(!access.credentials()[0].revoked);
     assert_eq!(access.confirming(), Some(&Revoke::Credential("KEY".into())));
+}
+
+#[test]
+fn a_retry_runs_once_and_reports_nothing_to_retry() {
+    let mut access = panel();
+    let ticket = access.begin_credentials();
+    access.credentials_listed(
+        ticket,
+        Ok(vec![
+            Listed {
+                name: "PAUSED".into(),
+                fingerprint: None,
+                revoked: false,
+                error: Some("paused".into()),
+                paused: true,
+            },
+            Listed {
+                name: "ACTIVE".into(),
+                fingerprint: Some("sha256:a".into()),
+                revoked: false,
+                error: None,
+                paused: false,
+            },
+        ]),
+    );
+    assert!(!access.begin_retry("ACTIVE"), "an active credential is not retryable");
+    assert!(!access.begin_retry("UNKNOWN"));
+    assert!(access.begin_retry("PAUSED"));
+    assert!(!access.begin_retry("PAUSED"), "one retry at a time");
+    assert_eq!(access.retrying(), Some("PAUSED"));
+    access.retry_done(Ok(false));
+    assert_eq!(access.retrying(), None);
+    assert_eq!(access.retry_message(), Some("Nothing to retry"));
+    assert!(access.begin_retry("PAUSED"), "a finished retry can start another");
+    access.retry_done(Err("daemon disconnected".into()));
+    assert_eq!(access.retry_message(), Some("daemon disconnected"));
+}
+
+#[test]
+fn a_stale_listing_cannot_start_a_retry() {
+    let mut access = panel();
+    let ticket = access.begin_credentials();
+    access.credentials_listed(
+        ticket,
+        Ok(vec![Listed {
+            name: "PAUSED".into(),
+            fingerprint: None,
+            revoked: false,
+            error: Some("paused".into()),
+            paused: true,
+        }]),
+    );
+    let stale = access.begin_credentials();
+    access.credentials_listed(stale, Ok(vec![]));
+    assert!(!access.begin_retry("PAUSED"), "the name is no longer listed as paused");
 }
 
 #[test]
