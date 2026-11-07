@@ -216,15 +216,52 @@ impl Client {
         if let Some(base) = base {
             request.insert("base".into(), json!(base));
         }
-        if let Some(draft) = draft {
-            request.insert("draft".into(), json!(draft));
-        }
-        if request.is_empty() {
+        if request.is_empty() && draft.is_none() {
             return Err(Problem::invalid("an update names a title, a body, a base or the draft state"));
         }
         let path = format!("{}pulls/{number}", self.prefix());
-        let reply = self.call("PATCH", &path, Some(&Value::Object(request)))?;
+        if !request.is_empty() {
+            self.call("PATCH", &path, Some(&Value::Object(request)))?;
+        }
+        // REST's update has no draft field: GitHub ignores it. Changing draft
+        // state is the GraphQL mutations below (ADR 0008 §5, contract §11).
+        if let Some(draft) = draft {
+            let current = self.call("GET", &path, None)?;
+            let was = current.get("draft").and_then(Value::as_bool);
+            if was != Some(draft) {
+                let id = current
+                    .get("node_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Problem::unavailable("the pull request named no node id"))?;
+                let mutation = if draft { "convertPullRequestToDraft" } else { "markPullRequestReadyForReview" };
+                let query = format!(
+                    "mutation {{ {mutation}(input: {{pullRequestId: \"{id}\"}}) {{ pullRequest {{ number isDraft }} }} }}"
+                );
+                let reply = self.graphql(&query)?;
+                if let Some(error) = reply
+                    .get("errors")
+                    .and_then(Value::as_array)
+                    .and_then(|errors| errors.first())
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                {
+                    // GraphQL reports a rejected mutation as 200 plus errors.
+                    return Err(Problem::refused(error.chars().take(300).collect::<String>()));
+                }
+            }
+        }
+        let reply = self.call("GET", &path, None)?;
         Ok(summary(&reply).to_string())
+    }
+
+    /// One GraphQL mutation. The endpoint is the API host's, not the
+    /// repository prefix; the query is this module's, never the guest's.
+    fn graphql(&self, query: &str) -> Result<Value, Problem> {
+        self.call_at(
+            "POST",
+            &format!("{}/graphql", self.settings.api.trim_end_matches('/')),
+            Some(&json!({ "query": query })),
+        )
     }
 
     /// The head branch of pull request `number`, when it is one this task may
@@ -307,6 +344,10 @@ impl Client {
     /// One API call with the host's credential. The guest contributed the
     /// path only through arguments this module already validated.
     pub(crate) fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, Problem> {
+        self.call_at(method, path, body)
+    }
+
+    fn call_at(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, Problem> {
         let Some(token) = self.settings.token.as_ref().filter(|token| !token.is_empty()) else {
             return Err(Problem::credential("the host has no GitHub credential"));
         };

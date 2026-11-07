@@ -1,0 +1,456 @@
+[
+  {
+    "check": "fixture: scratch repository is private",
+    "passed": true,
+    "observed": "private"
+  },
+  {
+    "check": "fixture: project origin names the scratch repository",
+    "passed": true,
+    "observed": "https://github.com/strf0x1/deck-acceptance-scratch.git"
+  },
+  {
+    "check": "fixture: the project .env is git-ignored",
+    "passed": true,
+    "observed": ".env"
+  },
+  {
+    "check": "fixture: the main run starts with no project file",
+    "passed": true,
+    "observed": "/home/brandon/git/deck-acceptance-89/scratch-project/.deck/project.toml"
+  },
+  {
+    "check": "fixture: main has a trivial CI workflow",
+    "passed": true,
+    "observed": ".github/workflows/ci.yml"
+  },
+  {
+    "check": "fixture: the file store holds DECK_GITHUB_TOKEN",
+    "passed": true,
+    "observed": "DECK_GITHUB_TOKEN sha256:a77a71482137 file /home/brandon/git/deck-acceptance-89/target/credentials.json active"
+  },
+  {
+    "check": "fixture: the file store holds the synthetic model key",
+    "passed": true,
+    "observed": "OPENAI_API_KEY sha256:defab487987c file /home/brandon/git/deck-acceptance-89/target/credentials.json active"
+  },
+  {
+    "check": "window: the VM task is running with the project identity",
+    "passed": true,
+    "observed": {
+      "argv": [
+        "/usr/local/bin/construct",
+        "acp"
+      ],
+      "cwd": "/home/brandon/git/deck-acceptance-89/scratch-project",
+      "github": {
+        "repository": "strf0x1/deck-acceptance-scratch",
+        "base": "main",
+        "credential": "DECK_GITHUB_TOKEN",
+        "approvals": "own-branch",
+        "identity": {
+          "name": "Brandon Bosch",
+          "email": "brandon.bosch@protonmail.com"
+        }
+      }
+    }
+  },
+  {
+    "check": "window: the task recorded the inferred GitHub policy",
+    "passed": true,
+    "observed": {
+      "repository": "strf0x1/deck-acceptance-scratch",
+      "base": "main",
+      "credential": "DECK_GITHUB_TOKEN",
+      "approvals": "own-branch",
+      "identity": {
+        "name": "Brandon Bosch",
+        "email": "brandon.bosch@protonmail.com"
+      }
+    }
+  },
+  {
+    "check": "window: a capable agent shows no publish notice",
+    "passed": true,
+    "observed": null
+  },
+  {
+    "check": "01-publish: turn reached a text reply",
+    "passed": true,
+    "observed": "Draft pull request opened."
+  },
+  {
+    "check": "01-publish: no boundary card was shown",
+    "passed": true,
+    "observed": []
+  },
+  {
+    "check": "case 8: the ignored .env is absent from the guest checkout",
+    "passed": true,
+    "observed": "A  change.txt\n?? .deck-checkout\n?? .deck-provisioned\n---\n/workspace\ndeck/1a1b4b9aaf7-70c0b-0\nhttps://github.com/strf0x1/deck-acceptance-scratch.git\nenv-absent\ngitignore-present\n"
+  },
+  {
+    "check": "case 1: publish reports a created branch",
+    "passed": true,
+    "observed": "Published dc1bdfe842763685c5042a0221671f25da39ad1f to strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (created)\n\n[deck boundary] blocked while this ran: strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (approval 1a1b4b9b5f2-1, allowed; scope: default). This is the user's policy, not a network failure; do not look for another route to the same resource. Call boundary_wait if the task needs it, or carry on and boundary_withdraw if it does not."
+  },
+  {
+    "check": "case 1: the draft pull request was opened by the task",
+    "passed": true,
+    "observed": "Pull request #8 \"Scratch: first change\" (draft, deck/1a1b4b9aaf7-70c0b-0 -> main): https://github.com/strf0x1/deck-acceptance-scratch/pull/8\n\n[deck boundary] blocked while this ran: strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (approval 1a1b4b9bf22-2, allowed; scope: default). This is the user's policy, not a network failure; do not look for another route to the same resource. Call boundary_wait if the task needs it, or carry on and boundary_withdraw if it does not."
+  },
+  {
+    "check": "case 1: the write is admitted with scope default on the boundary /events feed",
+    "passed": true,
+    "observed": [
+      {
+        "seq": 1,
+        "approval_id": "1a1b4b9b5f2-1",
+        "gateway": "github",
+        "destination": "strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0",
+        "state": "allowed",
+        "scope": "default",
+        "reason": "publish a commit to deck/1a1b4b9aaf7-70c0b-0"
+      },
+      {
+        "seq": 2,
+        "approval_id": "1a1b4b9bf22-2",
+        "gateway": "github",
+        "destination": "strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0",
+        "state": "allowed",
+        "scope": "default",
+        "reason": "open a pull request from deck/1a1b4b9aaf7-70c0b-0 to main"
+      }
+    ]
+  },
+  {
+    "check": "case 1: GitHub has the published branch at the reported commit",
+    "passed": true,
+    "observed": {
+      "github": "dc1bdfe842763685c5042a0221671f25da39ad1f",
+      "reported": "dc1bdfe842763685c5042a0221671f25da39ad1f"
+    }
+  },
+  {
+    "check": "case 1: GitHub shows the pull request as a draft",
+    "passed": true,
+    "observed": {
+      "draft": true,
+      "head": "deck/1a1b4b9aaf7-70c0b-0",
+      "base": "main"
+    }
+  },
+  {
+    "check": "case 2: the card shows the pull request chip",
+    "passed": true,
+    "observed": {
+      "dot": "draft",
+      "label": "#8"
+    }
+  },
+  {
+    "check": "case 2: publishing put the same chip in the header",
+    "passed": true,
+    "observed": {
+      "dot": "draft",
+      "label": "#8"
+    }
+  },
+  {
+    "check": "case 1: the admission also reaches the agent as a boundary note",
+    "passed": true,
+    "observed": "strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (approval 1a1b4b9b5f2-1, allowed; scope: default). This is the user's policy, not a network failure; do not look for another route to the same resource. Call boundary_wait if the task needs it, or carry on and boundary_withdraw if it does not."
+  },
+  {
+    "check": "case 2: opening the chip opens the publication panel",
+    "passed": true,
+    "observed": "1a1b4b9aaf7-70c0b-0"
+  },
+  {
+    "check": "case 3: live state lists the check runs on the pull request",
+    "passed": true,
+    "observed": [
+      [
+        "check",
+        "queued",
+        null
+      ]
+    ]
+  },
+  {
+    "check": "case 3: a draft pull request shows the draft dot while its checks run",
+    "passed": true,
+    "observed": {
+      "dot": "draft",
+      "label": "#8"
+    }
+  },
+  {
+    "check": "04-second-push: turn reached a text reply",
+    "passed": true,
+    "observed": "Second change published; the pull request checks were read."
+  },
+  {
+    "check": "04-second-push: no boundary card was shown",
+    "passed": true,
+    "observed": []
+  },
+  {
+    "check": "case 4: the second push fast-forwards from the previous commit",
+    "passed": true,
+    "observed": "Published f6254cf915250c7f922f18c6390d233ee5bbf380 to strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (fast-forwarded from dc1bdfe842763685c5042a0221671f25da39ad1f)\n\n[deck boundary] blocked while this ran: strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (approval 1a1b4b9f340-3, allowed; scope: default). This is the user's policy, not a network failure; do not look for another route to the same resource. Call boundary_wait if the task needs it, or carry on and boundary_withdraw if it does not."
+  },
+  {
+    "check": "case 4: GitHub advanced the branch to the reported commit",
+    "passed": true,
+    "observed": {
+      "github": "f6254cf915250c7f922f18c6390d233ee5bbf380",
+      "reported": "f6254cf915250c7f922f18c6390d233ee5bbf380"
+    }
+  },
+  {
+    "check": "case 3: pr_review reads the checks back to the agent",
+    "passed": true,
+    "observed": "Pull request #8 \"Scratch: first change\" (draft, deck/1a1b4b9aaf7-70c0b-0 -> main): https://github.com/strf0x1/deck-acceptance-scratch/pull/8\nHead dc1bdfe842763685c5042a0221671f25da39ad1f; not mergeable.\nChecks (1 total):\n- check: queued"
+  },
+  {
+    "check": "05-ready: turn reached a text reply",
+    "passed": true,
+    "observed": "The pull request is ready for review."
+  },
+  {
+    "check": "case 6: marking ready asks with a card on the pull request",
+    "passed": true,
+    "observed": {
+      "id": "1a1b4ba03a0-4",
+      "task": "1a1b4b9aaf7-70c0b-0",
+      "gateway": "github",
+      "operation": "update_pr",
+      "destination": "strf0x1/deck-acceptance-scratch#pr8",
+      "credential": "DECK_GITHUB_TOKEN",
+      "state": "pending",
+      "waiting": false,
+      "pending": [
+        {
+          "id": "1a1b4ba03a0-4",
+          "task": "1a1b4b9aaf7-70c0b-0",
+          "project": "/home/brandon/git/deck-acceptance-89/scratch-project",
+          "session": "20261107-063709-3d70",
+          "gateway": "github",
+          "operation": "update_pr",
+          "destination": "strf0x1/deck-acceptance-scratch#pr8",
+          "credential": "DECK_GITHUB_TOKEN",
+          "details": {
+            "identity": "sha256:d627011007ab54ff2287798fcf80635f06a235288af90c52b852a5adc52741e9",
+            "summary": {
+              "subject": "Add the second scratch change",
+              "count": 1
+            }
+          },
+          "reason": "update pull request 8",
+          "created_ms": 1794033451936,
+          "expires_ms": 1794033751936,
+          "policy": 0,
+          "state": "pending",
+          "waiters": 0
+        }
+      ]
+    }
+  },
+  {
+    "check": "case 6: the card carries the publish summary",
+    "passed": true,
+    "observed": {
+      "subject": "Add the second scratch change",
+      "count": 1
+    }
+  },
+  {
+    "check": "case 6: GitHub shows the pull request ready for review",
+    "passed": true,
+    "observed": {
+      "draft": false,
+      "state": "open"
+    }
+  },
+  {
+    "check": "case 3: the chip shows the queued check as running",
+    "passed": true,
+    "observed": [
+      [
+        0.001,
+        "draft: #8"
+      ],
+      [
+        6.512,
+        "checks running: #8"
+      ]
+    ]
+  },
+  {
+    "check": "case 3: the chip went from running checks to their result",
+    "passed": true,
+    "observed": [
+      "checks running: #8",
+      "checks failing: #8"
+    ]
+  },
+  {
+    "check": "case 3: the panel lists the completed runs",
+    "passed": true,
+    "observed": [
+      [
+        "check",
+        "completed",
+        "cancelled"
+      ],
+      [
+        "check",
+        "completed",
+        "cancelled"
+      ]
+    ]
+  },
+  {
+    "check": "06-refused: turn reached a text reply",
+    "passed": true,
+    "observed": "The publish was refused; the branch moved. Not resending the same commits."
+  },
+  {
+    "check": "06-refused: no boundary card was shown",
+    "passed": true,
+    "observed": []
+  },
+  {
+    "check": "case 5: the gateway refuses the rewrite with deck_github_refused and names current",
+    "passed": true,
+    "observed": "Error: Deck's GitHub gateway refused: deck_github_refused (403): deck/1a1b4b9aaf7-70c0b-0 is at f6254cf915250c7f922f18c6390d233ee5bbf380, which the bundle does not build on; a publish only extends a branch, never rewrites it, so rebuild on f6254cf915250c7f922f18c6390d233ee5bbf380 and publish again. The branch is at f6254cf915250c7f922f18c6390d233ee5bbf380: rebase onto f6254cf915250c7f922f18c6390d233ee5bbf380 and push again. Do not resend the same commits.\n\n[deck boundary] blocked while this ran:\n- strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (approval , failed)\n- strf0x1/deck-acceptance-scratch#deck/1a1b4b9aaf7-70c0b-0 (approval 1a1b4ba68b6-6, allowed; scope: default)\nThis is the user's policy, not a network failure; do not look for another route to the same resource. Call boundary_wait if the task needs it, or carry on and boundary_withdraw if it does not."
+  },
+  {
+    "check": "case 5: the agent does not retry the refused publish",
+    "passed": true,
+    "observed": 1
+  },
+  {
+    "check": "case 5: GitHub still has the fast-forwarded commit",
+    "passed": true,
+    "observed": "f6254cf915250c7f922f18c6390d233ee5bbf380"
+  },
+  {
+    "check": "case 9: the stopped task still shows its chip",
+    "passed": true,
+    "observed": {
+      "dot": "checks failing",
+      "label": "#8"
+    }
+  },
+  {
+    "check": "case 9: the stopped task still opens its publication panel",
+    "passed": true,
+    "observed": "1a1b4b9aaf7-70c0b-0"
+  },
+  {
+    "check": "case 9: resume restores the session and keeps the chip",
+    "passed": true,
+    "observed": {
+      "dot": "checks failing",
+      "label": "#8"
+    }
+  },
+  {
+    "check": "case 10: GitHub merged the pull request",
+    "passed": true,
+    "observed": "Pull Request successfully merged"
+  },
+  {
+    "check": "case 10: the card chip turns merged after the merge",
+    "passed": true,
+    "observed": {
+      "id": 0,
+      "title": "construct",
+      "state": "idle",
+      "detail": "ready",
+      "chip": {
+        "dot": "merged",
+        "label": "#8"
+      },
+      "y": 0.0,
+      "lift": 0.0
+    }
+  },
+  {
+    "check": "case 10: the merged task offers Destroy in its panel",
+    "passed": true,
+    "observed": "1a1b4b9aaf7-70c0b-0"
+  },
+  {
+    "check": "case 10: the second Destroy click destroys the task",
+    "passed": true,
+    "observed": {
+      "state": "destroyed"
+    }
+  },
+  {
+    "check": "case 7: the ask task recorded the project approval mode",
+    "passed": true,
+    "observed": {
+      "repository": "strf0x1/deck-acceptance-scratch",
+      "base": "main",
+      "credential": "DECK_GITHUB_TOKEN",
+      "approvals": "ask",
+      "identity": {
+        "name": "Brandon Bosch",
+        "email": "brandon.bosch@protonmail.com"
+      }
+    }
+  },
+  {
+    "check": "07-ask-first-push: turn reached a text reply",
+    "passed": true,
+    "observed": "Published after the card."
+  },
+  {
+    "check": "case 7: the first push in ask mode shows a card",
+    "passed": true,
+    "observed": {
+      "id": "1a1b4bac0d5-1",
+      "task": "1a1b4bab5ed-716a9-0",
+      "gateway": "github",
+      "operation": "publish",
+      "destination": "strf0x1/deck-acceptance-scratch#deck/1a1b4bab5ed-716a9-0",
+      "credential": "DECK_GITHUB_TOKEN",
+      "state": "pending",
+      "waiting": false,
+      "pending": [
+        {
+          "id": "1a1b4bac0d5-1",
+          "task": "1a1b4bab5ed-716a9-0",
+          "project": "/home/brandon/git/deck-acceptance-89/scratch-project",
+          "session": "20261107-063817-3497",
+          "gateway": "github",
+          "operation": "publish",
+          "destination": "strf0x1/deck-acceptance-scratch#deck/1a1b4bab5ed-716a9-0",
+          "credential": "DECK_GITHUB_TOKEN",
+          "details": {
+            "identity": "sha256:cfdf88d8d520446f1b033fbcc748fdfd9e11ece56a0e3b7eeb9024465a7649ea",
+            "summary": {
+              "subject": "Ask-mode scratch change",
+              "count": 7
+            }
+          },
+          "reason": "publish a commit to deck/1a1b4bab5ed-716a9-0",
+          "created_ms": 1794033500373,
+          "expires_ms": 1794033800373,
+          "policy": 0,
+          "state": "pending",
+          "waiters": 0
+        }
+      ]
+    }
+  },
+  {
+    "check": "case 7: the allowed push published the branch",
+    "passed": true,
+    "observed": "Published 1f6f8dfe539b013c98c98748064e35b6f7d9894e to strf0x1/deck-acceptance-scratch#deck/1a1b4bab5ed-716a9-0 (created)"
+  }
+]

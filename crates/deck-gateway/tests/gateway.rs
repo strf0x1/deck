@@ -15,6 +15,7 @@ use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1994,6 +1995,45 @@ fn an_update_touches_only_the_tasks_own_pull_request_and_review_reports_checks()
     assert!(review.starts_with("HTTP/1.1 200 OK"), "{review}");
     assert!(review.contains(r#""conclusion":"success""#), "{review}");
     assert!(!review.contains("long"), "only the run's verdict returns: {review}");
+}
+
+#[test]
+fn an_update_marks_a_draft_ready_through_graphql() {
+    let (_, remote) = bare("gh-ready");
+    let sha = "c".repeat(40);
+    let ready = Arc::new(AtomicBool::new(false));
+    let state = ready.clone();
+    let (api, seen, _) = api(move |request| {
+        let pull = |draft: bool| {
+            format!(
+                r#"{{"number":7,"title":"t","state":"open","draft":{draft},"node_id":"PR_1","head":{{"ref":"deck/t-1","sha":"{sha}","repo":{{"full_name":"owner/repo"}}}},"base":{{"ref":"main"}}}}"#
+            )
+        };
+        match (request.method.as_str(), request.target.as_str()) {
+            ("GET", t) if t.ends_with("/pulls/7") => pull(!state.load(Ordering::SeqCst)),
+            ("POST", t) if t.ends_with("/graphql") => {
+                state.store(true, Ordering::SeqCst);
+                r#"{"data":{"markPullRequestReadyForReview":{"pullRequest":{"number":7,"isDraft":false}}}}"#.into()
+            }
+            _ => "{}".into(),
+        }
+    });
+    let gateway =
+        with_github("gh-ready-gw", &api, &url(&remote), Some((&agreement("gh-ready-queue"), "t-1")), Some("t"));
+    let github = gateway.ready.github.clone().unwrap();
+    let ask = r#"{"operation":"update_pr","number":7,"draft":false}"#;
+    let reply = send(
+        &github,
+        &format!("POST /operations/pull_request/update HTTP/1.1\r\ncontent-length: {}\r\n\r\n{ask}", ask.len()),
+    );
+    assert!(reply.starts_with("HTTP/1.1 200 OK"), "{reply}");
+    assert!(reply.contains(r#""draft":false"#), "the reply reports the state GitHub now has: {reply}");
+    let seen = seen.lock().unwrap();
+    let mutations: Vec<&Request> = seen.iter().filter(|r| r.target.ends_with("/graphql")).collect();
+    assert_eq!(mutations.len(), 1, "one mutation, not one per read: {seen:?}");
+    let body = String::from_utf8_lossy(&mutations[0].body);
+    assert!(body.contains("markPullRequestReadyForReview"), "{body}");
+    assert!(body.contains("PR_1"), "{body}");
 }
 
 #[test]
