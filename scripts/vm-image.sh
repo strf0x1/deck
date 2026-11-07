@@ -257,7 +257,8 @@ export GIT_TERMINAL_PROMPT=0
 export http_proxy="http://127.0.0.1:${DECK_WEB_PORT:-8082}"
 export https_proxy="$http_proxy"
 export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$http_proxy"
-export no_proxy="127.0.0.1,localhost" NO_PROXY="$no_proxy"
+export no_proxy="127.0.0.1,localhost"
+export NO_PROXY="$no_proxy"
 export DECK_GITHUB_URL="http://127.0.0.1:${DECK_GITHUB_PORT:-8084}"
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)
 echo "CHECK branch=$branch"
