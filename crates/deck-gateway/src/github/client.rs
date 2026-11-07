@@ -149,7 +149,17 @@ impl Client {
             let task = name == task_branch;
             branches.push(json!({ "branch": name, "commit": commit, "task_branch": task }));
         }
-        Ok(json!({ "repository": self.settings.policy.repository(), "branches": branches }).to_string())
+        // The host policy the guest builds against (ADR 0008 §2): the task
+        // branch is named even before it exists on GitHub.
+        let policy = &self.settings.policy;
+        Ok(json!({
+            "repository": policy.repository(),
+            "base": policy.base(),
+            "task_branch": task_branch,
+            "writable": policy.writable_branches(&self.settings.task),
+            "branches": branches,
+        })
+        .to_string())
     }
 
     /// Create a pull request from the task's branch (or a listed one) to the
@@ -408,6 +418,10 @@ fn summary(reply: &Value) -> Value {
         "head_commit": reply.pointer("/head/sha").cloned().unwrap_or(Value::Null),
         "base": reply.pointer("/base/ref").cloned().unwrap_or(Value::Null),
         "mergeable": reply.get("mergeable").cloned().unwrap_or(Value::Null),
+        // GitHub's `merged`, else whether it recorded a merge time: a closed
+        // pull request is otherwise indistinguishable from a merged one.
+        "merged": reply.get("merged").and_then(Value::as_bool)
+            .unwrap_or_else(|| reply.get("merged_at").is_some_and(|at| !at.is_null())),
         "html_url": reply.get("html_url").cloned().unwrap_or(Value::Null),
     })
 }
@@ -481,5 +495,9 @@ mod tests {
         assert_eq!(summary["head_commit"], "abc");
         assert!(summary.get("body").is_none());
         assert!(summary.get("user").is_none());
+        assert_eq!(summary["merged"], false);
+        let merged = super::summary(&json!({ "state": "closed", "merged_at": "2026-11-06T00:00:00Z" }));
+        assert_eq!(merged["merged"], true, "a merge time without `merged` is still a merge");
+        assert_eq!(super::summary(&json!({ "merged": true }))["merged"], true);
     }
 }

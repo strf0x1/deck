@@ -54,14 +54,12 @@ fn a_pull_request_identity_tracks_effective_fields_and_defaults() {
 fn a_pull_request_update_identity_distinguishes_no_body_edit_from_clearing_it() {
     let original = json!({ "operation": "update_pr", "number": 7, "title": "Title" });
     let fingerprint = review(&ask(original.clone()), Operation::UpdatePullRequest, None, &settings()).unwrap();
-    let mut ignored = original.clone();
-    ignored["body"] = json!("");
-    assert_eq!(fingerprint, review(&ask(ignored), Operation::UpdatePullRequest, None, &settings()).unwrap());
+    // A present body is an edit even when empty (contract 1.2.0 §11.2).
     for (field, value) in [
         ("number", json!(8)),
         ("title", json!("Other")),
         ("body", json!("new")),
-        ("empty_body", json!(true)),
+        ("body", json!("")),
         ("draft", json!(false)),
         ("base", json!("main")),
     ] {

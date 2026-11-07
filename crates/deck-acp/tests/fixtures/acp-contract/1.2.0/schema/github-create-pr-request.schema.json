@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-create-pr-request.schema.json",
+  "title": "GitHub `create_pr` request",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "create_pr"
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "base": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "body": {
+      "type": "string"
+    },
+    "draft": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": [
+    "operation",
+    "head",
+    "base",
+    "title"
+  ],
+  "additionalProperties": false
+}

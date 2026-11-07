@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-error.schema.json",
+  "title": "GitHub operation refusal body (every non-2xx reply)",
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "type": {
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "deck_github_refused",
+            "deck_github_conflict",
+            "deck_bad_request",
+            "deck_github_not_found",
+            "deck_github_rejected",
+            "deck_github_credential",
+            "deck_github_failed",
+            "deck_not_permitted",
+            "deck_boundary_denied",
+            "deck_boundary_unavailable",
+            "deck_credential_missing",
+            "deck_credential_unavailable",
+            "deck_credential_refused",
+            "deck_credential_revoked"
+          ]
+        }
+      },
+      "required": [
+        "message",
+        "type",
+        "code"
+      ],
+      "additionalProperties": true
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "current": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "error",
+    "retryable"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_github_conflict"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "current"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "current"
+        ]
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "deck_github_refused",
+                  "deck_github_conflict"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "approval_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_boundary_denied"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

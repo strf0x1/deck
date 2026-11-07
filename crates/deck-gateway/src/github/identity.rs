@@ -29,10 +29,10 @@ pub(super) fn review(
         Operation::PullRequest => {
             writable(&ask.head, settings)?;
             base(&ask.base, settings)?;
-            check_text(&ask.title, &ask.body)?;
+            check_text(&ask.title, ask.body())?;
             json!({
                 "head": ask.head, "base": ask.base, "title": ask.title,
-                "body": ask.body, "draft": ask.draft.unwrap_or(true),
+                "body": ask.body(), "draft": ask.draft.unwrap_or(true),
             })
         }
         Operation::UpdatePullRequest => {
@@ -48,8 +48,8 @@ pub(super) fn review(
             if !ask.title.is_empty() {
                 edits.insert("title".into(), json!(ask.title));
             }
-            if ask.empty_body || !ask.body.is_empty() {
-                edits.insert("body".into(), json!(ask.body));
+            if let Some(body) = &ask.body {
+                edits.insert("body".into(), json!(body));
             }
             if let Some(draft) = ask.draft {
                 edits.insert("draft".into(), json!(draft));
@@ -57,7 +57,7 @@ pub(super) fn review(
             if edits.is_empty() {
                 return Err(Problem::invalid("an update names a title, a body, a base or the draft state"));
             }
-            check_text(if ask.title.is_empty() { "-" } else { &ask.title }, &ask.body)?;
+            check_text(if ask.title.is_empty() { "-" } else { &ask.title }, ask.body())?;
             json!({ "number": number, "edits": edits })
         }
         Operation::Refs | Operation::Review => return Ok(None),

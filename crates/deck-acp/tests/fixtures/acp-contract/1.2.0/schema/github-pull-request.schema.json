@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/github-pull-request.schema.json",
+  "title": "GitHub create_pr / update_pr success: the pull request summary",
+  "type": "object",
+  "properties": {
+    "number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "open",
+        "closed"
+      ]
+    },
+    "draft": {
+      "type": "boolean"
+    },
+    "merged": {
+      "type": "boolean"
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "head_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "base": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]{1,200}$",
+      "description": "A branch name without refs/heads/; the full rules are SPEC.md \u00a711.2."
+    },
+    "mergeable": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "null while GitHub is still computing it."
+    },
+    "html_url": {
+      "type": "string",
+      "pattern": "^https://"
+    },
+    "domain": {
+      "type": "string",
+      "description": "The destination the gateway recorded, e.g. owner/name#deck/t-123."
+    }
+  },
+  "required": [
+    "number",
+    "title",
+    "state",
+    "draft",
+    "head",
+    "head_commit",
+    "base",
+    "mergeable",
+    "html_url"
+  ],
+  "additionalProperties": true
+}

@@ -20,7 +20,14 @@
     },
     "com.sprawlcommons/deck": {
       "type": "object",
-      "properties": { "boundary": { "type": "boolean" } },
+      "properties": {
+        "boundary": { "type": "boolean" },
+        "github_operations": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Since 1.2.0, current key only: the highest GitHub operation API version the agent's client speaks (SPEC.md §11.1)."
+        }
+      },
       "additionalProperties": true
     },
     "deck": {

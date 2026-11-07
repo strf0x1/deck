@@ -1,0 +1,400 @@
+{
+  "contract": "1.2.0",
+  "acp": "1",
+  "names": {
+    "construct_meta": "com.sprawlcommons/construct",
+    "construct_meta_legacy": "construct",
+    "deck_meta": "com.sprawlcommons/deck",
+    "deck_meta_legacy": "deck",
+    "event_method": "_com.sprawlcommons/construct/event",
+    "event_method_legacy": "_construct/event",
+    "turn_method": "_com.sprawlcommons/construct/turn",
+    "turn_method_legacy": "_construct/turn",
+    "boundary_method": "_com.sprawlcommons/deck/boundary",
+    "boundary_method_legacy": "_deck/boundary"
+  },
+  "accepts": {
+    "boundary_methods": [
+      "_com.sprawlcommons/deck/boundary",
+      "_deck/boundary"
+    ],
+    "start_meta_keys": [
+      "com.sprawlcommons/construct",
+      "construct"
+    ],
+    "load_snapshot_keys": [
+      "com.sprawlcommons/construct",
+      "construct"
+    ]
+  },
+  "negotiation": [
+    {
+      "case": "current",
+      "client_meta": {
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "turn": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_com.sprawlcommons/construct/turn"
+      }
+    },
+    {
+      "case": "current-events-only",
+      "client_meta": {
+        "com.sprawlcommons/construct": {
+          "events": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "legacy",
+      "client_meta": {
+        "construct": {
+          "events": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "legacy-turn-is-not-a-capability",
+      "client_meta": {
+        "construct": {
+          "events": true,
+          "turn": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "none",
+      "client_meta": {},
+      "expect": {
+        "lossless": false,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "both-keys-current-wins",
+      "client_meta": {
+        "construct": {
+          "events": true
+        },
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "turn": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_com.sprawlcommons/construct/turn"
+      }
+    }
+  ],
+  "boundary_grants": {
+    "timed_scope": "timed",
+    "deadline_field": "expires_at_ms",
+    "duration_ms": 300000,
+    "deadline_exclusive": true,
+    "capability": "boundary",
+    "new_capability_required": false,
+    "legacy_reader": "scope string accepted; deadline may be ignored; host authority unchanged",
+    "deadline_cases": [
+      {
+        "case": "before-deadline",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 300999,
+        "expires_at_ms": 301000,
+        "elapsed": false
+      },
+      {
+        "case": "at-exclusive-deadline",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 301000,
+        "expires_at_ms": 301000,
+        "elapsed": true
+      },
+      {
+        "case": "late-notice-does-not-renew",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 700000,
+        "expires_at_ms": 301000,
+        "elapsed": true
+      }
+    ]
+  },
+  "github": {
+    "capability": {
+      "meta_key": "com.sprawlcommons/deck",
+      "field": "github_operations",
+      "version": 1,
+      "legacy_key": false
+    },
+    "environment": "DECK_GITHUB_URL",
+    "operations": [
+      {
+        "operation": "publish",
+        "path": "/operations/publish",
+        "writes": true,
+        "bundle": true,
+        "request": "github-publish-request.schema.json",
+        "response": "github-publish-response.schema.json"
+      },
+      {
+        "operation": "refs",
+        "path": "/operations/refs",
+        "writes": false,
+        "bundle": false,
+        "request": "github-refs-request.schema.json",
+        "response": "github-refs-response.schema.json"
+      },
+      {
+        "operation": "create_pr",
+        "path": "/operations/pull_request",
+        "writes": true,
+        "bundle": false,
+        "request": "github-create-pr-request.schema.json",
+        "response": "github-pull-request.schema.json"
+      },
+      {
+        "operation": "update_pr",
+        "path": "/operations/pull_request/update",
+        "writes": true,
+        "bundle": false,
+        "request": "github-update-pr-request.schema.json",
+        "response": "github-pull-request.schema.json"
+      },
+      {
+        "operation": "review",
+        "path": "/operations/pull_request/review",
+        "writes": false,
+        "bundle": false,
+        "request": "github-review-request.schema.json",
+        "response": "github-review-response.schema.json"
+      }
+    ],
+    "refused_by_name": [
+      "merge",
+      "close",
+      "delete",
+      "tag",
+      "release",
+      "force_push",
+      "workflow",
+      "dispatch",
+      "settings"
+    ],
+    "limits": {
+      "json_head_bytes": 65536,
+      "bundle_bytes": 16777216,
+      "pr_text_bytes": 65536,
+      "length_prefix": "u32-be",
+      "bundle_magic": "# v2 git bundle\n"
+    },
+    "refusals": [
+      {
+        "code": "deck_github_refused",
+        "status": [
+          403
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_conflict",
+        "status": [
+          409
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_bad_request",
+        "status": [
+          400,
+          405,
+          408,
+          411,
+          413,
+          431
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_not_found",
+        "status": [
+          404
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_rejected",
+        "status": [
+          409,
+          422
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_credential",
+        "status": [
+          502
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_failed",
+        "status": [
+          502
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_not_permitted",
+        "status": [
+          403,
+          404
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_boundary_denied",
+        "status": [
+          403
+        ],
+        "retryable": null
+      },
+      {
+        "code": "deck_boundary_unavailable",
+        "status": [
+          502
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_credential_missing",
+        "status": [
+          503
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_credential_unavailable",
+        "status": [
+          503
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_credential_refused",
+        "status": [
+          403
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_credential_revoked",
+        "status": [
+          403
+        ],
+        "retryable": false
+      }
+    ],
+    "framing_cases": [
+      {
+        "case": "full-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAc0jIHYyIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFlM2QxOWJlZDVkZmRmNzA0NSByZWZzL2hlYWRzL2RlY2svdC0xMjMKClBBQ0sAAAACAAAABpgKeJx9yrENAjEMAMA+U7inceK840gIwSiOYwuK59Er7M8GXH3rdAdioZCGw2tla2a4RahHD0WueSuNPUuR9NHT3wuUEfMoZNqn12w4M5dt1i5dbdRgQiGhSPpdz+OEBdd19xvk1qkXKohwQURMduz7ay3/U9JjThjpB4ycLR2XB3icfcoxDoAgDADAnVd0dylQrU2M8SsFS3QwJlj/7w+8+bybgWprTDJTrXWP46Q0iTblXbRENGLmYiVR0NePu4PD4putEFmypJwQYUBEDPW+rtPdfkoo+lj4ACKkIKmqA3icMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aDSGSSQyJFewzlHrF1+ua/Hlyfu/n0LBmlSIAMRUViDJ4nEvkAgAAzgBsMnicS+ICAADQAG2tAXicMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aAXxpCmaqg2XGnHIdUNOfc2ijJGSy19b9bA==",
+        "expect": {
+          "valid": true,
+          "branch": "deck/t-123",
+          "ref": "refs/heads/deck/t-123",
+          "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+          "prerequisites": []
+        }
+      },
+      {
+        "case": "incremental-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAWojIHYyIGdpdCBidW5kbGUKLWE2MDAxYjIzY2E5ZGU0MWMwZDE2MjVkNDk4OWFjYjRmNjMwODM4M2YgYmFzZQoxYzQxMGJjODYyYzEyNDkyYTRkNmU5MWUzZDE5YmVkNWRmZGY3MDQ1IHJlZnMvaGVhZHMvZGVjay90LTEyMwoKUEFDSwAAAAIAAAADmAp4nH3KsQ0CMQwAwD5TuKdx4rzjSAjBKI5jC4rn0SvszwZcfet0B2KhkIbDa2VrZrhFqEcPRa55K409S5H00dPfC5QR8yhk2qfXbDgzl23WLl1t1GBCIaFI+l3P44QF13X3G+TWqRcqiHBBREx27PtrLf9T0mNOGOkHjJwtHaoDeJwzNDAwMzFRSGSomCGplGit9TtBlUX/2972roMz/VoNIZJJDIkV7DOUesXX65r8eXJ+7+fQsGaVIgAxFRWIMnicS+ICAADQAG3WnxFTvQAeHLH9LO1KbqqcB478Sw==",
+        "expect": {
+          "valid": true,
+          "branch": "deck/t-123",
+          "ref": "refs/heads/deck/t-123",
+          "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+          "prerequisites": [
+            "a6001b23ca9de41c0d1625d4989acb4f6308383f"
+          ]
+        }
+      },
+      {
+        "case": "two-refs",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAgYjIHYyIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFlM2QxOWJlZDVkZmRmNzA0NSByZWZzL2hlYWRzL2RlY2svdC0xMjMKYTYwMDFiMjNjYTlkZTQxYzBkMTYyNWQ0OTg5YWNiNGY2MzA4MzgzZiByZWZzL2hlYWRzL21haW4KClBBQ0sAAAACAAAABpgKeJx9yrENAjEMAMA+U7inceK840gIwSiOYwuK59Er7M8GXH3rdAdioZCGw2tla2a4RahHD0WueSuNPUuR9NHT3wuUEfMoZNqn12w4M5dt1i5dbdRgQiGhSPpdz+OEBdd19xvk1qkXKohwQURMduz7ay3/U9JjThjpB4ycLR2XB3icfcoxDoAgDADAnVd0dylQrU2M8SsFS3QwJlj/7w+8+bybgWprTDJTrXWP46Q0iTblXbRENGLmYiVR0NePu4PD4putEFmypJwQYUBEDPW+rtPdfkoo+lj4ACKkIKmqA3icMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aDSGSSQyJFewzlHrF1+ua/Hlyfu/n0LBmlSIAMRUViDJ4nEvkAgAAzgBsMnicS+ICAADQAG2tAXicMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aAXxpCmaqg2XGnHIdUNOfc2ijJGSy19b9bA==",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "ref-is-not-the-branch",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAPwjIHYyIGdpdCBidW5kbGUKYTYwMDFiMjNjYTlkZTQxYzBkMTYyNWQ0OTg5YWNiNGY2MzA4MzgzZiByZWZzL2hlYWRzL21haW4KClBBQ0sAAAACAAAAA5cHeJx9yjEOgCAMAMCdV3R3KVCtTYzxKwVLdDAmWP/vD7z5vJuBamtMMlOtdY/jpDSJNuVdtEQ0YuZiJVHQ14+7g8Pim60QWbKknBBhQEQM9b6u091+Sij6WPgAIqQgqa0BeJwzNDAwMzFRSGSomCGplGit9TtBlUX/2972roMz/VoBfGkKZjJ4nEvkAgAAzgBs4vFp4zWGbwkJHzotADiZjybMdN8=",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "not-bundle-v2",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAc0jIHYzIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFlM2QxOWJlZDVkZmRmNzA0NSByZWZzL2hlYWRzL2RlY2svdC0xMjMKClBBQ0sAAAACAAAABpgKeJx9yrENAjEMAMA+U7inceK840gIwSiOYwuK59Er7M8GXH3rdAdioZCGw2tla2a4RahHD0WueSuNPUuR9NHT3wuUEfMoZNqn12w4M5dt1i5dbdRgQiGhSPpdz+OEBdd19xvk1qkXKohwQURMduz7ay3/U9JjThjpB4ycLR2XB3icfcoxDoAgDADAnVd0dylQrU2M8SsFS3QwJlj/7w+8+bybgWprTDJTrXWP46Q0iTblXbRENGLmYiVR0NePu4PD4putEFmypJwQYUBEDPW+rtPdfkoo+lj4ACKkIKmqA3icMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aDSGSSQyJFewzlHrF1+ua/Hlyfu/n0LBmlSIAMRUViDJ4nEvkAgAAzgBsMnicS+ICAADQAG2tAXicMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aAXxpCmaqg2XGnHIdUNOfc2ijJGSy19b9bA==",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "no-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQ==",
+        "expect": {
+          "valid": false,
+          "status": 411,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "declared-length-over-limit",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQEAAAE=",
+        "expect": {
+          "valid": false,
+          "status": 413,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "truncated-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAc0jIHYyIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFl",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      }
+    ]
+  }
+}

@@ -71,6 +71,16 @@ fn the_forms_deck_accepts_follow_the_contract() {
     assert_eq!(current["expect"]["turn_method"], TURN_METHOD);
 }
 
+#[test]
+fn the_github_capability_is_the_contracts() {
+    let m = matrix();
+    let capability = &m["github"]["capability"];
+    assert_eq!(capability["meta_key"], DECK_META);
+    assert_eq!(capability["field"], GITHUB_OPERATIONS);
+    assert_eq!(capability["version"], json!(GITHUB_OPERATIONS_VERSION));
+    assert_eq!(capability["legacy_key"], json!(false), "Deck reads it under the current key only (conn.rs)");
+}
+
 fn validators() -> HashMap<String, jsonschema::Validator> {
     let schemas: Vec<_> = std::fs::read_dir(vendored().join("schema"))
         .unwrap()

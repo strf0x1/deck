@@ -1,5 +1,5 @@
 {
-  "contract": "1.1.0",
+  "contract": "1.2.0",
   "cases": [
     {
       "case": "canonical-boundary",
@@ -699,6 +699,539 @@
         "state": "allowed",
         "scope": "timed",
         "expires_at_ms": 42.0
+      }
+    },
+    {
+      "case": "deck-github-operations-capability",
+      "schema": "agent-capabilities.schema.json",
+      "valid": true,
+      "payload": {
+        "com.sprawlcommons/deck": {
+          "boundary": true,
+          "github_operations": 1
+        }
+      }
+    },
+    {
+      "case": "deck-github-operations-not-boolean",
+      "schema": "agent-capabilities.schema.json",
+      "valid": false,
+      "payload": {
+        "com.sprawlcommons/deck": {
+          "github_operations": true
+        }
+      }
+    },
+    {
+      "case": "publish-request",
+      "schema": "github-publish-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "publish",
+        "branch": "deck/t-123",
+        "summary": {
+          "subject": "Add b",
+          "count": 1
+        }
+      }
+    },
+    {
+      "case": "publish-request-without-summary",
+      "schema": "github-publish-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "publish",
+        "branch": "deck/t-123"
+      }
+    },
+    {
+      "case": "publish-request-unknown-field",
+      "schema": "github-publish-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "publish",
+        "branch": "deck/t-123",
+        "force": true
+      }
+    },
+    {
+      "case": "publish-request-summary-commit-not-accepted",
+      "schema": "github-publish-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "publish",
+        "branch": "deck/t-123",
+        "summary": {
+          "subject": "x",
+          "count": 1,
+          "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045"
+        }
+      }
+    },
+    {
+      "case": "publish-request-no-branch",
+      "schema": "github-publish-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "publish"
+      }
+    },
+    {
+      "case": "refs-request",
+      "schema": "github-refs-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "refs"
+      }
+    },
+    {
+      "case": "refs-request-wrong-operation",
+      "schema": "github-refs-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "merge"
+      }
+    },
+    {
+      "case": "create-pr-request",
+      "schema": "github-create-pr-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "create_pr",
+        "head": "deck/t-123",
+        "base": "main",
+        "title": "Add b",
+        "body": "",
+        "draft": true
+      }
+    },
+    {
+      "case": "create-pr-request-blank-title",
+      "schema": "github-create-pr-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "create_pr",
+        "head": "deck/t-123",
+        "base": "main",
+        "title": "  "
+      }
+    },
+    {
+      "case": "create-pr-request-no-head",
+      "schema": "github-create-pr-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "create_pr",
+        "base": "main",
+        "title": "t"
+      }
+    },
+    {
+      "case": "update-pr-request-ready",
+      "schema": "github-update-pr-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "update_pr",
+        "number": 7,
+        "draft": false
+      }
+    },
+    {
+      "case": "update-pr-request-clear-body",
+      "schema": "github-update-pr-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "update_pr",
+        "number": 7,
+        "body": ""
+      }
+    },
+    {
+      "case": "update-pr-request-no-edit",
+      "schema": "github-update-pr-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "update_pr",
+        "number": 7
+      }
+    },
+    {
+      "case": "update-pr-request-legacy-empty-body",
+      "schema": "github-update-pr-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "update_pr",
+        "number": 7,
+        "body": "",
+        "empty_body": true
+      }
+    },
+    {
+      "case": "review-request",
+      "schema": "github-review-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "review",
+        "number": 7
+      }
+    },
+    {
+      "case": "review-request-zero",
+      "schema": "github-review-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "review",
+        "number": 0
+      }
+    },
+    {
+      "case": "publish-response-created",
+      "schema": "github-publish-response.schema.json",
+      "valid": true,
+      "payload": {
+        "repository": "owner/name",
+        "branch": "deck/t-123",
+        "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "previous": null,
+        "created": true,
+        "domain": "owner/name#deck/t-123"
+      }
+    },
+    {
+      "case": "publish-response-fast-forward",
+      "schema": "github-publish-response.schema.json",
+      "valid": true,
+      "payload": {
+        "repository": "owner/name",
+        "branch": "deck/t-123",
+        "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "previous": "a6001b23ca9de41c0d1625d4989acb4f6308383f",
+        "created": false
+      }
+    },
+    {
+      "case": "publish-response-created-with-previous",
+      "schema": "github-publish-response.schema.json",
+      "valid": false,
+      "payload": {
+        "repository": "owner/name",
+        "branch": "deck/t-123",
+        "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "previous": "a6001b23ca9de41c0d1625d4989acb4f6308383f",
+        "created": true
+      }
+    },
+    {
+      "case": "publish-response-short-sha",
+      "schema": "github-publish-response.schema.json",
+      "valid": false,
+      "payload": {
+        "repository": "owner/name",
+        "branch": "deck/t-123",
+        "commit": "1c410bc",
+        "previous": null,
+        "created": true
+      }
+    },
+    {
+      "case": "refs-response-before-first-publish",
+      "schema": "github-refs-response.schema.json",
+      "valid": true,
+      "payload": {
+        "repository": "owner/name",
+        "base": "main",
+        "task_branch": "deck/t-123",
+        "writable": [
+          "deck/t-123"
+        ],
+        "branches": [
+          {
+            "branch": "main",
+            "commit": "a6001b23ca9de41c0d1625d4989acb4f6308383f",
+            "task_branch": false
+          }
+        ],
+        "domain": "owner/name"
+      }
+    },
+    {
+      "case": "refs-response-shared",
+      "schema": "github-refs-response.schema.json",
+      "valid": true,
+      "payload": {
+        "repository": "owner/name",
+        "base": "main",
+        "task_branch": "deck/t-123",
+        "writable": [
+          "deck/t-123",
+          "deck/shared"
+        ],
+        "branches": [
+          {
+            "branch": "deck/t-123",
+            "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+            "task_branch": true
+          }
+        ]
+      }
+    },
+    {
+      "case": "refs-response-pre-1.2",
+      "schema": "github-refs-response.schema.json",
+      "valid": false,
+      "payload": {
+        "repository": "owner/name",
+        "branches": []
+      }
+    },
+    {
+      "case": "pull-request",
+      "schema": "github-pull-request.schema.json",
+      "valid": true,
+      "payload": {
+        "number": 7,
+        "title": "Add b",
+        "state": "open",
+        "draft": true,
+        "head": "deck/t-123",
+        "head_commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "base": "main",
+        "mergeable": null,
+        "html_url": "https://github.com/owner/name/pull/7",
+        "domain": "owner/name#deck/t-123"
+      }
+    },
+    {
+      "case": "pull-request-unknown-state",
+      "schema": "github-pull-request.schema.json",
+      "valid": false,
+      "payload": {
+        "number": 7,
+        "title": "Add b",
+        "state": "merged",
+        "draft": true,
+        "head": "deck/t-123",
+        "head_commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "base": "main",
+        "mergeable": null,
+        "html_url": "https://github.com/owner/name/pull/7",
+        "domain": "owner/name#deck/t-123"
+      }
+    },
+    {
+      "case": "review-response",
+      "schema": "github-review-response.schema.json",
+      "valid": true,
+      "payload": {
+        "number": 7,
+        "title": "Add b",
+        "state": "open",
+        "draft": true,
+        "head": "deck/t-123",
+        "head_commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "base": "main",
+        "mergeable": null,
+        "html_url": "https://github.com/owner/name/pull/7",
+        "domain": "owner/name#deck/t-123",
+        "merged": false,
+        "checks": {
+          "total": 2,
+          "runs": [
+            {
+              "name": "check",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "macos",
+              "status": "in_progress",
+              "conclusion": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "review-response-merged-no-checks",
+      "schema": "github-review-response.schema.json",
+      "valid": true,
+      "payload": {
+        "number": 7,
+        "title": "Add b",
+        "state": "closed",
+        "draft": false,
+        "head": "deck/t-123",
+        "head_commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "base": "main",
+        "mergeable": null,
+        "html_url": "https://github.com/owner/name/pull/7",
+        "domain": "owner/name#deck/t-123",
+        "merged": true,
+        "checks": null
+      }
+    },
+    {
+      "case": "review-response-without-merged",
+      "schema": "github-review-response.schema.json",
+      "valid": false,
+      "payload": {
+        "number": 7,
+        "title": "Add b",
+        "state": "open",
+        "draft": true,
+        "head": "deck/t-123",
+        "head_commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "base": "main",
+        "mergeable": null,
+        "html_url": "https://github.com/owner/name/pull/7",
+        "domain": "owner/name#deck/t-123",
+        "checks": null
+      }
+    },
+    {
+      "case": "error-refused-rewrite",
+      "schema": "github-error.schema.json",
+      "valid": true,
+      "payload": {
+        "error": {
+          "message": "the publish would rewrite deck/t-123",
+          "type": "deck_github_refused",
+          "code": "deck_github_refused"
+        },
+        "retryable": false,
+        "current": "a6001b23ca9de41c0d1625d4989acb4f6308383f"
+      }
+    },
+    {
+      "case": "error-conflict",
+      "schema": "github-error.schema.json",
+      "valid": true,
+      "payload": {
+        "error": {
+          "message": "deck/t-123 moved",
+          "type": "deck_github_conflict",
+          "code": "deck_github_conflict"
+        },
+        "retryable": true,
+        "current": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045"
+      }
+    },
+    {
+      "case": "error-conflict-without-current",
+      "schema": "github-error.schema.json",
+      "valid": false,
+      "payload": {
+        "error": {
+          "message": "moved",
+          "type": "deck_github_conflict",
+          "code": "deck_github_conflict"
+        },
+        "retryable": true
+      }
+    },
+    {
+      "case": "error-pending-approval",
+      "schema": "github-error.schema.json",
+      "valid": true,
+      "payload": {
+        "error": {
+          "message": "needs the user's approval",
+          "type": "deck_boundary_denied",
+          "code": "deck_boundary_denied"
+        },
+        "retryable": true,
+        "approval_id": "a1"
+      }
+    },
+    {
+      "case": "error-not-permitted",
+      "schema": "github-error.schema.json",
+      "valid": true,
+      "payload": {
+        "error": {
+          "message": "merge is not a Deck GitHub operation",
+          "type": "deck_not_permitted",
+          "code": "deck_not_permitted"
+        },
+        "retryable": false
+      }
+    },
+    {
+      "case": "error-credential-revoked",
+      "schema": "github-error.schema.json",
+      "valid": true,
+      "payload": {
+        "error": {
+          "message": "revoked",
+          "type": "deck_credential_revoked",
+          "code": "deck_credential_revoked"
+        },
+        "retryable": false
+      }
+    },
+    {
+      "case": "error-string-body",
+      "schema": "github-error.schema.json",
+      "valid": false,
+      "payload": {
+        "error": "the GitHub operations take POST"
+      }
+    },
+    {
+      "case": "error-without-retryable",
+      "schema": "github-error.schema.json",
+      "valid": false,
+      "payload": {
+        "error": {
+          "message": "x",
+          "type": "deck_github_failed",
+          "code": "deck_github_failed"
+        }
+      }
+    },
+    {
+      "case": "error-unknown-code",
+      "schema": "github-error.schema.json",
+      "valid": false,
+      "payload": {
+        "error": {
+          "message": "x",
+          "type": "x",
+          "code": "deck_github_merged"
+        },
+        "retryable": false
+      }
+    },
+    {
+      "case": "error-approval-on-other-code",
+      "schema": "github-error.schema.json",
+      "valid": false,
+      "payload": {
+        "error": {
+          "message": "x",
+          "type": "deck_github_failed",
+          "code": "deck_github_failed"
+        },
+        "retryable": true,
+        "approval_id": "a1"
+      }
+    },
+    {
+      "case": "pull-request-merged-field",
+      "schema": "github-pull-request.schema.json",
+      "valid": true,
+      "payload": {
+        "number": 7,
+        "title": "Add b",
+        "state": "open",
+        "draft": true,
+        "head": "deck/t-123",
+        "head_commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+        "base": "main",
+        "mergeable": true,
+        "html_url": "https://github.com/owner/name/pull/7",
+        "domain": "owner/name#deck/t-123",
+        "merged": false
       }
     }
   ]

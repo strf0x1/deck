@@ -256,9 +256,17 @@ Five operations, and no relay:
 | `POST /operations/refs` | list branches | no |
 | `POST /operations/pull_request/review` | read a pull request | no |
 
-`merge`, `close`, `delete`, `tag`, `release`, `force_push`, `workflow` and
-`settings` are refused by name so an agent learns the set instead of retrying
-a 404. A publish carries one git bundle after its JSON body; the gateway reads
+The wire is shared contract 1.2.0 §11 (`CONTRACT.lock`); the gateway's
+tests check every reply against its vendored schemas. Requests are closed: a
+field the operation does not take is `deck_bad_request`, never ignored. Every
+refusal, including a malformed request head, is one JSON shape
+(`error.{message,type,code}`, `retryable`). `refs` also answers the policy the
+guest builds against: `repository`, `base`, `task_branch` (before that branch
+exists) and `writable`.
+
+`merge`, `close`, `delete`, `tag`, `release`, `force_push`, `workflow`,
+`dispatch` and `settings` are refused by name (`deck_not_permitted`, 403) so an
+agent learns the set instead of retrying a 404. A publish carries one git bundle after its JSON body; the gateway reads
 the header itself and refuses a bundle with more than one ref or a ref that is
 not the allowed branch, then fetches and pushes exactly that refspec. A push
 is fast-forward only (`--force-with-lease` against the sha read a moment

@@ -1269,6 +1269,7 @@ name = "deck-gateway"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "jsonschema",
  "libc",
  "serde",
  "serde_json",

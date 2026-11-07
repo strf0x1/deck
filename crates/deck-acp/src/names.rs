@@ -14,3 +14,10 @@ pub const DECK_META: &str = "com.sprawlcommons/deck";
 pub const LEGACY_DECK_META: &str = "deck";
 pub const BOUNDARY_METHOD: &str = "_com.sprawlcommons/deck/boundary";
 pub const LEGACY_BOUNDARY_METHOD: &str = "_deck/boundary";
+
+/// The agent capability that says its tools speak Deck's GitHub operation API
+/// (contract 1.2.0 §11.1), under [`DECK_META`] only: it has no bare form. The
+/// value is the highest API version the agent speaks; this is the one Deck
+/// serves.
+pub const GITHUB_OPERATIONS: &str = "github_operations";
+pub const GITHUB_OPERATIONS_VERSION: u64 = 1;
