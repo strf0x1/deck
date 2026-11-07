@@ -14,20 +14,23 @@ pub const CARD_H: f32 = 64.;
 pub const GAP: f32 = 8.;
 pub const PITCH: f32 = CARD_H + GAP;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LaneState {
+    #[default]
     Idle,
     Working,
     Waiting,
     Review,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Lane {
     pub id: usize,
     pub title: String,
     pub detail: String,
     pub state: LaneState,
+    /// The task's publication chip: its state dot and `#7` or branch.
+    pub chip: Option<(super::publication::Dot, String)>,
 }
 
 pub struct Card {
@@ -79,6 +82,29 @@ impl Board {
 
     pub fn height(&self) -> f32 {
         self.cards.len() as f32 * PITCH - GAP
+    }
+
+    /// Show exactly `lanes`: cards that stay keep their slot order and
+    /// motion, new ones join at the bottom, and missing ones leave. A card
+    /// under the pointer that leaves ends the drag.
+    pub fn sync(&mut self, mut lanes: Vec<Lane>) {
+        let mut cards = Vec::with_capacity(lanes.len());
+        for card in self.cards.drain(..) {
+            if let Some(i) = lanes.iter().position(|l| l.id == card.lane.id) {
+                cards.push(Card { lane: lanes.remove(i), ..card });
+            }
+        }
+        let start = cards.len();
+        cards.extend(lanes.into_iter().enumerate().map(|(i, lane)| Card {
+            lane,
+            y: Spring::at((start + i) as f32 * PITCH),
+            lift: Spring::at(0.),
+        }));
+        self.cards = cards;
+        if self.drag.as_ref().is_some_and(|d| !self.cards.iter().any(|c| c.lane.id == d.id)) {
+            self.drag = None;
+        }
+        self.retarget();
     }
 
     pub fn lane_mut(&mut self, id: usize) -> Option<&mut Lane> {
@@ -143,7 +169,7 @@ mod tests {
     use super::*;
 
     fn lanes(n: usize) -> Vec<Lane> {
-        (0..n).map(|id| Lane { id, title: format!("l{id}"), detail: String::new(), state: LaneState::Idle }).collect()
+        (0..n).map(|id| Lane { id, title: format!("l{id}"), ..Lane::default() }).collect()
     }
 
     fn settle(b: &mut Board) {
@@ -185,5 +211,27 @@ mod tests {
         b.move_to(PITCH + 25.);
         let held = b.cards().iter().find(|c| c.lane.id == 1).map(|c| c.y.pos);
         assert_eq!(held, Some(PITCH + 20.));
+    }
+
+    #[test]
+    fn syncing_keeps_order_and_motion_adds_at_the_bottom_and_drops_the_missing() {
+        let mut b = Board::new(lanes(3));
+        b.grab(0, 0.);
+        b.move_to(PITCH * 2.);
+        b.release();
+        settle(&mut b);
+        assert_eq!(b.order(), vec![1, 2, 0]);
+        let mut next = lanes(4);
+        next.remove(2);
+        next[0].title = "renamed".into();
+        b.sync(next);
+        assert_eq!(b.order(), vec![1, 0, 3], "kept cards keep their order; 2 left; 3 joined");
+        assert_eq!(b.cards()[1].lane.title, "renamed");
+        settle(&mut b);
+        let ys: Vec<f32> = b.cards().iter().map(|c| c.y.pos).collect();
+        assert_eq!(ys, vec![0., PITCH, PITCH * 2.]);
+        b.grab(3, PITCH * 2.);
+        b.sync(lanes(1));
+        assert_eq!(b.dragging(), None, "a card that left cannot stay held");
     }
 }

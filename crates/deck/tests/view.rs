@@ -449,9 +449,25 @@ fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext
     cleanup_daemon(&data);
 }
 
+/// A task record as `deckd` lists it.
+fn task(id: &str, state: serde_json::Value, publication: Option<serde_json::Value>) -> deck_runtime::Task {
+    serde_json::from_value(json!({
+        "id": id, "backend": "vm", "spec": { "argv": ["construct", "acp"], "cwd": format!("/src/{id}") },
+        "state": state, "pid": null, "publication": publication,
+    }))
+    .unwrap()
+}
+
+/// Three more tasks on the board, as a daemon refresh would show them.
+fn seed(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
+    let tasks = ["a", "b", "c"].map(|id| task(id, json!({ "state": "running" }), None)).to_vec();
+    deck.update(cx, |d, cx| d.on_tasks(tasks, Default::default(), cx));
+}
+
 #[gpui::test]
 fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
+    seed(&deck, &mut cx);
     cx.run_until_parked();
     let before = deck.read_with(&cx, |d, _| d.board().order());
     assert_eq!(before, vec![0, 1, 2, 3]);
@@ -745,5 +761,113 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     watcher.stop(&id).unwrap();
     assert!(matches!(watcher.task(&id).unwrap().state, State::Stopped { .. }));
     drop(watcher);
+    cleanup_daemon(&data);
+}
+
+#[gpui::test]
+fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAppContext) {
+    use deck::ui::publication::Dot;
+    use deck_runtime::pull_request::{Live, State as Published};
+    let (deck, mut cx) = open(cx);
+    assert_eq!(deck.read_with(&cx, |d, _| d.board().order()), vec![0], "only the live card before a task list");
+    let pull = json!({ "kind": "pull_request", "number": 7, "url": "https://github.com/o/r/pull/7", "title": "Add b", "draft": true });
+    let tasks = vec![
+        task("a", json!({ "state": "running" }), Some(pull.clone())),
+        task("b", json!({ "state": "stopped", "clean": true, "reason": "" }), None),
+        task("gone", json!({ "state": "destroyed" }), None),
+    ];
+    let checks = json!({ "state": "open", "draft": false, "merged": false, "head": "deck/t-a", "head_commit": "c".repeat(40),
+        "checks": { "total": 1, "runs": [{ "name": "ci", "status": "in_progress", "conclusion": null }] } });
+    let published: std::collections::HashMap<String, Published> = [(
+        "a".to_string(),
+        Published {
+            publication: Some(serde_json::from_value(pull).unwrap()),
+            live: Some(Live { read_at_ms: 1, pull_request: Some(checks), ..Live::default() }),
+            fresh: true,
+        },
+    )]
+    .into();
+    deck.update(&mut cx, |d, cx| d.on_tasks(tasks, published, cx));
+    cx.run_until_parked();
+    let (order, lanes) = deck.read_with(&cx, |d, _| {
+        let cards = d.board().cards();
+        (
+            d.board().order(),
+            cards
+                .iter()
+                .map(|c| (c.lane.title.clone(), c.lane.detail.clone(), c.lane.chip.clone()))
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(order.len(), 3, "the live card plus a and b; a destroyed task has none");
+    assert_eq!(lanes[1], ("a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
+    assert_eq!(lanes[2], ("b".into(), "stopped · vm".into(), None));
+
+    // The chip opens the panel without picking the card up.
+    let lane = order[1];
+    click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
+    assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), None);
+    assert_eq!(deck.read_with(&cx, |d, _| d.open_publication().map(|(t, _)| t.to_string())), Some("a".into()));
+    assert!(cx.debug_bounds("publication-panel").is_some());
+    assert!(cx.debug_bounds("publication-destroy").is_none(), "nothing to destroy before a merge");
+    cx.simulate_keystrokes("escape");
+    assert!(cx.debug_bounds("publication-panel").is_none());
+}
+
+#[gpui::test]
+fn a_merged_pull_request_marks_the_task_done_and_offers_destroy_behind_a_second_click(cx: &mut TestAppContext) {
+    use deck_runtime::pull_request::{Live, State as Published};
+    let (deck, mut cx) = open(cx);
+    let pull = json!({ "kind": "pull_request", "number": 9, "url": "https://github.com/o/r/pull/9", "title": "t", "draft": false });
+    let merged = Published {
+        publication: Some(serde_json::from_value(pull.clone()).unwrap()),
+        live: Some(Live {
+            read_at_ms: 1,
+            pull_request: Some(json!({ "state": "closed", "merged": true })),
+            ..Live::default()
+        }),
+        fresh: false,
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_tasks(vec![task("a", json!({ "state": "running" }), Some(pull))], [("a".to_string(), merged)].into(), cx)
+    });
+    cx.run_until_parked();
+    let (lane, detail) = deck.read_with(&cx, |d, _| (d.board().order()[1], d.board().cards()[1].lane.detail.clone()));
+    assert_eq!(detail, "done · merged");
+    click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
+    click_control(&mut cx, "publication-destroy");
+    assert!(deck.read_with(&cx, |d, _| d.open_publication().is_some()), "the first click only asks");
+}
+
+#[gpui::test]
+fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Publication, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-pub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), github: None }).unwrap().task;
+    let pull = Publication::PullRequest {
+        number: 7,
+        url: "https://github.com/o/r/pull/7".into(),
+        title: "t".into(),
+        draft: true,
+    };
+    daemon.publication(&task.id, pull).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, data.clone(), cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.publication_of(deck::ui::root::LIVE).is_some()));
+    click_control(&mut vcx, "hdr-publication");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.open_publication().map(|(t, _)| t.to_string())), Some(task.id.clone()));
+    assert!(deck.read_with(&vcx, |d, _| d.publish_notice().is_none()), "a local task has no gateway to warn about");
+    cx.quit();
+    daemon.stop(&task.id).unwrap();
+    drop(daemon);
     cleanup_daemon(&data);
 }

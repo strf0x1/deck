@@ -63,6 +63,8 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         )
         .child(if deck.access.is_open() {
             super::access_panel::panel(deck, cx)
+        } else if deck.open_publication().is_some() {
+            super::publication_panel::panel(deck, cx)
         } else {
             transcript(deck).into_any_element()
         })

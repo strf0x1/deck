@@ -87,6 +87,8 @@ impl Session {
                     self.set_turn(state);
                 }
             }
+            // The window keeps the capability; the transcript has nothing to show.
+            Inbound::Publishes => {}
             Inbound::Detached => {
                 self.ask = None;
                 self.questions.clear();

@@ -38,6 +38,7 @@ impl Deck {
                     Err(e) => deck.session.apply(Inbound::Failed(format!("watching task approvals: {e:#}"))),
                 }
                 deck.task = Some(task);
+                deck.follow_tasks(cx);
                 deck._quit = Some(cx.on_app_quit(|deck, _| {
                     deck.attachment += 1;
                     deck.client = None;
@@ -46,6 +47,7 @@ impl Deck {
                     // its reader thread then closes the daemon connection.
                     deck.watch = None;
                     deck.access_refresh = None;
+                    deck.task_refresh = None;
                     async {}
                 }));
                 match connection {
@@ -111,6 +113,7 @@ impl Deck {
         self.attachment += 1;
         let attachment = self.attachment;
         self.session = Session::new();
+        self.agent_publishes = None;
         self.client = Some(Arc::new(client));
         cx.spawn(async move |this, cx| {
             while let Some(ev) = rx.next().await {

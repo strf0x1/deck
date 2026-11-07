@@ -10,6 +10,10 @@ pub enum Inbound {
     Ready { agent: String, session_id: String, turn: Option<TurnState> },
     /// A running agent cannot rebuild history on a live attachment.
     Detached,
+    /// The agent's tools speak Deck's GitHub operation API (contract 1.2.0
+    /// §11.1). Sent once after `initialize`, only when advertised, so its
+    /// absence by `Ready` means the agent cannot publish from a sandbox.
+    Publishes,
     /// Authoritative state, independent of a prompt request on this connection.
     Turn { number: u64, state: TurnState },
     /// A user prompt replayed while loading history.
