@@ -48,6 +48,45 @@ fn typing_a_prompt_and_answering_a_permission_by_key(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_composer_edits_across_lines_and_recalls_earlier_prompts(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("f i x shift-enter t e s t s");
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft().to_string()), "fix\ntests");
+    // Up moves to the row above, keeping the column; left and backspace edit there.
+    cx.simulate_keystrokes("up backspace X");
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft().to_string()), "fiX\ntests");
+    cx.simulate_keystrokes("ctrl-a n e w");
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft().to_string()), "new", "typing replaces a selection");
+    cx.simulate_keystrokes("enter");
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    cx.simulate_keystrokes("d r a f t up");
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft().to_string()), "new", "up on the first row recalls");
+    cx.simulate_keystrokes("down");
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft().to_string()), "draft", "down returns to the draft");
+}
+
+#[gpui::test]
+fn a_long_draft_wraps_and_a_click_places_the_caret(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    cx.run_until_parked();
+    let one_row = cx.debug_bounds("composer").unwrap();
+    cx.simulate_input(&"word ".repeat(60));
+    cx.run_until_parked();
+    let wrapped = cx.debug_bounds("composer").unwrap();
+    assert!(wrapped.size.height > one_row.size.height, "the field grows: {one_row:?} -> {wrapped:?}");
+    // The text starts below the field's 15px top padding, at its left edge.
+    cx.simulate_click(gpui::point(wrapped.left() + px(1.), wrapped.top() + px(20.)), Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft_selection()), 0..0);
+    cx.simulate_keystrokes("shift-right shift-right");
+    assert_eq!(deck.read_with(&cx, |d, _| d.draft_selection()), 0..2);
+    cx.simulate_input("s");
+    deck.read_with(&cx, |d, _| assert!(d.draft().starts_with("srd word"), "{}", d.draft()));
+}
+
+#[gpui::test]
 fn loading_construct_history_preserves_terminal_tool_states(cx: &mut TestAppContext) {
     use deck_acp::{ToolKind, ToolStatus, conn::Conn};
 

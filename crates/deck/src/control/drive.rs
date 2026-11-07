@@ -12,8 +12,8 @@ use crate::ui::root::Deck;
 use crate::ui::session::{Entry, Status};
 use deck_acp::ToolContent;
 use gpui::{
-    AnyWindowHandle, AppContext as _, AsyncApp, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, WindowHandle, point, px,
+    AnyWindowHandle, AppContext as _, AsyncApp, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PlatformInput, WindowHandle, point, px,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -36,15 +36,11 @@ async fn execute(cmd: Command, deck: WindowHandle<Deck>, cx: &mut AsyncApp) -> a
         Command::Keys(presses) => {
             for p in &presses {
                 let keystroke = keystroke(p);
-                dispatch(
-                    window,
-                    cx,
-                    PlatformInput::KeyDown(KeyDownEvent {
-                        keystroke: keystroke.clone(),
-                        is_held: false,
-                        prefer_character_input: false,
-                    }),
-                )?;
+                // As the platform does: key down, then text the key handlers
+                // left alone goes to the focused input handler, then key up.
+                cx.update_window(window, |_, window, cx| {
+                    window.dispatch_keystroke(keystroke.clone(), cx);
+                })?;
                 dispatch(window, cx, PlatformInput::KeyUp(KeyUpEvent { keystroke }))?;
             }
             Ok(json!({ "keys": presses.len() }))
