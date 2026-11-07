@@ -41,13 +41,13 @@ fn ignored(project: &Path) -> Result<Option<HashSet<PathBuf>>> {
         .output();
     let output = match output {
         Ok(output) => output,
-        Err(error) if project.join(".git").exists() => {
+        Err(error) if is_checkout(project) => {
             return Err(error).with_context(|| format!("listing ignored files in {}", project.display()));
         }
         Err(_) => return Ok(None),
     };
     if !output.status.success() {
-        if project.join(".git").exists() {
+        if is_checkout(project) {
             bail!("listing ignored files in {}: {}", project.display(), String::from_utf8_lossy(&output.stderr).trim());
         }
         return Ok(None);
