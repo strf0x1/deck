@@ -109,7 +109,7 @@ impl Store {
     }
 
     #[cfg(test)]
-    fn scripted(bound: Duration, answer: impl Fn(&str) -> Outcome + Send + Sync + 'static) -> Self {
+    pub(crate) fn scripted(bound: Duration, answer: impl Fn(&str) -> Outcome + Send + Sync + 'static) -> Self {
         Self { bound, ..Self::with(Source::Scripted(Arc::new(answer))) }
     }
 

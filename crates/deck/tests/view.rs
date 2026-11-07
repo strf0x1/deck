@@ -498,12 +498,13 @@ fn credential_retry_instructions_fit_the_access_panel_at_supported_widths(cx: &m
                 d.on_credentials(
                     0,
                     Ok(vec![
-                        Listed { name, fingerprint: None, revoked: false, error: Some(message) },
+                        Listed { name, fingerprint: None, revoked: false, error: Some(message), paused: true },
                         Listed {
                             name: "DECK_GITHUB_TOKEN".into(),
                             fingerprint: Some("sha256:123456789abc".into()),
                             revoked: false,
                             error: None,
+                            paused: false,
                         },
                     ]),
                     cx,
@@ -538,6 +539,41 @@ fn credential_retry_instructions_fit_the_access_panel_at_supported_widths(cx: &m
         deck.read_with(&cx, |d, _| d.access().confirming().map(|target| target.label())),
         Some("DECK_GITHUB_TOKEN".into())
     );
+}
+
+#[gpui::test]
+fn a_paused_credential_offers_retry_instead_of_revoke(cx: &mut TestAppContext) {
+    use deck_runtime::broker::Listed;
+
+    let (deck, mut cx) = open(cx);
+    click_control(&mut cx, "hdr-access");
+    deck.update(&mut cx, |d, cx| {
+        d.on_credentials(
+            0,
+            Ok(vec![
+                Listed {
+                    name: "PAUSED_KEY".into(),
+                    fingerprint: None,
+                    revoked: false,
+                    error: Some("OS access was cancelled or refused; automatic reads are paused.".into()),
+                    paused: true,
+                },
+                Listed {
+                    name: "ACTIVE_KEY".into(),
+                    fingerprint: Some("sha256:123456789abc".into()),
+                    revoked: false,
+                    error: None,
+                    paused: false,
+                },
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("access-retry-0").is_some(), "a paused credential offers Retry");
+    assert!(cx.debug_bounds("access-revoke-0").is_none(), "a paused credential has no value to revoke");
+    assert!(cx.debug_bounds("access-retry-1").is_none(), "an active credential is not retryable");
+    assert!(cx.debug_bounds("access-revoke-1").is_some());
 }
 
 #[gpui::test]

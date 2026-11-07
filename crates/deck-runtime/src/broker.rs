@@ -67,6 +67,10 @@ pub struct Listed {
     pub fingerprint: Option<String>,
     pub revoked: bool,
     pub error: Option<String>,
+    /// OS access was cancelled or refused, so automatic reads are paused
+    /// until a host retry. Daemon control metadata, not ACP.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 /// The daemon's store description and its credential listing, without values.
@@ -193,14 +197,14 @@ fn list(store: &Store, revoked: &Revoked) -> Result<Vec<Listed>> {
 /// One name as listed: its current fingerprint and revoked state, or why
 /// there is none. This is the only place a listing reads a value.
 fn list_one(store: &Store, revoked: &Revoked, name: String) -> Listed {
-    let (fingerprint, error) = match store.read(&name) {
-        Ok(value) => (Some(credentials::fingerprint(&value)), None),
-        Err(Absent::Missing) => (None, Some("no value".to_string())),
-        Err(Absent::Denied) => (None, Some(credentials::denied_message(&name))),
-        Err(Absent::Unavailable(why)) => (None, Some(why)),
+    let (fingerprint, error, paused) = match store.read(&name) {
+        Ok(value) => (Some(credentials::fingerprint(&value)), None, false),
+        Err(Absent::Missing) => (None, Some("no value".to_string()), false),
+        Err(Absent::Denied) => (None, Some(credentials::denied_message(&name)), true),
+        Err(Absent::Unavailable(why)) => (None, Some(why), false),
     };
     let is_revoked = fingerprint.as_deref().is_some_and(|fingerprint| revoked.is_revoked(fingerprint));
-    Listed { name, fingerprint, revoked: is_revoked, error }
+    Listed { name, fingerprint, revoked: is_revoked, error, paused }
 }
 
 #[cfg(test)]
@@ -286,6 +290,27 @@ mod tests {
         // The listing never carries a value.
         let json = serde_json::to_string(&broker.list_names(&names)).unwrap();
         assert!(!json.contains("sk-"), "{json}");
+    }
+
+    #[test]
+    fn only_a_denied_read_is_listed_as_paused() {
+        let dir = std::env::temp_dir().join(format!("deck-broker-paused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::scripted(credentials::READ_BOUND, |name| match name {
+            "DENIED_KEY" => Err(Absent::Denied),
+            "MISSING_KEY" => Err(Absent::Missing),
+            _ => Err(Absent::Unavailable("store down".into())),
+        });
+        let broker = Broker::open(&dir, store).unwrap();
+        let names = vec!["DENIED_KEY".to_string(), "MISSING_KEY".into(), "DOWN_KEY".into()];
+        let listed = broker.list_names(&names);
+        assert_eq!(
+            listed.iter().map(|item| item.paused).collect::<Vec<_>>(),
+            [true, false, false],
+            "only a cancelled or refused OS read is paused"
+        );
+        assert!(listed[0].error.as_deref().is_some_and(|why| why.contains("paused")));
     }
 
     #[test]

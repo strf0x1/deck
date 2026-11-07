@@ -22,11 +22,15 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .enumerate()
         .map(|(i, item)| {
             let name = item.name.clone();
+            let retry_name = item.name.clone();
             let can_revoke = item.fingerprint.is_some() && !item.revoked;
+            let retrying = access.retrying() == Some(item.name.as_str());
             let (label, color): (&str, Hsla) = if item.revoked {
                 ("revoked", Tokens::red())
             } else if item.fingerprint.is_some() {
                 ("active", Tokens::lime())
+            } else if item.paused {
+                ("paused", Tokens::text_dim().into())
             } else {
                 ("no value", Tokens::text_faint().into())
             };
@@ -72,6 +76,16 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .debug_selector(move || format!("access-revoke-{i}"))
                                 .flex_none()
                                 .on_click(cx.listener(move |this, _, _, cx| this.ask_revoke(&name, cx)))
+                        }))
+                        .children(item.paused.then(|| {
+                            button(
+                                ("access-retry", i),
+                                if retrying { "Retrying…" } else { "Retry" },
+                                Tokens::text_dim(),
+                            )
+                            .debug_selector(move || format!("access-retry-{i}"))
+                            .flex_none()
+                            .on_click(cx.listener(move |this, _, _, cx| this.retry_credential(&retry_name, cx)))
                         })),
                 )
                 .child(
@@ -158,6 +172,9 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .children(access.confirming().map(|target| confirm(target, access.busy(), cx)))
         .children(access.revoked().map(notice))
         .children(access.revoke_error().map(error))
+        .children(access.retry_message().map(|message| {
+            div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(message.to_owned())
+        }))
         .child(contents)
         .into_any_element()
 }
