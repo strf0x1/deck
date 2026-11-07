@@ -38,6 +38,9 @@ mod identity;
 #[path = "gateway/contract.rs"]
 mod contract;
 
+#[path = "gateway/fake_agent.rs"]
+mod fake_agent;
+
 /// A fake `deckd` in front of a test's own queue fixture: it answers
 /// `credential` and `credential_watch` as the broker does, and forwards every
 /// other line to `upstream`, so each fixture stays one concern.

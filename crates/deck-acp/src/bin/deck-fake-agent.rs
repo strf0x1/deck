@@ -2,6 +2,13 @@
 //! Each prompt: a thought, a streamed reply, one tool call that asks
 //! permission, then a final line saying what it was told.
 //!
+//! `DECK_GITHUB_URL` switches a prompt to the publication turn: a local
+//! commit, then `refs`, `publish`, `create_pr`, `review` and a
+//! ready-for-review `update_pr` through Deck's GitHub gateway (contract
+//! 1.2.0 §11). Each gateway reply, or the refusal's message, becomes that
+//! step's tool result. The capability `github_operations` is advertised under
+//! the current Deck key whenever the URL is set.
+//!
 //! It speaks over stdio by default. `deck-fake-agent --listen <socket>` binds
 //! a Unix socket and serves the first connection instead, so a test or a
 //! runtime can reach an agent deck did not launch. Either way the loop ends
@@ -25,6 +32,8 @@ use std::time::Duration;
 
 #[path = "fake/agent.rs"]
 mod agent;
+#[path = "fake/github.rs"]
+mod github;
 #[path = "fake/journal.rs"]
 mod journal;
 #[path = "fake/turn.rs"]

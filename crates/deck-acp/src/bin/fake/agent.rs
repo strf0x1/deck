@@ -26,6 +26,10 @@ pub struct Agent<W> {
     /// Whether this process has a boundary endpoint, matching Construct: the
     /// capability is advertised only when the endpoint exists.
     boundary: bool,
+    /// The GitHub operation gateway (`DECK_GITHUB_URL`). When set, this client
+    /// advertises `github_operations` and a prompt runs the publication turn
+    /// instead of the permission script.
+    github: Option<String>,
     /// The turn method this client asked for: the reverse-DNS name when it
     /// named the namespace, otherwise the bare one (deck#36).
     turn_method: &'static str,
@@ -53,6 +57,7 @@ impl<W: Write> Agent<W> {
             turn: None,
             stop: None,
             boundary: std::env::var_os("DECK_BOUNDARY_URL").is_some_and(|value| !value.is_empty()),
+            github: std::env::var("DECK_GITHUB_URL").ok().filter(|value| !value.is_empty()),
             turn_method: LEGACY_TURN_METHOD,
             legacy_names: names != "reverse",
             reverse_names: names != "legacy",
@@ -142,6 +147,32 @@ impl<W: Write> Agent<W> {
         self.update(json!({ "sessionUpdate": kind, "content": { "type": "text", "text": text } }));
     }
 
+    /// One done step of the publication turn: the tool call, then its result
+    /// as the transcript content ACP gives a tool call.
+    fn tool_step(&mut self, index: usize, title: &str, result: Result<String, String>) {
+        let id = format!("p{}-{index}", self.number);
+        self.update(json!({ "sessionUpdate": "tool_call", "toolCallId": id,
+            "title": title, "kind": "execute", "status": "in_progress" }));
+        let (status, text) = match result {
+            Ok(text) => ("completed", text),
+            Err(error) => ("failed", error),
+        };
+        self.update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": id, "status": status,
+            "content": [{ "type": "content", "content": { "type": "text", "text": text } }] }));
+    }
+
+    /// The scripted publication turn (ADR 0008 §9). A gateway refusal is the
+    /// failing step's text, not a retry: the fake exists to show the card and
+    /// the transcript, not to recover from either.
+    fn publish(&mut self, url: &str, asked: &str) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut step = 0;
+        super::github::run(url, &cwd, asked, |title, result| {
+            step += 1;
+            self.tool_step(step, title, result);
+        });
+    }
+
     fn ask(&mut self) {
         let Some(turn) = self.turn.as_mut().filter(|t| t.waiting) else { return };
         if turn.question.is_some() {
@@ -178,13 +209,21 @@ impl<W: Write> Agent<W> {
                 if self.reverse_names {
                     meta[CONSTRUCT_META] = json!({ "liveAttach": true });
                 }
-                if self.boundary {
-                    if self.legacy_names {
-                        meta[LEGACY_DECK_META] = json!({ "boundary": true });
-                    }
-                    if self.reverse_names {
-                        meta[DECK_META] = json!({ "boundary": true });
-                    }
+                let mut deck = serde_json::Map::new();
+                if self.boundary && self.reverse_names {
+                    deck.insert("boundary".into(), json!(true));
+                }
+                // The capability exists under the current key only (contract
+                // 1.2.0 §11.1); a release pinned to the legacy namespace does
+                // not speak it.
+                if self.github.is_some() && self.reverse_names {
+                    deck.insert("github_operations".into(), json!(1));
+                }
+                if !deck.is_empty() {
+                    meta[DECK_META] = Value::Object(deck);
+                }
+                if self.boundary && self.legacy_names {
+                    meta[LEGACY_DECK_META] = json!({ "boundary": true });
                 }
                 self.reply(
                     id,
@@ -239,7 +278,13 @@ impl<W: Write> Agent<W> {
                 self.stop = None;
                 self.turn = Some(Turn::new(id, self.attachment, asked));
                 self.notice();
-                self.chunk("agent_thought_chunk", "planning a small change");
+                if let Some(url) = self.github.clone() {
+                    self.chunk("agent_thought_chunk", "publishing the task branch");
+                    self.publish(&url, asked);
+                    self.finish("end_turn");
+                } else {
+                    self.chunk("agent_thought_chunk", "planning a small change");
+                }
             }
             None => {
                 let current = self.turn.as_ref().and_then(|t| t.question.as_ref());
