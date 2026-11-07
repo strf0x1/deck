@@ -15,7 +15,7 @@ use gpui::{AnyElement, Div, Hsla, IntoElement, ParentElement as _, Styled as _, 
 
 pub fn diff(changes: &[transcript::Change], open: bool) -> AnyElement {
     let mut cut_total = 0;
-    let mut out = div().flex().flex_col().border_t_1().border_color(Tokens::edge()).py(px(4.));
+    let mut out = div().flex().flex_col().border_t_1().border_color(Tokens::edge()).py(px(space::DETAIL));
     for (n, change) in changes.iter().enumerate() {
         let (rows, cut) = change.diff.preview(2, if open { CAP } else { PREVIEW });
         cut_total += cut;
@@ -24,7 +24,7 @@ pub fn diff(changes: &[transcript::Change], open: bool) -> AnyElement {
                 mono()
                     .px(px(space::INSET))
                     .pt(px(if n == 0 { 2. } else { 8. }))
-                    .pb(px(2.))
+                    .pb(px(space::HAIR))
                     .text_color(Tokens::text_dim())
                     .child(change.path.clone()),
             );

@@ -68,9 +68,9 @@ pub mod radius {
     pub const PANE: f32 = 18.;
 }
 
-/// Spacing by role for the transcript and prompt, so density is tuned here.
+/// Spacing by role for every pane, so density is tuned here.
 pub mod space {
-    /// Between transcript rows.
+    /// Between transcript rows and pane sections.
     pub const ROW: f32 = 14.;
     /// The transcript's side margins.
     pub const MARGIN: f32 = 22.;
@@ -80,6 +80,22 @@ pub mod space {
     pub const TIGHT: f32 = 6.;
     /// A card header's height.
     pub const HEADER: f32 = 34.;
+    /// A pane's side padding.
+    pub const PANE: f32 = 22.;
+    /// A pane's top and bottom padding.
+    pub const PANE_V: f32 = 18.;
+    /// Between stacked items in a pane.
+    pub const STACK: f32 = 10.;
+    /// Between items in a row.
+    pub const LINE: f32 = 8.;
+    /// Between sections in a pane.
+    pub const SECTION: f32 = 12.;
+    /// Inside a card or a control.
+    pub const PAD: f32 = 14.;
+    /// A small separation or padding.
+    pub const DETAIL: f32 = 4.;
+    /// A hairline gap or padding.
+    pub const HAIR: f32 = 2.;
 }
 
 pub struct Tokens;

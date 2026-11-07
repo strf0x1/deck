@@ -10,7 +10,7 @@ use super::access_panel::button;
 use super::panels::glyph;
 use super::publication::{Dot, View};
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, size};
+use super::theme::{MONO, Tokens, icon, size, space};
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -50,7 +50,7 @@ pub fn chip(dot: Dot, label: &str) -> gpui::Div {
 fn row(label: &'static str, value: impl Into<String>) -> AnyElement {
     div()
         .flex()
-        .gap(px(12.))
+        .gap(px(space::SECTION))
         .child(div().w(px(110.)).flex_none().text_color(Tokens::text_faint()).child(label))
         .child(div().min_w_0().truncate().font_family(MONO).text_size(px(size::LABEL)).child(value.into()))
         .into_any_element()
@@ -70,14 +70,14 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .min_h_0()
         .flex()
         .flex_col()
-        .gap(px(14.))
-        .px(px(22.))
-        .py(px(18.))
+        .gap(px(space::ROW))
+        .px(px(space::PANE))
+        .py(px(space::PANE_V))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Publication"))
                 .child(div().text_color(Tokens::text_faint()).child(title))
                 .child(div().flex_1())
@@ -105,7 +105,7 @@ fn details(view: &View, confirm: bool, cx: &mut Context<Deck>) -> AnyElement {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(space::LINE))
                 .child(div().size(px(6.)).rounded_full().bg(color))
                 .child(div().flex_1().min_w_0().truncate().child(check.name.clone()))
                 .child(div().text_color(Tokens::text_dim()).child(check.verdict.clone()))
@@ -116,32 +116,31 @@ fn details(view: &View, confirm: bool, cx: &mut Context<Deck>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(space::STACK))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::STACK))
                 .child(chip(view.dot, &view.label))
                 .child(div().text_color(Tokens::text_dim()).child(view.dot.label())),
         )
         .children(view.title.clone().map(|t| row("pull request", format!("{} {t}", view.label))))
         .children(view.branch.clone().map(|b| row("branch", b)))
         .children(view.commit.clone().map(|c| row("last commit", c)))
-        .children(
-            (!checks.is_empty())
-                .then(|| div().flex().flex_col().gap(px(6.)).pt(px(4.)).children(checks).into_any_element()),
-        )
+        .children((!checks.is_empty()).then(|| {
+            div().flex().flex_col().gap(px(space::TIGHT)).pt(px(space::DETAIL)).children(checks).into_any_element()
+        }))
         .children(view.note.clone().map(|n| div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(n)))
         .child(
             div()
                 .flex()
-                .gap(px(8.))
-                .pt(px(4.))
+                .gap(px(space::LINE))
+                .pt(px(space::DETAIL))
                 .children(url.map(|url| {
                     button("publication-open", "Open on GitHub", Tokens::text())
                         .child(glyph(icon::SEND, 10.))
-                        .gap(px(6.))
+                        .gap(px(space::TIGHT))
                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
                 }))
                 .children(view.done().then(|| {

@@ -11,7 +11,7 @@
 use super::composer::Field;
 use super::panels::glyph;
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, radius, size, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     Context, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px,
@@ -144,7 +144,7 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .border_1()
         .border_color(if ready { Tokens::edge_strong() } else { Tokens::edge() })
         .bg(Tokens::raised())
-        .child(div().pl(px(16.)).pr(px(8.)).flex().items_end().gap(px(10.)).child(field).child(send))
+        .child(div().pl(px(16.)).pr(px(8.)).flex().items_end().gap(px(space::STACK)).child(field).child(send))
         .child(status_row(deck))
 }
 
@@ -155,7 +155,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(px(space::TIGHT))
             .when(shrinks, |d| d.min_w_0().flex_shrink())
             .when(!shrinks, |d| d.flex_none())
             .child(glyph(g, 10.).text_color(Tokens::text_faint()))
