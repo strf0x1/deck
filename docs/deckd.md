@@ -126,6 +126,21 @@ file before each admission, so the next request uses the new limits without
 restarting the VM. The model allowlist is still fixed when the gateway
 starts.
 
+## Attention and settled tasks
+
+The window reports two facts to `deckd` so they survive restarts and agree
+across windows (ADR 0010 §6). `seen {id, turn}` records the turn number last
+shown to the user while the task was selected; it appends a `seen` event only
+when the turn is higher than the recorded one, so a lagging window cannot
+rewind it. `mark {id, done}` appends a `marked` event: `true` records when the
+task was marked done, `false` clears it.
+
+Both are accounting, not lifecycle transitions: they never change the task's
+state and are accepted whether it runs or has stopped. `task.json` carries
+`seen`, `done_ms` and, once destroyed, `destroyed_ms`; the fold takes each
+event's log-line time, so a recorded time is exactly what a reload reads back.
+Records written before these fields load with `seen` 0 and no times.
+
 ## The web and package gateway
 
 A VM task's second gateway kind (ADR 0004 §3) is a proxy: CONNECT tunnels to

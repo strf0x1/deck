@@ -165,6 +165,29 @@ impl Runtime {
         inner.store.append(&mut task, Event::Publication { publication })
     }
 
+    /// Record the turn number the window last showed the user. It only moves
+    /// forward, and a stale report is free (ADR 0010 §6).
+    pub fn seen(&self, id: &str, turn: u64) -> Result<()> {
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if turn <= task.seen {
+            return Ok(());
+        }
+        inner.store.append(&mut task, Event::Seen { turn })
+    }
+
+    /// Mark the task done, or clear the mark (ADR 0010 §6). Accounting, not a
+    /// lifecycle transition, so it is accepted while the task runs and after
+    /// it stopped.
+    pub fn mark(&self, id: &str, done: bool) -> Result<()> {
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if task.done_ms.is_some() == done {
+            return Ok(());
+        }
+        inner.store.append(&mut task, Event::Marked { done })
+    }
+
     /// Record the first use of a credential value by a run's gateway.
     pub fn credential_used(&self, id: &str, name: &str, fingerprint: &str) -> Result<()> {
         let inner = self.lock();
