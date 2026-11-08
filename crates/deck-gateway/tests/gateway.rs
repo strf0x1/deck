@@ -2332,12 +2332,14 @@ fn an_expiring_github_grant_cancels_its_running_operation() {
 #[test]
 fn removing_an_unrelated_github_grant_does_not_cancel_a_running_operation() {
     let (api, arrived, closed) = holding_api();
-    let queue = admitting_queue("gh-grant-unrelated-queue", "task");
+    // Short fixture names: macOS's temporary directory plus this socket name
+    // exceeded SUN_LEN and the gateway could not bind.
+    let queue = admitting_queue("gu-q", "task");
     let authorizing = github_rule("g1", "task", "create_pr", "owner/repo#deck/t-1", None);
     let unrelated = github_rule("g2", "task", "publish", "owner/repo#deck/t-1", None);
-    let grants = github_grant_file("gh-grant-unrelated-file", &[authorizing.clone(), unrelated]);
+    let grants = github_grant_file("gu-f", &[authorizing.clone(), unrelated]);
     let gateway = with_github_grants(
-        "gh-grant-unrelated-gw",
+        "gu-g",
         &api,
         "https://github.com/owner/repo",
         Some((&queue, "t-1")),
