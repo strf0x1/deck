@@ -49,7 +49,7 @@ pub fn lanes(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     }
     // The held card renders last so it passes over the others.
     rest.append(&mut top);
-    let cards: Vec<AnyElement> = rest.into_iter().map(|c| card(c, held == Some(c.lane.id), cx)).collect();
+    let cards: Vec<AnyElement> = rest.into_iter().map(|c| card(c, held == Some(c.lane.id), deck, cx)).collect();
     pane()
         .w(px(296.))
         .flex_none()
@@ -81,9 +81,108 @@ pub fn lanes(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 ),
         )
         .child(div().relative().h(px(deck.board.height())).children(cards))
+        .children((!deck.settled().is_empty()).then(|| fold(deck, cx)))
 }
 
-fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
+/// The settled tasks' fold: a quiet header, and the rows once opened.
+fn fold(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    let open = deck.settled_open();
+    let rows: Vec<AnyElement> = if open {
+        deck.settled().iter().enumerate().map(|(index, settled)| settled_row(settled, index, deck, cx)).collect()
+    } else {
+        Vec::new()
+    };
+    div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .gap(px(space::TIGHT))
+        .child(
+            div()
+                .id("settled-fold")
+                .debug_selector(|| "settled-fold".into())
+                .h(px(28.))
+                .px(px(space::TIGHT))
+                .flex()
+                .items_center()
+                .rounded(px(radius::CONTROL))
+                .cursor_pointer()
+                .hover(|style| style.bg(Tokens::raised()))
+                .text_size(px(size::SMALL))
+                .text_color(Tokens::text_faint())
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_settled(cx)))
+                .child(format!("Settled ({})", deck.settled().len())),
+        )
+        .children(rows)
+        .into_any_element()
+}
+
+/// One settled task: what it was, when it settled, and the mark's toggle.
+fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    let title = settled
+        .task
+        .spec
+        .cwd
+        .file_name()
+        .map_or_else(|| settled.task.spec.cwd.display().to_string(), |name| name.to_string_lossy().into_owned());
+    let destroyed = settled.task.state == deck_runtime::State::Destroyed;
+    let done = settled.task.done_ms.is_some();
+    let label = if destroyed {
+        "destroyed"
+    } else if done {
+        "done"
+    } else {
+        "merged"
+    };
+    let id = settled.task.id.clone();
+    // The chip is how a settled task still reaches its publication panel and
+    // the destroy-after-merge flow (ADR 0008 §8).
+    let lane = settled.task.id.as_str();
+    let lane = deck.lanes.lane_of(lane, deck.task_id());
+    let chip = lane.and_then(|lane| deck.publication_of(lane).map(|view| (lane, view)));
+    let toggle = (!destroyed).then(|| {
+        div()
+            .id(("settled-done", index))
+            .debug_selector(move || format!("settled-done-{index}"))
+            .h(px(22.))
+            .px(px(space::TIGHT))
+            .flex()
+            .items_center()
+            .rounded(px(radius::CHIP))
+            .border_1()
+            .border_color(Tokens::edge())
+            .text_size(px(size::SMALL))
+            .text_color(Tokens::text_dim())
+            .cursor_pointer()
+            .hover(|style| style.bg(Tokens::raised_hover()))
+            .on_click(cx.listener(move |this, _, _, cx| this.mark_task(&id, !done, cx)))
+            .child(if done { "Not done" } else { "Mark done" })
+    });
+    div()
+        .h(px(30.))
+        .px(px(space::INSET))
+        .flex()
+        .items_center()
+        .gap(px(space::SECTION))
+        .rounded(px(radius::CONTROL))
+        .bg(Tokens::raised())
+        .text_size(px(size::SMALL))
+        .text_color(Tokens::text_dim())
+        .child(div().truncate().child(title))
+        .child(div().flex_none().text_color(Tokens::text_faint()).child(label))
+        .child(div().flex_1())
+        .children(chip.map(|(lane, view)| {
+            super::publication_panel::chip(view.dot, &view.label)
+                .id(("settled-chip", index))
+                .debug_selector(move || format!("settled-chip-{index}"))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_publication(lane, cx)))
+        }))
+        .children(toggle)
+        .into_any_element()
+}
+
+fn card(c: &Card, held: bool, deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let lift = c.lift.pos.clamp(0., 1.2);
     let live = c.lane.id == LIVE;
     let color = state_color(c.lane.state);
@@ -93,6 +192,38 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
     let tile_bg: Hsla = if live { tint(Tokens::accent(), 0.18) } else { Tokens::raised().into() };
     let tile_fg: Hsla = if live { Tokens::accent() } else { Tokens::text_dim().into() };
     let id = c.lane.id;
+    let note = c.lane.attention.clone().unwrap_or_else(|| c.lane.detail.clone());
+    let note_color: Hsla = if c.lane.attention.is_some() { Tokens::amber() } else { Tokens::text_faint().into() };
+    let task = deck.lanes.task(id, deck.task_id());
+    let done = task
+        .as_deref()
+        .and_then(|task| deck.tasks.iter().find(|record| record.id == task))
+        .is_some_and(|record| record.done_ms.is_some());
+    let mark = task.map(|task| {
+        div()
+            .id(("card-done", id))
+            .debug_selector(move || format!("card-done-{id}"))
+            .flex_none()
+            .h(px(22.))
+            .px(px(space::TIGHT))
+            .flex()
+            .items_center()
+            .rounded(px(radius::CHIP))
+            .border_1()
+            .border_color(Tokens::edge())
+            .text_size(px(size::SMALL))
+            .text_color(Tokens::text_dim())
+            .cursor_pointer()
+            .hover(|style| style.bg(Tokens::raised_hover()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.mark_task(&task, !done, cx);
+                }),
+            )
+            .child(if done { "Not done" } else { "Mark done" })
+    });
     div()
         .id(("card", id))
         .absolute()
@@ -150,9 +281,10 @@ fn card(c: &Card, held: bool, cx: &mut Context<Deck>) -> AnyElement {
                         .child(div().flex_none().size(px(6.)).rounded_full().bg(color))
                         .child(div().flex_none().child(state_label(c.lane.state)))
                         .child(div().flex_none().text_color(Tokens::text_faint()).child("·"))
-                        .child(div().truncate().text_color(Tokens::text_faint()).child(c.lane.detail.clone())),
+                        .child(div().truncate().text_color(note_color).child(note)),
                 ),
         )
+        .children(mark)
         .children(c.lane.chip.as_ref().map(|(dot, label)| {
             // Its own press: the card under it must not take it as a grab.
             super::publication_panel::chip(*dot, label)

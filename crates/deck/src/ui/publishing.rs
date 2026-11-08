@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// How often an open window refreshes its task list and publications.
 const REFRESH: Duration = Duration::from_secs(15);
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
 }
 
@@ -33,6 +33,9 @@ impl Deck {
         self.task_refresh = Some(cx.spawn(async move |this, cx| {
             loop {
                 let root = data.clone();
+                // Tasks this window already watches get their items from the
+                // watch connection; the rest need the queue listed.
+                let watched = this.update(cx, |deck, _| deck.attached_ids()).unwrap_or_default();
                 // Only the data root crosses into the background read, not a
                 // daemon handle: a queued read the window drops before it runs
                 // would otherwise hold a control connection open and delay
@@ -41,15 +44,29 @@ impl Deck {
                     let daemon = DaemonClient::connect(&root)?;
                     let tasks = daemon.tasks()?;
                     let mut published = HashMap::new();
-                    for t in tasks.iter().filter(|t| t.publication.is_some()) {
-                        if let Ok(state) = daemon.pull_request(&t.id, false) {
+                    let mut approvals = HashMap::new();
+                    for t in &tasks {
+                        if t.publication.is_some()
+                            && let Ok(state) = daemon.pull_request(&t.id, false)
+                        {
                             published.insert(t.id.clone(), state);
                         }
+                        if !watched.contains(&t.id)
+                            && let Ok(items) = daemon.approvals(&t.id)
+                            && !items.is_empty()
+                        {
+                            approvals.insert(t.id.clone(), items);
+                        }
                     }
-                    anyhow::Ok((tasks, published))
+                    anyhow::Ok((tasks, published, approvals))
                 });
-                if let Ok((tasks, published)) = read.await
-                    && this.update(cx, |deck, cx| deck.on_tasks(tasks, published, cx)).is_err()
+                if let Ok((tasks, published, approvals)) = read.await
+                    && this
+                        .update(cx, |deck, cx| {
+                            deck.on_tasks(tasks, published, cx);
+                            deck.on_approvals(approvals, cx);
+                        })
+                        .is_err()
                 {
                     break;
                 }
@@ -63,13 +80,42 @@ impl Deck {
     pub fn on_tasks(&mut self, tasks: Vec<Task>, published: HashMap<String, Published>, cx: &mut Context<Self>) {
         let own = self.task_id().map(str::to_string);
         let now = now_ms();
-        // The column lists the selected project's tasks only (ADR 0010 §9).
+        // The column lists the selected project's tasks only (ADR 0010 §9),
+        // settled ones folding below the rest.
+        self.tasks = tasks;
+        self.published = published;
         let mut visible = Vec::new();
-        for record in &tasks {
+        for record in &self.tasks {
             if own.as_deref() == Some(record.id.as_str()) || self.projects.holds(record) {
                 visible.push(record.clone());
             }
         }
+        let mut shown = Vec::new();
+        let mut settled = Vec::new();
+        for record in visible {
+            let at = super::attention::settled(&record, self.published.get(&record.id));
+            let is_own = own.as_deref() == Some(record.id.as_str());
+            if !is_own
+                && let Some(at_ms) = at
+                && now.saturating_sub(at_ms) < super::tasks::SETTLED_WINDOW_MS
+            {
+                settled.push(super::tasks::Settled { task: record, at_ms });
+            } else if is_own || at.is_none() {
+                // A settled selection stays the live card; a record settled
+                // longer ago than the window shows nowhere.
+                shown.push(record);
+            }
+        }
+        settled.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| a.task.id.cmp(&b.task.id)));
+        // A settled task has no card, but its chip still opens the
+        // publication panel, so it keeps a lane id for the window's life.
+        for item in &settled {
+            self.lanes.slot(&item.task.id, own.as_deref());
+        }
+        self.settled = settled;
+        // Most recent activity first; the record id begins with its time.
+        shown.sort_by(|a, b| b.id.cmp(&a.id));
+        self.refresh_attention();
         let mut lanes: Vec<Lane> = Vec::new();
         let had_live = self.board.cards().iter().any(|c| c.lane.id == LIVE);
         if own.is_some() {
@@ -81,7 +127,7 @@ impl Deck {
                 .map_or_else(super::root::live_lane, |c| c.lane.clone());
             lanes.push(live);
         }
-        lanes.extend(self.lanes.lanes(&visible, own.as_deref(), &published, now));
+        lanes.extend(self.lanes.lanes(&shown, own.as_deref(), &self.published, &self.needs_you, now));
         self.board.sync(lanes);
         // A new live card belongs at the top, where the selected task shows;
         // an existing one keeps the slot the user put it in.
@@ -89,10 +135,9 @@ impl Deck {
             self.board.to_front(LIVE);
         }
         // One small file read for the branch, every refresh, not every frame.
-        self.workspace = tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);
-        self.tasks = tasks;
-        self.published = published;
+        self.workspace = self.tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);
         self.sync_live_lane();
+        self.note_seen(cx);
         cx.notify();
     }
 

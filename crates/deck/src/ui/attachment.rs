@@ -407,7 +407,7 @@ impl Deck {
 
     /// Make `record` the selection and reset what belongs to the previous
     /// one. Connect it only if it has no attachment yet.
-    fn select_task(&mut self, current: &WindowTask, record: Task, cx: &mut Context<Self>) {
+    pub(super) fn select_task(&mut self, current: &WindowTask, record: Task, cx: &mut Context<Self>) {
         let id = record.id.clone();
         // Insert first, so `current()` resolves while the lanes rebuild: a
         // missing attachment would make the target an ordinary card too.
@@ -460,6 +460,10 @@ impl Deck {
             });
         })
         .detach();
+        self.refresh_attention();
+        self.sync_attention_lanes();
+        self.note_seen(cx);
+        self.sync_live_lane();
     }
 
     /// Attach, in the background, every other task that is running and whose
