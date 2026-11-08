@@ -106,6 +106,15 @@ impl DaemonClient {
     pub fn tasks(&self) -> Result<Vec<Task>> {
         self.request(Request::Tasks)
     }
+    pub fn projects(&self) -> Result<Vec<crate::project::Project>> {
+        self.request(Request::Projects)
+    }
+    pub fn open_project(&self, path: &Path, argv: Vec<String>) -> Result<crate::project::Project> {
+        self.request(Request::OpenProject { path: path.into(), argv })
+    }
+    pub fn forget_project(&self, id: &str) -> Result<()> {
+        self.request(Request::ForgetProject { id: id.into() })
+    }
     pub fn run(&self, spec: Spec) -> Result<RunResult> {
         self.request(Request::Run { spec })
     }

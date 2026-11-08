@@ -33,6 +33,7 @@ pub struct Options {
 struct Service {
     data: PathBuf,
     runtime: Runtime,
+    projects: crate::project::Projects,
     boundary: Arc<Boundary>,
     broker: Arc<Broker>,
 }
@@ -61,12 +62,14 @@ pub fn serve(options: Options) -> Result<()> {
             Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
         Runtime::open(&options.data, backend)?
     };
+    let projects = crate::project::Projects::open(&options.data)?;
     let boundary = Boundary::open(&options.data)?;
     let broker = Arc::new(Broker::open(&options.data, store)?);
     eprintln!("deckd: credentials come from the {}", broker.describe());
     let service = Arc::new(Mutex::new(Service {
         data: options.data.clone(),
         runtime,
+        projects,
         boundary: boundary.clone(),
         broker: broker.clone(),
     }));
@@ -520,6 +523,12 @@ impl Service {
             }
             Request::Task { id } => Ok(serde_json::to_value(self.runtime.task(&id)?)?),
             Request::Tasks => Ok(serde_json::to_value(self.runtime.tasks()?)?),
+            Request::Projects => Ok(serde_json::to_value(self.projects.list())?),
+            Request::OpenProject { path, argv } => Ok(serde_json::to_value(self.projects.open_project(&path, argv)?)?),
+            Request::ForgetProject { id } => {
+                self.projects.forget(&id)?;
+                Ok(json!(null))
+            }
             Request::Run { spec } => Ok(serde_json::to_value(self.run(spec)?)?),
             Request::Session { id, session_id } => {
                 self.runtime.session(&id, &session_id)?;

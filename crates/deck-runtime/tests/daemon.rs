@@ -85,7 +85,12 @@ impl Daemon {
     }
 
     fn spec(&self, argv: &[&str]) -> Spec {
-        Spec { argv: argv.iter().map(|arg| (*arg).into()).collect(), cwd: self.data.clone(), github: None }
+        Spec {
+            argv: argv.iter().map(|arg| (*arg).into()).collect(),
+            cwd: self.data.clone(),
+            project: None,
+            github: None,
+        }
     }
 
     fn wait_exit(&mut self) -> std::process::ExitStatus {
@@ -133,6 +138,36 @@ fn running(pid: u32) -> bool {
     let output = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
     let state = String::from_utf8(output.stdout).unwrap();
     !state.trim().is_empty() && !state.trim().starts_with('Z')
+}
+
+#[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
+fn git_repo(dir: &std::path::Path) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    let git = |args: &[&str]| {
+        let status = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git(&["init", "--quiet", "-b", "main"]);
+    git(&["config", "user.name", "Ada Lovelace"]);
+    git(&["config", "user.email", "ada@example.com"]);
+    std::fs::write(dir.join("README.md"), "one\n").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "--quiet", "-m", "one"]);
+    let output = Command::new("git").arg("-C").arg(dir).args(["rev-list", "--max-parents=0", "HEAD"]).output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn projects_open_list_and_forget() {
+    let (daemon, client) = Daemon::new("projects");
+    let repo = daemon.data.join("repo");
+    let root = git_repo(&repo);
+    let project = client.open_project(&repo, vec!["construct".into()]).unwrap();
+    assert_eq!(project.id, format!("git:{root}"));
+    assert_eq!(client.projects().unwrap(), vec![project.clone()]);
+    client.forget_project(&project.id).unwrap();
+    assert!(client.projects().unwrap().is_empty(), "a forgotten project drops out of the list");
 }
 
 #[test]
@@ -666,6 +701,7 @@ fn a_live_approvals_switch_applies_to_the_next_operation() {
         .create(Spec {
             argv: vec!["cat".into()],
             cwd: project.clone(),
+            project: None,
             github: Some(Policy {
                 repository: "owner/repo".into(),
                 base: "main".into(),

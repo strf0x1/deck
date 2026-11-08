@@ -63,7 +63,8 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     std::fs::write(root.join("project/README.md"), "vm test\n").unwrap();
     let data = root.join("data");
     let paths = Paths::for_data(&data).unwrap();
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), github: None };
+    let spec =
+        Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), project: None, github: None };
 
     let runtime = open(&data, &paths);
     let id = runtime.create(spec.clone()).unwrap();
@@ -129,7 +130,8 @@ fn vm_prompt_and_permission_round_trip() {
     std::fs::create_dir_all(root.join("project")).unwrap();
     let data = root.join("data");
     let paths = Paths::for_data(&data).unwrap();
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), github: None };
+    let spec =
+        Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), project: None, github: None };
 
     let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())
         .arg("--data")
@@ -266,7 +268,8 @@ fn vm_launch_to_ready_is_event_driven_twenty_times() {
     std::fs::create_dir_all(root.join("project")).unwrap();
     let data = root.join("data");
     let paths = Paths::for_data(&data).unwrap();
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), github: None };
+    let spec =
+        Spec { argv: vec!["construct".into(), "acp".into()], cwd: root.join("project"), project: None, github: None };
     let runtime = Runtime::open(&data, Vm::from_env(&data, paths.clone()).expect("VM backend configuration"))
         .expect("runtime")
         .with_grace(Duration::from_millis(200));
@@ -327,7 +330,7 @@ fn vm_tasks_record_their_projects_github_policy() {
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "--quiet"]);
         git(&dir, &["remote", "add", "origin", origin]);
-        specs.push(Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir, github: None });
+        specs.push(Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir, project: None, github: None });
     }
 
     let data = root.join("data");
@@ -418,7 +421,12 @@ fn vm_guest_checkout_is_ready_to_publish() {
         approvals: deck_runtime::github::Approvals::OwnBranchPublic,
         identity: deck_runtime::github::Identity { name: "Deck Test".into(), email: "deck-test@example.com".into() },
     };
-    let spec = Spec { argv: vec!["construct".into(), "acp".into()], cwd: project.clone(), github: Some(policy) };
+    let spec = Spec {
+        argv: vec!["construct".into(), "acp".into()],
+        cwd: project.clone(),
+        project: None,
+        github: Some(policy),
+    };
 
     let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())
         .arg("--data")

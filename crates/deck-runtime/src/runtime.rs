@@ -182,6 +182,9 @@ impl Runtime {
 
     /// Record a new task for `spec`. Nothing runs yet.
     pub fn create(&self, mut spec: Spec) -> Result<String> {
+        if spec.project.is_none() {
+            spec.project = Some(crate::project::identify(&spec.cwd)?.id);
+        }
         let mut inner = self.lock();
         inner.backend.prepare(&mut spec)?;
         let name = inner.backend.name();

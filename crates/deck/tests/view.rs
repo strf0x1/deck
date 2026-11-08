@@ -587,7 +587,7 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), github: None }).unwrap().task;
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), project: None, github: None }).unwrap().task;
     let ask = Ask {
         gateway: "web".into(),
         operation: "connect".into(),
@@ -656,6 +656,7 @@ fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext
         .run(Spec {
             argv: argv.clone(),
             cwd: data.clone(),
+            project: None,
             github: Some(Policy {
                 repository: "owner/repo".into(),
                 base: "main".into(),
@@ -804,7 +805,7 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), github: None }).unwrap().task;
+    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: None, github: None }).unwrap().task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -862,7 +863,7 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), github: None }).unwrap().task;
+    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: None, github: None }).unwrap().task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -900,7 +901,7 @@ fn the_stop_binding_stops_the_task(cx: &mut TestAppContext) {
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), github: None }).unwrap().task;
+    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: None, github: None }).unwrap().task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -1161,7 +1162,7 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), github: None }).unwrap().task;
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), project: None, github: None }).unwrap().task;
     let pull = Publication::PullRequest {
         number: 7,
         url: "https://github.com/o/r/pull/7".into(),
@@ -1196,7 +1197,7 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), github: None }).unwrap().task;
+    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), project: None, github: None }).unwrap().task;
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, data.clone(), cx))).unwrap()
     });
@@ -1340,7 +1341,7 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
         std::fs::create_dir_all(&cwd).unwrap();
         let journal = format!("DECK_FAKE_STATE={}", data.join(format!("journal-{name}")).display());
         let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
-        Spec { argv, cwd, github: None }
+        Spec { argv, cwd, project: None, github: None }
     };
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     // The second task has never run: selecting it starts it.

@@ -39,11 +39,24 @@ impl Drop for Scratch {
 }
 
 fn spec(argv: &[&str]) -> Spec {
-    Spec { argv: argv.iter().map(|s| s.to_string()).collect(), cwd: std::env::temp_dir(), github: None }
+    Spec { argv: argv.iter().map(|s| s.to_string()).collect(), cwd: std::env::temp_dir(), project: None, github: None }
 }
 
 fn sh(script: &str) -> Spec {
     spec(&["sh", "-c", script])
+}
+
+#[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+#[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
+fn git_output(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 #[expect(clippy::unwrap_used, reason = "a test helper: a closed channel is the failure")]
@@ -54,6 +67,26 @@ fn next(rx: &mut UnboundedReceiver<Notice>) -> State {
 #[expect(clippy::unwrap_used, reason = "a test helper")]
 fn open(dir: &Scratch) -> Runtime {
     Runtime::open(&dir.0, Local).unwrap().with_grace(Duration::from_millis(300))
+}
+
+#[test]
+fn a_task_records_the_root_commit_of_its_checkout() {
+    hang_guard();
+    let dir = Scratch::new("project");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let repo = dir.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "--quiet", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Ada Lovelace"]);
+    git(&repo, &["config", "user.email", "ada@example.com"]);
+    std::fs::write(repo.join("README.md"), "one\n").unwrap();
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "--quiet", "-m", "one"]);
+    let root = git_output(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
+    let rt = open(&dir);
+    let id = rt.create(Spec { argv: vec!["cat".into()], cwd: repo, project: None, github: None }).unwrap();
+    let expected = format!("git:{root}");
+    assert_eq!(rt.task(&id).unwrap().spec.project.as_deref(), Some(expected.as_str()));
 }
 
 #[test]

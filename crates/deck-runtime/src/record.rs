@@ -144,6 +144,16 @@ impl Store {
         Ok(out)
     }
 
+    /// When the task's first event was recorded, in Unix milliseconds. The
+    /// project backfill uses it as the project's first open time.
+    pub fn created_ms(&self, id: &str) -> Result<u64> {
+        let path = self.tasks.join(id).join(LOG);
+        let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let first = bytes.split(|&byte| byte == b'\n').next().unwrap_or_default();
+        let line: Line = serde_json::from_slice(first).with_context(|| format!("parsing {}", path.display()))?;
+        Ok(line.at_ms)
+    }
+
     /// Write the task's live model budget where its gateway re-reads it.
     /// `None` is unlimited, and the file is a complete snapshot: writing it
     /// replaces both limits, so a missing field never silently widens one.
@@ -221,7 +231,7 @@ mod tests {
     }
 
     fn spec() -> Spec {
-        Spec { argv: vec!["agent".into()], cwd: "/w".into(), github: None }
+        Spec { argv: vec!["agent".into()], cwd: "/w".into(), project: None, github: None }
     }
 
     #[test]

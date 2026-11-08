@@ -31,7 +31,7 @@ impl GuardedLocal {
         let executable = self.executable.to_str().context("deckd executable path is not UTF-8")?;
         let mut argv = vec![executable.into(), "--child".into(), "--".into()];
         argv.extend(spec.argv.iter().cloned());
-        let mut inner = Local::spawn(&Spec { argv, cwd: spec.cwd.clone(), github: None }, exited, None)?;
+        let mut inner = Local::spawn(&Spec { argv, cwd: spec.cwd.clone(), project: None, github: None }, exited, None)?;
         let mut stream = inner.attach()?;
         before_start(inner.pid().context("helper has no pid")?)?;
         stream.writer.write_all(b"!")?;
