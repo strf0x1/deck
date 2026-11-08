@@ -778,7 +778,7 @@ mod tests {
         let task = Task {
             id: "legacy".into(),
             backend: "vm".into(),
-            spec: Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir.clone(), github: None },
+            spec: Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir.clone(), project: None, github: None },
             state: State::Created,
             pid: None,
             holder: None,

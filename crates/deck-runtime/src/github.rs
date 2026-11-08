@@ -267,7 +267,8 @@ fn git_config(cwd: &Path, key: &str) -> String {
 
 /// A local read; never prompts and never touches the network. A missing
 /// `git`, a directory that is not a checkout, or an unset key is `None`.
-fn git(cwd: &Path, args: &[&str]) -> Option<String> {
+/// Shared with `project`, which asks the same questions of a checkout.
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git").arg("-C").arg(cwd).args(args).env("GIT_TERMINAL_PROMPT", "0").output().ok()?;
     if !output.status.success() {
         return None;

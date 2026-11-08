@@ -10,7 +10,7 @@
 
 mod access;
 mod admission;
-mod store;
+pub(crate) mod store;
 mod types;
 
 #[cfg(test)]

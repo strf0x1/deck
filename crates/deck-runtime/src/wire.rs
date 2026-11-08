@@ -6,6 +6,7 @@ use crate::{Spec, Task};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
 pub(crate) const LIMIT: usize = 1024 * 1024;
 
@@ -31,6 +32,17 @@ pub(crate) enum Request {
         id: String,
     },
     Tasks,
+    /// The projects a window may show.
+    Projects,
+    /// Resolve a path into its project, adding the checkout.
+    OpenProject {
+        path: PathBuf,
+        argv: Vec<String>,
+    },
+    /// Hide a project; its tasks stay.
+    ForgetProject {
+        id: String,
+    },
     Run {
         spec: Spec,
     },
@@ -223,6 +235,11 @@ impl Request {
             && !crate::credentials::valid_name(name)
         {
             bail!("invalid credential name");
+        }
+        if let Self::ForgetProject { id } = self
+            && id.is_empty()
+        {
+            bail!("invalid project id");
         }
         Ok(())
     }

@@ -16,6 +16,10 @@ use std::path::PathBuf;
 pub struct Spec {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    /// The project this task belongs to (ADR 0010): `git:<root sha>` or
+    /// `path:<canonical path>`. Resolved at create when the caller left it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// The project's GitHub policy for this task, if it has one (ADR 0008
     /// §3). Recorded at create so restarts use the same destination and one
     /// daemon can serve projects with different repositories.
@@ -292,7 +296,7 @@ mod tests {
     fn created() -> Event {
         Event::Created {
             backend: "local".into(),
-            spec: Spec { argv: vec!["agent".into()], cwd: "/w".into(), github: None },
+            spec: Spec { argv: vec!["agent".into()], cwd: "/w".into(), project: None, github: None },
         }
     }
     fn started() -> Event {
@@ -314,6 +318,12 @@ mod tests {
             t.apply(e)?;
         }
         Ok(t)
+    }
+
+    #[test]
+    fn an_old_spec_without_a_project_still_loads() {
+        let spec: Spec = serde_json::from_str(r#"{"argv":["agent"],"cwd":"/w"}"#).unwrap();
+        assert_eq!(spec.project, None);
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub mod lifecycle;
 pub mod local;
 pub mod local_guard;
 pub mod paths;
+pub mod project;
 pub mod pull_request;
 mod reconcile;
 pub mod record;
