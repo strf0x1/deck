@@ -1543,7 +1543,9 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     assert!(said(&deck, &vcx).is_empty(), "a new session starts with an empty transcript");
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let record = daemon.task(&second).unwrap();
-    assert_eq!((record.spec.cwd.as_path(), record.state.clone()), (cwd.as_path(), State::Running));
+    // The project's checkout is canonical (`/private/var` on macOS).
+    let checkout = std::fs::canonicalize(&cwd).unwrap();
+    assert_eq!((record.spec.cwd.as_path(), record.state.clone()), (checkout.as_path(), State::Running));
     assert_eq!(daemon.task(&own).unwrap().state, State::Running, "the previous session keeps running");
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.board().order().len(), 2, "the previous session is an ordinary card");
