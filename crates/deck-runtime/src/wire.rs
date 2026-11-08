@@ -75,6 +75,16 @@ pub(crate) enum Request {
         task: String,
         publication: crate::lifecycle::Publication,
     },
+    /// The turn number last shown to the user for a task (ADR 0010 §6).
+    Seen {
+        id: String,
+        turn: u64,
+    },
+    /// Mark a task done (`done: true`) or clear the mark.
+    Mark {
+        id: String,
+        done: bool,
+    },
     /// The task's publication and its live pull request state, read through
     /// its gateway when due (ADR 0008 §8). Reads only.
     PullState {
@@ -185,6 +195,8 @@ impl Request {
             | Self::WithdrawApproval { task: id, .. }
             | Self::ModelUsage { task: id, .. }
             | Self::Publication { task: id, .. }
+            | Self::Seen { id, .. }
+            | Self::Mark { id, .. }
             | Self::PullState { task: id, .. }
             | Self::WebProfile { task: id, .. }
             | Self::GitHubProfile { task: id, .. }

@@ -123,6 +123,16 @@ pub enum Event {
     Publication {
         publication: Publication,
     },
+    /// The turn number last shown to the user while the task was selected
+    /// (ADR 0010 §6). Accounting, not a lifecycle transition.
+    Seen {
+        turn: u64,
+    },
+    /// The user marked the task done, or cleared the mark (ADR 0010 §6).
+    /// Accounting, not a lifecycle transition.
+    Marked {
+        done: bool,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -154,6 +164,17 @@ pub struct Task {
     /// restarts (ADR 0008 §8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<Publication>,
+    /// The turn number last shown to the user; it only moves forward
+    /// (ADR 0010 §6).
+    #[serde(default)]
+    pub seen: u64,
+    /// When the user marked the task done; cleared by unmarking. The settled
+    /// fold ages marked tasks from here (ADR 0010 §6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_ms: Option<u64>,
+    /// When the task was destroyed; the settled fold ages from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destroyed_ms: Option<u64>,
 }
 
 impl Task {
@@ -172,11 +193,16 @@ impl Task {
             session_id: None,
             usage: Usage::default(),
             publication: None,
+            seen: 0,
+            done_ms: None,
+            destroyed_ms: None,
         })
     }
 
     /// Apply `ev`, or refuse it if it cannot follow the current state.
-    pub fn apply(&mut self, ev: &Event) -> Result<()> {
+    /// `at_ms` is the log line's time: the attention facts record when they
+    /// happened, so the fold takes it with the event.
+    pub fn apply(&mut self, at_ms: u64, ev: &Event) -> Result<()> {
         if matches!(ev, Event::Adopted) {
             if self.state != State::Running || self.holder.is_none() {
                 bail!("task {} has no running holder to adopt", self.id);
@@ -214,6 +240,16 @@ impl Task {
             self.publication = Some(publication.clone());
             return Ok(());
         }
+        if let Event::Seen { turn } = ev {
+            // Only forward: an older turn reported by a lagging window must
+            // not rewind what a newer one has already shown.
+            self.seen = self.seen.max(*turn);
+            return Ok(());
+        }
+        if let Event::Marked { done } = ev {
+            self.done_ms = if *done { Some(at_ms) } else { None };
+            return Ok(());
+        }
         let next = match (&self.state, ev) {
             (
                 State::Created | State::Stopped { .. } | State::Failed { failure: Failure::StartFailed(_) },
@@ -244,6 +280,10 @@ impl Task {
             _ => None,
         };
         self.state = next;
+        if self.state == State::Destroyed {
+            // The destroy arm only matches once, so this is when it happened.
+            self.destroyed_ms = Some(at_ms);
+        }
         Ok(())
     }
 
@@ -268,6 +308,8 @@ fn name(ev: &Event) -> &'static str {
         Event::Usage { .. } => "usage",
         Event::CredentialUsed { .. } => "credential_used",
         Event::Publication { .. } => "publication",
+        Event::Seen { .. } => "seen",
+        Event::Marked { .. } => "marked",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -308,10 +350,14 @@ mod tests {
         Event::Failed { failure: Failure::ShutdownUnconfirmed("pid 7 survived".into()) }
     }
 
+    /// The log line time every test fold uses, so a recorded time is
+    /// comparable without a clock.
+    const AT: u64 = 1_000;
+
     fn fold(events: &[Event]) -> Result<Task> {
         let mut t = Task::new("t", &events[0])?;
         for e in &events[1..] {
-            t.apply(e)?;
+            t.apply(AT, e)?;
         }
         Ok(t)
     }
@@ -349,6 +395,30 @@ mod tests {
             })
         );
         assert!(fold(&[created(), Event::Destroyed, pull]).is_err());
+    }
+
+    #[test]
+    fn seen_only_moves_forward_and_never_changes_state() {
+        let t = fold(&[created(), started(), Event::Seen { turn: 3 }, Event::Seen { turn: 2 }]).unwrap();
+        assert_eq!(t.seen, 3, "a lower turn is stale, not a rewind");
+        assert_eq!(t.state, State::Running, "attention is accounting");
+        assert_eq!(fold(&[created(), Event::Seen { turn: 1 }]).unwrap().state, State::Created);
+    }
+
+    #[test]
+    fn marked_records_when_and_clears_with_its_mark() {
+        let done = fold(&[created(), started(), Event::Marked { done: true }]).unwrap();
+        assert_eq!((done.done_ms, done.state.clone()), (Some(AT), State::Running));
+        let cleared =
+            fold(&[created(), started(), Event::Marked { done: true }, Event::Marked { done: false }]).unwrap();
+        assert_eq!(cleared.done_ms, None);
+        assert_eq!(cleared.state, State::Running, "settledness is accounting");
+    }
+
+    #[test]
+    fn destroy_records_when_it_happened() {
+        let t = fold(&[created(), started(), stopped(true), Event::Destroyed]).unwrap();
+        assert_eq!((t.destroyed_ms, t.state), (Some(AT), State::Destroyed));
     }
 
     #[test]
@@ -417,6 +487,7 @@ mod tests {
         let task: Task = serde_json::from_value(value).unwrap();
         assert_eq!(task.session_id, None);
         assert_eq!(task.usage, Usage::default());
+        assert_eq!((task.seen, task.done_ms, task.destroyed_ms), (0, None, None));
     }
 
     #[test]
@@ -478,6 +549,8 @@ mod tests {
             started(),
             Event::Session { id: "session-7".into() },
             Event::Usage { requests: 2, tokens: 12 },
+            Event::Seen { turn: 3 },
+            Event::Marked { done: true },
             stopped(false),
             start_failed(),
             unconfirmed(),

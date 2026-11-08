@@ -113,6 +113,16 @@ impl DaemonClient {
         self.request(Request::Session { id: id.into(), session_id: session_id.into() })
     }
 
+    /// Record the turn number last shown to the user; it only moves forward.
+    pub fn seen(&self, id: &str, turn: u64) -> Result<()> {
+        self.request(Request::Seen { id: id.into(), turn })
+    }
+
+    /// Mark the task done (`true`) or clear the mark.
+    pub fn mark(&self, id: &str, done: bool) -> Result<()> {
+        self.request(Request::Mark { id: id.into(), done })
+    }
+
     /// Record the model gateway's latest totals for a task.
     pub fn model_usage(&self, id: &str, requests: u64, tokens: u64) -> Result<()> {
         self.request(Request::ModelUsage { task: id.into(), requests, tokens })

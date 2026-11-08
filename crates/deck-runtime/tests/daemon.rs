@@ -717,6 +717,35 @@ fn a_publication_is_in_the_record_after_a_daemon_restart() {
 }
 
 #[test]
+fn seen_and_marked_are_recorded_on_the_task() {
+    let (mut daemon, client) = Daemon::new("attention");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+
+    client.seen(&task.id, 4).unwrap();
+    client.mark(&task.id, true).unwrap();
+    let recorded = client.task(&task.id).unwrap();
+    assert_eq!(recorded.seen, 4);
+    assert!(recorded.done_ms.is_some(), "marking done records when");
+    assert_eq!(recorded.state, State::Created, "attention is accounting, not a transition");
+
+    // A lower turn is stale; unmarking clears the time.
+    client.seen(&task.id, 2).unwrap();
+    client.mark(&task.id, false).unwrap();
+    let recorded = client.task(&task.id).unwrap();
+    assert_eq!((recorded.seen, recorded.done_ms), (4, None));
+
+    // An unknown id is the same error a plain task read gives.
+    assert_eq!(client.seen("missing", 1).unwrap_err().to_string(), client.task("missing").unwrap_err().to_string());
+
+    // Both facts come back from the log after a daemon restart.
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    let client = daemon.restart();
+    let recorded = client.task(&task.id).unwrap();
+    assert_eq!((recorded.seen, recorded.done_ms), (4, None));
+}
+
+#[test]
 fn task_grants_survive_a_daemon_restart_and_do_not_widen_other_tasks() {
     use deck_runtime::approvals::{Decision, Scope, State};
     let (mut daemon, client) = Daemon::new("approval-durable");

@@ -77,7 +77,7 @@ impl Store {
             match fs::create_dir(self.tasks.join(&id)) {
                 Ok(()) => {
                     let task = Task::new(&id, &first)?;
-                    self.write(&task, &first)?;
+                    self.write(&task, &first, now_ms())?;
                     return Ok(task);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -89,9 +89,12 @@ impl Store {
     /// Record `ev` for `task`, refusing it if it cannot follow the task's
     /// state. `task` is updated only once the line is on disk.
     pub fn append(&self, task: &mut Task, ev: Event) -> Result<()> {
+        // The fold and the line share one time, so a recorded time is exactly
+        // what a later load reads back.
+        let at_ms = now_ms();
         let mut next = task.clone();
-        next.apply(&ev)?;
-        self.write(&next, &ev)?;
+        next.apply(at_ms, &ev)?;
+        self.write(&next, &ev, at_ms)?;
         *task = next;
         Ok(())
     }
@@ -124,7 +127,8 @@ impl Store {
         let Some(first) = lines.next() else { bail!("{} is empty", path.display()) };
         let mut task = Task::new(id, &first?.event)?;
         for line in lines {
-            task.apply(&line?.event)?;
+            let line = line?;
+            task.apply(line.at_ms, &line.event)?;
         }
         Ok(task)
     }
@@ -177,9 +181,9 @@ impl Store {
         }
     }
 
-    fn write(&self, task: &Task, ev: &Event) -> Result<()> {
+    fn write(&self, task: &Task, ev: &Event, at_ms: u64) -> Result<()> {
         let dir = self.tasks.join(&task.id);
-        let mut line = serde_json::to_string(&Line { at_ms: now_ms(), event: ev.clone() })?;
+        let mut line = serde_json::to_string(&Line { at_ms, event: ev.clone() })?;
         line.push('\n');
         let mut log = OpenOptions::new().create(true).append(true).open(dir.join(LOG))?;
         log.write_all(line.as_bytes())?;

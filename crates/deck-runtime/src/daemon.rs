@@ -534,6 +534,14 @@ impl Service {
                 self.runtime.publication(&task, publication)?;
                 Ok(json!(null))
             }
+            Request::Seen { id, turn } => {
+                self.runtime.seen(&id, turn)?;
+                Ok(json!(null))
+            }
+            Request::Mark { id, done } => {
+                self.runtime.mark(&id, done)?;
+                Ok(json!(null))
+            }
             Request::SetBudget { task, requests, tokens } => {
                 self.runtime.set_budget(&task, requests, tokens)?;
                 Ok(json!(null))
