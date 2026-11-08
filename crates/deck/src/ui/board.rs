@@ -33,6 +33,8 @@ pub struct Lane {
     pub state: LaneState,
     /// The task's publication chip: its state dot and `#7` or branch.
     pub chip: Option<(super::publication::Dot, String)>,
+    /// What the task needs, in a few words, when it needs a person.
+    pub attention: Option<String>,
 }
 
 pub struct Card {

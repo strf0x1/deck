@@ -731,7 +731,7 @@ fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     assert_eq!(before, vec![1, 2, 3], "the project's tasks; no live card without a selected task");
 
     // The first card sits under the Sessions heading, right of the closed rail.
-    let start = point(px(200.), px(150.));
+    let start = point(px(200.), px(198.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
     assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), Some(1), "mouse down on the first card grabs it");
     for step in 1..=10 {
@@ -988,7 +988,8 @@ fn launching_inside_a_checkout_opens_its_project(cx: &mut TestAppContext) {
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let expected = deck_runtime::project::identify(&repo).unwrap().id;
     let window = cx.update(|cx| {
-        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, repo, cx))).unwrap()
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
     });
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx).unwrap();
@@ -1384,11 +1385,11 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
         )
     });
     assert_eq!(order.len(), 2, "a and b; a destroyed task has none");
-    assert_eq!(lanes[0], ("a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
-    assert_eq!(lanes[1], ("b".into(), "stopped · vm".into(), None));
+    assert_eq!(lanes[0], ("b".into(), "stopped · vm".into(), None), "most recent activity first");
+    assert_eq!(lanes[1], ("a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
 
     // The chip opens the panel without picking the card up.
-    let lane = order[0];
+    let lane = order[1];
     click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
     assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), None);
     assert_eq!(deck.read_with(&cx, |d, _| d.open_publication().map(|(t, _)| t.to_string())), Some("a".into()));
@@ -1404,10 +1405,14 @@ fn a_merged_pull_request_marks_the_task_done_and_offers_destroy_behind_a_second_
     let (deck, mut cx) = open(cx);
     seed_project(&deck, &mut cx);
     let pull = json!({ "kind": "pull_request", "number": 9, "url": "https://github.com/o/r/pull/9", "title": "t", "draft": false });
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(0))
+        .unwrap();
     let merged = Published {
         publication: Some(serde_json::from_value(pull.clone()).unwrap()),
         live: Some(Live {
-            read_at_ms: 1,
+            read_at_ms: now_ms,
             pull_request: Some(json!({ "state": "closed", "merged": true })),
             ..Live::default()
         }),
@@ -1417,9 +1422,12 @@ fn a_merged_pull_request_marks_the_task_done_and_offers_destroy_behind_a_second_
         d.on_tasks(vec![task("a", json!({ "state": "running" }), Some(pull))], [("a".to_string(), merged)].into(), cx)
     });
     cx.run_until_parked();
-    let (lane, detail) = deck.read_with(&cx, |d, _| (d.board().order()[0], d.board().cards()[0].lane.detail.clone()));
-    assert_eq!(detail, "done · merged");
-    click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
+    // A merged pull request settles the task, so its card folds below the
+    // column; its chip still opens the publication panel.
+    assert_eq!(deck.read_with(&cx, |d, _| d.settled().len()), 1);
+    assert_eq!(deck.read_with(&cx, |d, _| d.board().cards().len()), 0);
+    click_control(&mut cx, "settled-fold");
+    click_control(&mut cx, "settled-chip-0");
     click_control(&mut cx, "publication-destroy");
     assert!(deck.read_with(&cx, |d, _| d.open_publication().is_some()), "the first click only asks");
 }
@@ -1560,7 +1568,7 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     let third = ready_on(&deck, &mut vcx, None);
     assert!(third != own && third != second);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 3));
-    vcx.simulate_click(point(px(200.), px(150. + PITCH)), Modifiers::none());
+    vcx.simulate_click(point(px(200.), px(198. + PITCH)), Modifiers::none());
     let back = ready_on(&deck, &mut vcx, None);
     assert!(back == own || back == second, "the card held one of the earlier sessions");
     let expect = if back == own { "first" } else { "second" };
@@ -1652,7 +1660,7 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
 
     // The second card sits one pitch below the live card.
-    let card = point(px(200.), px(150. + PITCH));
+    let card = point(px(200.), px(198. + PITCH));
     vcx.simulate_click(card, Modifiers::none());
     assert_eq!(deck.read_with(&vcx, |d, _| d.board().dragging()), None, "a click is not a drag");
     ready_on(&deck, &mut vcx, Some(&other));
@@ -1865,6 +1873,184 @@ fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppCont
     cx.quit();
     for id in [&a, &b] {
         daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+/// The lane of the card whose title is `title`.
+#[cfg(unix)]
+fn lane_named(deck: &gpui::Entity<Deck>, cx: &VisualTestContext, title: &str) -> usize {
+    deck.read_with(cx, |d, _| {
+        d.board()
+            .cards()
+            .iter()
+            .find(|card| card.lane.title == title)
+            .unwrap_or_else(|| panic!("no card titled {title}"))
+            .lane
+            .id
+    })
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn the_needs_you_strip_opens_a_background_question_and_seen_clears_a_finished_turn(cx: &mut TestAppContext) {
+    use deck::ui::attention::Reason;
+    use deck_acp::TurnState;
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, beta) = two_fake_tasks("needs-you");
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta.clone());
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().cards().len() == 2));
+    wait_view(&mut vcx, |cx| {
+        let ids = deck.read_with(cx, |d, _| d.attached_ids());
+        ids.contains(&a) && ids.contains(&b)
+    });
+
+    // Beta asks a question, then stays in the background.
+    let beta_lane = lane_named(&deck, &vcx, "beta");
+    deck.update(&mut vcx, |d, cx| d.select(beta_lane, cx));
+    ready_on(&deck, &mut vcx, Some(&b));
+    vcx.simulate_input("first");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    let alpha_lane = lane_named(&deck, &vcx, "alpha");
+    deck.update(&mut vcx, |d, cx| d.select(alpha_lane, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.needs_you().iter().any(|item| item.task == b && matches!(item.reason, Reason::Question { .. }))
+        })
+    });
+    let index = deck.read_with(&vcx, |d, _| d.needs_you().iter().position(|item| item.task == b).unwrap());
+    let selector = Box::leak(format!("needs-{index}").into_boxed_str());
+    assert!(vcx.debug_bounds(selector).is_some(), "the strip shows the background question");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.needs_you()[index].project.clone()), {
+        deck.read_with(&vcx, |d, _| d.project().unwrap().to_string())
+    });
+    click_control(&mut vcx, selector);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(b.as_str())));
+    assert!(vcx.debug_bounds("permission-card").is_some(), "selecting the item opens its card");
+    vcx.simulate_keystrokes("1");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().all(|item| item.task != b)));
+
+    // A turn that ends while the task is in the background is unseen.
+    deck.update(&mut vcx, |d, cx| d.select(alpha_lane, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    deck.update(&mut vcx, |d, cx| {
+        d.on_inbound_for(
+            &b,
+            Inbound::Turn { number: 2, state: TurnState::Idle { stop_reason: Some("end_turn".into()) } },
+            cx,
+        )
+    });
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.needs_you().iter().any(|item| item.task == b && matches!(item.reason, Reason::Finished { turn: 2, .. }))
+        })
+    });
+    let index = deck.read_with(&vcx, |d, _| d.needs_you().iter().position(|item| item.task == b).unwrap());
+    let selector = Box::leak(format!("needs-{index}").into_boxed_str());
+    click_control(&mut vcx, selector);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(b.as_str())));
+    wait_view(&mut vcx, |_| daemon.task(&b).unwrap().seen >= 2);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().all(|item| item.task != b)));
+
+    cx.quit();
+    for id in [&a, &b] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-settled-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let repo = git_repo(&data, "repo");
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    let spec = |name: &str| {
+        let cwd = repo.join(name);
+        std::fs::create_dir_all(&cwd).unwrap();
+        Spec { argv: argv.clone(), cwd, project: Some(project.id.clone()), github: None }
+    };
+    let older = daemon.create(spec("alpha")).unwrap();
+    let newer = daemon.create(spec("beta")).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().cards().len() == 2));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_string)), Some(newer.id.clone()));
+    let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
+    assert_eq!(deck.read_with(&vcx, |d, _| d.board().cards()[1].lane.title.clone()), "alpha");
+    let selector = Box::leak(format!("card-done-{lane}").into_boxed_str());
+    click_control(&mut vcx, selector);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.settled()[0].task.id.clone()), older.id);
+    assert!(daemon.task(&older.id).unwrap().done_ms.is_some());
+
+    click_control(&mut vcx, "settled-fold");
+    click_control(&mut vcx, "settled-done-0");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().is_empty() && d.board().cards().len() == 2));
+    assert_eq!(daemon.task(&older.id).unwrap().done_ms, None);
+    assert!(deck.read_with(&vcx, |d, _| d.board().order().contains(&lane)));
+
+    // A task destroyed longer ago than the column's window is absent; a
+    // recent one is folded. Records keep the times.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(0))
+        .unwrap();
+    let day: u64 = 24 * 60 * 60 * 1000;
+    let destroyed = |id: &str, at_ms: u64| -> deck_runtime::Task {
+        serde_json::from_value(json!({
+            "id": id, "backend": "local",
+            "spec": { "argv": argv, "cwd": repo.display().to_string(), "project": project.id },
+            "state": { "state": "destroyed" }, "pid": null, "destroyed_ms": at_ms,
+        }))
+        .unwrap()
+    };
+    let old = destroyed("0100-old", now - 15 * day);
+    let recent = destroyed("0200-recent", now - 13 * day);
+    let old_id = old.id.clone();
+    let recent_id = recent.id.clone();
+    let mut tasks: Vec<deck_runtime::Task> = deck.read_with(&vcx, |d, _| d.tasks().to_vec());
+    tasks.push(old);
+    tasks.push(recent);
+    deck.update(&mut vcx, |d, cx| d.on_tasks(tasks, Default::default(), cx));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert!(d.settled().iter().all(|item| item.task.id != old_id), "15 days settled is out");
+        assert!(d.settled().iter().any(|item| item.task.id == recent_id), "13 days settled is in");
+        assert!(d.tasks().iter().any(|task| task.id == old_id), "the record stays");
+        assert_eq!(d.settled().iter().filter(|item| item.task.state == State::Destroyed).count(), 1);
+    });
+
+    cx.quit();
+    for id in [&older.id, &newer.id] {
+        if daemon.task(id).unwrap().state == State::Running {
+            daemon.stop(id).unwrap();
+        }
     }
     drop(daemon);
     cleanup_daemon(&data);

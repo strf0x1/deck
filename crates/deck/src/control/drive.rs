@@ -207,6 +207,11 @@ pub fn state(d: &Deck) -> Value {
             })).collect::<Vec<_>>(),
             "dragging": board.dragging(),
         },
+        "needs_you": d.needs_you().iter().map(|item| json!({
+            "task": item.task,
+            "project": item.project,
+            "reason": item.reason.text(),
+        })).collect::<Vec<_>>(),
         "publication": d.open_publication().map(|(task, _)| task.to_string()),
         "publish_notice": d.publish_notice(),
         "new_session": {

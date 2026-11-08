@@ -92,6 +92,18 @@ pub struct Deck {
     /// clicked once.
     pub(super) publication_open: Option<String>,
     pub(super) destroy_confirm: bool,
+    /// The strip's items, when each was first seen, and `deckd`'s pending
+    /// approvals for tasks the window is not attached to (ADR 0010 §6, §7).
+    pub(super) needs_you: Vec<super::attention::Item>,
+    pub(super) attention_since: HashMap<String, Instant>,
+    pub(super) approvals: HashMap<String, Vec<Approval>>,
+    /// The highest turn number this window already reported as seen.
+    pub(super) seen_sent: HashMap<String, u64>,
+    /// The column's settled tasks and whether its fold is open.
+    pub(super) settled: Vec<super::tasks::Settled>,
+    pub(super) settled_open: bool,
+    /// Why the last Mark done failed, shown in the header until the next one.
+    pub(super) mark_error: Option<String>,
     /// The New session buttons: idle, creating, or the last failure.
     pub(super) new_session: super::new_session::NewSession,
     last_frame: Option<Instant>,
@@ -144,6 +156,13 @@ impl Deck {
             attach_task: None,
             publication_open: None,
             destroy_confirm: false,
+            needs_you: Vec::new(),
+            attention_since: HashMap::new(),
+            approvals: HashMap::new(),
+            seen_sent: HashMap::new(),
+            settled: Vec::new(),
+            settled_open: false,
+            mark_error: None,
             new_session: super::new_session::NewSession::Idle,
             last_frame: None,
         }
@@ -281,6 +300,9 @@ impl Deck {
             Some(attached) => (attached.boundary.apply(approval), attached.client.clone()),
             None => return,
         };
+        self.refresh_attention();
+        self.sync_attention_lanes();
+        cx.notify();
         if id != self.selected.as_deref() {
             return;
         }
@@ -311,6 +333,8 @@ impl Deck {
                 self.current_mut().session.apply(Inbound::Failed(format!("deciding boundary approval: {e:#}")));
             }
         }
+        self.refresh_attention();
+        self.sync_attention_lanes();
         self.sync_live_lane();
         cx.notify();
     }
@@ -345,11 +369,26 @@ impl Deck {
         self.inbound_from(selected.as_deref(), ev, cx);
     }
 
+    /// Apply an event to task `id`'s attachment, selected or not: what the
+    /// window's other connections deliver in the background (ADR 0010 §8).
+    pub fn on_inbound_for(&mut self, id: &str, ev: Inbound, cx: &mut Context<Self>) {
+        self.inbound_from(Some(id), ev, cx);
+    }
+
     /// Apply an event to task `id`'s attachment, selected or not. Only the
     /// selection re-renders, except that a background turn's state is kept.
     pub(super) fn inbound_from(&mut self, id: Option<&str>, ev: Inbound, cx: &mut Context<Self>) {
         let selected = id == self.selected.as_deref();
         let ready = matches!(&ev, Inbound::Ready { .. });
+        let attention_event = matches!(
+            &ev,
+            Inbound::Ready { .. }
+                | Inbound::Turn { .. }
+                | Inbound::Permission { .. }
+                | Inbound::TurnEnded(_)
+                | Inbound::Failed(_)
+                | Inbound::Detached
+        );
         let mut turn_changed = false;
         if let Inbound::Ready { session_id, .. } = &ev
             && let Some(task) = self.attachment(id).and_then(|a| a.task.clone())
@@ -381,13 +420,18 @@ impl Deck {
             }
             attached.session.apply(ev);
         }
+        if attention_event {
+            self.refresh_attention();
+            self.sync_attention_lanes();
+        }
         if selected && ready {
             self.send_pending();
         }
         if selected {
+            self.note_seen(cx);
             self.sync_live_lane();
         }
-        if selected || turn_changed {
+        if selected || turn_changed || attention_event {
             cx.notify();
         }
     }
@@ -423,11 +467,17 @@ impl Deck {
         );
         let agent = attached.session.agent.clone();
         let chip = view.map(|v| (v.dot, v.label));
+        let attention = self
+            .needs_you
+            .iter()
+            .find(|item| Some(item.task.as_str()) == self.selected.as_deref())
+            .map(|item| item.reason.text());
         if let Some(lane) = self.board.lane_mut(LIVE) {
             lane.title = agent;
             lane.state = state;
             lane.detail = detail;
             lane.chip = chip;
+            lane.attention = attention;
         }
     }
 
@@ -473,6 +523,8 @@ impl Deck {
         {
             self.current_mut().session.apply(Inbound::Failed(format!("{e:#}")));
         }
+        self.refresh_attention();
+        self.sync_attention_lanes();
         self.sync_live_lane();
         cx.notify();
     }
@@ -608,15 +660,23 @@ impl Render for Deck {
             .text_color(Tokens::text())
             .child(div().flex_none().w(px(chrome::RAIL_SLOT)))
             .child(
-                div().flex_1().min_w_0().flex().flex_col().gap(px(GUTTER)).child(chrome::header(self, cx)).child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .gap(px(GUTTER))
-                        .child(panels::lanes(self, cx))
-                        .child(conversation::main(self, cx)),
-                ),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(GUTTER))
+                    .child(super::needs_you::strip(self, cx))
+                    .child(chrome::header(self, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .gap(px(GUTTER))
+                            .child(panels::lanes(self, cx))
+                            .child(conversation::main(self, cx)),
+                    ),
             )
             // Last, so the open rail floats over the sessions column.
             .child(chrome::rail(self, GUTTER, cx))

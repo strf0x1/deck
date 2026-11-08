@@ -32,7 +32,33 @@ pub fn lane(id: usize, task: &Task, view: Option<&View>) -> Lane {
         State::Failed { .. } => (LaneState::Waiting, "needs a restart".to_string()),
         State::Destroyed => (LaneState::Idle, "destroyed".to_string()),
     };
-    Lane { id, title: project, detail, state, chip: view.map(|v| (v.dot, v.label.clone())) }
+    Lane { id, title: project, detail, state, chip: view.map(|v| (v.dot, v.label.clone())), attention: None }
+}
+
+/// A settled task and when it settled: the row of the column's fold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settled {
+    pub task: Task,
+    pub at_ms: u64,
+}
+
+/// How long a settled task stays in the column (ADR 0010 §6).
+pub const SETTLED_WINDOW_MS: u64 = 14 * 24 * 60 * 60 * 1000;
+
+/// The settled tasks of the column, most recently settled first, dropping
+/// those that settled longer than [`SETTLED_WINDOW_MS`] ago. Their records
+/// stay; only the column forgets them.
+pub fn settled(tasks: &[Task], published: &HashMap<String, Published>, own: Option<&str>, now_ms: u64) -> Vec<Settled> {
+    let mut out: Vec<Settled> = tasks
+        .iter()
+        .filter(|task| own != Some(task.id.as_str()))
+        .filter_map(|task| {
+            let at_ms = super::attention::settled(task, published.get(&task.id))?;
+            (now_ms.saturating_sub(at_ms) < SETTLED_WINDOW_MS).then(|| Settled { task: task.clone(), at_ms })
+        })
+        .collect();
+    out.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| a.task.id.cmp(&b.task.id)));
+    out
 }
 
 /// The window's own card: the live session's state, except that a pending
@@ -78,6 +104,16 @@ impl Lanes {
         self.next
     }
 
+    /// The lane a task shows, or the one it takes when it has none yet.
+    pub fn slot(&mut self, task: &str, own: Option<&str>) -> usize {
+        self.id(task, own)
+    }
+
+    /// The lane a task already shows, without allocating one.
+    pub fn lane_of(&self, task: &str, own: Option<&str>) -> Option<usize> {
+        (own == Some(task)).then_some(LIVE).or_else(|| self.ids.get(task).copied())
+    }
+
     /// The task a lane shows, or `None` for an unknown lane.
     pub fn task(&self, lane: usize, own: Option<&str>) -> Option<String> {
         if lane == LIVE {
@@ -110,6 +146,7 @@ impl Lanes {
         tasks: &[Task],
         own: Option<&str>,
         published: &HashMap<String, Published>,
+        attention: &[super::attention::Item],
         now_ms: u64,
     ) -> Vec<Lane> {
         tasks
@@ -117,7 +154,9 @@ impl Lanes {
             .filter(|t| t.state != State::Destroyed && own != Some(t.id.as_str()))
             .map(|t| {
                 let view = published.get(&t.id).and_then(|p| publication::view(p, now_ms));
-                lane(self.id(&t.id, own), t, view.as_ref())
+                let mut lane = lane(self.id(&t.id, own), t, view.as_ref());
+                lane.attention = attention.iter().find(|item| item.task == t.id).map(|item| item.reason.text());
+                lane
             })
             .collect()
     }
@@ -195,11 +234,12 @@ mod tests {
             task("b", json!({ "state": "destroyed" }), "vm"),
             task("c", json!({ "state": "created" }), "local"),
         ];
-        let first: Vec<usize> = lanes.lanes(&tasks, Some("own"), &HashMap::new(), 0).iter().map(|l| l.id).collect();
+        let first: Vec<usize> =
+            lanes.lanes(&tasks, Some("own"), &HashMap::new(), &[], 0).iter().map(|l| l.id).collect();
         assert_eq!(first.len(), 2, "the own task is the live card; a destroyed one has none");
         assert!(!first.contains(&LIVE));
         let again: Vec<usize> =
-            lanes.lanes(&tasks[1..], Some("own"), &HashMap::new(), 0).iter().map(|l| l.id).collect();
+            lanes.lanes(&tasks[1..], Some("own"), &HashMap::new(), &[], 0).iter().map(|l| l.id).collect();
         assert_eq!(again, first, "a refresh keeps each task's lane");
         assert_eq!(lanes.task(first[0], Some("own")).as_deref(), Some("a"));
         assert_eq!(lanes.task(LIVE, Some("own")).as_deref(), Some("own"));
@@ -213,12 +253,12 @@ mod tests {
             task("a", json!({ "state": "running" }), "local"),
             task("b", json!({ "state": "running" }), "local"),
         ];
-        let before = lanes.lanes(&tasks, Some("own"), &HashMap::new(), 0);
+        let before = lanes.lanes(&tasks, Some("own"), &HashMap::new(), &[], 0);
         let (a, b) = (before[0].id, before[1].id);
         assert_eq!(lanes.switch(Some("own"), LIVE), None, "the live card is already the window's");
         assert_eq!(lanes.switch(Some("own"), 99), None, "an unknown lane selects nothing");
         assert_eq!(lanes.switch(Some("own"), b).as_deref(), Some("b"));
-        let after = lanes.lanes(&tasks, Some("b"), &HashMap::new(), 0);
+        let after = lanes.lanes(&tasks, Some("b"), &HashMap::new(), &[], 0);
         let shown: Vec<(usize, &str)> = after.iter().map(|l| (l.id, l.title.as_str())).collect();
         assert_eq!(shown, vec![(b, "own-project"), (a, "a-project")], "the previous task takes b's card");
         assert_eq!(lanes.task(LIVE, Some("b")).as_deref(), Some("b"));

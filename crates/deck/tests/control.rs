@@ -141,11 +141,11 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
         d.on_tasks(tasks, Default::default(), cx);
     });
 
-    let to = 150. + PITCH * 2.2;
+    let to = 198. + PITCH * 2.2;
     send(
         &mut cx,
         &d,
-        json!({ "cmd": "drag", "from": { "x": 200, "y": 150 }, "to": { "x": 200, "y": to }, "steps": 10 }),
+        json!({ "cmd": "drag", "from": { "x": 200, "y": 198 }, "to": { "x": 200, "y": to }, "steps": 10 }),
     );
     let s = send(&mut cx, &d, json!({ "cmd": "state" }));
     assert_eq!(s["board"]["order"], json!([2, 3, 1]));
@@ -164,4 +164,31 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
 
     let g = send(&mut cx, &d, json!({ "cmd": "geometry" }));
     assert!(g["viewport"]["w"].as_f64().unwrap() > 0.);
+}
+
+#[gpui::test]
+fn state_reports_the_needs_you_strip(cx: &mut TestAppContext) {
+    let (deck, mut cx, d) = open(cx);
+    let crashed = serde_json::from_value(json!({
+        "id": "a", "backend": "local",
+        "spec": { "argv": ["x"], "cwd": "/src/a", "project": "git:test" },
+        "state": { "state": "stopped", "clean": false, "reason": "exit 1" }, "pid": null,
+    }))
+    .unwrap();
+    let project = deck_runtime::project::Project {
+        id: "git:test".into(),
+        name: "test".into(),
+        checkouts: vec!["/src/a".into()],
+        argv: vec!["x".into()],
+        opened_ms: 1,
+        hidden: false,
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_projects(vec![project], Some("git:test".into()), cx);
+        d.on_tasks(vec![crashed], Default::default(), cx);
+    });
+    assert_eq!(
+        send(&mut cx, &d, json!({ "cmd": "state" }))["needs_you"],
+        json!([{ "task": "a", "project": "git:test", "reason": "stopped unexpectedly" }])
+    );
 }

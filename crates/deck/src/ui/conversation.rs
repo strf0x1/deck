@@ -304,6 +304,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .on_click(cx.listener(move |this, _, _, cx| this.choose(Some(i), cx)))
     });
     div()
+        .debug_selector(|| "permission-card".into())
         .flex()
         .flex_col()
         .gap(px(space::SECTION))
