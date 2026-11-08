@@ -1389,3 +1389,168 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     drop(daemon);
     cleanup_daemon(&data);
 }
+
+/// Start a fake-agent task, record its ACP session, then detach. The task
+/// keeps running, which is what a later window attaches to.
+#[cfg(unix)]
+fn start_recorded(data: &std::path::Path, argv: &[String], cwd: std::path::PathBuf) -> String {
+    use deck::task::WindowTask;
+    let (task, connection) = WindowTask::run(data, argv.to_vec(), cwd).unwrap();
+    let id = task.id().to_string();
+    let (_client, mut rx) = connection.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match rx.try_recv() {
+            Ok(Inbound::Ready { session_id, .. }) => {
+                task.record_session(&session_id).unwrap();
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(std::time::Instant::now() < deadline, "the fake agent never became ready");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    id
+}
+
+/// A fake-agent launch pair: two tasks with distinct directories, and the
+/// agent command both run.
+#[cfg(unix)]
+fn two_fake_tasks(name: &str) -> (std::path::PathBuf, Vec<String>, std::path::PathBuf, std::path::PathBuf) {
+    let data = std::env::temp_dir().join(format!("deck-view-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    let argv = vec![fake.display().to_string()];
+    let alpha = data.join("alpha");
+    let beta = data.join("beta");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+    (data, argv, alpha, beta)
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn launching_attaches_every_running_task_that_recorded_a_session(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, State};
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, beta) = two_fake_tasks("attach-live");
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta.clone());
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let pids = (daemon.task(&a).unwrap().pid, daemon.task(&b).unwrap().pid);
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let both = |d: &Deck| {
+        let ids = d.attached_ids();
+        ids.len() == 2 && ids.contains(&a) && ids.contains(&b)
+    };
+    while !deck.read_with(&vcx, |d, _| both(d)) {
+        vcx.run_until_parked();
+        assert!(std::time::Instant::now() < deadline, "the window never attached both tasks");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(daemon.task(&a).unwrap().pid, pids.0, "attaching starts nothing");
+    assert_eq!(daemon.task(&b).unwrap().pid, pids.1, "attaching starts nothing");
+    assert_eq!(daemon.task(&a).unwrap().state, State::Running);
+    assert_eq!(daemon.task(&b).unwrap().state, State::Running);
+
+    cx.quit();
+    for id in [&a, &b] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppContext) {
+    use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
+    use deck_runtime::{DaemonClient, State};
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, beta) = two_fake_tasks("kept");
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta.clone());
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.attached_ids().contains(&b)));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 2));
+    let beta_lane =
+        deck.read_with(&vcx, |d, _| d.board().cards().iter().find(|c| c.lane.title == "beta").unwrap().lane.id);
+
+    // A asks a permission question; leave it unanswered and switch away.
+    vcx.simulate_input("first");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    let (request, entries) =
+        deck.read_with(&vcx, |d, _| (d.session().ask.as_ref().unwrap().request.clone(), d.session().entries.len()));
+
+    deck.update(&mut vcx, |d, cx| d.select(beta_lane, cx));
+    ready_on(&deck, &mut vcx, Some(&b));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.session().entries.len()), 0, "beta keeps its own session");
+
+    // Back to A: the same client, the same question, no second replay.
+    let alpha_lane =
+        deck.read_with(&vcx, |d, _| d.board().cards().iter().find(|c| c.lane.title == "alpha").unwrap().lane.id);
+    deck.update(&mut vcx, |d, cx| d.select(alpha_lane, cx));
+    // A is waiting on its question, not ready.
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(a.as_str())));
+    deck.read_with(&vcx, |d, _| {
+        let ask = d.session().ask.as_ref().expect("the question was kept");
+        assert_eq!(ask.request, request, "the same question, not a replayed one");
+        assert_eq!(d.session().entries.len(), entries, "switching back replays nothing");
+    });
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&a));
+    assert_eq!(said(&deck, &vcx), vec!["first".to_string()], "the question was answerable");
+
+    // An approval for beta raised while alpha is selected waits on beta's card.
+    let ask = Ask {
+        gateway: "github".into(),
+        operation: "create_pr".into(),
+        destination: "owner/repo".into(),
+        credential: Some("DECK_GITHUB_TOKEN".into()),
+        details: Default::default(),
+        reason: None,
+        coverage: None,
+    };
+    let b_ask = b.clone();
+    let holder = DaemonClient::connect(&data).unwrap();
+    let asked = std::thread::spawn(move || holder.request_approval(&b_ask, ask));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while daemon.approvals(&b).unwrap().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "beta's approval was never queued");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(deck.read_with(&vcx, |d, _| d.boundary().pending().is_none()), "alpha has no card");
+    let beta_lane =
+        deck.read_with(&vcx, |d, _| d.board().cards().iter().find(|c| c.lane.title == "beta").unwrap().lane.id);
+    deck.update(&mut vcx, |d, cx| d.select(beta_lane, cx));
+    ready_on(&deck, &mut vcx, Some(&b));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.boundary().pending().is_some()));
+    vcx.simulate_keystrokes("3");
+    assert_eq!(asked.join().unwrap().unwrap().state, ApprovalState::Allowed(Scope::Task));
+    assert_eq!(daemon.task(&b).unwrap().state, State::Running);
+
+    cx.quit();
+    for id in [&a, &b] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}

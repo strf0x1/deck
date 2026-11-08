@@ -218,6 +218,7 @@ pub fn state(d: &Deck) -> Value {
             "pinned": rail.pinned(),
             "expanded": rail.expanded(),
         },
+        "attached": d.attached_ids(),
         "session": {
             "agent": s.agent,
             "status": status,

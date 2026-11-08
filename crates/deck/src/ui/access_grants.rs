@@ -46,7 +46,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .on_click(cx.listener(move |this, _, _, cx| this.ask_revoke_grant(&id, cx))),
             )
     });
-    let pending = deck.boundary.items().iter().enumerate().map(|(i, item)| {
+    let pending = deck.boundary().items().iter().enumerate().map(|(i, item)| {
         let id = item.id.clone();
         div()
             .flex()
@@ -88,7 +88,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(space::LINE))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Pending requests"))
                 .children(
-                    deck.boundary
+                    deck.boundary()
                         .items()
                         .is_empty()
                         .then(|| div().text_color(Tokens::text_faint()).child("No pending requests.")),

@@ -16,7 +16,7 @@ use gpui::{
 use std::ops::Range;
 
 pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyElement {
-    let files = touched(&deck.session.entries[turn.clone()]);
+    let files = touched(&deck.session().entries[turn.clone()]);
     let (added, removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
     let count = |text: String| div().flex_none().font_family(MONO).text_size(px(size::SMALL)).child(text);
     div()

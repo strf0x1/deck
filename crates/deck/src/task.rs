@@ -46,7 +46,7 @@ impl WindowTask {
         self.daemon.create(Spec { github: None, ..spec })
     }
 
-    fn of(daemon: DaemonClient, record: &Task) -> WindowTask {
+    pub(crate) fn of(daemon: DaemonClient, record: &Task) -> WindowTask {
         // ACP addresses the agent filesystem; task and project identity stay
         // in the host filesystem recorded by the daemon.
         let vm = record.backend == "vm";
@@ -71,6 +71,17 @@ impl WindowTask {
             bail!("task {} cannot run again: {:?}", self.id, record.state);
         };
         self.connection(true, record.session_id)
+    }
+
+    /// Attach to a task only if it is running with a recorded session. It
+    /// never starts, resumes or restarts anything: a stopped task waits until
+    /// it is selected.
+    pub fn attach_live(&self) -> Result<Option<Connection>> {
+        let record = self.daemon.task(&self.id)?;
+        if record.state != State::Running {
+            return Ok(None);
+        }
+        self.connection(false, record.session_id)
     }
 
     fn connection(&self, started: bool, session_id: Option<String>) -> Result<Option<Connection>> {

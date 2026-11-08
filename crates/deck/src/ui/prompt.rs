@@ -78,14 +78,14 @@ fn compact(n: u64) -> String {
 }
 
 pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
-    let ready = deck.session.can_prompt();
+    let ready = deck.session().can_prompt();
     let has_draft = !deck.editor.is_empty();
     // Keys go to an open card first, so the hint says where they go.
-    let hint = if deck.session.ask.is_some() || deck.boundary.pending().is_some() {
+    let hint = if deck.session().ask.is_some() || deck.boundary().pending().is_some() {
         "Answer the question above first"
     } else if ready {
         "Tell the agent what to do…"
-    } else if deck.session.status == super::session::Status::Working {
+    } else if deck.session().status == super::session::Status::Working {
         "Working… you can type ahead"
     } else {
         "Waiting for the agent…"
@@ -174,7 +174,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .font_family(MONO)
         .text_size(px(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(item(icon::AGENTS, deck.session.agent.clone(), false))
+        .child(item(icon::AGENTS, deck.session().agent.clone(), false))
         .children(
             w.map(|w| item(if w.backend == "vm" { icon::SHIELD } else { icon::TERMINAL }, w.backend.clone(), false)),
         )

@@ -158,7 +158,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))),
                 ),
         )
-        .children(deck.task.as_ref().map(|task| {
+        .children(deck.current().task.as_ref().map(|task| {
             div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(
                 if task.boundary_enforced() {
                     "VM · external access is enforced by host gateways."

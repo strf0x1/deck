@@ -41,7 +41,7 @@ impl Deck {
 
     pub fn refresh_access(&mut self, cx: &mut Context<Self>) {
         self.load_grants(cx);
-        let Some(task) = self.task.clone() else {
+        let Some(task) = self.current().task.clone() else {
             return;
         };
         let ticket = self.access.begin_credentials();
@@ -62,7 +62,7 @@ impl Deck {
     }
 
     pub(super) fn load_grants(&mut self, cx: &mut Context<Self>) {
-        let Some(task) = self.task.clone() else {
+        let Some(task) = self.current().task.clone() else {
             return;
         };
         let ticket = self.access.begin_grants();
@@ -124,7 +124,7 @@ impl Deck {
     }
 
     pub fn review_approval(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.boundary.select(id);
+        self.current_mut().boundary.select(id);
         self.toggle_access(cx);
     }
 
@@ -134,7 +134,7 @@ impl Deck {
         if !self.access.begin_retry(name) {
             return cx.notify();
         }
-        let Some(task) = self.task.clone() else {
+        let Some(task) = self.current().task.clone() else {
             self.access.retry_done(Err("no task is attached to retry through".into()));
             return cx.notify();
         };
@@ -156,7 +156,7 @@ impl Deck {
         let Some(target) = self.access.begin_revoke() else {
             return;
         };
-        let Some(task) = self.task.clone() else {
+        let Some(task) = self.current().task.clone() else {
             self.access.revoke_done(Err("no task is attached to revoke through".into()));
             return cx.notify();
         };
