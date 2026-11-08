@@ -587,7 +587,11 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), project: None, github: None }).unwrap().task;
+    let project = daemon.open_project(&data, argv.clone()).unwrap();
+    let task = daemon
+        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None })
+        .unwrap()
+        .task;
     let ask = Ask {
         gateway: "web".into(),
         operation: "connect".into(),
@@ -652,11 +656,12 @@ fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
+    let project = daemon.open_project(&data, argv.clone()).unwrap();
     let task = daemon
         .run(Spec {
             argv: argv.clone(),
             cwd: data.clone(),
-            project: None,
+            project: Some(project.id),
             github: Some(Policy {
                 repository: "owner/repo".into(),
                 base: "main".into(),
@@ -683,17 +688,36 @@ fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext
     cleanup_daemon(&data);
 }
 
+/// A project as `deckd` lists it.
+fn project(id: &str, name: &str) -> deck_runtime::project::Project {
+    deck_runtime::project::Project {
+        id: id.into(),
+        name: name.into(),
+        checkouts: vec![std::path::PathBuf::from(format!("/src/{name}"))],
+        argv: vec!["construct".into(), "acp".into()],
+        opened_ms: 1,
+        hidden: false,
+    }
+}
+
 /// A task record as `deckd` lists it.
 fn task(id: &str, state: serde_json::Value, publication: Option<serde_json::Value>) -> deck_runtime::Task {
     serde_json::from_value(json!({
-        "id": id, "backend": "vm", "spec": { "argv": ["construct", "acp"], "cwd": format!("/src/{id}") },
+        "id": id, "backend": "vm",
+        "spec": { "argv": ["construct", "acp"], "cwd": format!("/src/{id}"), "project": "git:test" },
         "state": state, "pid": null, "publication": publication,
     }))
     .unwrap()
 }
 
+/// Select the project every [`task`] helper's record belongs to.
+fn seed_project(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
+    deck.update(cx, |d, cx| d.on_projects(vec![project("git:test", "test")], Some("git:test".into()), cx));
+}
+
 /// Three more tasks on the board, as a daemon refresh would show them.
 fn seed(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
+    seed_project(deck, cx);
     let tasks = ["a", "b", "c"].map(|id| task(id, json!({ "state": "running" }), None)).to_vec();
     deck.update(cx, |d, cx| d.on_tasks(tasks, Default::default(), cx));
 }
@@ -704,47 +728,56 @@ fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     seed(&deck, &mut cx);
     cx.run_until_parked();
     let before = deck.read_with(&cx, |d, _| d.board().order());
-    assert_eq!(before, vec![0, 1, 2, 3]);
+    assert_eq!(before, vec![1, 2, 3], "the project's tasks; no live card without a selected task");
 
     // The first card sits under the Sessions heading, right of the closed rail.
     let start = point(px(200.), px(150.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
-    assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), Some(0), "mouse down on the first card grabs it");
+    assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), Some(1), "mouse down on the first card grabs it");
     for step in 1..=10 {
         let y = start.y + px(PITCH * 2.2 * step as f32 / 10.);
         cx.simulate_mouse_move(point(start.x, y), Some(MouseButton::Left), Modifiers::none());
     }
     cx.simulate_mouse_up(point(start.x, start.y + px(PITCH * 2.2)), MouseButton::Left, Modifiers::none());
     deck.read_with(&cx, |d, _| {
-        assert_eq!(d.board().order(), vec![1, 2, 0, 3]);
+        assert_eq!(d.board().order(), vec![2, 3, 1]);
         assert_eq!(d.board().dragging(), None);
     });
 }
 
 #[gpui::test]
-fn the_rail_opens_under_the_pointer_and_selects_by_click(cx: &mut TestAppContext) {
+fn the_rail_opens_under_the_pointer_and_selects_a_project_by_click(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
+    let older = project("git:older", "older");
+    let newer = deck_runtime::project::Project { opened_ms: 2, ..project("git:newer", "newer") };
+    deck.update(&mut cx, |d, cx| d.on_projects(vec![older, newer], Some("git:newer".into()), cx));
     cx.run_until_parked();
     assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()));
+    assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), Some(0), "the newest project is selected first");
 
-    // The first icon (Sessions), inside the closed rail.
-    let (x, y) = Deck::rail_item_center(0);
-    let sessions = point(px(x), px(y));
-    cx.simulate_mouse_move(sessions, None, Modifiers::none());
+    let (x, y) = Deck::rail_item_center(1);
+    let older_item = point(px(x), px(y));
+    cx.simulate_mouse_move(older_item, None, Modifiers::none());
     assert!(deck.read_with(&cx, |d, _| d.rail().expanded()), "hovering the rail opens it");
-    cx.simulate_click(sessions, Modifiers::none());
-    assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), 0);
+    cx.simulate_click(older_item, Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), Some(1));
+    assert_eq!(deck.read_with(&cx, |d, _| d.project().map(str::to_string)), Some("git:older".into()));
 
     cx.simulate_mouse_move(point(px(700.), px(300.)), None, Modifiers::none());
     assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()), "leaving the rail closes it");
 }
 
 #[gpui::test]
-fn the_rail_shows_only_sessions(cx: &mut TestAppContext) {
-    let (_deck, mut cx) = open(cx);
+fn the_rail_lists_projects_and_open_project(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    let older = project("git:older", "older");
+    let newer = deck_runtime::project::Project { opened_ms: 2, ..project("git:newer", "newer") };
+    deck.update(&mut cx, |d, cx| d.on_projects(vec![older, newer], Some("git:newer".into()), cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("rail-item-0").is_some(), "the rail renders Sessions");
-    assert!(cx.debug_bounds("rail-item-1").is_none(), "the rail has no second destination");
+    assert!(cx.debug_bounds("rail-item-0").is_some(), "the rail renders the newest project");
+    assert!(cx.debug_bounds("rail-item-1").is_some(), "and the other one");
+    assert!(cx.debug_bounds("rail-item-2").is_none(), "and nothing else");
+    assert!(cx.debug_bounds("rail-open").is_some(), "Open project… sits at its foot");
     assert!(cx.debug_bounds("rail-settings").is_none(), "the rail has no Settings item");
 }
 
@@ -762,23 +795,31 @@ fn the_quit_key_is_bound(cx: &mut TestAppContext) {
 #[cfg(unix)]
 #[gpui::test]
 fn quitting_detaches_and_the_windows_task_keeps_running(cx: &mut TestAppContext) {
-    use deck_runtime::{DaemonClient, State};
+    use deck_runtime::{DaemonClient, Spec, State};
     // The ACP reader wakes the UI from a real process, outside the test scheduler.
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-quit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
+    let cwd = std::env::temp_dir();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&cwd, argv.clone()).unwrap();
+    let task =
+        daemon.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    daemon.start(&task.id).unwrap();
     let window = cx.update(|cx| {
-        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, std::env::temp_dir(), cx)))
-            .unwrap()
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
     });
-    let vcx = VisualTestContext::from_window(window.into(), cx);
-    let deck = window.root(&mut vcx.clone()).unwrap();
-    // A failed launch only lands in the session, so name it in the panic.
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
     let id = deck.read_with(&vcx, |d, _| {
         d.task_id().map(str::to_owned).unwrap_or_else(|| panic!("the window runs no task: {:?}", d.session().status))
     });
-    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    assert_eq!(id, task.id, "launch selects the project's task");
+    // The launch's connection attempt is a background task; let it finish so
+    // the window holds nothing when it quits.
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().status != Status::Connecting));
+    deck.read_with(&vcx, |d, _| assert_eq!(d.session().status, Status::Detached));
     let before = daemon.task(&id).unwrap();
     assert_eq!(before.state, State::Running);
 
@@ -805,7 +846,11 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: None, github: None }).unwrap().task;
+    let project = daemon.open_project(&cwd, argv.clone()).unwrap();
+    let original = daemon
+        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None })
+        .unwrap()
+        .task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -813,6 +858,7 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx).unwrap();
     vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().status != Status::Connecting));
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.task_id(), Some(original.id.as_str()));
         assert_eq!(d.session().status, Status::Detached);
@@ -863,7 +909,11 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: None, github: None }).unwrap().task;
+    let project = daemon.open_project(&cwd, argv.clone()).unwrap();
+    let original = daemon
+        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None })
+        .unwrap()
+        .task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -901,7 +951,11 @@ fn the_stop_binding_stops_the_task(cx: &mut TestAppContext) {
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    let original = daemon.run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: None, github: None }).unwrap().task;
+    let project = daemon.open_project(&cwd, argv.clone()).unwrap();
+    let original = daemon
+        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None })
+        .unwrap()
+        .task;
     cx.update(deck::app::bind);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -924,6 +978,211 @@ fn the_stop_binding_stops_the_task(cx: &mut TestAppContext) {
 }
 
 #[cfg(unix)]
+#[gpui::test]
+fn launching_inside_a_checkout_opens_its_project(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-launch-repo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let repo = git_repo(&data, "repo");
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let expected = deck_runtime::project::identify(&repo).unwrap().id;
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, repo, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(expected.as_str()), "the checkout's root commit is the project");
+        assert_eq!(d.task_id(), None, "opening a project starts no task");
+        assert_eq!(d.projects().len(), 1);
+        assert!(d.awaiting_task(), "the composer is ready for the first prompt");
+    });
+    assert!(vcx.debug_bounds("project-empty-state").is_some(), "the empty project state shows");
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    assert!(daemon.projects().unwrap().iter().any(|project| project.id == expected), "deckd recorded it");
+    assert_eq!(daemon.tasks().unwrap().len(), 0);
+    drop(daemon);
+    cx.quit();
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn launching_outside_a_checkout_selects_the_project_opened_last(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-launch-last-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let repo = git_repo(&data, "repo");
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let opened = {
+        let daemon = DaemonClient::connect_or_start(&data).unwrap();
+        daemon.open_project(&repo, argv.clone()).unwrap()
+    };
+    let elsewhere = data.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, elsewhere, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(opened.id.as_str()));
+        assert_eq!(d.task_id(), None);
+    });
+    cx.quit();
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn launching_with_no_projects_shows_the_empty_state(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-launch-none-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let plain = data.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, plain, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), None);
+        assert_eq!(d.task_id(), None);
+        assert!(d.projects().is_empty());
+    });
+    assert!(vcx.debug_bounds("project-empty-state").is_some(), "the empty state shows");
+    assert!(vcx.debug_bounds("empty-open").is_some(), "with Open project… in it");
+    cx.quit();
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-projects-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let one = git_repo(&data, "one");
+    let two = git_repo(&data, "two");
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let p1 = daemon.open_project(&one, argv.clone()).unwrap();
+    let t1 = daemon
+        .create(Spec { argv: argv.clone(), cwd: one.clone(), project: Some(p1.id.clone()), github: None })
+        .unwrap();
+    let p2 = daemon.open_project(&two, argv.clone()).unwrap();
+    let t2 = daemon
+        .create(Spec { argv: argv.clone(), cwd: two.clone(), project: Some(p2.id.clone()), github: None })
+        .unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, one, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let index = deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(p1.id.as_str()), "the launch checkout's project is open");
+        assert_eq!(d.task_id(), Some(t1.id.as_str()), "and its task is selected");
+        let ids: Vec<&str> = d.projects().iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec![p1.id.as_str(), p2.id.as_str()], "most recently opened first");
+        d.projects().iter().position(|p| p.id == p2.id).unwrap()
+    });
+    wait_view(&mut vcx, |_| matches!(daemon.task(&t1.id).unwrap().state, State::Running));
+
+    let (x, y) = Deck::rail_item_center(index);
+    vcx.simulate_click(point(px(x), px(y)), Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(t2.id.as_str())));
+    wait_view(&mut vcx, |_| matches!(daemon.task(&t2.id).unwrap().state, State::Running));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(p2.id.as_str()));
+        assert_eq!(d.rail().active(), Some(index));
+        assert_eq!(d.board().cards().len(), 1, "only the selected project's task is in the column");
+        assert_eq!(d.board().cards()[0].lane.id, deck::ui::root::LIVE);
+        assert!(d.attached_ids().contains(&t1.id), "the other project's live session stays attached");
+    });
+
+    // Back to the first: its live attachment was kept, and the second leaves the column.
+    let (x, y) = Deck::rail_item_center(0);
+    vcx.simulate_click(point(px(x), px(y)), Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(t1.id.as_str())));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.board().cards().len(), 1);
+        assert!(d.attached_ids().contains(&t2.id));
+    });
+
+    cx.quit();
+    for id in [&t1.id, &t2.id] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-first-prompt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let repo = git_repo(&data, "repo");
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let project = {
+        let daemon = DaemonClient::connect_or_start(&data).unwrap();
+        daemon.open_project(&repo, argv.clone()).unwrap()
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(project.id.as_str()));
+        assert_eq!(d.task_id(), None);
+        assert!(d.awaiting_task());
+    });
+    assert!(vcx.debug_bounds("project-empty-state").is_some());
+
+    vcx.simulate_input("hello");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["hello".to_string()]);
+    let id = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    // The fake agent asks a permission during its turn; allow it so the
+    // transcript settles as an ordinary finished turn.
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&id));
+
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let record = daemon.task(&id).unwrap();
+    assert_eq!(record.spec.project.as_deref(), Some(project.id.as_str()));
+    assert_eq!(record.spec.cwd, repo, "the task runs in the project's checkout");
+    assert_eq!(record.spec.argv, argv, "with the project's command");
+    assert_eq!(daemon.tasks().unwrap().len(), 1, "the first prompt created exactly one task");
+    cx.quit();
+    daemon.stop(&id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
 fn cleanup_daemon(data: &std::path::Path) {
     let paths = deck_runtime::paths::Paths::for_data(data).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -939,15 +1198,18 @@ fn cleanup_daemon(data: &std::path::Path) {
 #[gpui::test]
 fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContext) {
     use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
-    use deck_runtime::{DaemonClient, State};
+    use deck_runtime::{DaemonClient, Spec, State};
     // The watch connection and the held request wake the UI from real threads.
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-boundary-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
+    let cwd = std::env::temp_dir();
+    let opener = DaemonClient::connect_or_start(&data).unwrap();
+    let project = opener.open_project(&cwd, argv.clone()).unwrap();
+    opener.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
     let window = cx.update(|cx| {
-        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, std::env::temp_dir(), cx)))
-            .unwrap()
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
     });
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx).unwrap();
@@ -955,6 +1217,8 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
     let id = deck.read_with(&vcx, |d, _| {
         d.task_id().map(str::to_owned).unwrap_or_else(|| panic!("the window runs no task: {:?}", d.session().status))
     });
+    // Wait for the launch's start; the watch lease must exist before asking.
+    wait_view(&mut vcx, |_| matches!(opener.task(&id).unwrap().state, State::Running));
 
     let watcher = DaemonClient::connect_or_start(&data).unwrap();
     let holder = DaemonClient::connect(&data).unwrap();
@@ -990,6 +1254,7 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
     watcher.stop(&id).unwrap();
     assert!(matches!(watcher.task(&id).unwrap().state, State::Stopped { .. }));
     drop(watcher);
+    drop(opener);
     cleanup_daemon(&data);
 }
 
@@ -997,7 +1262,7 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
 #[gpui::test]
 fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestAppContext) {
     use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
-    use deck_runtime::{DaemonClient, State};
+    use deck_runtime::{DaemonClient, Spec, State};
     // The watch connection and the held request wake the UI from real threads.
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-boundary-note-{}", std::process::id()));
@@ -1007,9 +1272,13 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     // `env` gives the agent a boundary endpoint, so it advertises the
     // capability and accepts the notification.
     let argv = vec!["env".to_string(), "DECK_BOUNDARY_URL=http://127.0.0.1:9".to_string(), fake.display().to_string()];
+    let cwd = std::env::temp_dir();
+    let opener = DaemonClient::connect_or_start(&data).unwrap();
+    let project = opener.open_project(&cwd, argv.clone()).unwrap();
+    opener.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    drop(opener);
     let window = cx.update(|cx| {
-        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, std::env::temp_dir(), cx)))
-            .unwrap()
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
     });
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx).unwrap();
@@ -1084,6 +1353,7 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
     use deck_runtime::pull_request::{Live, State as Published};
     let (deck, mut cx) = open(cx);
     assert_eq!(deck.read_with(&cx, |d, _| d.board().order()), vec![0], "only the live card before a task list");
+    seed_project(&deck, &mut cx);
     let pull = json!({ "kind": "pull_request", "number": 7, "url": "https://github.com/o/r/pull/7", "title": "Add b", "draft": true });
     let tasks = vec![
         task("a", json!({ "state": "running" }), Some(pull.clone())),
@@ -1113,12 +1383,12 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
                 .collect::<Vec<_>>(),
         )
     });
-    assert_eq!(order.len(), 3, "the live card plus a and b; a destroyed task has none");
-    assert_eq!(lanes[1], ("a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
-    assert_eq!(lanes[2], ("b".into(), "stopped · vm".into(), None));
+    assert_eq!(order.len(), 2, "a and b; a destroyed task has none");
+    assert_eq!(lanes[0], ("a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
+    assert_eq!(lanes[1], ("b".into(), "stopped · vm".into(), None));
 
     // The chip opens the panel without picking the card up.
-    let lane = order[1];
+    let lane = order[0];
     click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
     assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), None);
     assert_eq!(deck.read_with(&cx, |d, _| d.open_publication().map(|(t, _)| t.to_string())), Some("a".into()));
@@ -1132,6 +1402,7 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
 fn a_merged_pull_request_marks_the_task_done_and_offers_destroy_behind_a_second_click(cx: &mut TestAppContext) {
     use deck_runtime::pull_request::{Live, State as Published};
     let (deck, mut cx) = open(cx);
+    seed_project(&deck, &mut cx);
     let pull = json!({ "kind": "pull_request", "number": 9, "url": "https://github.com/o/r/pull/9", "title": "t", "draft": false });
     let merged = Published {
         publication: Some(serde_json::from_value(pull.clone()).unwrap()),
@@ -1146,7 +1417,7 @@ fn a_merged_pull_request_marks_the_task_done_and_offers_destroy_behind_a_second_
         d.on_tasks(vec![task("a", json!({ "state": "running" }), Some(pull))], [("a".to_string(), merged)].into(), cx)
     });
     cx.run_until_parked();
-    let (lane, detail) = deck.read_with(&cx, |d, _| (d.board().order()[1], d.board().cards()[1].lane.detail.clone()));
+    let (lane, detail) = deck.read_with(&cx, |d, _| (d.board().order()[0], d.board().cards()[0].lane.detail.clone()));
     assert_eq!(detail, "done · merged");
     click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
     click_control(&mut cx, "publication-destroy");
@@ -1162,7 +1433,11 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), project: None, github: None }).unwrap().task;
+    let project = daemon.open_project(&data, argv.clone()).unwrap();
+    let task = daemon
+        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None })
+        .unwrap()
+        .task;
     let pull = Publication::PullRequest {
         number: 7,
         url: "https://github.com/o/r/pull/7".into(),
@@ -1197,7 +1472,11 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
-    let task = daemon.run(Spec { argv: argv.clone(), cwd: data.clone(), project: None, github: None }).unwrap().task;
+    let project = daemon.open_project(&data, argv.clone()).unwrap();
+    let task = daemon
+        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None })
+        .unwrap()
+        .task;
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, data.clone(), cx))).unwrap()
     });
@@ -1231,7 +1510,7 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
 #[cfg(unix)]
 #[gpui::test]
 fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContext) {
-    use deck_runtime::{DaemonClient, State};
+    use deck_runtime::{DaemonClient, Spec, State};
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-new-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
@@ -1241,6 +1520,10 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     std::fs::create_dir_all(&cwd).unwrap();
     let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
     let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let opener = DaemonClient::connect_or_start(&data).unwrap();
+    let project = opener.open_project(&cwd, argv.clone()).unwrap();
+    opener.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    drop(opener);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd.clone(), cx))).unwrap()
     });
@@ -1336,17 +1619,23 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     let _ = std::fs::remove_dir_all(&data);
     let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
-    let spec = |name: &str| {
-        let cwd = data.join(name);
-        std::fs::create_dir_all(&cwd).unwrap();
+    let agent = |name: &str| {
         let journal = format!("DECK_FAKE_STATE={}", data.join(format!("journal-{name}")).display());
-        let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
-        Spec { argv, cwd, project: None, github: None }
+        ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec()
     };
+    // One project with two checkouts, so both tasks stay in the column.
+    let repo = git_repo(&data, "repo");
+    std::fs::create_dir_all(repo.join("beta")).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, agent("alpha")).unwrap();
     // The second task has never run: selecting it starts it.
-    let other = daemon.create(spec("beta")).unwrap().id;
-    let alpha = spec("alpha");
+    let other = daemon
+        .create(Spec { argv: agent("beta"), cwd: repo.join("beta"), project: Some(project.id.clone()), github: None })
+        .unwrap()
+        .id;
+    let alpha = Spec { argv: agent("alpha"), cwd: repo.join("alpha"), project: Some(project.id), github: None };
+    std::fs::create_dir_all(&alpha.cwd).unwrap();
+    let launched = daemon.create(alpha.clone()).unwrap();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, alpha.argv, alpha.cwd, cx)))
             .unwrap()
@@ -1355,6 +1644,7 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     let deck = window.root(&mut vcx).unwrap();
     vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
     let own = ready_on(&deck, &mut vcx, None);
+    assert_eq!(own, launched.id, "launch finds the task for its own command and directory");
     prompt_fake(&deck, &mut vcx, "first");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 2));
     let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
@@ -1415,8 +1705,30 @@ fn start_recorded(data: &std::path::Path, argv: &[String], cwd: std::path::PathB
     id
 }
 
-/// A fake-agent launch pair: two tasks with distinct directories, and the
-/// agent command both run.
+/// A git checkout under `data/name` with one commit: a project by root commit.
+#[cfg(unix)]
+fn git_repo(data: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let dir = data.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["-c", "user.email=deck@test", "-c", "user.name=deck"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    if !dir.join(".git").exists() {
+        run(&["init", "-q"]);
+        // A distinct message keeps two checkouts' root commits distinct.
+        run(&["commit", "-q", "--allow-empty", "-m", &format!("init {name}")]);
+    }
+    std::fs::canonicalize(&dir).unwrap()
+}
+
+/// A fake-agent launch pair: one project with two checkouts, and the agent
+/// command both tasks run.
 #[cfg(unix)]
 fn two_fake_tasks(name: &str) -> (std::path::PathBuf, Vec<String>, std::path::PathBuf, std::path::PathBuf) {
     let data = std::env::temp_dir().join(format!("deck-view-{name}-{}", std::process::id()));
@@ -1424,8 +1736,9 @@ fn two_fake_tasks(name: &str) -> (std::path::PathBuf, Vec<String>, std::path::Pa
     let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let argv = vec![fake.display().to_string()];
-    let alpha = data.join("alpha");
-    let beta = data.join("beta");
+    let repo = git_repo(&data, "repo");
+    let alpha = repo.join("alpha");
+    let beta = repo.join("beta");
     std::fs::create_dir_all(&alpha).unwrap();
     std::fs::create_dir_all(&beta).unwrap();
     (data, argv, alpha, beta)

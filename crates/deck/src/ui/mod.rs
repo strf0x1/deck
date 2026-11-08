@@ -3,8 +3,9 @@
 //! `prompt` and `access_panel` render it, `composer` is the text field's
 //! element and `input` its keys and IME; `attached` is one task's connection
 //! state, `board`, `rail`, `session`, `transcript`, `markdown`, `diff`,
-//! `highlight`, `motion`, `editor`, `access`, `new_session` and `spring` are
-//! pure state with their own tests; `theme` is the visual vocabulary.
+//! `highlight`, `motion`, `editor`, `access`, `new_session`, `projects` and
+//! `spring` are pure state with their own tests; `theme` is the visual
+//! vocabulary.
 
 pub mod access;
 mod access_grants;
@@ -29,6 +30,7 @@ pub mod markdown;
 pub mod motion;
 pub mod new_session;
 mod panels;
+mod projects;
 mod prompt;
 mod prose;
 pub mod publication;

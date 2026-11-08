@@ -15,7 +15,8 @@ use super::session::{Session, Status};
 use crate::task::{Connection, WindowTask};
 use deck_acp::Inbound;
 use deck_runtime::approvals::Approval;
-use deck_runtime::{DaemonClient, State, Task, Watch};
+use deck_runtime::project::{self, Project};
+use deck_runtime::{DaemonClient, Spec, State, Task, Watch};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::Context;
@@ -38,49 +39,95 @@ impl Deck {
         }
     }
 
-    /// Find or start the first task without taking ownership of its lifetime,
-    /// then attach every other running task that recorded a session.
+    /// Open the launch directory's project (or the one opened last), select
+    /// its most recent task, and attach every other running task that
+    /// recorded a session. Opening a project starts no task (ADR 0010 §1, §5);
+    /// its first prompt creates one.
     pub fn launch_in(data: &Path, argv: Vec<String>, cwd: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut deck = Self::detached(cx);
         deck.agent_cmd = argv.join(" ");
+        deck.argv = argv.clone();
         deck.data = Some(data.to_path_buf());
-        match WindowTask::run(data, argv, cwd) {
-            Ok((task, connection)) => {
-                let id = task.id().to_string();
-                let watch = task.watch();
-                let generation = deck.stamp();
-                let mut attached = Attached::new(task);
-                attached.generation = generation;
-                deck.attached.insert(id.clone(), attached);
-                deck.selected = Some(id.clone());
-                deck.follow_boundary(&id, watch, cx);
-                deck.follow_tasks(cx);
-                deck._quit = Some(cx.on_app_quit(|deck, _| {
-                    // Dropping every attachment detaches; it never stops an
-                    // agent (ADR 0002). Drop the watches before the entity can
-                    // outlive the app, so their readers close the daemon
-                    // connections.
-                    deck.attached.clear();
-                    deck.selected = None;
-                    deck.access_refresh = None;
-                    deck.task_refresh = None;
-                    deck.attach_task = None;
-                    async {}
-                }));
-                match connection {
-                    Some(connection) => deck.connect(&id, connection, cx),
-                    None => {
-                        if let Some(attached) = deck.attached.get_mut(&id) {
-                            attached.session.status = Status::Detached;
-                        }
-                    }
-                }
-                deck.attach_live(cx);
+        let daemon = match DaemonClient::connect_or_start(data) {
+            Ok(daemon) => daemon,
+            Err(e) => {
+                deck.idle.session.apply(Inbound::Failed(format!("{e:#}")));
+                return deck;
             }
-            Err(e) => deck.idle.session.apply(Inbound::Failed(format!("{e:#}"))),
-        }
+        };
+        deck.daemon = Some(daemon.clone());
+        deck.launch_project(&daemon, &argv, cwd, cx);
+        deck.follow_tasks(cx);
+        deck._quit = Some(cx.on_app_quit(|deck, _| {
+            // Dropping every attachment detaches; it never stops an agent
+            // (ADR 0002). Drop the watches before the entity can outlive the
+            // app, so their readers close the daemon connections.
+            deck.attached.clear();
+            deck.selected = None;
+            deck.daemon = None;
+            deck.access_refresh = None;
+            deck.task_refresh = None;
+            deck.attach_task = None;
+            async {}
+        }));
+        deck.attach_live(cx);
         deck.sync_live_lane();
         deck
+    }
+
+    /// Pick and select the launch project, then its most recent unsettled
+    /// task. Inside a git checkout that checkout is opened (and so becomes
+    /// the project and the default command); otherwise the project opened
+    /// last wins.
+    fn launch_project(&mut self, daemon: &DaemonClient, argv: &[String], cwd: PathBuf, cx: &mut Context<Self>) {
+        let identity = match project::identify(&cwd) {
+            Ok(identity) => Some(identity),
+            Err(e) => {
+                // A shallow clone has no root commit (ADR 0010 §2): say why
+                // in the header and fall back to the last project.
+                self.projects.set_error(format!("{e:#}"));
+                None
+            }
+        };
+        let inside_fresh_checkout = identity.as_ref().is_some_and(|identity| identity.id.starts_with("git:"));
+        let mut chosen = None;
+        if inside_fresh_checkout {
+            match daemon.open_project(&cwd, argv.to_vec()) {
+                Ok(project) => chosen = Some(project.id),
+                Err(e) => self.projects.set_error(format!("{e:#}")),
+            }
+        }
+        let list = match daemon.projects() {
+            Ok(list) => list,
+            Err(e) => {
+                self.idle.session.apply(Inbound::Failed(format!("{e:#}")));
+                return;
+            }
+        };
+        let chosen = chosen.or_else(|| list.first().map(|project| project.id.clone()));
+        self.projects.set(list, chosen);
+        self.rail.select(self.projects.index());
+
+        let tasks = daemon.tasks().unwrap_or_default();
+        self.on_tasks(tasks.clone(), Default::default(), cx);
+        // An explicit `deck -- <argv>` inside a repo still finds the session
+        // it started for that command and directory.
+        let same = inside_fresh_checkout.then_some((argv, cwd.as_path()));
+        let selection = self.projects.newest_task(&tasks, same);
+        let Some(record) = selection.and_then(|id| tasks.iter().find(|task| task.id == id).cloned()) else {
+            self.clear_task(cx);
+            return;
+        };
+        let task = WindowTask::of(daemon.clone(), &record);
+        self.select_task(&task, record, cx);
+    }
+
+    /// The selected project's create spec: its own command and its first
+    /// existing checkout (ADR 0010 §5, §9).
+    pub(super) fn project_spec(&self) -> Option<Spec> {
+        let project = self.projects.selected()?;
+        let checkout = self.projects.checkout()?;
+        Some(Spec { argv: project.argv.clone(), cwd: checkout, project: Some(project.id.clone()), github: None })
     }
 
     /// A detached or failed connection can be rebuilt by restarting its task.
@@ -176,27 +223,28 @@ impl Deck {
         self.select_task(&current, record, cx);
     }
 
-    /// Start a new session: another task with this window's command and
-    /// directory, then select it like a card. One at a time; a failed create
-    /// leaves the window where it was and says why in the header.
+    /// Start a new session: a task with the selected project's command and
+    /// checkout (ADR 0010 §9), then select it like a card. One at a time; a
+    /// failed create leaves the window where it was and says why in the header.
     pub fn new_session(&mut self, cx: &mut Context<Self>) {
         if self.new_session.is_creating() {
             return;
         }
-        let Some(current) = self.current().task.clone() else { return };
-        let from = current.id().to_string();
+        let Some(daemon) = self.daemon.clone() else { return };
+        let Some(spec) = self.project_spec() else { return };
+        let project = self.projects.selected_id().map(str::to_owned);
+        let from = self.selected.clone();
         let generation = self.current().generation;
         self.new_session = NewSession::Creating;
         cx.notify();
-        let created = cx.background_executor().spawn({
-            let current = current.clone();
-            async move { current.create_sibling() }
-        });
+        let creating = daemon.clone();
+        let created = cx.background_executor().spawn(async move { creating.create(spec) });
         cx.spawn(async move |this, cx| {
             let created = created.await;
             let _ = this.update(cx, |deck, cx| {
-                let unchanged =
-                    deck.selected.as_deref() == Some(from.as_str()) && deck.current().generation == generation;
+                let unchanged = deck.selected == from
+                    && deck.current().generation == generation
+                    && deck.projects.selected_id() == project.as_deref();
                 match created {
                     // A switch, restart or quit since the click owns the
                     // window: the new task stays a card for the next refresh.
@@ -204,11 +252,154 @@ impl Deck {
                     Ok(record) => {
                         deck.new_session = NewSession::Idle;
                         deck.tasks.push(record.clone());
-                        deck.select_task(&current, record, cx);
+                        let task = WindowTask::of(daemon, &record);
+                        deck.select_task(&task, record, cx);
                     }
                     Err(e) => deck.new_session = NewSession::Failed(format!("{e:#}")),
                 }
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The first prompt in a project with no task: create the task, select it,
+    /// and send the text once its connection is ready (ADR 0010 §5).
+    pub(super) fn first_prompt(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.new_session.is_creating() {
+            return;
+        }
+        let Some(daemon) = self.daemon.clone() else { return };
+        let Some(spec) = self.project_spec() else { return };
+        let project = self.projects.selected_id().map(str::to_owned);
+        self.new_session = NewSession::Creating;
+        self.pending_prompt = Some(text.clone());
+        self.editor.take();
+        cx.notify();
+        let creating = daemon.clone();
+        let created = cx.background_executor().spawn(async move { creating.create(spec) });
+        cx.spawn(async move |this, cx| {
+            let created = created.await;
+            let _ = this.update(cx, |deck, cx| match created {
+                // The user switched project while it was created: the task
+                // stays a card in its own project, and the text is not lost.
+                Ok(record) if deck.projects.selected_id() != project.as_deref() => {
+                    deck.tasks.push(record);
+                    deck.pending_prompt = None;
+                    deck.new_session = NewSession::Idle;
+                    if deck.editor.is_empty() {
+                        deck.editor.insert(&text);
+                    }
+                    cx.notify();
+                }
+                Ok(record) => {
+                    deck.new_session = NewSession::Idle;
+                    deck.tasks.push(record.clone());
+                    let task = WindowTask::of(daemon, &record);
+                    deck.select_task(&task, record, cx);
+                    cx.notify();
+                }
+                Err(e) => {
+                    deck.pending_prompt = None;
+                    deck.new_session = NewSession::Failed(format!("{e:#}"));
+                    if deck.editor.is_empty() {
+                        deck.editor.insert(&text);
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Apply a project list and selection already in hand: the rail's pure
+    /// state, for tests and replies that need no daemon call.
+    pub fn on_projects(&mut self, list: Vec<Project>, select: Option<String>, cx: &mut Context<Self>) {
+        self.projects.set(list, select);
+        self.rail.select(self.projects.index());
+        cx.notify();
+    }
+
+    /// Select the project at rail index `index`, and its most recent task if
+    /// it has one.
+    pub fn select_project(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.projects.select_index(index).is_none() {
+            return;
+        }
+        self.projects.clear_error();
+        self.rail.select(Some(index));
+        self.switch_project(cx);
+    }
+
+    /// Point the column and transcript at the selected project's newest task,
+    /// or at its empty state.
+    fn switch_project(&mut self, cx: &mut Context<Self>) {
+        let tasks = self.tasks.clone();
+        let selection = self.projects.newest_task(&tasks, None);
+        if let Some(record) = selection.and_then(|id| tasks.iter().find(|task| task.id == id).cloned()) {
+            if self.selected.as_deref() == Some(record.id.as_str()) {
+                cx.notify();
+                return;
+            }
+            if let Some(daemon) = self.daemon.clone() {
+                let task = WindowTask::of(daemon, &record);
+                self.select_task(&task, record, cx);
+                return;
+            }
+        }
+        self.clear_task(cx);
+    }
+
+    /// Keep the project open with no task: the composer shows its empty state.
+    fn clear_task(&mut self, cx: &mut Context<Self>) {
+        self.selected = None;
+        self.pending_prompt = None;
+        self.expanded.clear();
+        self.row_sigs.clear();
+        self.transcript = super::transcript_list::following();
+        self.editor = super::editor::Editor::new();
+        self.workspace = None;
+        self.new_session = NewSession::Idle;
+        let (tasks, published) = (self.tasks.clone(), std::mem::take(&mut self.published));
+        self.on_tasks(tasks, published, cx);
+        self.sync_live_lane();
+        cx.notify();
+    }
+
+    /// Ask for a directory and open it as a project, then select it
+    /// (ADR 0010 §1). A failure, such as a shallow clone, shows in the header.
+    pub fn pick_project(&mut self, cx: &mut Context<Self>) {
+        let Some(daemon) = self.daemon.clone() else { return };
+        let argv = self.argv.clone();
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open project".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = receiver.await else { return };
+            let Some(path) = paths.pop() else { return };
+            let opened = cx
+                .background_executor()
+                .spawn(async move {
+                    let project = daemon.open_project(&path, argv)?;
+                    let tasks = daemon.tasks()?;
+                    anyhow::Ok((project, tasks))
+                })
+                .await;
+            let _ = this.update(cx, |deck, cx| match opened {
+                Ok((project, tasks)) => {
+                    deck.projects.add(project);
+                    deck.rail.select(deck.projects.index());
+                    let published = std::mem::take(&mut deck.published);
+                    deck.on_tasks(tasks, published, cx);
+                    deck.switch_project(cx);
+                }
+                Err(e) => {
+                    deck.projects.set_error(format!("{e:#}"));
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -238,16 +429,19 @@ impl Deck {
         let (tasks, published) = (self.tasks.clone(), std::mem::take(&mut self.published));
         self.on_tasks(tasks, published, cx);
         let Some(next) = next else { return };
-        let opened = cx.background_executor().spawn(async move { (next.watch(), next.open()) });
+        // The approval lease is taken before the agent can ask anything, as
+        // launch always did: an approval submitted while no window watches
+        // returns to the agent instead of waiting for this one.
+        self.follow_boundary(&id, next.watch(), cx);
+        let opened = cx.background_executor().spawn(async move { next.open() });
         cx.spawn(async move |this, cx| {
-            let (watch, connection) = opened.await;
+            let connection = opened.await;
             let _ = this.update(cx, |deck, cx| {
                 // Another switch, a restart or quit has replaced this one;
                 // dropping the results detaches from the task again.
                 if deck.attached.get(&id).map(|a| a.generation) != Some(generation) {
                     return;
                 }
-                deck.follow_boundary(&id, watch, cx);
                 match connection {
                     Ok(Some(connection)) => deck.connect(&id, connection, cx),
                     Ok(None) => {
@@ -272,7 +466,6 @@ impl Deck {
     /// record has a session. Nothing is started, resumed or restarted.
     fn attach_live(&mut self, cx: &mut Context<Self>) {
         let Some(data) = self.data.clone() else { return };
-        let Some(own_id) = self.task_id().map(str::to_string) else { return };
         let known: Vec<String> = self.attached.keys().cloned().collect();
         // Only the data root crosses into the background task, not a daemon
         // handle: a queued task that the window drops before it runs would
@@ -282,9 +475,7 @@ impl Deck {
             let live: Vec<Task> = daemon
                 .tasks()?
                 .into_iter()
-                .filter(|t| {
-                    t.id != own_id && t.state == State::Running && t.session_id.is_some() && !known.contains(&t.id)
-                })
+                .filter(|t| t.state == State::Running && t.session_id.is_some() && !known.contains(&t.id))
                 .collect();
             let mut out = Vec::new();
             for chunk in live.chunks(LAUNCH_ATTACH) {

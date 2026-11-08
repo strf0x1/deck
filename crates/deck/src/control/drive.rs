@@ -71,7 +71,8 @@ async fn execute(cmd: Command, deck: WindowHandle<Deck>, cx: &mut AsyncApp) -> a
             Ok(json!({}))
         }
         Command::SelectRail(i) => {
-            anyhow::ensure!(i < crate::ui::rail::ITEMS.len(), "no rail item {i}");
+            let count = deck.read_with(cx, |d, _| d.projects().len())?;
+            anyhow::ensure!(i < count, "no rail item {i}");
             let (x, y) = Deck::rail_item_center(i);
             click(window, cx, Point { x, y })?;
             Ok(json!({}))
@@ -218,6 +219,8 @@ pub fn state(d: &Deck) -> Value {
             "pinned": rail.pinned(),
             "expanded": rail.expanded(),
         },
+        "projects": d.projects().iter().map(|p| json!({ "id": p.id, "name": p.name })).collect::<Vec<_>>(),
+        "project": d.project(),
         "attached": d.attached_ids(),
         "session": {
             "agent": s.agent,

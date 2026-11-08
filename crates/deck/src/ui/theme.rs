@@ -18,6 +18,7 @@ pub const MONO: &str = "JetBrainsMono Nerd Font";
 /// Nerd Font (Font Awesome range) glyphs; render with [`MONO`].
 pub mod icon {
     pub const SESSIONS: &str = "\u{f009}";
+    pub const PROJECT: &str = "\u{f07b}";
     pub const AGENTS: &str = "\u{f1b3}";
     pub const FILES: &str = "\u{f114}";
     pub const SEARCH: &str = "\u{f002}";

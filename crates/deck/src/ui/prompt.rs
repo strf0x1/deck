@@ -8,6 +8,7 @@
 //! It shows what is known and leaves the rest out; nothing here asks the
 //! agent for anything.
 
+use super::chrome::agent_label;
 use super::composer::Field;
 use super::panels::glyph;
 use super::root::Deck;
@@ -59,7 +60,7 @@ pub fn branch(dir: &Path) -> Option<String> {
 }
 
 /// `dir` with the home directory shown as `~`.
-fn tilde(dir: &Path) -> String {
+pub(super) fn tilde(dir: &Path) -> String {
     match std::env::var_os("HOME").map(PathBuf::from) {
         Some(home) if dir.starts_with(&home) && home.as_os_str().len() > 1 => {
             format!("~/{}", dir.strip_prefix(&home).map(|p| p.display().to_string()).unwrap_or_default())
@@ -78,13 +79,19 @@ fn compact(n: u64) -> String {
 }
 
 pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
-    let ready = deck.session().can_prompt();
+    // A project with no task takes a prompt: it creates the task (ADR 0010 §5).
+    let starting = deck.awaiting_task();
+    let ready = deck.session().can_prompt() || starting;
     let has_draft = !deck.editor.is_empty();
     // Keys go to an open card first, so the hint says where they go.
     let hint = if deck.session().ask.is_some() || deck.boundary().pending().is_some() {
         "Answer the question above first"
+    } else if deck.new_session_state().is_creating() {
+        "Starting the task…"
     } else if ready {
         "Tell the agent what to do…"
+    } else if deck.project().is_none() {
+        "Open a project to start"
     } else if deck.session().status == super::session::Status::Working {
         "Working… you can type ahead"
     } else {
@@ -162,6 +169,9 @@ fn status_row(deck: &Deck) -> impl IntoElement {
             .child(div().truncate().child(text))
     };
     let w = deck.workspace.as_ref();
+    let agent =
+        if deck.session().agent.is_empty() { agent_label(&deck.agent_cmd) } else { deck.session().agent.clone() };
+    let project_dir = deck.project_checkout();
     let enter = if deck.editor.text().contains('\n') { "enter send · shift-enter newline" } else { "enter send" };
     div()
         .h(px(30.))
@@ -174,11 +184,12 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .font_family(MONO)
         .text_size(px(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(item(icon::AGENTS, deck.session().agent.clone(), false))
+        .child(item(icon::AGENTS, agent, false))
         .children(
             w.map(|w| item(if w.backend == "vm" { icon::SHIELD } else { icon::TERMINAL }, w.backend.clone(), false)),
         )
         .children(w.map(|w| item(icon::FILES, tilde(&w.cwd), true)))
+        .children(w.is_none().then_some(project_dir).flatten().map(|dir| item(icon::FILES, tilde(&dir), true)))
         .children(w.and_then(|w| w.branch.clone()).map(|b| item(icon::BRANCH, b, true)))
         .child(div().flex_1())
         .children(
