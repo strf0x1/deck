@@ -33,8 +33,8 @@ impl Deck {
                 self.toggle_selected(cx);
                 return true;
             }
-            "escape" if self.selected.is_some() => {
-                self.selected = None;
+            "escape" if self.focused.is_some() => {
+                self.focused = None;
                 return true;
             }
             _ => {}
@@ -93,7 +93,7 @@ impl Deck {
                 e.move_to(at, false);
             }
             "escape" => {
-                if let Some(c) = &self.client {
+                if let Some(c) = self.current().client.as_ref() {
                     let _ = c.cancel();
                 }
             }

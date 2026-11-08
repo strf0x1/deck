@@ -31,7 +31,7 @@ impl Deck {
         let executor = cx.background_executor().clone();
         self.task_refresh = Some(cx.spawn(async move |this, cx| {
             loop {
-                let Ok(Some(task)) = this.update(cx, |deck, _| deck.task.clone()) else { break };
+                let Ok(Some(task)) = this.update(cx, |deck, _| deck.current().task.clone()) else { break };
                 let read = executor.spawn(async move {
                     let tasks = task.tasks()?;
                     let mut published = HashMap::new();
@@ -92,7 +92,8 @@ impl Deck {
 
     /// The capability warning for the window's own task (ADR 0008 §1).
     pub fn publish_notice(&self) -> Option<&'static str> {
-        publication::notice(self.task.as_ref().is_some_and(|t| t.publishes()), self.agent_publishes)
+        let attached = self.current();
+        publication::notice(attached.task.as_ref().is_some_and(|t| t.publishes()), attached.agent_publishes)
     }
 
     /// Open the panel for lane `lane`'s task, or close it if it is open.
@@ -124,12 +125,15 @@ impl Deck {
             return cx.notify();
         }
         let id = id.to_string();
-        let Some(task) = self.task.clone() else { return };
+        let Some(task) = self.current().task.clone() else { return };
         let own = self.task_id() == Some(id.as_str());
         if own {
             // The agent is going away: stop reading from it first.
-            self.attachment += 1;
-            self.client = None;
+            let generation = self.stamp();
+            if let Some(attached) = self.attached.get_mut(&id) {
+                attached.generation = generation;
+                attached.client = None;
+            }
         }
         let destroyed = cx.background_executor().spawn({
             let id = id.clone();
@@ -141,9 +145,15 @@ impl Deck {
                 deck.publication_open = None;
                 deck.destroy_confirm = false;
                 match result {
-                    Ok(()) if own => deck.session.apply(Inbound::Failed("task destroyed".into())),
+                    Ok(()) if own => {
+                        if let Some(attached) = deck.attached.get_mut(&id) {
+                            attached.session.apply(Inbound::Failed("task destroyed".into()));
+                        }
+                    }
                     Ok(()) => {}
-                    Err(e) => deck.session.apply(Inbound::Failed(format!("destroying task: {e:#}"))),
+                    Err(e) => {
+                        deck.current_mut().session.apply(Inbound::Failed(format!("destroying task: {e:#}")));
+                    }
                 }
                 let tasks: Vec<Task> = deck.tasks.iter().filter(|t| t.id != id).cloned().collect();
                 let published = std::mem::take(&mut deck.published);

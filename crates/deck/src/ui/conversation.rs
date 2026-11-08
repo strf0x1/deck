@@ -18,7 +18,7 @@ use gpui::{
 };
 
 pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
-    let s = &deck.session;
+    let s = deck.session();
     let (status, color): (&str, Hsla) = match &s.status {
         _ if s.ask.is_some() => ("Needs you", Tokens::amber()),
         Status::Connecting => ("Connecting", Tokens::text_faint().into()),
@@ -205,7 +205,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
 }
 
 fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
-    let Some(ask) = &deck.session.ask else { return div().into_any_element() };
+    let Some(ask) = &deck.session().ask else { return div().into_any_element() };
     let first_allow = ask.options.iter().position(|o| o.allows());
     let buttons = ask.options.iter().enumerate().map(|(i, o)| {
         let primary = Some(i) == first_allow;
@@ -248,7 +248,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .items_center()
                 .gap(px(space::STACK))
                 .child(glyph(icon::SHIELD, 13.).text_color(Tokens::amber()))
-                .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} wants to run", deck.session.agent)))
+                .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} wants to run", deck.session().agent)))
                 .child(div().flex_1())
                 .child(kbd("esc")),
         )
@@ -267,16 +267,16 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
 }
 
 fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
-    let title = match &deck.session.status {
+    let title = match &deck.session().status {
         Status::Detached => "Your task is still running.",
         Status::Down(detail) if detail.as_str() == "stopped" => "This task is stopped.",
         _ => "The task connection needs to be restored.",
     };
-    let action = match &deck.session.status {
+    let action = match &deck.session().status {
         Status::Down(detail) if detail.as_str() == "stopped" => "Restart",
         _ => "Stop and restart",
     };
-    let note = match &deck.session.status {
+    let note = match &deck.session().status {
         Status::Detached => "Restart to restore the conversation. Any unfinished turn will be interrupted.",
         Status::Down(detail) if detail.as_str() == "stopped" => {
             "Restart to start the agent again with its recorded history."

@@ -1,12 +1,14 @@
-//! The Deck window's root view: owns the lane board, the navigation rail, the
-//! live session and the agent client, routes input, and drives animation frames.
+//! The Deck window's root view: owns the lane board, the navigation rail, an
+//! attachment per task, routes input, and drives animation frames.
 //!
 //! The design choice: one view entity holding plain state structs (`Board`,
-//! `Session`); render helpers in `panels` read them. Animation is pull-based:
+//! `Attached`); render helpers in `panels` read the selected attachment.
+//! Animation is pull-based:
 //! each render steps the springs by the real frame gap and requests another
 //! frame only while something still moves, so an idle window draws nothing.
 
 use super::access::Access;
+use super::attached::Attached;
 use super::board::{Board, Lane};
 use super::boundary::Boundary;
 use super::composer;
@@ -15,17 +17,14 @@ use super::rail::Rail;
 use super::session::Session;
 use super::theme::{SANS, Tokens, size};
 use super::{chrome, conversation, panels};
-use crate::task::WindowTask;
 use deck_acp::{Client, Inbound};
-use deck_runtime::Watch;
 use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
     ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
 };
 use gpui::{FollowMode, ListState};
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// The lane id of this window's own task, the live agent session. Every other
@@ -39,8 +38,14 @@ pub struct Deck {
     pub(super) focus: FocusHandle,
     pub(super) board: Board,
     pub(super) rail: Rail,
-    pub(super) session: Session,
-    pub(super) boundary: Boundary,
+    /// Every task this window is attached to, by task id (ADR 0010 §8).
+    pub(super) attached: HashMap<String, Attached>,
+    /// The task whose transcript and composer the window shows.
+    pub(super) selected: Option<String>,
+    /// Where events go before any daemon task exists: a headless deck.
+    pub(super) idle: Attached,
+    /// The last generation stamped on a connection or an operation.
+    pub(super) next_generation: u64,
     pub(super) access: Access,
     pub(super) access_refresh: Option<gpui::Task<()>>,
     pub(super) editor: Editor,
@@ -57,30 +62,27 @@ pub struct Deck {
     pub(super) expanded: HashSet<String>,
     /// The copy button showing its check (`copy.rs`).
     pub(super) copied: Option<String>,
-    /// The transcript row selected from the keyboard (alt-up/down), by key.
-    pub(super) selected: Option<String>,
+    /// The transcript row focused from the keyboard (alt-up/down), by key.
+    pub(super) focused: Option<String>,
     /// Card bodies fading in and the jump pill (`motion.rs`).
     pub(super) motion: super::motion::Motion,
     pub(super) agent_cmd: String,
-    /// A connection to the daemon-owned task. Window shutdown detaches it.
-    pub(super) task: Option<WindowTask>,
-    /// The boundary watch connection; dropping it ends the window's lease.
-    pub(super) watch: Option<Watch>,
+    /// The records root this window's daemon serves, for background work.
+    pub(super) data: Option<std::path::PathBuf>,
     pub(super) _quit: Option<Subscription>,
-    pub(super) client: Option<Arc<Client>>,
-    pub(super) attachment: u64,
     /// Lane ids for the daemon's tasks, the last task list, and each
     /// task's publication as `deckd` last answered it.
     pub(super) lanes: super::tasks::Lanes,
     pub(super) tasks: Vec<deck_runtime::Task>,
     pub(super) published: std::collections::HashMap<String, deck_runtime::pull_request::State>,
     pub(super) task_refresh: Option<gpui::Task<()>>,
+    /// The background attach of other live tasks at launch; dropped on quit
+    /// so its daemon connection cannot outlive the window.
+    pub(super) attach_task: Option<gpui::Task<()>>,
     /// The task whose publication panel is open, and whether Destroy was
     /// clicked once.
     pub(super) publication_open: Option<String>,
     pub(super) destroy_confirm: bool,
-    /// Whether the agent advertised GitHub operations; `None` until ready.
-    pub(super) agent_publishes: Option<bool>,
     /// The New session buttons: idle, creating, or the last failure.
     pub(super) new_session: super::new_session::NewSession,
     last_frame: Option<Instant>,
@@ -98,8 +100,10 @@ impl Deck {
             focus: cx.focus_handle(),
             board: Board::new(lanes()),
             rail: Rail::new(),
-            session: Session::new(),
-            boundary: Boundary::new(),
+            attached: HashMap::new(),
+            selected: None,
+            idle: Attached::unattached(),
+            next_generation: 0,
             access: Access::new(),
             access_refresh: None,
             editor: Editor::new(),
@@ -110,33 +114,72 @@ impl Deck {
             row_sigs: Vec::new(),
             expanded: HashSet::new(),
             copied: None,
-            selected: None,
+            focused: None,
             motion: super::motion::Motion::default(),
             agent_cmd: String::new(),
-            task: None,
-            watch: None,
+            data: None,
             _quit: None,
-            client: None,
-            attachment: 0,
             lanes: super::tasks::Lanes::default(),
             tasks: Vec::new(),
             published: std::collections::HashMap::new(),
             task_refresh: None,
+            attach_task: None,
             publication_open: None,
             destroy_confirm: false,
-            agent_publishes: None,
             new_session: super::new_session::NewSession::Idle,
             last_frame: None,
         }
     }
 
+    /// The attachment the window shows, or the idle one before launch.
+    pub(super) fn current(&self) -> &Attached {
+        self.selected.as_deref().and_then(|id| self.attached.get(id)).unwrap_or(&self.idle)
+    }
+
+    /// The attachment the window shows; mutations before launch land on the
+    /// idle one, which is what a headless deck's tests read back.
+    pub(super) fn current_mut(&mut self) -> &mut Attached {
+        let Some(id) = self.selected.clone() else { return &mut self.idle };
+        if self.attached.contains_key(&id) {
+            return self.attached.get_mut(&id).unwrap_or(&mut self.idle);
+        }
+        &mut self.idle
+    }
+
+    fn attachment(&self, id: Option<&str>) -> Option<&Attached> {
+        match id {
+            Some(id) => self.attached.get(id),
+            None => Some(&self.idle),
+        }
+    }
+
+    fn attachment_mut(&mut self, id: Option<&str>) -> Option<&mut Attached> {
+        match id {
+            Some(id) => self.attached.get_mut(id),
+            None => Some(&mut self.idle),
+        }
+    }
+
+    /// The ids of every attached task: the window's connection per task.
+    pub fn attached_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.attached.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// Stamp a connection or an operation, invalidating earlier replies.
+    pub(super) fn stamp(&mut self) -> u64 {
+        self.next_generation += 1;
+        self.next_generation
+    }
+
     /// The id of the task this window runs, while it runs one.
     pub fn task_id(&self) -> Option<&str> {
-        self.task.as_ref().map(WindowTask::id)
+        self.current().task_id()
     }
 
     pub fn session(&self) -> &Session {
-        &self.session
+        &self.current().session
     }
 
     /// The New session control's state.
@@ -162,18 +205,32 @@ impl Deck {
     }
 
     pub fn boundary(&self) -> &Boundary {
-        &self.boundary
+        &self.current().boundary
     }
 
     pub fn access(&self) -> &Access {
         &self.access
     }
 
-    /// Apply a boundary change from the daemon's watch connection.
+    /// Apply a boundary change from the selected task's watch connection.
     pub fn on_boundary(&mut self, approval: Approval, cx: &mut Context<Self>) {
+        let id = self.selected.clone();
+        self.boundary_for(id.as_deref(), approval, cx);
+    }
+
+    /// Apply a boundary change to task `id`'s card, whether or not it is
+    /// selected. A background task's card is drawn when it is selected.
+    pub(super) fn boundary_for(&mut self, id: Option<&str>, approval: Approval, cx: &mut Context<Self>) {
         let changed = !matches!(approval.state, State::Pending);
-        if let Some(decided) = self.boundary.apply(approval) {
-            self.notify_boundary(&decided);
+        let (decided, client) = match self.attachment_mut(id) {
+            Some(attached) => (attached.boundary.apply(approval), attached.client.clone()),
+            None => return,
+        };
+        if id != self.selected.as_deref() {
+            return;
+        }
+        if let Some(decided) = decided {
+            Self::notify_boundary(client.as_deref(), &decided);
         }
         if changed && self.access.is_open() {
             self.load_grants(cx);
@@ -185,15 +242,19 @@ impl Deck {
     /// Send the card's decision. The card closes on the daemon's reply and
     /// on its next watch update; a failed decision leaves it open.
     pub fn decide_boundary(&mut self, decision: Decision, cx: &mut Context<Self>) {
-        let Some(item) = self.boundary.pending().cloned() else { return };
-        let Some(task) = self.task.clone() else { return };
+        let Some(item) = self.current().boundary.pending().cloned() else { return };
+        let Some(task) = self.current().task.clone() else { return };
         match task.decide(&item.id, decision) {
             Ok(approval) => {
-                if let Some(decided) = self.boundary.apply(approval) {
-                    self.notify_boundary(&decided);
+                let decided = self.current_mut().boundary.apply(approval);
+                if let Some(decided) = decided {
+                    let client = self.current().client.clone();
+                    Self::notify_boundary(client.as_deref(), &decided);
                 }
             }
-            Err(e) => self.session.apply(Inbound::Failed(format!("deciding boundary approval: {e:#}"))),
+            Err(e) => {
+                self.current_mut().session.apply(Inbound::Failed(format!("deciding boundary approval: {e:#}")));
+            }
         }
         self.sync_live_lane();
         cx.notify();
@@ -202,8 +263,8 @@ impl Deck {
     /// An agent that advertised a boundary capability (reverse-DNS, or the
     /// bare key from a released Construct) learns about a decision it did
     /// not wait for; the client ignores an agent without the capability.
-    fn notify_boundary(&self, approval: &Approval) {
-        let Some(client) = &self.client else { return };
+    fn notify_boundary(client: Option<&Client>, approval: &Approval) {
+        let Some(client) = client else { return };
         let mut notice = serde_json::json!({
             "approval_id": approval.id,
             "destination": approval.destination,
@@ -222,37 +283,66 @@ impl Deck {
         let _ = client.boundary_notice(&notice);
     }
 
+    /// Apply an event from the selected attachment's connection. The
+    /// connection pumps use [`Deck::inbound_from`] with their task id.
     pub fn on_inbound(&mut self, ev: Inbound, cx: &mut Context<Self>) {
+        let selected = self.selected.clone();
+        self.inbound_from(selected.as_deref(), ev, cx);
+    }
+
+    /// Apply an event to task `id`'s attachment, selected or not. Only the
+    /// selection re-renders, except that a background turn's state is kept.
+    pub(super) fn inbound_from(&mut self, id: Option<&str>, ev: Inbound, cx: &mut Context<Self>) {
+        let selected = id == self.selected.as_deref();
+        let mut turn_changed = false;
         if let Inbound::Ready { session_id, .. } = &ev
-            && let Some(task) = &self.task
+            && let Some(task) = self.attachment(id).and_then(|a| a.task.clone())
             && let Err(e) = task.record_session(session_id)
+            && let Some(attached) = self.attachment_mut(id)
         {
-            self.session.apply(Inbound::Failed(format!("recording session: {e:#}")));
+            attached.session.apply(Inbound::Failed(format!("recording session: {e:#}")));
         }
         if ev == Inbound::Detached {
-            self.attachment += 1;
-            self.client = None;
+            let generation = self.stamp();
+            if let Some(attached) = self.attachment_mut(id) {
+                attached.generation = generation;
+                attached.client = None;
+            }
         }
-        // `Publishes` comes before `Ready` when the agent advertised it.
-        match ev {
-            Inbound::Publishes => self.agent_publishes = Some(true),
-            Inbound::Ready { .. } if self.agent_publishes.is_none() => self.agent_publishes = Some(false),
-            _ => {}
+        if let Some(attached) = self.attachment_mut(id) {
+            if let Inbound::Turn { number, state } = &ev {
+                let next = (*number, state.clone());
+                turn_changed = attached.turn.as_ref() != Some(&next);
+                attached.turn = Some(next);
+            }
+            // `Publishes` comes before `Ready` when the agent advertised it.
+            match &ev {
+                Inbound::Publishes => attached.agent_publishes = Some(true),
+                Inbound::Ready { .. } if attached.agent_publishes.is_none() => {
+                    attached.agent_publishes = Some(false);
+                }
+                _ => {}
+            }
+            attached.session.apply(ev);
         }
-        self.session.apply(ev);
-        self.sync_live_lane();
-        cx.notify();
+        if selected {
+            self.sync_live_lane();
+        }
+        if selected || turn_changed {
+            cx.notify();
+        }
     }
 
     pub(super) fn sync_live_lane(&mut self) {
+        let attached = self.current();
         let view = self.publication_of(LIVE);
         let (state, detail) = super::tasks::live(
-            &self.session.status,
-            self.session.ask.as_ref().map(|ask| ask.title.as_str()),
-            self.boundary.pending().is_some(),
+            &attached.session.status,
+            attached.session.ask.as_ref().map(|ask| ask.title.as_str()),
+            attached.boundary.pending().is_some(),
             view.as_ref(),
         );
-        let agent = self.session.agent.clone();
+        let agent = attached.session.agent.clone();
         let chip = view.map(|v| (v.dot, v.label));
         if let Some(lane) = self.board.lane_mut(LIVE) {
             lane.title = agent;
@@ -264,17 +354,17 @@ impl Deck {
 
     pub fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.editor.text().trim().to_string();
-        if text.is_empty() || !self.session.can_prompt() {
+        if text.is_empty() || !self.current().session.can_prompt() {
             return;
         }
-        if let Some(client) = &self.client
+        if let Some(client) = self.current().client.clone()
             && let Err(e) = client.prompt(&text)
         {
-            self.session.apply(Inbound::Failed(format!("{e:#}")));
+            self.current_mut().session.apply(Inbound::Failed(format!("{e:#}")));
             return cx.notify();
         }
         self.editor.take();
-        self.session.sent(&text);
+        self.current_mut().session.sent(&text);
         self.sync_live_lane();
         // Sending is a request to see the answer: follow the tail again.
         self.transcript.set_follow_mode(FollowMode::Tail);
@@ -283,12 +373,13 @@ impl Deck {
 
     /// Answer the pending permission question with option `index`, or cancel it.
     pub fn choose(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
-        let Some(ask) = self.session.answered() else { return };
+        let client = self.current().client.clone();
+        let Some(ask) = self.current_mut().session.answered() else { return };
         let option = index.and_then(|i| ask.options.get(i)).map(|o| o.id.as_str());
-        if let Some(client) = &self.client
+        if let Some(client) = client
             && let Err(e) = client.answer(&ask.request, option)
         {
-            self.session.apply(Inbound::Failed(format!("{e:#}")));
+            self.current_mut().session.apply(Inbound::Failed(format!("{e:#}")));
         }
         self.sync_live_lane();
         cx.notify();
@@ -312,7 +403,7 @@ impl Deck {
             cx.stop_propagation();
             return self.close_publication(cx);
         }
-        if self.session.ask.is_some() && !self.boundary.is_reviewing() {
+        if self.current().session.ask.is_some() && !self.current().boundary.is_reviewing() {
             cx.stop_propagation();
             match k.key.as_str() {
                 "escape" => self.choose(None, cx),
@@ -324,7 +415,7 @@ impl Deck {
             }
             return;
         }
-        if self.boundary.pending().is_some() {
+        if self.current().boundary.pending().is_some() {
             cx.stop_propagation();
             match k.key.as_str() {
                 "1" => self.decide_boundary(Decision::Once, cx),

@@ -28,10 +28,10 @@ pub(super) const TAIL: usize = 5;
 pub(super) const CAP: usize = 400;
 
 pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
-    let entries = &deck.session.entries;
+    let entries = &deck.session().entries;
     let key = row.key(entries);
     let open = deck.expanded.contains(&key);
-    let selected = deck.selected.as_deref() == Some(key.as_str());
+    let selected = deck.focused.as_deref() == Some(key.as_str());
     match row {
         Row::Reads(range) => super::folds::reads(&entries[range.clone()], key, open, selected, cx),
         Row::Summary(turn) => super::turn_footer::footer(deck, turn.clone(), cx),
@@ -170,7 +170,7 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         _ => None,
     };
     let fade = deck.motion.reveal(&header_key);
-    frame(deck.selected.as_deref() == Some(header_key.as_str()))
+    frame(deck.focused.as_deref() == Some(header_key.as_str()))
         .child(header)
         .children(body.map(|b| div().opacity(fade).child(b)))
         .into_any_element()
