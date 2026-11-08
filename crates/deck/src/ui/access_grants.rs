@@ -4,7 +4,6 @@
 //! returns to the existing boundary card, so the panel does not introduce a
 //! second approval flow or let hidden keyboard shortcuts decide a request.
 
-use super::access::grant_scope;
 use super::access_panel::{button, error};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, radius, size, space};
@@ -34,12 +33,12 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .flex_col()
                     .gap(px(space::DETAIL))
                     .child(div().font_family(MONO).text_size(px(size::LABEL)).child(grant.destination.clone()))
-                    .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(format!(
-                        "{} · {} · {}",
-                        grant.gateway,
-                        grant.operation,
-                        grant_scope(grant, now)
-                    ))),
+                    .child(
+                        div()
+                            .text_size(px(size::SMALL))
+                            .text_color(Tokens::text_dim())
+                            .child(deck.access.grant_detail(grant, now)),
+                    ),
             )
             .child(
                 button(("access-grant-revoke", i), "Revoke", Tokens::red())

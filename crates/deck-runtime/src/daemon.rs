@@ -235,7 +235,7 @@ fn connection(
                         .runtime
                         .task(&task)
                         .ok()
-                        .map(|record| record.spec.cwd.to_string_lossy().into_owned()),
+                        .map(|record| record.spec.project_key()),
                 };
                 let changed = boundary.profile(project.as_deref(), &destinations, revoke);
                 wire::write(&mut socket, &reply(changed.map(|changed| json!({ "changed": changed }))))?;
@@ -244,7 +244,7 @@ fn connection(
                 let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task).ok();
                 let project = match project {
                     Some(project) if !project.is_empty() => Some(project),
-                    _ => record.as_ref().map(|record| record.spec.cwd.to_string_lossy().into_owned()),
+                    _ => record.as_ref().map(|record| record.spec.project_key()),
                 };
                 // A VM task's credential name is in its recorded policy; a
                 // local task has no policy and keeps the development default.
@@ -308,7 +308,7 @@ fn approval(
     match request {
         Request::Approval { task, ask } => {
             let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?;
-            let project = record.spec.cwd.to_string_lossy().into_owned();
+            let project = record.spec.project_key();
             // The recorded mode is the base; the project file is re-read so a
             // switch to `ask` governs the next operation without a restart.
             let approvals = record
@@ -333,8 +333,8 @@ fn approval(
             Ok(json!(null))
         }
         Request::AccessGrants { task } => {
-            let project = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?.spec.cwd;
-            Ok(serde_json::to_value(boundary.access_grants(&task, &project.to_string_lossy())?)?)
+            let project = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?.spec.project_key();
+            Ok(serde_json::to_value(boundary.access_grants(&task, &project)?)?)
         }
         Request::GithubApprovals { task } => {
             let record = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.task(&task)?;
@@ -349,15 +349,15 @@ fn approval(
             // Keep task creation serialized until the project revoke ends,
             // so a new task cannot be missed by the matching-grant removal.
             let service = service.lock().unwrap_or_else(|e| e.into_inner());
-            let project = service.runtime.task(&task)?.spec.cwd;
+            let project = service.runtime.task(&task)?.spec.project_key();
             let peers: Vec<_> = service
                 .runtime
                 .tasks()?
                 .into_iter()
-                .filter(|record| record.spec.cwd == project)
+                .filter(|record| record.spec.project_key() == project)
                 .map(|record| record.id)
                 .collect();
-            boundary.revoke_access_grant(&task, &project.to_string_lossy(), &peers, &id)?;
+            boundary.revoke_access_grant(&task, &project, &peers, &id)?;
             Ok(json!(null))
         }
         _ => unreachable!("approval is called only for approval requests"),

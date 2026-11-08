@@ -100,6 +100,11 @@ impl WindowTask {
         self.daemon.tasks()
     }
 
+    /// The projects the daemon knows, for naming a saved rule's project.
+    pub fn projects(&self) -> Result<Vec<deck_runtime::project::Project>> {
+        self.daemon.projects()
+    }
+
     /// A task's publication and live pull request state. The daemon bounds
     /// how often this reaches GitHub.
     pub fn pull_request(&self, id: &str, refresh: bool) -> Result<deck_runtime::pull_request::State> {

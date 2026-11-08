@@ -1016,7 +1016,7 @@ fn a_profile_decision_becomes_project_rules_the_gateway_re_reads() {
     let (daemon, client) = Daemon::new("web-profile");
     let task = client.create(daemon.spec(&["cat"])).unwrap();
     client.start(&task.id).unwrap();
-    let project = task.spec.cwd.to_string_lossy().into_owned();
+    let project = task.spec.project.clone().expect("create records the task's project");
     let destinations = vec!["deb.debian.org:443".to_string(), "security.debian.org:443".to_string()];
     assert_eq!(client.web_profile(&task.id, None, "os-mirrors", &destinations, false).unwrap(), 2);
     assert_eq!(
@@ -1055,7 +1055,7 @@ fn a_github_profile_writes_one_rule_per_operation_and_revokes_exactly_them() {
     let (daemon, client) = Daemon::new("github-profile");
     let task = client.create(daemon.spec(&["cat"])).unwrap();
     client.start(&task.id).unwrap();
-    let project = task.spec.cwd.to_string_lossy().into_owned();
+    let project = task.spec.project.clone().expect("create records the task's project");
     let operations = ["publish".to_string(), "create_pr".into()];
     assert_eq!(client.github_profile(&task.id, None, "strf0x1/deck", &operations, false).unwrap(), 2);
     assert_eq!(

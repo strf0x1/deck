@@ -8,6 +8,8 @@
 use deck_runtime::approvals::{Grant, Scope};
 use deck_runtime::broker::Listed;
 use deck_runtime::github::Approvals;
+use deck_runtime::project::Project;
+use std::collections::HashMap;
 
 pub const NOT_CANCELLED: &str = "Revoking stops Deck using this value. It does not cancel the key at the provider.";
 
@@ -56,6 +58,9 @@ pub struct Access {
     grants_loading: bool,
     credentials_error: Option<String>,
     grants_error: Option<String>,
+    /// Project names by id, for a rule's project; a missing entry shows its id.
+    projects: HashMap<String, String>,
+    projects_request: u64,
     revoke_error: Option<String>,
     retrying: Option<String>,
     retry_message: Option<String>,
@@ -136,6 +141,38 @@ impl Access {
         self.credentials_request += 1;
         self.grants_request += 1;
         self.approvals_request += 1;
+        self.projects_request += 1;
+    }
+
+    pub fn begin_projects(&mut self) -> u64 {
+        self.projects_request += 1;
+        self.projects_request
+    }
+
+    /// Apply a project list only if it still belongs to the current request.
+    /// Names only make a rule's project readable, so a failure leaves the ids.
+    pub fn projects_listed(&mut self, ticket: u64, result: Result<Vec<Project>, String>) {
+        if ticket != self.projects_request {
+            return;
+        }
+        if let Ok(list) = result {
+            self.projects = list.into_iter().map(|project| (project.id, project.name)).collect();
+        }
+    }
+
+    /// A project's name, or its id when the list has not answered for it.
+    pub fn project_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.projects.get(id).map_or(id, String::as_str)
+    }
+
+    /// What a grant row says under its destination: the gateway, operation and
+    /// scope, and the project name for a saved project rule.
+    pub fn grant_detail(&self, grant: &Grant, now_ms: u64) -> String {
+        let detail = format!("{} · {} · {}", grant.gateway, grant.operation, grant_scope(grant, now_ms));
+        match grant.project.as_deref() {
+            Some(project) => format!("{detail} · {}", self.project_name(project)),
+            None => detail,
+        }
     }
 
     pub fn begin_approvals(&mut self) -> u64 {
