@@ -121,13 +121,25 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
     let tasks = ["a", "b", "c"]
         .map(|id| {
             serde_json::from_value(json!({
-                "id": id, "backend": "local", "spec": { "argv": ["x"], "cwd": format!("/src/{id}") },
+                "id": id, "backend": "local",
+                "spec": { "argv": ["x"], "cwd": format!("/src/{id}"), "project": "git:test" },
                 "state": { "state": "running" }, "pid": null,
             }))
             .unwrap()
         })
         .to_vec();
-    deck.update(&mut cx, |d, cx| d.on_tasks(tasks, Default::default(), cx));
+    let project = deck_runtime::project::Project {
+        id: "git:test".into(),
+        name: "test".into(),
+        checkouts: vec!["/src/a".into()],
+        argv: vec!["x".into()],
+        opened_ms: 1,
+        hidden: false,
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_projects(vec![project], Some("git:test".into()), cx);
+        d.on_tasks(tasks, Default::default(), cx);
+    });
 
     let to = 150. + PITCH * 2.2;
     send(
@@ -136,8 +148,10 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
         json!({ "cmd": "drag", "from": { "x": 200, "y": 150 }, "to": { "x": 200, "y": to }, "steps": 10 }),
     );
     let s = send(&mut cx, &d, json!({ "cmd": "state" }));
-    assert_eq!(s["board"]["order"], json!([1, 2, 0, 3]));
+    assert_eq!(s["board"]["order"], json!([2, 3, 1]));
     assert_eq!(s["board"]["dragging"], Value::Null);
+    assert_eq!(s["project"], json!("git:test"));
+    assert_eq!(s["projects"], json!([{ "id": "git:test", "name": "test" }]));
 
     send(&mut cx, &d, json!({ "cmd": "hover_rail" }));
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(true));

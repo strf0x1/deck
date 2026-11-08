@@ -112,6 +112,15 @@ impl Board {
         self.retarget();
     }
 
+    /// Move card `id` to the top of the column, if it is there.
+    pub fn to_front(&mut self, id: usize) {
+        if let Some(at) = self.cards.iter().position(|c| c.lane.id == id) {
+            let card = self.cards.remove(at);
+            self.cards.insert(0, card);
+            self.retarget();
+        }
+    }
+
     pub fn lane_mut(&mut self, id: usize) -> Option<&mut Lane> {
         self.cards.iter_mut().map(|c| &mut c.lane).find(|l| l.id == id)
     }

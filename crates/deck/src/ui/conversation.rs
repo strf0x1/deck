@@ -19,6 +19,10 @@ use gpui::{
 
 pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     let s = deck.session();
+    let has_task = deck.task_id().is_some();
+    // A launched window with no selected task is an open project (or no
+    // project); a headless deck still shows the idle session's transcript.
+    let empty_project = !has_task && deck.is_launched();
     let (status, color): (&str, Hsla) = match &s.status {
         _ if s.ask.is_some() => ("Needs you", Tokens::amber()),
         Status::Connecting => ("Connecting", Tokens::text_faint().into()),
@@ -28,6 +32,9 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         Status::Detached => ("Running, detached", Tokens::mint()),
         Status::Down(_) => ("Down", Tokens::red()),
     };
+    let title = if empty_project { deck.project_name().unwrap_or("No project").to_string() } else { s.agent.clone() };
+    let subtitle = if empty_project { "project" } else { "live session" };
+    let title_selector = if empty_project { "empty-project" } else { "conversation-agent" };
     pane()
         .flex_1()
         .min_w_0()
@@ -42,10 +49,16 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .gap(px(space::STACK))
                 .border_b_1()
                 .border_color(Tokens::edge())
-                .child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(s.agent.clone()))
-                .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_faint()).child("live session"))
-                .child(div().flex_1())
                 .child(
+                    div()
+                        .debug_selector(move || title_selector.into())
+                        .text_size(px(size::TITLE))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_faint()).child(subtitle))
+                .child(div().flex_1())
+                .children(has_task.then(|| {
                     div()
                         .h(px(26.))
                         .px(px(10.))
@@ -57,15 +70,17 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                         .text_size(px(size::SMALL))
                         .text_color(Tokens::text_dim())
                         .child(div().size(px(6.)).rounded_full().bg(color))
-                        .child(status),
-                ),
+                        .child(status)
+                })),
         )
         .child(if deck.access.is_open() {
-            super::access_panel::panel(deck, cx)
+            super::access_panel::panel(deck, cx).into_any_element()
         } else if deck.open_publication().is_some() {
-            super::publication_panel::panel(deck, cx)
+            super::publication_panel::panel(deck, cx).into_any_element()
+        } else if empty_project {
+            empty(deck, cx)
         } else {
-            super::transcript_list::transcript(deck, cx)
+            super::transcript_list::transcript(deck, cx).into_any_element()
         })
         .child(
             div()
@@ -85,6 +100,61 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                     }
                 })),
         )
+}
+
+/// A project with no task: what a task would see, and the composer that
+/// creates it with the first prompt (ADR 0010 §5).
+fn empty(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    let project = deck.project_name();
+    let checkout = deck.project_checkout().map(|dir| super::prompt::tilde(&dir));
+    let mut body = div()
+        .flex_1()
+        .min_h_0()
+        .debug_selector(|| "project-empty-state".into())
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(space::STACK))
+        .px(px(space::PAD))
+        .child(match project {
+            Some(name) => div().text_size(px(size::DISPLAY)).font_weight(FontWeight::MEDIUM).child(name.to_string()),
+            None => div().text_size(px(size::DISPLAY)).font_weight(FontWeight::MEDIUM).child("No project open"),
+        })
+        .children(
+            checkout.map(|dir| {
+                div().font_family(MONO).text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(dir)
+            }),
+        )
+        .child(div().max_w(px(420.)).text_center().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(
+            if project.is_some() {
+                "A task sees the project's tracked and untracked files, but not ignored ones."
+            } else {
+                "Open a checkout to start a task in its project."
+            },
+        ));
+    if project.is_none() {
+        body = body.child(
+            div()
+                .id("empty-open")
+                .debug_selector(|| "empty-open".into())
+                .h(px(32.))
+                .px(px(space::INSET))
+                .flex()
+                .items_center()
+                .gap(px(space::LINE))
+                .rounded(px(radius::CONTROL))
+                .bg(Tokens::text())
+                .text_color(Tokens::ink())
+                .text_size(px(size::BODY))
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.pick_project(cx)))
+                .child(glyph(icon::PLUS, 11.))
+                .child("Open project…"),
+        );
+    }
+    body.into_any_element()
 }
 
 /// The host boundary card: an external operation that needs a human

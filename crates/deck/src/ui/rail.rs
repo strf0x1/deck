@@ -1,42 +1,34 @@
-//! The navigation rail: a column of icons that stays narrow until the pointer
-//! reaches it, then opens to show labels, and closes again when it leaves.
-//! A pin keeps it open.
+//! The project rail: a column of projects that stays narrow until the pointer
+//! reaches it, then opens to show names, and closes again when it leaves.
+//! A pin keeps it open (ADR 0010 §1, §9).
 //!
-//! The design choice: the rail's width and its active-item marker are
+//! The design choice: the rail's width and its active-project marker are
 //! [`Spring`]s with the same tuning as the lane cards, so opening the rail and
 //! reordering sessions share one motion. The rail floats over the content
 //! when open instead of pushing it, so the transcript never reflows mid-flight.
 
 use super::spring::Spring;
-use super::theme::icon;
 
 pub const COLLAPSED: f32 = 52.;
 pub const EXPANDED: f32 = 200.;
 pub const ITEM_H: f32 = 40.;
 
-pub struct Item {
-    pub icon: &'static str,
-    pub label: &'static str,
-}
-
-/// The rail's destinations, top to bottom. Sessions is the only one for now.
-pub const ITEMS: [Item; 1] = [Item { icon: icon::SESSIONS, label: "Sessions" }];
-
 pub struct Rail {
     pub width: Spring,
-    /// The active marker's offset from the first item.
+    /// The active marker's offset from the first project.
     pub marker: Spring,
-    active: usize,
+    /// The selected project's index, or none while no project is open.
+    active: Option<usize>,
     hovered: bool,
     pinned: bool,
 }
 
 impl Rail {
     pub fn new() -> Self {
-        Rail { width: Spring::at(COLLAPSED), marker: Spring::at(0.), active: 0, hovered: false, pinned: false }
+        Rail { width: Spring::at(COLLAPSED), marker: Spring::at(0.), active: None, hovered: false, pinned: false }
     }
 
-    pub fn active(&self) -> usize {
+    pub fn active(&self) -> Option<usize> {
         self.active
     }
 
@@ -64,11 +56,10 @@ impl Rail {
         self.retarget();
     }
 
-    pub fn select(&mut self, index: usize) {
-        if index < ITEMS.len() {
-            self.active = index;
-            self.marker.target = index as f32 * ITEM_H;
-        }
+    /// Mark project `index` (or none) as the selected one.
+    pub fn select(&mut self, index: Option<usize>) {
+        self.active = index;
+        self.marker.target = index.map_or(0., |i| i as f32 * ITEM_H);
     }
 
     fn retarget(&mut self) {
@@ -130,12 +121,17 @@ mod tests {
     }
 
     #[test]
-    fn selecting_slides_the_marker_and_ignores_unknown_items() {
+    fn selecting_slides_the_marker_and_none_returns_it_to_the_top() {
         let mut r = Rail::new();
-        r.select(0);
+        assert_eq!(r.active(), None);
+        r.select(Some(0));
         settle(&mut r);
-        assert_eq!((r.active(), r.marker.pos), (0, 0.));
-        r.select(1);
-        assert_eq!(r.active(), 0);
+        assert_eq!((r.active(), r.marker.pos), (Some(0), 0.));
+        r.select(Some(2));
+        settle(&mut r);
+        assert_eq!((r.active(), r.marker.pos), (Some(2), 2. * ITEM_H));
+        r.select(None);
+        settle(&mut r);
+        assert_eq!((r.active(), r.marker.pos), (None, 0.));
     }
 }

@@ -67,8 +67,17 @@ pub struct Deck {
     /// Card bodies fading in and the jump pill (`motion.rs`).
     pub(super) motion: super::motion::Motion,
     pub(super) agent_cmd: String,
+    /// The launch's agent command: a project opened from the picker uses it.
+    pub(super) argv: Vec<String>,
     /// The records root this window's daemon serves, for background work.
     pub(super) data: Option<std::path::PathBuf>,
+    /// The window's control connection to `deckd`, for projects and creates
+    /// that outlive the selected task.
+    pub(super) daemon: Option<deck_runtime::DaemonClient>,
+    /// The project rail and the column's filter (ADR 0010 §1, §9).
+    pub(super) projects: super::projects::Projects,
+    /// A first prompt that created its task and waits for the connection.
+    pub(super) pending_prompt: Option<String>,
     pub(super) _quit: Option<Subscription>,
     /// Lane ids for the daemon's tasks, the last task list, and each
     /// task's publication as `deckd` last answered it.
@@ -90,7 +99,12 @@ pub struct Deck {
 
 /// Before the first task list arrives the column holds only the live card.
 fn lanes() -> Vec<Lane> {
-    vec![Lane { id: LIVE, title: "agent".into(), detail: "connecting…".into(), ..Lane::default() }]
+    vec![live_lane()]
+}
+
+/// The selected task's card before its session says anything.
+pub(super) fn live_lane() -> Lane {
+    Lane { id: LIVE, title: "agent".into(), detail: "connecting…".into(), ..Lane::default() }
 }
 
 impl Deck {
@@ -117,7 +131,11 @@ impl Deck {
             focused: None,
             motion: super::motion::Motion::default(),
             agent_cmd: String::new(),
+            argv: Vec::new(),
             data: None,
+            daemon: None,
+            projects: super::projects::Projects::default(),
+            pending_prompt: None,
             _quit: None,
             lanes: super::tasks::Lanes::default(),
             tasks: Vec::new(),
@@ -193,6 +211,43 @@ impl Deck {
 
     pub fn rail(&self) -> &Rail {
         &self.rail
+    }
+
+    /// The visible projects, most recently opened first.
+    pub fn projects(&self) -> &[deck_runtime::project::Project] {
+        self.projects.list()
+    }
+
+    /// The open project's id, if one is open.
+    pub fn project(&self) -> Option<&str> {
+        self.projects.selected_id()
+    }
+
+    /// The open project's name, for the empty state.
+    pub fn project_name(&self) -> Option<&str> {
+        self.projects.selected().map(|project| project.name.as_str())
+    }
+
+    /// The checkout a first prompt or New session would use.
+    pub fn project_checkout(&self) -> Option<std::path::PathBuf> {
+        self.projects.checkout()
+    }
+
+    /// Why the last project open failed, while the notice stands (ADR 0010 §2).
+    pub fn projects_error(&self) -> Option<&str> {
+        self.projects.error()
+    }
+
+    /// Whether the window launched against a daemon, as a real window does;
+    /// a headless test deck has no project state to show.
+    pub fn is_launched(&self) -> bool {
+        self.daemon.is_some()
+    }
+
+    /// A project is open but has no task yet: the composer will create one
+    /// with its first prompt (ADR 0010 §5).
+    pub fn awaiting_task(&self) -> bool {
+        self.task_id().is_none() && self.projects.selected().is_some()
     }
 
     pub fn draft(&self) -> &str {
@@ -294,6 +349,7 @@ impl Deck {
     /// selection re-renders, except that a background turn's state is kept.
     pub(super) fn inbound_from(&mut self, id: Option<&str>, ev: Inbound, cx: &mut Context<Self>) {
         let selected = id == self.selected.as_deref();
+        let ready = matches!(&ev, Inbound::Ready { .. });
         let mut turn_changed = false;
         if let Inbound::Ready { session_id, .. } = &ev
             && let Some(task) = self.attachment(id).and_then(|a| a.task.clone())
@@ -325,11 +381,34 @@ impl Deck {
             }
             attached.session.apply(ev);
         }
+        if selected && ready {
+            self.send_pending();
+        }
         if selected {
             self.sync_live_lane();
         }
         if selected || turn_changed {
             cx.notify();
+        }
+    }
+
+    /// Send the first prompt now that its new task is connected.
+    pub(super) fn send_pending(&mut self) {
+        let Some(text) = self.pending_prompt.take() else { return };
+        let prompt = self.current().client.as_ref().map(|client| client.prompt(&text));
+        match prompt {
+            Some(Ok(())) => {
+                self.current_mut().session.sent(&text);
+                // Sending is a request to see the answer: follow the tail again.
+                self.transcript.set_follow_mode(FollowMode::Tail);
+            }
+            Some(Err(e)) => {
+                self.current_mut().session.apply(Inbound::Failed(format!("sending the first prompt: {e:#}")));
+                if self.editor.is_empty() {
+                    self.editor.insert(&text);
+                }
+            }
+            None => self.pending_prompt = Some(text),
         }
     }
 
@@ -352,9 +431,22 @@ impl Deck {
         }
     }
 
+    /// A project with no task yet turns the first prompt into its task
+    /// (ADR 0010 §5); `attachment.rs` creates it, then [`Deck::send_pending`]
+    /// sends the text once the connection is ready.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.editor.text().trim().to_string();
-        if text.is_empty() || !self.current().session.can_prompt() {
+        if text.is_empty() {
+            return;
+        }
+        if self.task_id().is_none() {
+            // A selected project with no task creates one (ADR 0010 §5); a
+            // headless deck's idle attachment still takes the prompt.
+            if self.projects.selected().is_some() && self.current().client.is_none() {
+                return self.first_prompt(text, cx);
+            }
+        }
+        if self.pending_prompt.is_some() || !self.current().session.can_prompt() {
             return;
         }
         if let Some(client) = self.current().client.clone()

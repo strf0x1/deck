@@ -8,7 +8,7 @@
 
 use super::board::LaneState;
 use super::panels::{glyph, state_color};
-use super::rail::{COLLAPSED, ITEM_H, ITEMS, Item};
+use super::rail::{COLLAPSED, ITEM_H};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
@@ -42,37 +42,51 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
     let label_a = ((open - 0.35) / 0.65).clamp(0., 1.);
     let waiting = deck.board.cards().iter().any(|c| c.lane.state == LaneState::Waiting);
     let weak = cx.entity().downgrade();
+    let active = r.active();
 
-    let items = ITEMS.iter().enumerate().map(|(i, item)| {
-        let badge = (i == 0 && waiting).then(Tokens::amber);
-        rail_item(("rail-item", i), item, r.active() == i, badge, label_a)
-            .debug_selector(move || format!("rail-item-{i}"))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.rail.select(i);
-                cx.notify();
-            }))
-            .into_any_element()
+    let items: Vec<_> = deck
+        .projects()
+        .iter()
+        .enumerate()
+        .map(|(i, project)| {
+            let selected = active == Some(i);
+            let badge = (selected && waiting).then(Tokens::amber);
+            rail_item(("rail-project", i), icon::PROJECT, &project.name, selected, badge, label_a)
+                .debug_selector(move || format!("rail-item-{i}"))
+                .on_click(cx.listener(move |this, _, _, cx| this.select_project(i, cx)))
+                .into_any_element()
+        })
+        .collect();
+    let marker = active.map(|_| {
+        div()
+            .absolute()
+            .top(px(r.marker.pos))
+            .left_0()
+            .right_0()
+            .h(px(ITEM_H))
+            .rounded(px(radius::CONTROL))
+            .bg(Tokens::raised_hover())
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-6.))
+                    .top(px(12.))
+                    .w(px(3.))
+                    .h(px(16.))
+                    .rounded(px(radius::MARK))
+                    .bg(Tokens::accent()),
+            )
     });
-    let marker = div()
-        .absolute()
-        .top(px(r.marker.pos))
-        .left_0()
-        .right_0()
-        .h(px(ITEM_H))
-        .rounded(px(radius::CONTROL))
-        .bg(Tokens::raised_hover())
-        .child(
-            div()
-                .absolute()
-                .left(px(-6.))
-                .top(px(12.))
-                .w(px(3.))
-                .h(px(16.))
-                .rounded(px(radius::MARK))
-                .bg(Tokens::accent()),
-        );
 
-    let pin = Item { icon: icon::PIN, label: if r.pinned() { "Unpin" } else { "Keep open" } };
+    let open_item = rail_item("rail-open", icon::PLUS, "Open project…", false, None, label_a)
+        .debug_selector(|| "rail-open".into())
+        .on_click(cx.listener(|this, _, _, cx| this.pick_project(cx)));
+    let pin = rail_item("rail-pin", icon::PIN, if r.pinned() { "Unpin" } else { "Keep open" }, false, None, label_a)
+        .when_pinned(r.pinned())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.rail.toggle_pin();
+            cx.notify();
+        }));
 
     div()
         .id("rail")
@@ -111,14 +125,10 @@ pub fn rail(deck: &Deck, inset: f32, cx: &mut Context<Deck>) -> impl IntoElement
                 .py(px(PAD_Y))
                 .gap(px(MARK_GAP))
                 .child(mark(label_a))
-                .child(div().relative().flex().flex_col().child(marker).children(items))
+                .child(div().relative().flex().flex_col().children(marker).children(items))
                 .child(div().flex_1())
-                .child(rail_item("rail-pin", &pin, false, None, label_a).when_pinned(r.pinned()).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.rail.toggle_pin();
-                        cx.notify();
-                    }),
-                )),
+                .child(open_item)
+                .child(pin),
         )
 }
 
@@ -157,7 +167,8 @@ fn mark(label_a: f32) -> impl IntoElement {
 
 fn rail_item(
     id: impl Into<gpui::ElementId>,
-    item: &Item,
+    icon: &'static str,
+    label: &str,
     active: bool,
     badge: Option<gpui::Hsla>,
     label_a: f32,
@@ -180,7 +191,7 @@ fn rail_item(
                 .w(px(COLLAPSED - 12.))
                 .flex()
                 .justify_center()
-                .child(glyph(item.icon, 15.))
+                .child(glyph(icon, 15.))
                 .children(badge.map(|c| div().absolute().top(px(-2.)).right(px(8.)).size(px(7.)).rounded_full().bg(c))),
         )
         .child(
@@ -190,7 +201,7 @@ fn rail_item(
                 .whitespace_nowrap()
                 .text_size(px(size::BODY))
                 .font_weight(if active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                .child(item.label),
+                .child(label.to_string()),
         )
 }
 
@@ -269,6 +280,22 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .text_color(Tokens::red())
                 .child(format!("New session failed: {e}"))
         }))
+        .children(deck.projects_error().map(|e| {
+            div()
+                .debug_selector(|| "hdr-project-error".into())
+                .max_w(px(420.))
+                .h(px(30.))
+                .px(px(11.))
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .rounded_full()
+                .border_1()
+                .border_color(Tokens::edge())
+                .text_size(px(size::SMALL))
+                .text_color(Tokens::red())
+                .child(e.to_string())
+        }))
         .child(icon_button("hdr-bell", icon::BELL))
         .child(
             icon_button("hdr-access", icon::SHIELD)
@@ -343,7 +370,7 @@ pub fn kbd(keys: &'static str) -> impl IntoElement {
 }
 
 /// The agent command without leading `env` assignments or directories.
-fn agent_label(cmd: &str) -> String {
+pub(super) fn agent_label(cmd: &str) -> String {
     let words: Vec<&str> = cmd.split_whitespace().skip_while(|w| *w == "env" || w.contains('=')).collect();
     let Some((prog, args)) = words.split_first() else { return String::from("no agent") };
     let prog = prog.rsplit('/').next().unwrap_or(prog);

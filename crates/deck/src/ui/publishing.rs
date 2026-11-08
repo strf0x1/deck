@@ -12,8 +12,8 @@ use super::board::Lane;
 use super::publication::{self, View};
 use super::root::{Deck, LIVE};
 use deck_acp::Inbound;
-use deck_runtime::Task;
 use deck_runtime::pull_request::State as Published;
+use deck_runtime::{DaemonClient, Task};
 use gpui::Context;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,15 +28,21 @@ fn now_ms() -> u64 {
 impl Deck {
     /// Refresh now and every [`REFRESH`] while the window lives.
     pub(super) fn follow_tasks(&mut self, cx: &mut Context<Self>) {
+        let Some(data) = self.data.clone() else { return };
         let executor = cx.background_executor().clone();
         self.task_refresh = Some(cx.spawn(async move |this, cx| {
             loop {
-                let Ok(Some(task)) = this.update(cx, |deck, _| deck.current().task.clone()) else { break };
+                let root = data.clone();
+                // Only the data root crosses into the background read, not a
+                // daemon handle: a queued read the window drops before it runs
+                // would otherwise hold a control connection open and delay
+                // daemon exit (as in the launch attach, `attachment.rs`).
                 let read = executor.spawn(async move {
-                    let tasks = task.tasks()?;
+                    let daemon = DaemonClient::connect(&root)?;
+                    let tasks = daemon.tasks()?;
                     let mut published = HashMap::new();
                     for t in tasks.iter().filter(|t| t.publication.is_some()) {
-                        if let Ok(state) = task.pull_request(&t.id, false) {
+                        if let Ok(state) = daemon.pull_request(&t.id, false) {
                             published.insert(t.id.clone(), state);
                         }
                     }
@@ -57,10 +63,31 @@ impl Deck {
     pub fn on_tasks(&mut self, tasks: Vec<Task>, published: HashMap<String, Published>, cx: &mut Context<Self>) {
         let own = self.task_id().map(str::to_string);
         let now = now_ms();
-        let mut lanes: Vec<Lane> =
-            self.board.cards().iter().filter(|c| c.lane.id == LIVE).map(|c| c.lane.clone()).collect();
-        lanes.extend(self.lanes.lanes(&tasks, own.as_deref(), &published, now));
+        // The column lists the selected project's tasks only (ADR 0010 §9).
+        let mut visible = Vec::new();
+        for record in &tasks {
+            if own.as_deref() == Some(record.id.as_str()) || self.projects.holds(record) {
+                visible.push(record.clone());
+            }
+        }
+        let mut lanes: Vec<Lane> = Vec::new();
+        let had_live = self.board.cards().iter().any(|c| c.lane.id == LIVE);
+        if own.is_some() {
+            let live = self
+                .board
+                .cards()
+                .iter()
+                .find(|c| c.lane.id == LIVE)
+                .map_or_else(super::root::live_lane, |c| c.lane.clone());
+            lanes.push(live);
+        }
+        lanes.extend(self.lanes.lanes(&visible, own.as_deref(), &published, now));
         self.board.sync(lanes);
+        // A new live card belongs at the top, where the selected task shows;
+        // an existing one keeps the slot the user put it in.
+        if own.is_some() && !had_live {
+            self.board.to_front(LIVE);
+        }
         // One small file read for the branch, every refresh, not every frame.
         self.workspace = tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);
         self.tasks = tasks;
