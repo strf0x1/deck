@@ -163,8 +163,8 @@ The window keeps one live attachment (`deck_acp::Client`) per running task
 that advertises live attach, in every project. It derives items 2 and 3 of
 §6 from each attachment's turn notifications, and gets items 1 and 4 from
 `deckd`.
-- Only the selected task's transcript is rendered. The other attachments
-  keep turn state and pending questions, not rows.
+- Each attachment keeps its own `Session`, so switching back is instant.
+  Only the selected task's transcript is rendered.
 - A task without live attach contributes only items 1 and 4.
 
 Each attachment replays its transcript once (ADR 0002 §2). With many live
@@ -218,4 +218,16 @@ project's **Inbox**, which is this same list.
   - `approvals.rs` and `vm.rs` (project grants keyed by `cwd`);
   - ADR 0008 §3–4.
 
-No implementation yet. The slices are filed as issues once this is reviewed.
+No implementation yet. Slices:
+
+- Runtime, no GPUI:
+  - #137: root-commit identity, `projects/index.json`, daemon requests,
+    `Spec.project`.
+  - #140: project grants keyed by project id, with migration (after #137).
+  - #138: `seen` and Mark done in task records.
+- Window:
+  - #139: one attachment per task instead of one window task.
+  - #141: project rail, launch selection, first-prompt create (after #137
+    and #139).
+  - #142: the "Needs you" strip, seen turns, the settled fold (after #138,
+    #139 and #141).
