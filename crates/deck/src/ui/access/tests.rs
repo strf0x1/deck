@@ -169,6 +169,30 @@ fn a_stale_approval_mode_reply_cannot_replace_a_newer_one() {
 }
 
 #[test]
+fn a_rule_names_its_project_and_falls_back_to_its_id() {
+    let mut access = Access::new();
+    let ticket = access.begin_projects();
+    access.projects_listed(
+        ticket,
+        Ok(vec![Project {
+            id: "git:abc".into(),
+            name: "Strata".into(),
+            checkouts: vec!["/src/strata".into()],
+            argv: vec!["construct".into()],
+            opened_ms: 0,
+            hidden: false,
+        }]),
+    );
+    let mut rule = grant(Scope::Project);
+    rule.project = Some("git:abc".into());
+    rule.expires_ms = None;
+    assert_eq!(access.grant_detail(&rule, 0), "web · connect · Project · no expiry · Strata");
+
+    rule.project = Some("git:unknown".into());
+    assert_eq!(access.grant_detail(&rule, 0), "web · connect · Project · no expiry · git:unknown");
+}
+
+#[test]
 fn scopes_show_expiry_and_project_revocation_explains_the_wider_effect() {
     assert_eq!(grant_scope(&grant(Scope::Task), 0), "Task · expires in 1h 0m");
     assert_eq!(grant_scope(&grant(Scope::Task), 3_600_000), "Task · expired");

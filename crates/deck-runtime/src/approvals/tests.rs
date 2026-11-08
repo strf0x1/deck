@@ -2,12 +2,44 @@
 //! bounded hold, with shortened timings.
 
 use super::*;
+use std::process::Command;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("deck-approvals-{name}-{}-{}", std::process::id(), now_ms()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// A checkout with one commit, for rules whose project id must resolve.
+fn repo(name: &str) -> PathBuf {
+    let dir = scratch(name);
+    let git = |args: &[&str]| {
+        let status = Command::new("git").arg("-C").arg(&dir).args(args).status().unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git(&["init", "--quiet", "-b", "main"]);
+    git(&["config", "user.name", "Ada Lovelace"]);
+    git(&["config", "user.email", "ada@example.com"]);
+    fs::write(dir.join("README.md"), format!("{name}\n")).unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "--quiet", "-m", name]);
+    dir
+}
+
+fn project_rule(id: &str, project: &str, destination: &str) -> Grant {
+    Grant {
+        id: id.into(),
+        task: None,
+        project: Some(project.into()),
+        gateway: "web".into(),
+        operation: "connect".into(),
+        destination: destination.into(),
+        credential: None,
+        scope: Scope::Project,
+        expires_ms: None,
+        reviewed: None,
+    }
 }
 
 fn incoming(task: &str, project: &str, destination: &str) -> Incoming {
@@ -321,6 +353,85 @@ fn project_rules_survive_a_restart_and_stay_with_their_project() {
     assert_eq!(reopened.submit(incoming("other", "/w", "m")).unwrap().state, State::Allowed(Scope::Project));
     assert_eq!(reopened.submit(incoming("other", "/elsewhere", "m")).unwrap().state, State::Pending);
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_path_keyed_project_rule_moves_to_its_project_and_rewrites_the_file() {
+    let data = scratch("migrate-path");
+    let checkout = repo("migrate-path-repo");
+    let id = crate::project::identify(&checkout).unwrap().id;
+    let rule = project_rule("g1", &checkout.to_string_lossy(), "example.com:443");
+    store::save_projects(&data, &[rule], 3).unwrap();
+
+    let boundary = Boundary::with_settings(&data, steady()).unwrap();
+    let rules = boundary.access_grants("t", &id).unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].project.as_deref(), Some(id.as_str()));
+    let (saved, version) = store::load_projects(&data).unwrap();
+    assert_eq!(saved[0].project.as_deref(), Some(id.as_str()), "the rewrite is durable");
+    assert_eq!(version, 4, "one migration bump");
+    drop(boundary);
+    fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn a_project_rule_whose_path_is_gone_stays() {
+    let data = scratch("migrate-gone");
+    let gone = data.join("checkout-that-never-existed");
+    let rule = project_rule("g1", &gone.to_string_lossy(), "example.com:443");
+    store::save_projects(&data, &[rule], 2).unwrap();
+
+    let boundary = Boundary::open(&data).unwrap();
+    let (saved, version) = store::load_projects(&data).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].project.as_deref(), Some(gone.to_str().unwrap()));
+    assert_eq!(version, 2, "nothing resolved, so no write");
+    drop(boundary);
+    fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn identical_rules_from_two_checkouts_collapse_into_one() {
+    let data = scratch("migrate-duplicates");
+    let checkout = repo("migrate-duplicates-repo");
+    let id = crate::project::identify(&checkout).unwrap().id;
+    let worktree = data.join("worktree");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args(["worktree", "add", worktree.to_str().unwrap(), "-b", "topic"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let first = project_rule("g1", &checkout.to_string_lossy(), "example.com:443");
+    let second = project_rule("g2", &worktree.to_string_lossy(), "example.com:443");
+    store::save_projects(&data, &[first, second], 1).unwrap();
+
+    let boundary = Boundary::open(&data).unwrap();
+    let rules = boundary.access_grants("t", &id).unwrap();
+    assert_eq!(rules.len(), 1, "a worktree is the same project");
+    assert_eq!(rules[0].id, "g1", "the first rule keeps its id");
+    drop(boundary);
+    let (saved, version) = store::load_projects(&data).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(version, 2);
+    fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn a_second_load_does_not_rewrite_the_grant_file() {
+    let data = scratch("migrate-idempotent");
+    let checkout = repo("migrate-idempotent-repo");
+    let rule = project_rule("g1", &checkout.to_string_lossy(), "example.com:443");
+    store::save_projects(&data, &[rule], 1).unwrap();
+    drop(Boundary::open(&data).unwrap());
+    let path = data.join("approvals").join("projects.json");
+    let after_first = fs::read(&path).unwrap();
+
+    drop(Boundary::open(&data).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), after_first, "the migrated file is not rewritten");
+    assert_eq!(store::load_projects(&data).unwrap().1, 2, "the version does not bump twice");
+    fs::remove_dir_all(data).unwrap();
 }
 
 #[test]

@@ -73,6 +73,15 @@ impl Boundary {
 
     pub fn with_settings(data: &Path, settings: Settings) -> Result<Arc<Self>> {
         let (projects, version) = load_projects(data)?;
+        // Rules recorded before projects were identified are keyed by the
+        // task's directory (ADR 0010 §4). Move each one to its project now;
+        // a path that no longer resolves keeps its rule, and a save that
+        // changes nothing is not written.
+        let (projects, migrated) = migrate_projects(projects);
+        let version = version.saturating_add(u64::from(migrated));
+        if migrated {
+            save_projects(data, &projects, version)?;
+        }
         let boundary = Arc::new(Self {
             inner: Mutex::new(Inner {
                 items: HashMap::new(),
@@ -527,6 +536,42 @@ impl Boundary {
         }
         Ok(changed)
     }
+}
+
+/// Rewrite project rules keyed by a checkout path to the project that path
+/// resolves to. Rules the rewrite makes equal merge into the first, keeping
+/// its id. The flag says whether the file should be written.
+fn migrate_projects(rules: Vec<Grant>) -> (Vec<Grant>, bool) {
+    let mut changed = false;
+    let mut migrated: Vec<Grant> = Vec::with_capacity(rules.len());
+    for mut rule in rules {
+        if let Some(project) = rule.project.as_deref()
+            && Path::new(project).is_absolute()
+            && let Ok(identity) = crate::project::identify(Path::new(project))
+        {
+            rule.project = Some(identity.id);
+            changed = true;
+        }
+        if migrated.iter().any(|kept| same_project_rule(kept, &rule)) {
+            changed = true;
+            continue;
+        }
+        migrated.push(rule);
+    }
+    (migrated, changed)
+}
+
+/// Whether two project rules differ only in their issued id.
+fn same_project_rule(a: &Grant, b: &Grant) -> bool {
+    a.task == b.task
+        && a.project == b.project
+        && a.gateway == b.gateway
+        && a.operation == b.operation
+        && a.destination == b.destination
+        && a.credential == b.credential
+        && a.scope == b.scope
+        && a.expires_ms == b.expires_ms
+        && a.reviewed == b.reviewed
 }
 
 fn resolved(request: &Incoming, now: u64, policy: u64, scope: Scope, grant_expires_ms: Option<u64>) -> Approval {

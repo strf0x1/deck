@@ -78,6 +78,21 @@ impl Deck {
             });
         })
         .detach();
+        // Names belong to the same refresh as the rules they label, so a rule
+        // is never shown beside an older project name.
+        let projects_ticket = self.access.begin_projects();
+        let projects = cx.background_executor().spawn({
+            let task = task.clone();
+            async move { task.projects() }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = projects.await.map_err(|e| format!("listing projects: {e:#}"));
+            let _ = this.update(cx, |deck, cx| {
+                deck.access.projects_listed(projects_ticket, result);
+                cx.notify();
+            });
+        })
+        .detach();
         // The mode is the task's live project policy, not a grant; it is read
         // with the same refresh so a project switched to `ask` shows the new
         // mode on the next open or 30-second refresh.

@@ -34,6 +34,13 @@ impl Spec {
     pub fn same_command(&self, other: &Self) -> bool {
         self.argv == other.argv && self.cwd == other.cwd
     }
+
+    /// The project key this task's grants use (ADR 0010 §4): its recorded
+    /// project, or the directory for a record written before projects were
+    /// recorded.
+    pub fn project_key(&self) -> String {
+        self.project.clone().unwrap_or_else(|| self.cwd.to_string_lossy().into_owned())
+    }
 }
 
 /// What the task's model gateway has spent. The gateway owns the live
@@ -370,6 +377,18 @@ mod tests {
     fn an_old_spec_without_a_project_still_loads() {
         let spec: Spec = serde_json::from_str(r#"{"argv":["agent"],"cwd":"/w"}"#).unwrap();
         assert_eq!(spec.project, None);
+        assert_eq!(spec.project_key(), "/w", "a record from before projects keeps its directory as the key");
+    }
+
+    #[test]
+    fn a_recorded_project_is_the_task_project_key() {
+        let spec = Spec {
+            argv: vec!["agent".into()],
+            cwd: "/checkout".into(),
+            project: Some("git:abc123".into()),
+            github: None,
+        };
+        assert_eq!(spec.project_key(), "git:abc123");
     }
 
     #[test]
