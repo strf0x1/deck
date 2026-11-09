@@ -145,12 +145,13 @@ at 2 KiB.
 
 `create` uses the project's recorded agent command and GitHub policy; the
 coordinator cannot choose an argv, another repository, or another base. A
-requested budget may be lower than the policy's, never higher. `create`
-records and starts the task and returns its id; `prompt` waits, bounded, for
-the holder's session and then sends, and a task whose agent fails to start is
-`failed` in its summary and wakes `wait`. `wait` is a long poll capped at
-300 s, like the approval wait in ADR 0004 §5, and it wakes on a turn change or
-a new pending approval.
+project with no recorded agent command is `deck_control_refused` until the
+user sets one. A requested budget may be lower than the policy's, never
+higher. `create` records and starts the task and returns its id; `prompt`
+waits, bounded, for the holder's session and then sends, and a task whose
+agent fails to start is `failed` in its summary and wakes `wait`. `wait` is a
+long poll capped at 300 s, like the approval wait in ADR 0004 §5, and it
+wakes on a turn change or a new pending approval.
 
 The gateway carries; `deckd` decides. It reads the coordinator's policy from
 `tasks/<id>/coordinator.json`, written by the user at creation and never
@@ -204,10 +205,16 @@ for #11.
 
 A `delegate` call is one tool card: its title, the arguments, and the child's
 answer. Deck does not invent a task, card or approval entry for the child.
+
 Child tool calls are not shown yet, because Construct does not forward them
-over ACP; when the contract carries a child's events with the delegating
-call's id, Deck nests them under that card. That is deferred (§10), not
-designed here.
+over ACP. Construct already wraps them internally as
+`Event::Child { id, inner }`, where `id` is the delegating call (construct
+`event.rs`). The later contract change exposes that id as
+`_meta["com.sprawlcommons/construct"].parent` on the child's standard
+`session/update`s and on any permission request it forwards; Deck then nests
+by that key and nothing else changes. The lossless event channel is not used
+for this, because Deck does not journal construct's vocabulary. That change
+and its UI are deferred (§10).
 
 ### 8. Results: each task publishes its own branch
 
