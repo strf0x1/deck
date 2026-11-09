@@ -1,16 +1,19 @@
-//! The project rail: a column of projects that stays narrow until the pointer
-//! reaches it, then opens to show names, and closes again when it leaves.
-//! A pin keeps it open (ADR 0010 §1, §9).
+//! The sidebar's open/close state: it stays narrow until the pointer reaches
+//! it, then opens to full width and closes again when it leaves. A pin keeps
+//! it open (ADR 0010 §1, §7, §9 as amended 2026-11-09).
 //!
-//! The design choice: the rail's width and its active-project marker are
-//! [`Spring`]s with the same tuning as the lane cards, so opening the rail and
-//! reordering sessions share one motion. The rail floats over the content
-//! when open instead of pushing it, so the transcript never reflows mid-flight.
+//! The design choice: the sidebar's width and its active-project marker are
+//! [`Spring`]s with the same tuning as the lane cards, so opening the sidebar
+//! and reordering sessions share one motion. Hovered, it floats over the
+//! transcript; pinned, it stays open and takes its width from the transcript
+//! instead of covering it, which is what [`Rail::reserved`] tells the layout.
 
 use super::spring::Spring;
 
 pub const COLLAPSED: f32 = 52.;
-pub const EXPANDED: f32 = 200.;
+/// The open width: about the old sessions column's, because it now holds the
+/// task list.
+pub const EXPANDED: f32 = 272.;
 pub const ITEM_H: f32 = 40.;
 
 pub struct Rail {
@@ -44,6 +47,13 @@ impl Rail {
     /// 0 closed, 1 open; overshoots slightly as the spring settles.
     pub fn openness(&self) -> f32 {
         (self.width.pos - COLLAPSED) / (EXPANDED - COLLAPSED)
+    }
+
+    /// The width the layout gives the sidebar: all of it while pinned, so the
+    /// transcript reflows around it, and only the narrow strip otherwise, so
+    /// the hover-open sidebar floats over the transcript.
+    pub fn reserved(&self) -> f32 {
+        if self.pinned { self.width.pos } else { COLLAPSED }
     }
 
     pub fn hover(&mut self, on: bool) {
@@ -118,6 +128,41 @@ mod tests {
         r.toggle_pin();
         settle(&mut r);
         assert_eq!(r.width.pos, COLLAPSED);
+    }
+
+    #[test]
+    fn a_hovered_sidebar_floats_so_the_layout_keeps_only_the_narrow_strip() {
+        let mut r = Rail::new();
+        r.hover(true);
+        assert!(r.step(1. / 60.), "opening is animated, not a jump");
+        assert!(r.width.pos > COLLAPSED, "the sidebar itself opens");
+        assert_eq!(r.reserved(), COLLAPSED, "but the transcript keeps its width");
+        settle(&mut r);
+        assert_eq!((r.width.pos, r.reserved()), (EXPANDED, COLLAPSED));
+    }
+
+    #[test]
+    fn a_pinned_sidebar_takes_its_width_from_the_transcript() {
+        let mut r = Rail::new();
+        r.hover(true);
+        r.toggle_pin();
+        settle(&mut r);
+        assert_eq!(r.reserved(), EXPANDED);
+        r.hover(false);
+        settle(&mut r);
+        assert_eq!(r.reserved(), EXPANDED, "a pin keeps it open after the pointer leaves");
+    }
+
+    #[test]
+    fn unpinning_gives_the_width_back_at_once_even_while_hovered() {
+        let mut r = Rail::new();
+        r.hover(true);
+        r.toggle_pin();
+        settle(&mut r);
+        assert_eq!(r.reserved(), EXPANDED);
+        r.toggle_pin();
+        assert_eq!(r.reserved(), COLLAPSED, "immediately, before the spring retracts");
+        assert!(r.width.pos > COLLAPSED);
     }
 
     #[test]

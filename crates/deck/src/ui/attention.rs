@@ -43,6 +43,18 @@ impl Reason {
         }
     }
 
+    /// The one word the sidebar's Needs-you row and a task's own row show;
+    /// the full [`Reason::text`] stays on hover and on the item it opens
+    /// (ADR 0010 §7).
+    pub fn word(&self) -> &'static str {
+        match self {
+            Reason::Approval { .. } => "wants",
+            Reason::Question { .. } => "asks",
+            Reason::Finished { .. } => "finished",
+            Reason::Failed { .. } => "stopped",
+        }
+    }
+
     /// What makes two items the same reason for the same task. The turn
     /// number is part of a finish so a later turn is a new item.
     fn key(&self) -> String {
@@ -231,6 +243,14 @@ mod tests {
         let crashed = task("0002", json!({ "state": "stopped", "clean": false, "reason": "exit 1" }), 0);
         let failed = items(std::slice::from_ref(&crashed), &HashMap::new(), &HashMap::new(), &mut since, now);
         assert_eq!(failed[0].reason.text(), "stopped unexpectedly");
+    }
+
+    #[test]
+    fn each_reason_has_a_one_word_form() {
+        assert_eq!(Reason::Approval { what: "api.openai.com".into() }.word(), "wants");
+        assert_eq!(Reason::Question { what: "shell rm -rf build".into() }.word(), "asks");
+        assert_eq!(Reason::Finished { turn: 4, files: None }.word(), "finished");
+        assert_eq!(Reason::Failed { why: "exit 1".into() }.word(), "stopped");
     }
 
     #[test]
