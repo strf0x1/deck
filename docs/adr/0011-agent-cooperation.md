@@ -112,7 +112,9 @@ session's permanent client and speaks a fixed subset of it.
 - **Turn state is recorded.** The task record gains the current turn number,
   state and stop reason, and the notice stream and `tasks` replies carry it.
   This is the first piece ADR 0010 named: a coordinator can see a worker turn
-  finish while no window is open.
+  finish while no window is open. An agent that does not advertise the turn
+  method ends a turn with its `session/prompt` response; the holder records
+  that response's stop reason.
 
 ### 4. The coordinator's authority crosses one closed control surface
 
