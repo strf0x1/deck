@@ -66,7 +66,8 @@ A coordinator is a task with `kind = coordinator`, created by the user from a
 project (later, from a space, which will supply the project set and the
 brief). It runs the project's agent command, which is `construct acp` in the
 first slice; the contract below is what lets another agent be a coordinator
-later.
+later. It is a VM task (ADR 0003): its authority is a host gateway, and the
+local backend, which runs the agent on the host, cannot host one.
 
 - **One per scope.** Its scope is a recorded set of project ids. Starting a
   coordinator for the same scope selects the existing one; there is one long
