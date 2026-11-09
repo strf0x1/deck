@@ -249,6 +249,9 @@ needs, in order:
 4. a Construct `deck` tool over that wire (construct repository);
 5. the window's Start coordinator, provenance and task selection (§9).
 
+These are filed as deck#150, deck#151, deck#152, deck#153, construct#222 and
+sprawlcommons-acp#7.
+
 The coordinator's optchat strategy is already being implemented in
 construct; until it ships, the coordinator runs but its context is the
 `compact` strategy.
