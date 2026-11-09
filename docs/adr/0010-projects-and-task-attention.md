@@ -1,6 +1,7 @@
 # 0010 — One window over all projects, and a "Needs you" strip
 
-Status: proposed, 2026-11-07. Answers #124. Builds on 0001 (tasks and
+Status: proposed, 2026-11-07; §1, §7 and §9 amended 2026-11-09 (one
+sidebar in place of the rail, the strip and the sessions column). Answers #124. Builds on 0001 (tasks and
 records), 0002 (live attach), 0004 §5 (the approval queue) and 0008 §3–4
 (the repository is part of the task).
 
@@ -36,11 +37,23 @@ The user's decisions (2026-11-07):
 
 ### 1. One window over all projects
 
-The window has four regions:
-- **"Needs you"** across the top (§6);
-- a **project rail** on the left;
-- the selected project's **sessions column**;
-- the **selected task's transcript**.
+The window has two regions (amended 2026-11-09):
+- a **sidebar** on the left, holding "Needs you" (§7), the projects and
+  their tasks (§9), and the settled fold;
+- the **selected task**: a header with its title, then its transcript.
+
+The sidebar stays narrow until the pointer reaches it, so the transcript
+keeps the screen. Narrow, it shows the Needs-you count, one glyph per
+project with a dot when any of its tasks needs you, the selected project's
+marker, **Open project…** and the pin. Under the pointer it opens to full
+width, floating over the transcript, and closes when the pointer leaves.
+Pinned, it stays open and takes its width from the transcript instead of
+covering it.
+
+This replaces the first version's four regions: a strip across the top, a
+project rail, a sessions column and the transcript. Three side-by-side
+columns cost width and read as three navigations for one choice: which
+task you are looking at.
 
 The window no longer *is* one task: it has a selected task, and it can
 switch between tasks in any project without changing windows.
@@ -145,16 +158,19 @@ the column after 14 days. Their records stay.
 The two states are independent. A settled task can still need you (a failed
 destroy), and an unsettled one usually doesn't.
 
-### 7. The "Needs you" strip
+### 7. The "Needs you" section
 
+The section opens the sidebar (amended 2026-11-09; it was a strip across
+the window's top).
 - It lists every attention item from every project, oldest first.
-- Each item names its project, its task and the reason, in a few words: "asks
-  to run `rm -rf build`", "finished: 3 files changed", "wants
-  `api.openai.com`".
+- Each item is one row: its task's title, and the reason in a word or two
+  ("asks", "wants", "finished", "stopped"). The full reason ("asks to run
+  `rm -rf build`") shows on hover and on the item it opens.
 - Selecting an item selects that project and task and opens the item: the
   permission card, the boundary card, or the turn's footer.
-- With nothing pending, the strip shrinks to one quiet line. It never
-  disappears, so its absence never reads as broken.
+- With nothing pending, the section is one quiet line, "Nothing needs you".
+  It never disappears, so its absence never reads as broken. Narrow, the
+  sidebar shows the count only when it is above zero.
 
 ### 8. The window attaches to every live task
 
@@ -171,15 +187,28 @@ Each attachment replays its transcript once (ADR 0002 §2). With many live
 tasks that is the cost to watch: a status-only attachment would be a
 contract change (ADR 0006), made only if this one proves too slow.
 
-### 9. The sessions column, before spaces
+### 9. Projects and their tasks, before spaces
 
-The column lists the selected project's tasks: unsettled first, most recent
-activity first, each with its attention reason; then the settled fold. The
-spaces ADR adds spaces above them. A task outside any space then sits in the
-project's **Inbox**, which is this same list.
+Below "Needs you", the sidebar lists every visible project (amended
+2026-11-09; it was a separate sessions column for the selected project).
+- Each project is a group header. The selected project's group is open and
+  lists its unsettled tasks, one row each, in the order the user dragged
+  them, most recent first otherwise. Other groups are closed and show their
+  task count and an attention dot. Clicking a header selects that project.
+- A task row has its state dot, its title, and on the right either its
+  attention word or its publication (`PR 141`). It keeps its actions
+  (Mark done, the publication panel, destroy after a merge) behind hover.
+  What a card's second line said (the agent's status) moves to the header.
+- The settled fold closes the list.
+
+The spaces ADR adds spaces inside a project's group. A task outside any
+space then sits in the project's **Inbox**, which is this same list.
 
 ## Consequences
 
+- **One sidebar** (amendment, 2026-11-09): `ui/rail.rs` becomes the
+  sidebar's open/close state, the sessions column and the top strip go,
+  and the header moves over the transcript. Slices: #154, #155, #156.
 - **The window's single task goes away.** `task.rs` and `ui/attachment.rs`
   manage a set of attachments keyed by task id, and `ui/root.rs` a selection.
   Switching tasks no longer detaches the old one. `New session` creates in
