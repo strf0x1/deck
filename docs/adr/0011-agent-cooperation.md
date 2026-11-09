@@ -93,10 +93,14 @@ local backend, which runs the agent on the host, cannot host one.
 This amends ADR 0002 §3. The holder no longer refuses to speak ACP; it is the
 session's permanent client and speaks a fixed subset of it.
 
-- **The holder initializes.** At task start, before any window can attach, the
-  holder sends `initialize` and then `session/new` (no recorded session) or
-  `session/load` (a recorded one), the same choice `deck/src/task.rs` makes.
-  It records the session id and reports it to `deckd`.
+- **The holder initializes only when it must.** A task can run without a
+  window: `deckd` prompts a worker, or a turn must be recorded with no window.
+  If the stream is not yet initialized, the holder sends `initialize` and then
+  `session/new` (no recorded session) or `session/load` (a recorded one), the
+  same choice `deck/src/task.rs` makes. If a window initialized first, the
+  holder adopts that connection and never initializes again, so an agent that
+  does not support a repeated `initialize` sees one. It records the session id
+  and reports it to `deckd`.
 - **The holder may prompt.** `deckd` sends the holder one prompt at a time;
   the holder writes `session/prompt` with a reserved request id prefix.
   Windows keep their own prefixed ids, and the relay serializes whole lines,
