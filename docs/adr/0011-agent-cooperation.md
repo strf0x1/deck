@@ -72,10 +72,12 @@ later.
   coordinator for the same scope selects the existing one; there is one long
   conversation per body of work.
 - **Its context strategy is `optchat`.** Deck sets
-  `CONSTRUCT_CONTEXT_STRATEGY=optchat` for the task. Construct refuses a model
-  whose window is under 65536 tokens and names both numbers (ADR 0043 §1);
-  the window shows that error rather than starting a coordinator that cannot
-  remember. The user's brief is the coordinator's first prompt.
+  `CONSTRUCT_CONTEXT_STRATEGY=optchat` for the task, from its recorded kind
+  rather than a one-off launch setting, so a resume uses the same strategy.
+  Construct refuses a model whose window is under 65536 tokens and names both
+  numbers (ADR 0043 §1); the window shows that error rather than starting a
+  coordinator that cannot remember. The user's brief is the coordinator's
+  first prompt.
 - **It has no repository policy.** Even when its project has a GitHub origin,
   a coordinator gets no GitHub gateway, no task branch and no publication
   chip. Its guest copy of the checkout is scratch; it can read the code, and
@@ -255,8 +257,8 @@ These are filed as deck#150, deck#151, deck#152, deck#153, construct#222 and
 sprawlcommons-acp#7.
 
 The coordinator's optchat strategy is already being implemented in
-construct; until it ships, the coordinator runs but its context is the
-`compact` strategy.
+construct. Until it ships, a coordinator task cannot start with that strategy
+(construct refuses an unknown strategy name), so this slice lands after it.
 
 Deferred:
 
