@@ -1,4 +1,4 @@
-//! The Deck window's root view: owns the lane board, the navigation rail, an
+//! The Deck window's root view: owns the lane board, the sidebar, an
 //! attachment per task, routes input, and drives animation frames.
 //!
 //! The design choice: one view entity holding plain state structs (`Board`,
@@ -16,7 +16,7 @@ use super::editor::Editor;
 use super::rail::Rail;
 use super::session::Session;
 use super::theme::{SANS, Tokens, size};
-use super::{chrome, conversation, panels};
+use super::{chrome, conversation, sidebar_view};
 use deck_acp::{Client, Inbound};
 use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
@@ -471,7 +471,7 @@ impl Deck {
             .needs_you
             .iter()
             .find(|item| Some(item.task.as_str()) == self.selected.as_deref())
-            .map(|item| item.reason.text());
+            .map(|item| item.reason.word());
         if let Some(lane) = self.board.lane_mut(LIVE) {
             lane.title = agent;
             lane.state = state;
@@ -587,9 +587,9 @@ impl Deck {
         self.board.dragging().is_some() || board || rail || !self.motion.at_rest()
     }
 
-    /// The centre of rail item `index` while the rail is closed, in window coordinates.
-    pub fn rail_item_center(index: usize) -> (f32, f32) {
-        chrome::rail_item_center(index, GUTTER)
+    /// The centre of the narrow glyph `index`, in window coordinates.
+    pub fn rail_item_center(&self, index: usize) -> (f32, f32) {
+        sidebar_view::rail_item_center(index, GUTTER, self.needs_you.len())
     }
 
     pub(super) fn grab(&mut self, id: usize, y: f32, cx: &mut Context<Self>) {
@@ -658,7 +658,7 @@ impl Render for Deck {
             .font_family(SANS)
             .text_size(px(size::BODY))
             .text_color(Tokens::text())
-            .child(div().flex_none().w(px(chrome::RAIL_SLOT)))
+            .child(div().flex_none().w(px(self.rail.reserved())))
             .child(
                 div()
                     .flex_1()
@@ -666,19 +666,10 @@ impl Render for Deck {
                     .flex()
                     .flex_col()
                     .gap(px(GUTTER))
-                    .child(super::needs_you::strip(self, cx))
                     .child(chrome::header(self, cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .flex()
-                            .gap(px(GUTTER))
-                            .child(panels::lanes(self, cx))
-                            .child(conversation::main(self, cx)),
-                    ),
+                    .child(conversation::main(self, cx)),
             )
-            // Last, so the open rail floats over the sessions column.
-            .child(chrome::rail(self, GUTTER, cx))
+            // Last, so the open sidebar floats over the transcript.
+            .child(sidebar_view::sidebar_view(self, GUTTER, cx))
     }
 }

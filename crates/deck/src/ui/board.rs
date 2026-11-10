@@ -10,8 +10,8 @@
 
 use super::spring::Spring;
 
-pub const CARD_H: f32 = 64.;
-pub const GAP: f32 = 8.;
+pub const CARD_H: f32 = 30.;
+pub const GAP: f32 = 4.;
 pub const PITCH: f32 = CARD_H + GAP;
 /// How far the pointer may travel before a press on a card is a drag, not a click.
 pub const CLICK_SLOP: f32 = 4.;
@@ -33,10 +33,11 @@ pub struct Lane {
     pub state: LaneState,
     /// The task's publication chip: its state dot and `#7` or branch.
     pub chip: Option<(super::publication::Dot, String)>,
-    /// What the task needs, in a few words, when it needs a person.
-    pub attention: Option<String>,
+    /// What the task needs, in one word, when it needs a person.
+    pub attention: Option<&'static str>,
 }
 
+#[derive(Clone)]
 pub struct Card {
     pub lane: Lane,
     pub y: Spring,
