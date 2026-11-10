@@ -60,19 +60,28 @@ fn glyph_row(g: &Glyph, cx: &mut Context<Deck>) -> AnyElement {
         .text_color(fg)
         .on_click(cx.listener(move |this, _, _, cx| this.select_project(index, cx)))
         .child(
-            div()
-                .size(px(COLLAPSED - 12.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(radius::CONTROL))
-                .bg(if g.selected { Tokens::raised_hover() } else { Tokens::raised() })
-                .child(div().font_weight(FontWeight::BOLD).text_size(px(size::TITLE)).child(g.letter.to_string()))
-                .children(g.attention.then(|| {
+            div().relative().child(tile(g.letter, g.selected, COLLAPSED - 12.)).children(
+                g.attention.then(|| {
                     div().absolute().top(px(-2.)).right(px(8.)).size(px(7.)).rounded_full().bg(Tokens::amber())
-                })),
+                }),
+            ),
         )
         .into_any_element()
+}
+
+/// A project's letter tile: the narrow sidebar's, and the open project
+/// header's at a smaller size (ADR 0010 §9).
+pub(super) fn tile(letter: char, selected: bool, size: f32) -> gpui::Div {
+    let font = if size >= 32. { size::TITLE } else { size::SMALL };
+    div()
+        .flex_none()
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::CONTROL))
+        .bg(if selected { Tokens::raised_hover() } else { Tokens::raised() })
+        .child(div().font_weight(FontWeight::BOLD).text_size(px(font)).child(letter.to_string()))
 }
 
 pub(super) fn count_badge(count: usize) -> AnyElement {

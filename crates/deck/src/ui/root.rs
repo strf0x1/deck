@@ -107,6 +107,9 @@ pub struct Deck {
     pub(super) settled_open: bool,
     /// Why the last Mark done failed, shown in the header until the next one.
     pub(super) mark_error: Option<String>,
+    /// The lane of the sidebar task row under the pointer: its Mark done
+    /// check shows only then.
+    pub(super) hovered_task: Option<usize>,
     /// The New session buttons: idle, creating, or the last failure.
     pub(super) new_session: super::new_session::NewSession,
     last_frame: Option<Instant>,
@@ -167,6 +170,7 @@ impl Deck {
             settled: Vec::new(),
             settled_open: false,
             mark_error: None,
+            hovered_task: None,
             new_session: super::new_session::NewSession::Idle,
             last_frame: None,
         }

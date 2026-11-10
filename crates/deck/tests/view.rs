@@ -791,6 +791,30 @@ fn the_rail_lists_projects_and_open_project(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("sidebar-open").is_some(), "Open project… sits at its foot");
     assert!(cx.debug_bounds("sidebar-pin").is_some(), "the pin sits at its foot");
     assert!(cx.debug_bounds("sidebar-settings").is_none(), "the sidebar has no Settings item");
+    assert!(cx.debug_bounds("sidebar-projects-header").is_some(), "the Projects label separates the sections");
+    assert!(cx.debug_bounds("sidebar-project-chevron-0").is_some(), "a project group has a chevron");
+    // Clicking another project's header still selects it.
+    click_control(&mut cx, "sidebar-project-1");
+    assert_eq!(deck.read_with(&cx, |d, _| d.project().map(str::to_string)), Some("git:older".into()));
+}
+
+/// The selected project's task rows indent under its tile, and its chevron
+/// folds the list (ADR 0010 §9).
+#[gpui::test]
+fn a_project_header_holds_its_tasks_and_its_chevron_folds_them(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    seed(&deck, &mut cx);
+    cx.run_until_parked();
+    open_sidebar(&deck, &mut cx);
+    assert!(cx.debug_bounds("sidebar-tasks").is_some(), "the selected project lists its tasks");
+    let project = cx.debug_bounds("sidebar-project-0").unwrap();
+    let task = cx.debug_bounds("card-row-1").unwrap();
+    assert!(task.left() > project.left(), "a task row indents to the project's tile: {task:?} {project:?}");
+
+    click_control(&mut cx, "sidebar-project-chevron-0");
+    assert!(cx.debug_bounds("sidebar-tasks").is_none(), "the chevron folds the selected project");
+    click_control(&mut cx, "sidebar-project-chevron-0");
+    assert!(cx.debug_bounds("sidebar-tasks").is_some(), "and opens it again");
 }
 
 #[gpui::test]
@@ -2241,6 +2265,16 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
         2 => "card-done-2",
         _ => panic!("unexpected lane {lane}"),
     };
+    assert!(vcx.debug_bounds(selector).is_none(), "Mark done shows only while its row is hovered");
+    let row_selector = match lane {
+        1 => "card-row-1",
+        2 => "card-row-2",
+        _ => panic!("unexpected lane {lane}"),
+    };
+    let row = vcx.debug_bounds(row_selector).expect("the task row is laid out").center();
+    vcx.simulate_mouse_move(row, None, Modifiers::none());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds(selector).is_some(), "hovering the row shows its Mark done check");
     click_control(&mut vcx, selector);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
     assert_eq!(deck.read_with(&vcx, |d, _| d.settled()[0].task.id.clone()), older.id);
