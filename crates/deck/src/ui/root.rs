@@ -666,7 +666,7 @@ impl Render for Deck {
                     .flex()
                     .flex_col()
                     .gap(px(GUTTER))
-                    .child(chrome::header(self, cx))
+                    .child(chrome::header(self, window, cx))
                     .child(conversation::main(self, cx)),
             )
             // Last, so the open sidebar floats over the transcript.

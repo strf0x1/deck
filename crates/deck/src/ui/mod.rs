@@ -4,8 +4,8 @@
 //! element and `input` its keys and IME; `attached` is one task's connection
 //! state, `board`, `rail`, `session`, `transcript`, `markdown`, `diff`,
 //! `highlight`, `motion`, `editor`, `access`, `new_session`, `projects`,
-//! `sidebar` and `spring` are pure state with their own tests; `theme` is the
-//! visual vocabulary.
+//! `sidebar` and `spring` are pure state with their own tests; `header_title`
+//! is the header's text; `theme` is the visual vocabulary.
 
 pub mod access;
 mod access_grants;
@@ -26,6 +26,7 @@ mod credentials;
 pub mod diff;
 pub mod editor;
 mod folds;
+mod header_title;
 pub mod highlight;
 mod input;
 pub mod markdown;
