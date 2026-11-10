@@ -175,6 +175,7 @@ pub fn state(d: &Deck) -> Value {
         Status::Detached => json!("detached"),
         Status::Down(e) => json!({ "down": e }),
     };
+    let header = d.header_title();
     let entries: Vec<Value> = s
         .entries
         .iter()
@@ -209,6 +210,11 @@ pub fn state(d: &Deck) -> Value {
                 "lift": c.lift.pos,
             })).collect::<Vec<_>>(),
             "dragging": board.dragging(),
+        },
+        "header": {
+            "title": header.title,
+            "project": header.project,
+            "detail": header.detail,
         },
         "needs_you": d.needs_you().iter().map(|item| json!({
             "task": item.task,

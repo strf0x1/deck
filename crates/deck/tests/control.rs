@@ -11,6 +11,7 @@
 use deck::control::{self, Request, protocol};
 use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
+use deck::ui::session::Status;
 use deck_acp::{Inbound, Location, PermissionOption, ToolCall, ToolContent, ToolKind, ToolStatus, ToolUpdate};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
@@ -117,6 +118,59 @@ fn state_reports_a_tool_calls_kind_diffs_and_locations(cx: &mut TestAppContext) 
         json!([{ "tool": "edit src/lib.rs", "id": "e1", "kind": "edit", "status": "done",
             "diffs": 1, "locations": ["src/lib.rs"] }])
     );
+}
+
+/// `state.header` names the selected task, its project and its status, after
+/// a launch selected a task (issue #156).
+#[gpui::test]
+fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-control-header-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    let argv = vec![fake.display().to_string()];
+    let project_root = data.join("one");
+    let lane = project_root.join("lane");
+    std::fs::create_dir_all(&lane).unwrap();
+    let opener = DaemonClient::connect_or_start(&data).unwrap();
+    let project = opener.open_project(&project_root, argv.clone()).unwrap();
+    opener.create(Spec { argv: argv.clone(), cwd: lane.clone(), project: Some(project.id), github: None }).unwrap();
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, lane, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let (tx, rx) = unbounded();
+    vcx.update(|_, cx| control::pump(rx, window, cx));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !deck.read_with(&vcx, |d, _| d.session().status == Status::Ready) {
+        vcx.run_until_parked();
+        assert!(std::time::Instant::now() < deadline, "the selected task never became ready");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        send(&mut vcx, &tx, json!({ "cmd": "state" }))["header"],
+        json!({ "title": "lane", "project": "one", "detail": "ready" })
+    );
+
+    let own = deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned));
+    cx.quit();
+    if let Some(id) = own {
+        opener.stop(&id).unwrap();
+    }
+    drop(opener);
+    let paths = deck_runtime::paths::Paths::for_data(&data).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while paths.control().exists() {
+        assert!(std::time::Instant::now() < deadline, "test daemon did not exit after detaching");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(paths.directory);
 }
 
 #[gpui::test]

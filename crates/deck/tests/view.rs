@@ -794,6 +794,22 @@ fn the_rail_lists_projects_and_open_project(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_header_of_an_empty_project_names_only_the_project(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    seed_project(&deck, &mut cx);
+    cx.run_until_parked();
+    deck.read_with(&cx, |d, _| {
+        let header = d.header_title();
+        assert_eq!(header.title, None, "a project without a task has no task title");
+        assert_eq!(header.project.as_deref(), Some("test"), "the header still names the project");
+        assert_eq!(header.detail, None, "and has no status line");
+    });
+    assert!(cx.debug_bounds("hdr-title").is_some(), "the project's name is the title block");
+    assert!(cx.debug_bounds("hdr-project").is_none(), "there is no chip to repeat it");
+    assert!(cx.debug_bounds("hdr-detail").is_none());
+}
+
+#[gpui::test]
 fn the_quit_key_is_bound(cx: &mut TestAppContext) {
     cx.update(deck::app::bind);
     let (_deck, mut cx) = open(cx);
@@ -1705,6 +1721,77 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
 
     cx.quit();
     for id in [&own, &other] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+/// The header names the selected task and its project, and follows a switch
+/// between projects (issue #156).
+#[cfg(unix)]
+#[gpui::test]
+fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-header-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
+    let argv = vec![fake.display().to_string()];
+    let one = git_repo(&data, "one");
+    let two = git_repo(&data, "two");
+    let alpha = one.join("alpha");
+    let beta = two.join("beta");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let first = daemon.open_project(&one, argv.clone()).unwrap();
+    let second = daemon.open_project(&two, argv.clone()).unwrap();
+    let spec = |cwd: &std::path::Path, project: &str| Spec {
+        argv: argv.clone(),
+        cwd: cwd.to_path_buf(),
+        project: Some(project.to_string()),
+        github: None,
+    };
+    let a = daemon.create(spec(&alpha, &first.id)).unwrap().id;
+    let b = daemon.create(spec(&beta, &second.id)).unwrap().id;
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), alpha, cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        let header = d.header_title();
+        assert_eq!(header.title.as_deref(), Some("alpha"), "the header names the selected task");
+        assert_eq!(header.project.as_deref(), Some("one"), "and its project");
+        assert_eq!(header.detail.as_deref(), Some("ready"), "and the agent's status");
+    });
+    assert!(vcx.debug_bounds("hdr-title").is_some(), "the title block renders");
+    assert!(vcx.debug_bounds("hdr-project").is_some(), "with the project chip");
+    assert!(vcx.debug_bounds("hdr-detail").is_some(), "and the status line");
+    let title = vcx.debug_bounds("hdr-title").expect("the title renders");
+    let chip = vcx.debug_bounds("hdr-project").expect("the chip renders");
+    assert!(title.size.width > px(10.), "the title shows its text, not only an ellipsis: {title:?}");
+    assert!(chip.left() <= title.right() + px(12.), "the chip sits beside the title: {title:?} {chip:?}");
+
+    // Another project's task: both the title and the chip follow the selection.
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    ready_on(&deck, &mut vcx, Some(&b));
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        let header = d.header_title();
+        assert_eq!(header.title.as_deref(), Some("beta"), "the title follows the switch");
+        assert_eq!(header.project.as_deref(), Some("two"), "and so does the project chip");
+    });
+
+    cx.quit();
+    for id in [&a, &b] {
         daemon.stop(id).unwrap();
     }
     drop(daemon);

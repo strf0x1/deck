@@ -1,18 +1,24 @@
-//! The window's header across the top of the transcript. It holds the agent's
-//! status, the publication and error chips, and the window's actions.
+//! The window's header across the top of the transcript. On the left it names
+//! the selected task, its project and the agent's status; on the right it
+//! holds the publication and error chips and the window's actions.
 //!
 //! The design choice: the header is one row that stays put; the sidebar is the
 //! only navigation, so the header carries no project or session controls.
 
+use super::header_title::HeaderTitle;
 use super::panels::{glyph, state_color};
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, radius, size, space};
+use super::theme::{MONO, SANS, Tokens, icon, radius, size, space};
 use gpui::{
-    Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
-    Styled as _, div, px,
+    AnyElement, Context, Font, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    StatefulInteractiveElement as _, Styled as _, TextRun, Window, div, px,
 };
 
-pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
+/// The title block's widest run, so a long task title leaves room for the
+/// header's right-hand controls.
+const TITLE_MAX: f32 = 420.;
+
+pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl IntoElement {
     let live = deck.board.cards().iter().find(|c| c.lane.id == super::root::LIVE).map(|c| c.lane.state);
     let dot = live.map_or(Tokens::text_faint().into(), state_color);
     div()
@@ -20,6 +26,7 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .flex()
         .items_center()
         .gap(px(space::STACK))
+        .children(title_block(deck, window))
         .child(div().flex_1())
         .child(
             div()
@@ -153,6 +160,93 @@ pub fn header(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .child(glyph(icon::PLUS, 11.))
                 .child(deck.new_session_state().label()),
         )
+}
+
+/// The selected task's title, its project's faint chip and its status line;
+/// the project alone when it has no task yet (ADR 0010 §1).
+fn title_block(deck: &Deck, window: &Window) -> Option<AnyElement> {
+    let HeaderTitle { title, project, detail } = deck.header_title();
+    if let Some(title) = title {
+        let width = title_width(&title, window);
+        let chip = project.map(|project| {
+            div()
+                .debug_selector(|| "hdr-project".into())
+                .flex_none()
+                .h(px(18.))
+                .px(px(space::TIGHT))
+                .flex()
+                .items_center()
+                .rounded_full()
+                .border_1()
+                .border_color(Tokens::edge())
+                .text_size(px(size::MICRO))
+                .text_color(Tokens::text_faint())
+                .child(project)
+        });
+        return Some(
+            div()
+                .flex_shrink()
+                .min_w_0()
+                .max_w(px(TITLE_MAX))
+                .flex()
+                .flex_col()
+                .gap(px(space::HAIR))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::LINE))
+                        .child(
+                            div()
+                                .debug_selector(|| "hdr-title".into())
+                                .w(width)
+                                .flex_shrink()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(size::TITLE))
+                                .line_height(px(17.))
+                                .child(title),
+                        )
+                        .children(chip),
+                )
+                .children(detail.map(|detail| {
+                    div()
+                        .debug_selector(|| "hdr-detail".into())
+                        .min_w_0()
+                        .truncate()
+                        .line_height(px(14.))
+                        .text_size(px(size::SMALL))
+                        .text_color(Tokens::text_faint())
+                        .child(detail)
+                }))
+                .into_any_element(),
+        );
+    }
+    project.map(|project| {
+        div()
+            .debug_selector(|| "hdr-title".into())
+            .w(title_width(&project, window))
+            .flex_shrink()
+            .min_w_0()
+            .truncate()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_size(px(size::TITLE))
+            .line_height(px(17.))
+            .child(project)
+            .into_any_element()
+    })
+}
+
+/// The width the header title needs, capped at [`TITLE_MAX`]. A truncating
+/// text measures as its ellipsis inside a flex row, so the title's own width
+/// is measured here and the project chip can follow the text.
+fn title_width(text: &str, window: &Window) -> Pixels {
+    let font = Font { family: SANS.into(), weight: FontWeight::SEMIBOLD, ..Font::default() };
+    let run = TextRun { len: text.len(), font, ..TextRun::default() };
+    let width = window.text_system().layout_line(text, px(size::TITLE), &[run], None).width;
+    (width + px(1.)).min(px(TITLE_MAX))
 }
 
 pub fn icon_button(id: &'static str, g: &'static str) -> gpui::Stateful<gpui::Div> {
