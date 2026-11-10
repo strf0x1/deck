@@ -10,7 +10,7 @@
 use super::panels::glyph;
 use super::root::Deck;
 use super::session::Status;
-use super::theme::{Tokens, icon, size, space};
+use super::theme::{Tokens, glow, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, FollowMode, FontWeight, InteractiveElement as _, IntoElement, ListAlignment, ListState,
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, list, px,
@@ -111,6 +111,21 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .justify_center()
             .gap(px(space::TIGHT))
             .child(
+                div()
+                    .mb(px(space::STACK))
+                    .size(px(56.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::PANE))
+                    .border_1()
+                    .border_color(tint(Tokens::cyan(), 0.35))
+                    .bg(tint(Tokens::cyan(), 0.1))
+                    .shadow(glow(Tokens::cyan(), 0.5))
+                    .text_color(Tokens::cyan())
+                    .child(glyph(icon::BOLT, 22.)),
+            )
+            .child(
                 div().text_size(px(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("What should we work on?"),
             )
             .child(
@@ -147,10 +162,11 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(7.))
                 .rounded_full()
                 .border_1()
-                .border_color(Tokens::edge_strong())
+                .border_color(tint(Tokens::cyan(), 0.5))
                 .bg(Tokens::float())
+                .shadow(glow(Tokens::cyan(), 0.5))
                 .text_size(px(size::SMALL))
-                .text_color(Tokens::text_dim())
+                .text_color(Tokens::cyan())
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.transcript.set_follow_mode(FollowMode::Tail);

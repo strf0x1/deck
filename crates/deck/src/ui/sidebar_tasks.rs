@@ -5,8 +5,8 @@
 //! The design choice: the rows are a snapshot of the board's cards, so the
 //! drag's springs and order stay the board's and nothing here owns state.
 
-use super::board::{CARD_H, Card};
-use super::panels::{glyph, state_color};
+use super::board::{CARD_H, Card, LaneState};
+use super::panels::{glyph, state_mark};
 use super::root::{Deck, LIVE};
 use super::sidebar_rows::TASK_INDENT;
 use super::theme::{Tokens, icon, radius, size, space, tint};
@@ -39,10 +39,15 @@ pub(super) fn tasks_view(deck: &mut Deck, cx: &mut Context<Deck>) -> AnyElement 
 fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> AnyElement {
     let lift = c.lift.pos.clamp(0., 1.2);
     let live = c.lane.id == LIVE;
-    let color = state_color(c.lane.state);
-    let edge: gpui::Hsla = if live { tint(Tokens::accent(), 0.4) } else { Tokens::edge().into() };
+    let edge: gpui::Hsla = if live { tint(Tokens::accent(), 0.55) } else { Tokens::edge().into() };
     let edge = if lift > 0.02 { tint(Tokens::text().into(), 0.07 + 0.12 * lift.min(1.)) } else { edge };
-    let bg = if lift > 0.02 || live { Tokens::raised_hover() } else { Tokens::raised() };
+    let bg: gpui::Hsla = if live {
+        tint(Tokens::accent(), 0.1)
+    } else if lift > 0.02 {
+        Tokens::raised_hover().into()
+    } else {
+        Tokens::raised().into()
+    };
     let id = c.lane.id;
     let task = deck.lanes.task(id, deck.task_id());
     let done = task
@@ -87,9 +92,19 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
             )
     });
     let right: AnyElement = match (&c.lane.attention, chip) {
-        (Some(word), _) => {
-            div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::amber()).child(*word).into_any_element()
-        }
+        (Some(word), _) => div()
+            .flex_none()
+            .h(px(18.))
+            .px(px(space::TIGHT))
+            .flex()
+            .items_center()
+            .rounded_full()
+            .bg(tint(Tokens::amber(), 0.14))
+            .text_size(px(size::MICRO))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(Tokens::amber())
+            .child(*word)
+            .into_any_element(),
         (None, Some(chip)) => chip.into_any_element(),
         (None, None) => div().flex_none().into_any_element(),
     };
@@ -135,7 +150,8 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
             MouseButton::Left,
             cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.grab(id, f32::from(ev.position.y), cx)),
         )
-        .child(div().flex_none().size(px(6.)).rounded_full().bg(color))
+        // A row that asks wears the waiting mark, whatever its process is doing.
+        .child(state_mark(if c.lane.attention.is_some() { LaneState::Waiting } else { c.lane.state }, 8.))
         .child(
             div()
                 .flex_1()
@@ -174,9 +190,12 @@ pub(super) fn settled_fold(deck: &mut Deck, count: usize, cx: &mut Context<Deck>
                 .rounded(px(radius::CONTROL))
                 .cursor_pointer()
                 .hover(|style| style.bg(Tokens::raised()))
+                .gap(px(space::LINE))
                 .text_size(px(size::SMALL))
                 .text_color(Tokens::text_faint())
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_settled(cx)))
+                .child(glyph(if open { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT }, 8.))
+                .child(glyph(icon::ARCHIVE, 10.))
                 .child(format!("Settled ({count})")),
         )
         .children(rows)

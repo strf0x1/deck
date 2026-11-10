@@ -7,7 +7,7 @@
 use super::rail::{COLLAPSED, ITEM_H};
 use super::root::Deck;
 use super::sidebar::Glyph;
-use super::theme::{Tokens, radius, size, space};
+use super::theme::{Tokens, glow, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -28,7 +28,7 @@ pub(super) fn narrow_view(glyphs: &[Glyph], marker: f32, cx: &mut Context<Deck>)
                 .right_0()
                 .h(px(ITEM_H))
                 .rounded(px(radius::CONTROL))
-                .bg(Tokens::raised_hover())
+                .bg(tint(Tokens::accent(), 0.1))
                 .child(
                     div()
                         .absolute()
@@ -37,7 +37,8 @@ pub(super) fn narrow_view(glyphs: &[Glyph], marker: f32, cx: &mut Context<Deck>)
                         .w(px(3.))
                         .h(px(16.))
                         .rounded(px(radius::MARK))
-                        .bg(Tokens::accent()),
+                        .bg(Tokens::accent())
+                        .shadow(glow(Tokens::accent(), 1.)),
                 ),
         )
         .children(items)
@@ -60,19 +61,24 @@ fn glyph_row(g: &Glyph, cx: &mut Context<Deck>) -> AnyElement {
         .cursor_pointer()
         .text_color(fg)
         .on_click(cx.listener(move |this, _, _, cx| this.select_project(index, cx)))
-        .child(
-            div().relative().child(tile(g.letter, g.selected, COLLAPSED - 12.)).children(
-                g.attention.then(|| {
-                    div().absolute().top(px(-2.)).right(px(8.)).size(px(7.)).rounded_full().bg(Tokens::amber())
-                }),
-            ),
-        )
+        .child(div().relative().child(tile(g.letter, Tokens::hue(&g.name), g.selected, 32.)).children(
+            g.attention.then(|| {
+                div()
+                    .absolute()
+                    .top(px(-2.))
+                    .right(px(-2.))
+                    .size(px(7.))
+                    .rounded_full()
+                    .bg(Tokens::amber())
+                    .shadow(glow(Tokens::amber(), 1.))
+            }),
+        ))
         .into_any_element()
 }
 
-/// A project's letter tile: the narrow sidebar's, and the open project
-/// header's at a smaller size (ADR 0010 §9).
-pub(super) fn tile(letter: char, selected: bool, size: f32) -> gpui::Div {
+/// A project's letter tile in the project's own hue: the narrow sidebar's,
+/// and the open project header's at a smaller size (ADR 0010 §9).
+pub(super) fn tile(letter: char, hue: gpui::Hsla, selected: bool, size: f32) -> gpui::Div {
     let font = if size >= 32. { size::TITLE } else { size::SMALL };
     div()
         .flex_none()
@@ -80,8 +86,11 @@ pub(super) fn tile(letter: char, selected: bool, size: f32) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(radius::CONTROL))
-        .bg(if selected { Tokens::raised_hover() } else { Tokens::raised() })
+        .rounded(px(if size >= 32. { radius::CONTROL } else { radius::CHIP }))
+        .border_1()
+        .border_color(tint(hue, if selected { 0.55 } else { 0.22 }))
+        .bg(tint(hue, if selected { 0.22 } else { 0.1 }))
+        .text_color(tint(hue, if selected { 1. } else { 0.8 }))
         .child(div().font_weight(FontWeight::BOLD).text_size(px(font)).child(letter.to_string()))
 }
 
@@ -100,6 +109,7 @@ pub(super) fn count_badge(count: usize) -> AnyElement {
                 .items_center()
                 .rounded_full()
                 .bg(Tokens::amber())
+                .shadow(glow(Tokens::amber(), 0.8))
                 .text_size(px(size::SMALL))
                 .text_color(Tokens::ink())
                 .font_weight(FontWeight::SEMIBOLD)

@@ -12,7 +12,7 @@ use super::chrome::agent_label;
 use super::composer::Field;
 use super::panels::glyph;
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
+use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use gpui::{
     Context, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px,
@@ -100,11 +100,7 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         "Waiting for the agent…".to_string()
     };
     let caret: Hsla = tint(Tokens::accent(), if ready { 0.9 } else { 0.35 });
-    let (send_bg, send_fg): (Hsla, Hsla) = if ready && has_draft {
-        (Tokens::accent(), Tokens::ink().into())
-    } else {
-        (Tokens::raised().into(), Tokens::text_faint().into())
-    };
+    let armed = ready && has_draft;
     let field = div()
         .id("composer")
         .debug_selector(|| "composer".into())
@@ -143,16 +139,18 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .items_center()
         .justify_center()
         .rounded(px(radius::CONTROL))
-        .bg(send_bg)
-        .text_color(send_fg)
+        .when(armed, |d| d.bg(Tokens::sweep(1.)).shadow(glow(Tokens::accent(), 0.8)).text_color(Tokens::ink()))
+        .when(!armed, |d| d.bg(Tokens::raised()).text_color(Tokens::text_faint()))
         .child(glyph(icon::SEND, 13.));
     div()
         .flex()
         .flex_col()
         .rounded(px(radius::FIELD))
         .border_1()
-        .border_color(if ready { Tokens::edge_strong() } else { Tokens::edge() })
-        .bg(Tokens::raised())
+        .border_color(if ready { tint(Tokens::accent(), 0.45) } else { Tokens::edge().into() })
+        .bg(Tokens::sunken())
+        .when(ready, |d| d.shadow(glow(Tokens::accent(), 0.22)))
+        .overflow_hidden()
         .child(div().pl(px(16.)).pr(px(8.)).flex().items_end().gap(px(space::STACK)).child(field).child(send))
         .child(status_row(deck))
 }
@@ -160,15 +158,26 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
 /// Agent · backend · directory · branch, with tokens and the key hint at the right.
 fn status_row(deck: &Deck) -> impl IntoElement {
     // Short items keep their width; the path and branch give way first.
-    let item = |g: &'static str, text: String, shrinks: bool| {
+    // Each icon keeps its meaning's colour; the words stay quiet.
+    let item = |g: &'static str, color: Hsla, text: String, shrinks: bool| {
         div()
             .flex()
             .items_center()
             .gap(px(space::TIGHT))
             .when(shrinks, |d| d.min_w_0().flex_shrink())
             .when(!shrinks, |d| d.flex_none())
-            .child(glyph(g, 10.).text_color(Tokens::text_faint()))
-            .child(div().truncate().child(text))
+            .child(glyph(g, 10.).text_color(tint(color, 0.85)))
+            // Clipped, not truncated: a truncating text measures as its ellipsis
+            // in a flex row and would collapse to "…" with room to spare.
+            .child(div().overflow_hidden().whitespace_nowrap().child(text))
+    };
+    // The sealed VM is green; a local process has no such promise.
+    let backend = |w: &Workspace| {
+        if w.backend == "vm" {
+            item(icon::LOCK, Tokens::lime(), w.backend.clone(), false)
+        } else {
+            item(icon::TERMINAL, Tokens::text_faint().into(), w.backend.clone(), false)
+        }
     };
     let w = deck.workspace.as_ref();
     let agent =
@@ -183,20 +192,24 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .gap(px(16.))
         .border_t_1()
         .border_color(Tokens::edge())
+        .bg(Tokens::raised())
         .font_family(MONO)
         .text_size(px(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(item(icon::AGENTS, agent, false))
+        .child(item(icon::AGENTS, Tokens::cyan(), agent, false))
+        .children(w.map(backend))
+        .children(w.map(|w| item(icon::PROJECT, Tokens::sky(), tilde(&w.cwd), true)))
         .children(
-            w.map(|w| item(if w.backend == "vm" { icon::SHIELD } else { icon::TERMINAL }, w.backend.clone(), false)),
+            w.is_none()
+                .then_some(project_dir)
+                .flatten()
+                .map(|dir| item(icon::PROJECT, Tokens::sky(), tilde(&dir), true)),
         )
-        .children(w.map(|w| item(icon::FILES, tilde(&w.cwd), true)))
-        .children(w.is_none().then_some(project_dir).flatten().map(|dir| item(icon::FILES, tilde(&dir), true)))
-        .children(w.and_then(|w| w.branch.clone()).map(|b| item(icon::BRANCH, b, true)))
+        .children(w.and_then(|w| w.branch.clone()).map(|b| item(icon::BRANCH, Tokens::violet(), b, true)))
         .child(div().flex_1())
         .children(
             w.filter(|w| w.tokens > 0)
-                .map(|w| div().text_color(Tokens::text_faint()).child(format!("{} tokens", compact(w.tokens)))),
+                .map(|w| item(icon::GAUGE, Tokens::amber(), format!("{} tokens", compact(w.tokens)), false)),
         )
         .child(div().text_color(Tokens::text_faint()).child(enter))
 }

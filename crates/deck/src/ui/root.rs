@@ -15,7 +15,7 @@ use super::composer;
 use super::editor::Editor;
 use super::rail::Rail;
 use super::session::Session;
-use super::theme::{SANS, Tokens, size};
+use super::theme::{SANS, Tokens, size, tint};
 use super::{chrome, conversation, sidebar_view};
 use deck_acp::{Client, Inbound};
 use deck_runtime::approvals::{Approval, Decision, State};
@@ -681,6 +681,7 @@ impl Render for Deck {
             .font_family(SANS)
             .text_size(px(size::BODY))
             .text_color(Tokens::text())
+            .child(ambient())
             .child(div().flex_none().w(px(self.rail.reserved())))
             .child(
                 div()
@@ -695,4 +696,25 @@ impl Render for Deck {
             // Last, so the open sidebar floats over the transcript.
             .child(sidebar_view::sidebar_view(self, GUTTER, cx))
     }
+}
+
+/// Two soft lights behind the panes, the user's colour above and the
+/// agent's below: shadows of zero-sized marks, since GPUI has no radial fill.
+fn ambient() -> impl IntoElement {
+    let light = |color: gpui::Hsla| {
+        div().size(px(1.)).shadow(vec![gpui::BoxShadow {
+            color,
+            offset: gpui::point(px(0.), px(0.)),
+            blur_radius: px(420.),
+            spread_radius: px(160.),
+        }])
+    };
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .overflow_hidden()
+        .child(div().absolute().top(px(-120.)).left(gpui::relative(0.3)).child(light(tint(Tokens::accent(), 0.1))))
+        .child(div().absolute().bottom(px(-140.)).right(gpui::relative(0.12)).child(light(tint(Tokens::cyan(), 0.08))))
 }

@@ -7,7 +7,7 @@
 
 use super::panels::glyph;
 use super::root::Deck;
-use super::theme::{MONO, Tokens, icon, radius, size, space};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use super::transcript::{file_name, touched};
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
@@ -26,7 +26,7 @@ pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyEle
         .gap(px(space::TIGHT))
         .text_size(px(size::LABEL))
         .text_color(Tokens::text_faint())
-        .child(glyph(icon::EDIT, 10.))
+        .child(glyph(icon::EDIT, 10.).text_color(tint(Tokens::violet(), 0.8)))
         .child(format!("{} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" }))
         // With one file its chip already says it.
         .when(files.len() > 1, |d| {
@@ -46,8 +46,10 @@ pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyEle
                 .px(px(7.))
                 .py(px(space::HAIR))
                 .rounded(px(radius::CHIP))
+                .border_1()
+                .border_color(Tokens::edge())
                 .bg(Tokens::raised())
-                .hover(|s| s.bg(Tokens::raised_hover()))
+                .hover(|s| s.bg(Tokens::raised_hover()).border_color(tint(Tokens::violet(), 0.5)))
                 .cursor_pointer()
                 .font_family(MONO)
                 .text_size(px(size::SMALL))

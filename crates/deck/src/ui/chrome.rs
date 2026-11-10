@@ -6,12 +6,12 @@
 //! only navigation, so the header carries no project or session controls.
 
 use super::header_title::HeaderTitle;
-use super::panels::{glyph, state_color};
+use super::panels::{glyph, primary, state_color};
 use super::root::Deck;
-use super::theme::{MONO, SANS, Tokens, icon, radius, size, space};
+use super::theme::{MONO, SANS, Tokens, icon, radius, size, space, tint};
 use gpui::{
-    AnyElement, Context, Font, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
-    StatefulInteractiveElement as _, Styled as _, TextRun, Window, div, px,
+    AnyElement, Context, Div, Font, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    StatefulInteractiveElement as _, Styled as _, TextRun, Window, div, prelude::FluentBuilder as _, px,
 };
 
 /// The title block's widest run, so a long task title leaves room for the
@@ -31,15 +31,27 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
         .child(
             div()
                 .h(px(30.))
-                .px(px(space::INSET))
+                .pl(px(space::DETAIL))
+                .pr(px(space::INSET))
                 .flex()
                 .items_center()
                 .gap(px(space::LINE))
                 .rounded_full()
                 .border_1()
-                .border_color(Tokens::edge())
+                .border_color(tint(dot, 0.3))
+                .bg(tint(dot, 0.07))
                 .text_color(Tokens::text_dim())
-                .child(div().size(px(7.)).rounded_full().bg(dot))
+                .child(
+                    div()
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(tint(dot, 0.18))
+                        .text_color(dot)
+                        .child(glyph(icon::AGENTS, 10.)),
+                )
                 .child(div().font_family(MONO).text_size(px(size::SMALL)).child(agent_label(&deck.agent_cmd))),
         )
         .children(deck.publication_of(super::root::LIVE).map(|view| {
@@ -47,79 +59,31 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .max_w(px(240.))
                 .h(px(30.))
                 .px(px(11.))
-                .border_1()
-                .border_color(Tokens::edge())
                 .id("hdr-publication")
                 .debug_selector(|| "hdr-publication".into())
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_publication(super::root::LIVE, cx)))
         }))
         .children(deck.publish_notice().map(|notice| {
-            div()
+            notice_chip(icon::BELL, Tokens::amber(), notice.to_string(), 320.)
                 .debug_selector(|| "hdr-publish-notice".into())
-                .h(px(30.))
-                .px(px(11.))
-                .flex()
-                .items_center()
-                .rounded_full()
-                .border_1()
-                .border_color(Tokens::edge())
-                .text_size(px(size::SMALL))
-                .text_color(Tokens::amber())
-                .child(notice)
         }))
         .children(deck.new_session_state().error().map(|e| {
-            div()
+            notice_chip(icon::WARN, Tokens::red(), format!("New session failed: {e}"), 320.)
                 .debug_selector(|| "hdr-new-error".into())
-                .max_w(px(320.))
-                .h(px(30.))
-                .px(px(11.))
-                .flex()
-                .items_center()
-                .overflow_hidden()
-                .rounded_full()
-                .border_1()
-                .border_color(Tokens::edge())
-                .text_size(px(size::SMALL))
-                .text_color(Tokens::red())
-                .child(format!("New session failed: {e}"))
         }))
         .children(deck.mark_error().map(|e| {
-            div()
+            notice_chip(icon::WARN, Tokens::red(), format!("Mark done failed: {e}"), 320.)
                 .debug_selector(|| "hdr-mark-error".into())
-                .max_w(px(320.))
-                .h(px(30.))
-                .px(px(11.))
-                .flex()
-                .items_center()
-                .overflow_hidden()
-                .rounded_full()
-                .border_1()
-                .border_color(Tokens::edge())
-                .text_size(px(size::SMALL))
-                .text_color(Tokens::red())
-                .child(format!("Mark done failed: {e}"))
         }))
         .children(deck.projects_error().map(|e| {
-            div()
-                .debug_selector(|| "hdr-project-error".into())
-                .max_w(px(420.))
-                .h(px(30.))
-                .px(px(11.))
-                .flex()
-                .items_center()
-                .overflow_hidden()
-                .rounded_full()
-                .border_1()
-                .border_color(Tokens::edge())
-                .text_size(px(size::SMALL))
-                .text_color(Tokens::red())
-                .child(e.to_string())
+            notice_chip(icon::WARN, Tokens::red(), e.to_string(), 420.).debug_selector(|| "hdr-project-error".into())
         }))
         .child(icon_button("hdr-bell", icon::BELL))
         .child(
             icon_button("hdr-access", icon::SHIELD)
                 .debug_selector(|| "hdr-access".into())
+                .when(deck.access.is_open(), |d| d.bg(tint(Tokens::violet(), 0.16)).text_color(Tokens::violet()))
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))),
         )
         .children(deck.can_stop().then(|| {
@@ -137,29 +101,44 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .text_color(Tokens::text_dim())
                 .debug_selector(|| "hdr-stop".into())
                 .cursor_pointer()
+                .hover(|s| {
+                    s.border_color(tint(Tokens::red(), 0.5)).bg(tint(Tokens::red(), 0.08)).text_color(Tokens::text())
+                })
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+                .child(glyph(icon::STOP, 9.).text_color(Tokens::red()))
                 .child("Stop")
                 .child(kbd(crate::app::STOP_HINT))
         }))
         .child(
-            div()
+            primary()
                 .id("hdr-new")
-                .h(px(32.))
-                .px(px(space::PAD))
-                .flex()
-                .items_center()
-                .gap(px(space::LINE))
-                .rounded(px(radius::CONTROL))
-                .bg(Tokens::text())
-                .text_color(Tokens::ink())
-                .text_size(px(size::BODY))
-                .font_weight(FontWeight::MEDIUM)
                 .debug_selector(|| "hdr-new".into())
                 .cursor_pointer()
+                .hover(|s| s.opacity(0.9))
                 .on_click(cx.listener(|this, _, _, cx| this.new_session(cx)))
                 .child(glyph(icon::PLUS, 11.))
                 .child(deck.new_session_state().label()),
         )
+}
+
+/// A header notice: one line in the colour of what it reports.
+fn notice_chip(g: &'static str, color: Hsla, text: String, max: f32) -> Div {
+    div()
+        .max_w(px(max))
+        .h(px(30.))
+        .px(px(11.))
+        .flex()
+        .items_center()
+        .gap(px(space::LINE))
+        .overflow_hidden()
+        .rounded_full()
+        .border_1()
+        .border_color(tint(color, 0.3))
+        .bg(tint(color, 0.08))
+        .text_size(px(size::SMALL))
+        .text_color(color)
+        .child(glyph(g, 10.))
+        .child(div().min_w_0().truncate().child(text))
 }
 
 /// The selected task's title, its project's faint chip and its status line;
@@ -169,6 +148,7 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
     if let Some(title) = title {
         let width = title_width(&title, window);
         let chip = project.map(|project| {
+            let hue = Tokens::hue(&project);
             div()
                 .id("hdr-project")
                 .debug_selector(|| "hdr-project".into())
@@ -179,11 +159,12 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                 .items_center()
                 .rounded_full()
                 .border_1()
-                .border_color(Tokens::edge())
+                .border_color(tint(hue, 0.3))
+                .bg(tint(hue, 0.08))
                 .text_size(px(size::MICRO))
-                .text_color(Tokens::text_faint())
+                .text_color(tint(hue, 0.85))
                 .cursor_pointer()
-                .hover(|style| style.text_color(Tokens::text_dim()).bg(Tokens::raised_hover()))
+                .hover(move |style| style.text_color(hue).bg(tint(hue, 0.16)))
                 .on_click(cx.listener(|this, _, _, cx| this.clear_task(cx)))
                 .child(project)
         });
@@ -274,9 +255,10 @@ pub fn kbd(keys: &'static str) -> impl IntoElement {
         .rounded(px(radius::CHIP))
         .border_1()
         .border_color(Tokens::edge())
+        .bg(Tokens::sunken())
         .font_family(MONO)
         .text_size(px(size::MICRO))
-        .text_color(Tokens::text_faint())
+        .text_color(Tokens::text_dim())
         .child(keys)
 }
 

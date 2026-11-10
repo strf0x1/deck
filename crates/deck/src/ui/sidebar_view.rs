@@ -87,7 +87,7 @@ pub fn sidebar_view(deck: &mut Deck, inset: f32, cx: &mut Context<Deck>) -> impl
         .bottom(px(inset))
         .left(px(inset))
         .w(px(width))
-        .rounded(px(radius::FIELD))
+        .rounded(px(radius::PANE))
         .border_1()
         .border_color(Tokens::edge())
         .bg(Tokens::panel())
@@ -162,7 +162,7 @@ fn rail_item(
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .text_color(fg)
-        .hover(|s| s.text_color(Tokens::text()))
+        .hover(|s| s.text_color(Tokens::text()).bg(Tokens::raised()))
         .child(
             div()
                 .relative()
@@ -190,6 +190,6 @@ trait PinExt {
 
 impl PinExt for gpui::Stateful<gpui::Div> {
     fn when_pinned(self, pinned: bool) -> Self {
-        if pinned { self.text_color(Tokens::accent()) } else { self }
+        if pinned { self.text_color(Tokens::accent()).bg(tint(Tokens::accent(), 0.08)) } else { self }
     }
 }
