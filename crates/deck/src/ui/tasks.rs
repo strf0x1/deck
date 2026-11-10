@@ -4,9 +4,9 @@
 //! The design choice: lane ids are the window's, task ids are the daemon's,
 //! and [`Lanes`] is the only place that maps one to the other, so a task
 //! keeps its card (and the card its place and motion) across refreshes. The
-//! window's own card stays [`LIVE`]: its title and state come from the live
-//! session, not from the record, except that a merged publication marks it
-//! done.
+//! window's own card stays [`LIVE`]: its state comes from the live session;
+//! its title from its record, like every other card (ADR 0010 §9), except
+//! that a merged publication marks it done.
 
 use super::board::{Lane, LaneState};
 use super::publication::{self, View};
@@ -16,10 +16,29 @@ use deck_runtime::pull_request::State as Published;
 use deck_runtime::{State, Task};
 use std::collections::HashMap;
 
+/// A task's human title: what `deckd` recorded from its first prompt, or a
+/// stand-in made from its id. Never its directory, and never its agent's
+/// name (ADR 0010 §9).
+pub fn title(task: &Task) -> String {
+    task.title.clone().unwrap_or_else(|| untitled(&task.id))
+}
+
+/// The title a task has before one is recorded: "Untitled" and the first six
+/// characters of its id.
+fn untitled(id: &str) -> String {
+    let head: String = id.chars().take(6).collect();
+    format!("Untitled · {head}")
+}
+
+/// The title a prompt gives its task: its first non-empty line, with inner
+/// whitespace collapsed to single spaces. `None` when it has none. The
+/// 60-character cap is `deckd`'s.
+pub fn title_of(prompt: &str) -> Option<String> {
+    prompt.lines().map(|line| line.split_whitespace().collect::<Vec<_>>().join(" ")).find(|line| !line.is_empty())
+}
+
 /// What one task's card says, from its record and its publication.
 pub fn lane(id: usize, task: &Task, view: Option<&View>) -> Lane {
-    let project =
-        task.spec.cwd.file_name().map_or_else(|| task.spec.cwd.display().to_string(), |n| n.to_string_lossy().into());
     let place = if task.backend == "vm" { " · vm" } else { "" };
     // The dot's label already says Working; the detail says where.
     let backend = if task.backend == "vm" { "vm" } else { "local" };
@@ -32,7 +51,7 @@ pub fn lane(id: usize, task: &Task, view: Option<&View>) -> Lane {
         State::Failed { .. } => (LaneState::Waiting, "needs a restart".to_string()),
         State::Destroyed => (LaneState::Idle, "destroyed".to_string()),
     };
-    Lane { id, title: project, detail, state, chip: view.map(|v| (v.dot, v.label.clone())), attention: None }
+    Lane { id, title: title(task), detail, state, chip: view.map(|v| (v.dot, v.label.clone())), attention: None }
 }
 
 /// A settled task and when it settled: the row of the column's fold.
@@ -179,11 +198,32 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn each_record_becomes_a_card_with_its_project_state_and_place() {
+    fn a_recorded_title_is_used_and_otherwise_the_id_stands_in() {
+        assert_eq!(title(&task("abcdef123", json!({ "state": "running" }), "local")), "Untitled · abcdef");
+        let named: Task = serde_json::from_value(json!({
+            "id": "abcdef123", "backend": "local", "title": "fix the rail",
+            "spec": { "argv": ["construct", "acp"], "cwd": "/src/a-project" },
+            "state": { "state": "running" }, "pid": null,
+        }))
+        .unwrap();
+        assert_eq!(title(&named), "fix the rail", "never the directory name");
+        assert_eq!(lane(1, &named, None).title, "fix the rail");
+    }
+
+    #[test]
+    fn a_prompt_titles_its_task_from_its_first_non_empty_line() {
+        assert_eq!(title_of("\n  fix   the rail\nmore"), Some("fix the rail".into()));
+        assert_eq!(title_of("one\ttwo  three"), Some("one two three".into()));
+        assert_eq!(title_of("  \n\t\n"), None);
+        assert_eq!(title_of(""), None);
+    }
+
+    #[test]
+    fn each_record_becomes_a_card_with_its_title_state_and_place() {
         let running = lane(1, &task("a", json!({ "state": "running" }), "vm"), None);
         assert_eq!(
             (running.title.as_str(), running.detail.as_str(), running.state),
-            ("a-project", "vm", LaneState::Working)
+            ("Untitled · a", "vm", LaneState::Working)
         );
         let crashed =
             lane(2, &task("b", json!({ "state": "stopped", "clean": false, "reason": "exit 1" }), "local"), None);
@@ -260,7 +300,7 @@ mod tests {
         assert_eq!(lanes.switch(Some("own"), b).as_deref(), Some("b"));
         let after = lanes.lanes(&tasks, Some("b"), &HashMap::new(), &[], 0);
         let shown: Vec<(usize, &str)> = after.iter().map(|l| (l.id, l.title.as_str())).collect();
-        assert_eq!(shown, vec![(b, "own-project"), (a, "a-project")], "the previous task takes b's card");
+        assert_eq!(shown, vec![(b, "Untitled · own"), (a, "Untitled · a")], "the previous task takes b's card");
         assert_eq!(lanes.task(LIVE, Some("b")).as_deref(), Some("b"));
         // And back: the first task is live again, b returns to its card.
         assert_eq!(lanes.switch(Some("b"), b).as_deref(), Some("own"));

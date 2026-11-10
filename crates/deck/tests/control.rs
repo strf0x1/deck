@@ -136,7 +136,10 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
     std::fs::create_dir_all(&lane).unwrap();
     let opener = DaemonClient::connect_or_start(&data).unwrap();
     let project = opener.open_project(&project_root, argv.clone()).unwrap();
-    opener.create(Spec { argv: argv.clone(), cwd: lane.clone(), project: Some(project.id), github: None }).unwrap();
+    let task =
+        opener.create(Spec { argv: argv.clone(), cwd: lane.clone(), project: Some(project.id), github: None }).unwrap();
+    // The header reads the record's title, not the checkout's name (#162).
+    opener.title(&task.id, "name the row").unwrap();
 
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, lane, cx))).unwrap()
@@ -154,7 +157,7 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
     }
     assert_eq!(
         send(&mut vcx, &tx, json!({ "cmd": "state" }))["header"],
-        json!({ "title": "lane", "project": "one", "detail": "ready" })
+        json!({ "title": "name the row", "project": "one", "detail": "ready" })
     );
 
     let own = deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned));

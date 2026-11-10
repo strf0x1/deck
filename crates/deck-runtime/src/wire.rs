@@ -97,6 +97,12 @@ pub(crate) enum Request {
         id: String,
         done: bool,
     },
+    /// Record the task's human title, from the first line of its first
+    /// prompt (ADR 0010 §9).
+    Title {
+        id: String,
+        title: String,
+    },
     /// The task's publication and its live pull request state, read through
     /// its gateway when due (ADR 0008 §8). Reads only.
     PullState {
@@ -209,6 +215,7 @@ impl Request {
             | Self::Publication { task: id, .. }
             | Self::Seen { id, .. }
             | Self::Mark { id, .. }
+            | Self::Title { id, .. }
             | Self::PullState { task: id, .. }
             | Self::WebProfile { task: id, .. }
             | Self::GitHubProfile { task: id, .. }

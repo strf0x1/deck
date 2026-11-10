@@ -779,6 +779,7 @@ mod tests {
             id: "legacy".into(),
             backend: "vm".into(),
             spec: Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir.clone(), project: None, github: None },
+            title: None,
             state: State::Created,
             pid: None,
             holder: None,

@@ -759,16 +759,21 @@ fn seen_and_marked_are_recorded_on_the_task() {
 
     client.seen(&task.id, 4).unwrap();
     client.mark(&task.id, true).unwrap();
+    client.title(&task.id, "  fix the rail  ").unwrap();
     let recorded = client.task(&task.id).unwrap();
     assert_eq!(recorded.seen, 4);
     assert!(recorded.done_ms.is_some(), "marking done records when");
+    assert_eq!(recorded.title.as_deref(), Some("fix the rail"), "the title is trimmed");
     assert_eq!(recorded.state, State::Created, "attention is accounting, not a transition");
 
-    // A lower turn is stale; unmarking clears the time.
+    // A lower turn is stale; unmarking clears the time. An empty title is
+    // refused and leaves the record alone.
     client.seen(&task.id, 2).unwrap();
     client.mark(&task.id, false).unwrap();
+    assert!(client.title(&task.id, " \n ").is_err());
     let recorded = client.task(&task.id).unwrap();
     assert_eq!((recorded.seen, recorded.done_ms), (4, None));
+    assert_eq!(recorded.title.as_deref(), Some("fix the rail"));
 
     // An unknown id is the same error a plain task read gives.
     assert_eq!(client.seen("missing", 1).unwrap_err().to_string(), client.task("missing").unwrap_err().to_string());
@@ -779,6 +784,7 @@ fn seen_and_marked_are_recorded_on_the_task() {
     let client = daemon.restart();
     let recorded = client.task(&task.id).unwrap();
     assert_eq!((recorded.seen, recorded.done_ms), (4, None));
+    assert_eq!(recorded.title.as_deref(), Some("fix the rail"));
 }
 
 #[test]

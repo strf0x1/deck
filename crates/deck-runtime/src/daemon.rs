@@ -551,6 +551,10 @@ impl Service {
                 self.runtime.mark(&id, done)?;
                 Ok(json!(null))
             }
+            Request::Title { id, title } => {
+                self.runtime.title(&id, &title)?;
+                Ok(json!(null))
+            }
             Request::SetBudget { task, requests, tokens } => {
                 self.runtime.set_budget(&task, requests, tokens)?;
                 Ok(json!(null))

@@ -1193,6 +1193,11 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
     vcx.simulate_keystrokes("enter");
     wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["hello".to_string()]);
     let id = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| d.board().cards()[0].lane.title.clone()),
+        "hello",
+        "the row shows the first prompt before the next task refresh"
+    );
     // The fake agent asks a permission during its turn; allow it so the
     // transcript settles as an ordinary finished turn.
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
@@ -1200,7 +1205,9 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
     ready_on(&deck, &mut vcx, Some(&id));
 
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    wait_view(&mut vcx, |_| daemon.task(&id).unwrap().title.as_deref() == Some("hello"));
     let record = daemon.task(&id).unwrap();
+    assert_eq!(record.title.as_deref(), Some("hello"), "deckd recorded the first prompt's first line");
     assert_eq!(record.spec.project.as_deref(), Some(project.id.as_str()));
     assert_eq!(record.spec.cwd, repo, "the task runs in the project's checkout");
     assert_eq!(record.spec.argv, argv, "with the project's command");
@@ -1413,8 +1420,12 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
         )
     });
     assert_eq!(order.len(), 2, "a and b; a destroyed task has none");
-    assert_eq!(lanes[0], ("b".into(), "stopped · vm".into(), None), "most recent activity first");
-    assert_eq!(lanes[1], ("a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
+    assert_eq!(
+        lanes[0],
+        ("Untitled · b".into(), "stopped · vm".into(), None),
+        "most recent activity first, titled by its id until it has one (issue #162)"
+    );
+    assert_eq!(lanes[1], ("Untitled · a".into(), "vm".into(), Some((Dot::ChecksRunning, "#7".into()))));
 
     // The chip opens the panel without picking the card up.
     let lane = order[1];
@@ -1431,6 +1442,25 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
     assert!(cx.debug_bounds("publication-destroy").is_none(), "nothing to destroy before a merge");
     cx.simulate_keystrokes("escape");
     assert!(cx.debug_bounds("publication-panel").is_none());
+}
+
+/// A row and the publication panel read the record's title, never the
+/// checkout's directory name (issue #162).
+#[gpui::test]
+fn a_task_row_shows_its_recorded_title_instead_of_its_directory(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    seed_project(&deck, &mut cx);
+    let named: deck_runtime::Task = serde_json::from_value(json!({
+        "id": "abcdef123456", "backend": "local", "title": "fix the rail drag",
+        "spec": { "argv": ["construct", "acp"], "cwd": "/src/some-checkout", "project": "git:test" },
+        "state": { "state": "running" }, "pid": null,
+    }))
+    .unwrap();
+    deck.update(&mut cx, |d, cx| d.on_tasks(vec![named], Default::default(), cx));
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.board().cards()[0].lane.title, "fix the rail drag", "the row shows the recorded title");
+        assert_eq!(d.task_title("abcdef123456"), "fix the rail drag", "and so does the publication panel");
+    });
 }
 
 #[gpui::test]
@@ -1682,6 +1712,9 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     let alpha = Spec { argv: agent("alpha"), cwd: repo.join("alpha"), project: Some(project.id), github: None };
     std::fs::create_dir_all(&alpha.cwd).unwrap();
     let launched = daemon.create(alpha.clone()).unwrap();
+    // The rows read their records' titles, not their checkouts' names.
+    daemon.title(&launched.id, "alpha").unwrap();
+    daemon.title(&other, "beta").unwrap();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, alpha.argv, alpha.cwd, cx)))
             .unwrap()
@@ -1703,6 +1736,11 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     ready_on(&deck, &mut vcx, Some(&other));
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.board().order(), vec![deck::ui::root::LIVE, lane], "the column keeps its shape");
+        assert_eq!(
+            d.board().cards()[0].lane.title,
+            "beta",
+            "the selected row is its record's title, not the agent's name"
+        );
         assert_eq!(d.board().cards()[1].lane.title, "alpha", "the previous task is an ordinary card");
     });
     assert!(said(&deck, &vcx).is_empty(), "the transcript is the selected task's");
@@ -1756,6 +1794,9 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     };
     let a = daemon.create(spec(&alpha, &first.id)).unwrap().id;
     let b = daemon.create(spec(&beta, &second.id)).unwrap().id;
+    // Recorded titles are what the header shows, not the checkouts' names.
+    daemon.title(&a, "alpha").unwrap();
+    daemon.title(&b, "beta").unwrap();
 
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), alpha, cx)))
@@ -1821,6 +1862,78 @@ fn start_recorded(data: &std::path::Path, argv: &[String], cwd: std::path::PathB
         }
     }
     id
+}
+
+/// A task recorded before titles existed takes its title from its replayed
+/// transcript when a window attaches (ADR 0010 §9).
+#[cfg(unix)]
+#[gpui::test]
+fn a_task_without_a_title_gets_one_from_its_replayed_transcript(cx: &mut TestAppContext) {
+    use deck::task::WindowTask;
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, _beta) = two_fake_tasks("backfill");
+    let (task, connection) = WindowTask::run(&data, argv.clone(), alpha.clone()).unwrap();
+    let id = task.id().to_string();
+    let (client, mut rx) = connection.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match rx.try_recv() {
+            Ok(Inbound::Ready { session_id, .. }) => {
+                task.record_session(&session_id).unwrap();
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(std::time::Instant::now() < deadline, "the fake agent never became ready");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    client.prompt("ship the spike").unwrap();
+    // Let the turn finish, answering its question, so the agent is idle and
+    // its transcript is complete when the window attaches.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match rx.try_recv() {
+            Ok(Inbound::Permission { request, options, .. }) => {
+                let allow = options.iter().find(|o| o.kind.starts_with("allow")).map(|o| o.id.as_str());
+                client.answer(&request, allow).unwrap();
+            }
+            // The fake agent reports an idle turn; a real agent may answer
+            // with TurnEnded instead.
+            Ok(Inbound::Turn { state: deck_acp::TurnState::Idle { .. }, .. } | Inbound::TurnEnded(_)) => break,
+            Ok(_) => {}
+            Err(_) => {
+                assert!(std::time::Instant::now() < deadline, "the fake agent never finished its turn");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    // Both connections go; the task itself keeps running for the window.
+    drop(client);
+    drop(task);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    assert_eq!(daemon.task(&id).unwrap().title, None, "the record predates titles");
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&id));
+    wait_view(&mut vcx, |_| daemon.task(&id).unwrap().title.as_deref() == Some("ship the spike"));
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| d.board().cards()[0].lane.title.clone()),
+        "ship the spike",
+        "the row takes the replayed prompt's first line"
+    );
+
+    cx.quit();
+    daemon.stop(&id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
 }
 
 /// A git checkout under `data/name` with one commit: a project by root commit.
@@ -1912,6 +2025,8 @@ fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppCont
     let a = start_recorded(&data, &argv, alpha.clone());
     let b = start_recorded(&data, &argv, beta.clone());
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    daemon.title(&a, "alpha").unwrap();
+    daemon.title(&b, "beta").unwrap();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
     });
@@ -2011,8 +2126,11 @@ fn the_needs_you_strip_opens_a_background_question_and_seen_clears_a_finished_tu
     let a = start_recorded(&data, &argv, alpha.clone());
     let b = start_recorded(&data, &argv, beta.clone());
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    daemon.title(&a, "alpha").unwrap();
+    daemon.title(&b, "beta").unwrap();
     let window = cx.update(|cx| {
-        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha.clone(), cx)))
+            .unwrap()
     });
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx).unwrap();
@@ -2112,7 +2230,11 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().cards().len() == 2));
     assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_string)), Some(newer.id.clone()));
     let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
-    assert_eq!(deck.read_with(&vcx, |d, _| d.board().cards()[1].lane.title.clone()), "alpha");
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| d.board().cards()[1].lane.title.clone()),
+        format!("Untitled · {}", older.id.chars().take(6).collect::<String>()),
+        "a task without a record title stands in with its id, not its directory"
+    );
     open_sidebar(&deck, &mut vcx);
     let selector = match lane {
         1 => "card-done-1",

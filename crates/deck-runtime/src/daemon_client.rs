@@ -132,6 +132,11 @@ impl DaemonClient {
         self.request(Request::Mark { id: id.into(), done })
     }
 
+    /// Record the task's human title (ADR 0010 §9).
+    pub fn title(&self, id: &str, title: &str) -> Result<()> {
+        self.request(Request::Title { id: id.into(), title: title.into() })
+    }
+
     /// Record the model gateway's latest totals for a task.
     pub fn model_usage(&self, id: &str, requests: u64, tokens: u64) -> Result<()> {
         self.request(Request::ModelUsage { task: id.into(), requests, tokens })

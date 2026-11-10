@@ -144,6 +144,12 @@ pub enum Event {
     Marked {
         done: bool,
     },
+    /// The task's human title, from the first line of its first prompt
+    /// (ADR 0010 §9). A later `titled` replaces an earlier one. Accounting,
+    /// not a lifecycle transition.
+    Titled {
+        title: String,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -160,6 +166,11 @@ pub struct Task {
     pub id: String,
     pub backend: String,
     pub spec: Spec,
+    /// The task's human title, from the first line of its first prompt
+    /// (ADR 0010 §9). Set once by the window; a task from before titles has
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub state: State,
     /// The process the last `Started` named, while it runs.
     pub pid: Option<u32>,
@@ -198,6 +209,7 @@ impl Task {
             id: id.into(),
             backend: backend.clone(),
             spec: spec.clone(),
+            title: None,
             state: State::Created,
             pid: None,
             holder: None,
@@ -261,6 +273,12 @@ impl Task {
             self.done_ms = if *done { Some(at_ms) } else { None };
             return Ok(());
         }
+        if let Event::Titled { title } = ev {
+            // A later title replaces an earlier one: the record keeps the
+            // latest, and an agent-provided title may replace the prompt's.
+            self.title = Some(title.clone());
+            return Ok(());
+        }
         let next = match (&self.state, ev) {
             (
                 State::Created | State::Stopped { .. } | State::Failed { failure: Failure::StartFailed(_) },
@@ -321,6 +339,7 @@ fn name(ev: &Event) -> &'static str {
         Event::Publication { .. } => "publication",
         Event::Seen { .. } => "seen",
         Event::Marked { .. } => "marked",
+        Event::Titled { .. } => "titled",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -442,6 +461,33 @@ mod tests {
             fold(&[created(), started(), Event::Marked { done: true }, Event::Marked { done: false }]).unwrap();
         assert_eq!(cleared.done_ms, None);
         assert_eq!(cleared.state, State::Running, "settledness is accounting");
+    }
+
+    #[test]
+    fn a_title_is_set_by_the_fold_and_a_later_one_replaces_it() {
+        let t = fold(&[created(), Event::Titled { title: "fix the rail".into() }]).unwrap();
+        assert_eq!(t.title.as_deref(), Some("fix the rail"));
+        assert_eq!(t.state, State::Created, "a title is accounting");
+        let replaced = fold(&[
+            created(),
+            started(),
+            Event::Titled { title: "fix the rail".into() },
+            Event::Titled { title: "fix it again".into() },
+        ])
+        .unwrap();
+        assert_eq!(replaced.title.as_deref(), Some("fix it again"));
+        assert_eq!(replaced.state, State::Running);
+    }
+
+    #[test]
+    fn a_task_from_before_titles_loads_with_none() {
+        let t: Task = serde_json::from_str(
+            r#"{"id":"old","backend":"local","spec":{"argv":["agent"],"cwd":"/w"},
+                "state":{"state":"created"},"pid":null}"#,
+        )
+        .unwrap();
+        assert_eq!(t.title, None);
+        assert_eq!(fold(&[created(), started()]).unwrap().title, None);
     }
 
     #[test]

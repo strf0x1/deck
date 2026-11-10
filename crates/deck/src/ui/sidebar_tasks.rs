@@ -162,12 +162,7 @@ pub(super) fn settled_fold(deck: &mut Deck, count: usize, cx: &mut Context<Deck>
 
 /// One settled task: what it was, when it settled, and the mark's toggle.
 fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &mut Deck, cx: &mut Context<Deck>) -> AnyElement {
-    let title = settled
-        .task
-        .spec
-        .cwd
-        .file_name()
-        .map_or_else(|| settled.task.spec.cwd.display().to_string(), |name| name.to_string_lossy().into_owned());
+    let title = super::tasks::title(&settled.task);
     let destroyed = settled.task.state == deck_runtime::State::Destroyed;
     let done = settled.task.done_ms.is_some();
     let label = if destroyed {
