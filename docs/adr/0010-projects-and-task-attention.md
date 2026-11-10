@@ -252,7 +252,8 @@ space then sits in the project's **Inbox**, which is this same list.
   and the header moves over the transcript. Slices: #154, #155, #156.
 - **The project view, titles and hierarchy** (amendment, 2026-11-09):
   `Task.title` and a `title` daemon request; the sidebar's rows restyled;
-  the main area's project view. Slices: TITLES, HIERARCHY, VIEW.
+  the main area's project view. Slices: #162 (titles, now), #163 (hierarchy, after #160),
+  #164 (the project view, after #163).
 - **The window's single task goes away.** `task.rs` and `ui/attachment.rs`
   manage a set of attachments keyed by task id, and `ui/root.rs` a selection.
   Switching tasks no longer detaches the old one. `New session` creates in
