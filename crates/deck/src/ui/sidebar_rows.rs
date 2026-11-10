@@ -5,14 +5,21 @@
 //! `sidebar::rows` returns, so the shell (`sidebar_view.rs`) stays a layout.
 
 use super::root::Deck;
-use super::sidebar::Row;
+use super::sidebar::{Row, initial};
 use super::sidebar_tasks::{settled_fold, tasks_view};
-use super::theme::{Tokens, radius, size, space};
+use super::theme::{Tokens, icon, radius, size, space};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
+
+/// The chevron's column and the project tile, which together set how far the
+/// selected project's task rows indent.
+pub(super) const CHEVRON_W: f32 = 12.;
+pub(super) const TILE: f32 = 20.;
+/// Where a task row starts so its dot sits under the project's tile.
+pub(super) const TASK_INDENT: f32 = space::TIGHT + CHEVRON_W + space::LINE;
 
 /// The open rows, top to bottom: the needs section, each project, the selected
 /// project's tasks, then the settled fold.
@@ -21,10 +28,13 @@ pub(super) fn rows_view(deck: &mut Deck, rows: &[Row], cx: &mut Context<Deck>) -
         .iter()
         .map(|row| match row {
             Row::NeedsHeader { count } => needs_header(*count),
-            Row::Need { index, title, word, text } => need_row(*index, title, word, text.clone(), cx),
+            Row::Need { index, project_name, title, word, text } => {
+                need_row(*index, project_name, title, word, text.clone(), cx)
+            }
             Row::Nothing => nothing(),
-            Row::Project { index, name, tasks, attention, selected, .. } => {
-                project_row(*index, name, *tasks, *attention, *selected, cx)
+            Row::ProjectsHeader => projects_header(),
+            Row::Project { index, name, tasks, attention, selected, open, .. } => {
+                project_row(*index, name, *tasks, *attention, *selected, *open, cx)
             }
             Row::Tasks => tasks_view(deck, cx),
             Row::Settled { count } => settled_fold(deck, *count, cx),
@@ -34,19 +44,34 @@ pub(super) fn rows_view(deck: &mut Deck, rows: &[Row], cx: &mut Context<Deck>) -
 }
 
 fn needs_header(count: usize) -> AnyElement {
+    section_label(&format!("Needs you · {count}"), "sidebar-needs-header")
+}
+
+fn projects_header() -> AnyElement {
+    div().mt(px(space::LINE)).child(section_label("Projects", "sidebar-projects-header")).into_any_element()
+}
+
+fn section_label(label: &str, selector: &'static str) -> AnyElement {
     div()
-        .debug_selector(|| "sidebar-needs-header".into())
+        .debug_selector(move || selector.into())
         .h(px(28.))
         .px(px(space::TIGHT))
         .flex()
         .items_center()
         .text_size(px(size::SMALL))
         .text_color(Tokens::text_faint())
-        .child(format!("Needs you ({count})"))
+        .child(label.to_string())
         .into_any_element()
 }
 
-fn need_row(index: usize, title: &str, word: &'static str, text: String, cx: &mut Context<Deck>) -> AnyElement {
+fn need_row(
+    index: usize,
+    project_name: &str,
+    title: &str,
+    word: &'static str,
+    text: String,
+    cx: &mut Context<Deck>,
+) -> AnyElement {
     div()
         .id(("sidebar-need", index))
         .debug_selector(move || format!("sidebar-need-{index}"))
@@ -60,6 +85,16 @@ fn need_row(index: usize, title: &str, word: &'static str, text: String, cx: &mu
         .hover(|style| style.bg(Tokens::raised()))
         .on_click(cx.listener(move |this, _, _, cx| this.open_item(index, cx)))
         .child(div().flex_none().size(px(6.)).rounded_full().bg(Tokens::amber()))
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(104.))
+                .truncate()
+                .text_size(px(size::SMALL))
+                .text_color(Tokens::text_faint())
+                .child(project_name.to_string()),
+        )
+        .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child("›"))
         .child(div().flex_1().min_w_0().truncate().text_size(px(size::BODY)).child(title.to_string()))
         .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::amber()).child(word))
         .tooltip(move |_, cx| {
@@ -88,10 +123,11 @@ fn project_row(
     tasks: usize,
     attention: bool,
     selected: bool,
+    open: bool,
     cx: &mut Context<Deck>,
 ) -> AnyElement {
     let fg = if selected { Tokens::text() } else { Tokens::text_dim() };
-    let dot: gpui::Hsla = if attention { Tokens::amber() } else { Tokens::text_faint().into() };
+    let chevron = if open { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT };
     let row = div()
         .id(("sidebar-project", index))
         .debug_selector(move || format!("sidebar-project-{index}"))
@@ -106,15 +142,30 @@ fn project_row(
         .when(selected, |s| s.bg(Tokens::raised_hover()))
         .hover(|style| style.bg(Tokens::raised_hover()))
         .on_click(cx.listener(move |this, _, _, cx| this.select_project(index, cx)))
-        .child(div().flex_none().size(px(6.)).rounded_full().bg(dot))
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .font_weight(if selected { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                .child(name.to_string()),
+                .id(("sidebar-project-chevron", index))
+                .debug_selector(move || format!("sidebar-project-chevron-{index}"))
+                .flex_none()
+                .w(px(CHEVRON_W))
+                .flex()
+                .justify_center()
+                .text_color(Tokens::text_faint())
+                .hover(|style| style.text_color(Tokens::text_dim()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if selected {
+                        this.rail.toggle_collapsed();
+                        cx.notify();
+                    } else {
+                        this.select_project(index, cx);
+                    }
+                }))
+                .child(super::panels::glyph(chevron, 10.)),
         )
+        .child(super::sidebar_narrow::tile(initial(name), selected, TILE))
+        .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
+        .children(attention.then(|| div().flex_none().size(px(6.)).rounded_full().bg(Tokens::amber())))
         .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(tasks.to_string()));
     row.into_any_element()
 }

@@ -28,6 +28,8 @@ impl Deck {
                 *counts.entry(id).or_default() += 1;
             }
         }
+        let names: HashMap<String, String> =
+            self.projects().iter().map(|project| (project.id.clone(), project.name.clone())).collect();
         let projects = self
             .projects()
             .iter()
@@ -43,6 +45,8 @@ impl Deck {
             .map(|item| NeedIn {
                 task: item.task.clone(),
                 project: item.project.clone(),
+                // A hidden or forgotten project still names something the eye can use.
+                project_name: names.get(&item.project).cloned().unwrap_or_else(|| item.project.clone()),
                 title: self.task_title(&item.task),
                 word: item.reason.word(),
                 text: item.reason.text(),

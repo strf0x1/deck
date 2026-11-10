@@ -15,12 +15,14 @@ pub struct ProjectIn {
     pub tasks: usize,
 }
 
-/// One attention item as the sidebar shows it: its task's title, the reason in
-/// a word, and the full reason for hover and the item it opens.
+/// One attention item as the sidebar shows it: its task's title, the project
+/// it belongs to by id and name, the reason in a word, and the full reason for
+/// hover and the item it opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedIn {
     pub task: String,
     pub project: String,
+    pub project_name: String,
     pub title: String,
     pub word: &'static str,
     pub text: String,
@@ -35,12 +37,15 @@ pub enum Row {
     },
     Need {
         index: usize,
+        project_name: String,
         title: String,
         word: &'static str,
         text: String,
     },
     /// "Nothing needs you": the section never disappears (§7).
     Nothing,
+    /// "Projects": the label above the first project group.
+    ProjectsHeader,
     Project {
         index: usize,
         id: String,
@@ -48,6 +53,8 @@ pub enum Row {
         tasks: usize,
         attention: bool,
         selected: bool,
+        /// The selected project's list is showing, not folded.
+        open: bool,
     },
     /// Where the selected project's task list goes.
     Tasks,
@@ -57,22 +64,33 @@ pub enum Row {
 }
 
 /// The open sidebar: "Needs you" first, then each project, the selected one's
-/// tasks under its header, then the settled fold.
-pub fn rows(needs: &[NeedIn], projects: &[ProjectIn], selected: Option<&str>, settled: usize) -> Vec<Row> {
-    let mut rows = Vec::with_capacity(needs.len() + projects.len() * 2 + 3);
+/// tasks under its header unless its list is collapsed, then the settled fold.
+pub fn rows(
+    needs: &[NeedIn],
+    projects: &[ProjectIn],
+    selected: Option<&str>,
+    collapsed: bool,
+    settled: usize,
+) -> Vec<Row> {
+    let mut rows = Vec::with_capacity(needs.len() + projects.len() * 2 + 4);
     rows.push(Row::NeedsHeader { count: needs.len() });
     if needs.is_empty() {
         rows.push(Row::Nothing);
     } else {
         rows.extend(needs.iter().enumerate().map(|(index, need)| Row::Need {
             index,
+            project_name: need.project_name.clone(),
             title: need.title.clone(),
             word: need.word,
             text: need.text.clone(),
         }));
     }
+    if !projects.is_empty() {
+        rows.push(Row::ProjectsHeader);
+    }
     for (index, project) in projects.iter().enumerate() {
         let selected = selected == Some(project.id.as_str());
+        let open = selected && !collapsed;
         rows.push(Row::Project {
             index,
             id: project.id.clone(),
@@ -80,8 +98,9 @@ pub fn rows(needs: &[NeedIn], projects: &[ProjectIn], selected: Option<&str>, se
             tasks: project.tasks,
             attention: needs.iter().any(|need| need.project == project.id),
             selected,
+            open,
         });
-        if selected {
+        if open {
             rows.push(Row::Tasks);
         }
     }
@@ -117,7 +136,7 @@ pub fn narrow(needs: &[NeedIn], projects: &[ProjectIn], selected: Option<&str>) 
 }
 
 /// The name's first alphanumeric character, uppercased, or `?`.
-fn initial(name: &str) -> char {
+pub(super) fn initial(name: &str) -> char {
     name.chars().find(|c| c.is_alphanumeric()).and_then(|c| c.to_uppercase().next()).unwrap_or('?')
 }
 
@@ -129,19 +148,22 @@ mod tests {
         ProjectIn { id: id.into(), name: name.into(), tasks }
     }
 
-    fn need(task: &str, project: &str, title: &str) -> NeedIn {
+    fn need(task: &str, project: &str, project_name: &str, title: &str) -> NeedIn {
         NeedIn {
             task: task.into(),
             project: project.into(),
+            project_name: project_name.into(),
             title: title.into(),
             word: "asks",
             text: "asks to run make".into(),
         }
     }
 
-    fn project_row(row: &Row) -> (usize, &str, bool, bool) {
+    fn project_row(row: &Row) -> (usize, &str, bool, bool, bool) {
         match row {
-            Row::Project { index, id, attention, selected, .. } => (*index, id.as_str(), *attention, *selected),
+            Row::Project { index, id, attention, selected, open, .. } => {
+                (*index, id.as_str(), *attention, *selected, *open)
+            }
             _ => panic!("not a project row: {row:?}"),
         }
     }
@@ -149,12 +171,13 @@ mod tests {
     #[test]
     fn the_open_sidebar_lists_the_needs_section_then_projects_with_the_selected_ones_tasks() {
         let projects = [project("git:a", "alpha", 2), project("path:/b", "beta", 0)];
-        let rows = rows(&[], &projects, Some("path:/b"), 0);
+        let rows = rows(&[], &projects, Some("path:/b"), false, 0);
         assert_eq!(
             rows,
             vec![
                 Row::NeedsHeader { count: 0 },
                 Row::Nothing,
+                Row::ProjectsHeader,
                 Row::Project {
                     index: 0,
                     id: "git:a".into(),
@@ -162,6 +185,7 @@ mod tests {
                     tasks: 2,
                     attention: false,
                     selected: false,
+                    open: false,
                 },
                 Row::Project {
                     index: 1,
@@ -170,6 +194,7 @@ mod tests {
                     tasks: 0,
                     attention: false,
                     selected: true,
+                    open: true,
                 },
                 Row::Tasks,
             ]
@@ -177,43 +202,76 @@ mod tests {
     }
 
     #[test]
-    fn needs_keep_their_order_and_light_the_project_they_belong_to() {
-        let needs = [need("t2", "git:a", "second"), need("t1", "path:/b", "first")];
+    fn needs_keep_their_order_name_their_project_and_light_it() {
+        let needs = [need("t2", "git:a", "alpha", "second"), need("t1", "path:/b", "beta", "first")];
         let projects = [project("git:a", "alpha", 1), project("path:/b", "beta", 1)];
-        let rows = rows(&needs, &projects, None, 0);
-        let titles: Vec<&str> = rows
+        let rows = rows(&needs, &projects, None, false, 0);
+        let seen: Vec<(&str, &str)> = rows
             .iter()
             .filter_map(|row| match row {
-                Row::Need { title, .. } => Some(title.as_str()),
+                Row::Need { project_name, title, .. } => Some((project_name.as_str(), title.as_str())),
                 _ => None,
             })
             .collect();
-        assert_eq!(titles, ["second", "first"], "oldest first, as given");
+        assert_eq!(seen, [("alpha", "second"), ("beta", "first")], "oldest first, with where they belong");
         assert!(matches!(rows.first(), Some(Row::NeedsHeader { count: 2 })));
-        let projects: Vec<(usize, &str, bool, bool)> =
+        let projects: Vec<(usize, &str, bool, bool, bool)> =
             rows.iter().filter(|r| matches!(r, Row::Project { .. })).map(project_row).collect();
-        assert_eq!(projects, [(0, "git:a", true, false), (1, "path:/b", true, false)]);
+        assert_eq!(projects, [(0, "git:a", true, false, false), (1, "path:/b", true, false, false)]);
+    }
+
+    #[test]
+    fn the_projects_header_sits_between_the_needs_section_and_the_first_project() {
+        let projects = [project("git:a", "alpha", 1)];
+        let listed = rows(&[], &projects, None, false, 0);
+        assert_eq!((&listed[1], &listed[2]), (&Row::Nothing, &Row::ProjectsHeader));
+        assert_eq!(
+            listed[3],
+            Row::Project {
+                index: 0,
+                id: "git:a".into(),
+                name: "alpha".into(),
+                tasks: 1,
+                attention: false,
+                selected: false,
+                open: false,
+            }
+        );
+        let none = rows(&[], &[], None, false, 0);
+        assert!(!none.contains(&Row::ProjectsHeader), "no projects, no label");
     }
 
     #[test]
     fn an_unselected_sidebar_has_no_tasks_row() {
         let projects = [project("git:a", "alpha", 1)];
-        let rows = rows(&[], &projects, None, 0);
+        let rows = rows(&[], &projects, None, false, 0);
         assert!(!rows.contains(&Row::Tasks), "no project is open to list tasks under");
-        assert_eq!(project_row(&rows[2]), (0, "git:a", false, false));
+        assert_eq!(project_row(&rows[3]), (0, "git:a", false, false, false));
+    }
+
+    #[test]
+    fn a_collapsed_selected_project_keeps_its_header_closed() {
+        let projects = [project("git:a", "alpha", 1), project("git:b", "beta", 1)];
+        let listed = rows(&[], &projects, Some("git:a"), true, 0);
+        assert!(!listed.contains(&Row::Tasks), "the folded list has no tasks row");
+        assert_eq!(project_row(&listed[3]), (0, "git:a", false, true, false), "and says it is closed");
+        let opened = rows(&[], &projects, Some("git:a"), false, 0);
+        assert_eq!(project_row(&opened[3]), (0, "git:a", false, true, true));
+        assert_eq!(opened[4], Row::Tasks);
+        assert_eq!(project_row(&opened[5]), (1, "git:b", false, false, false), "another project is never open");
     }
 
     #[test]
     fn the_settled_fold_closes_the_list_only_when_it_has_something() {
         let projects = [project("git:a", "alpha", 1)];
-        assert_eq!(rows(&[], &projects, Some("git:a"), 3).last(), Some(&Row::Settled { count: 3 }));
-        let none = rows(&[], &projects, Some("git:a"), 0);
+        assert_eq!(rows(&[], &projects, Some("git:a"), false, 3).last(), Some(&Row::Settled { count: 3 }));
+        let none = rows(&[], &projects, Some("git:a"), false, 0);
         assert!(!none.iter().any(|row| matches!(row, Row::Settled { .. })));
     }
 
     #[test]
     fn the_narrow_sidebar_shows_the_count_and_one_letter_per_project() {
-        let needs = [need("t1", "git:a", "first")];
+        let needs = [need("t1", "git:a", "alpha", "first")];
         let projects = [
             project("git:a", "alpha", 1),
             project("git:b", "9 lives", 0),

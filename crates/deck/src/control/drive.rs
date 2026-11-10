@@ -272,12 +272,15 @@ pub fn state(d: &Deck) -> Value {
 
 /// The sidebar's rows, as `sidebar::rows` builds them, for a test to read.
 fn sidebar_state(d: &Deck) -> Value {
+    let names: std::collections::HashMap<&str, &str> =
+        d.projects().iter().map(|project| (project.id.as_str(), project.name.as_str())).collect();
     let needs: Vec<sidebar::NeedIn> = d
         .needs_you()
         .iter()
         .map(|item| sidebar::NeedIn {
             task: item.task.clone(),
             project: item.project.clone(),
+            project_name: names.get(item.project.as_str()).copied().unwrap_or(&item.project).to_string(),
             title: d.task_title(&item.task),
             word: item.reason.word(),
             text: item.reason.text(),
@@ -299,17 +302,18 @@ fn sidebar_state(d: &Deck) -> Value {
                 .count(),
         })
         .collect();
-    let rows = sidebar::rows(&needs, &projects, d.project(), d.settled().len());
+    let rows = sidebar::rows(&needs, &projects, d.project(), d.rail().collapsed(), d.settled().len());
     rows.iter()
         .map(|row| match row {
             sidebar::Row::NeedsHeader { count } => json!({ "kind": "needs_header", "count": count }),
-            sidebar::Row::Need { index, title, word, .. } => {
-                json!({ "kind": "need", "index": index, "title": title, "word": word })
-            }
+            sidebar::Row::Need { index, project_name, title, word, .. } => json!({
+                "kind": "need", "index": index, "project": project_name, "title": title, "word": word,
+            }),
             sidebar::Row::Nothing => json!({ "kind": "nothing" }),
-            sidebar::Row::Project { index, id, name, tasks, attention, selected } => json!({
+            sidebar::Row::ProjectsHeader => json!({ "kind": "projects_header" }),
+            sidebar::Row::Project { index, id, name, tasks, attention, selected, open } => json!({
                 "kind": "project", "index": index, "id": id, "name": name,
-                "tasks": tasks, "attention": attention, "selected": selected,
+                "tasks": tasks, "attention": attention, "selected": selected, "open": open,
             }),
             sidebar::Row::Tasks => json!({ "kind": "tasks" }),
             sidebar::Row::Settled { count } => json!({ "kind": "settled", "count": count }),

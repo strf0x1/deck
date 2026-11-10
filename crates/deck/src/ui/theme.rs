@@ -40,6 +40,8 @@ pub mod icon {
     pub const BULB: &str = "\u{f0eb}";
     pub const DOWN: &str = "\u{f063}";
     pub const COPY: &str = "\u{f0c5}";
+    pub const CHEVRON_DOWN: &str = "\u{f078}";
+    pub const CHEVRON_RIGHT: &str = "\u{f054}";
 }
 
 /// Text sizes by role. Six steps: views pick a role, never a number.

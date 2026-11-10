@@ -6,9 +6,10 @@
 //! drag's springs and order stay the board's and nothing here owns state.
 
 use super::board::{CARD_H, Card};
-use super::panels::state_color;
+use super::panels::{glyph, state_color};
 use super::root::{Deck, LIVE};
-use super::theme::{Tokens, radius, size, space, tint};
+use super::sidebar_rows::TASK_INDENT;
+use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, BoxShadow, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
@@ -29,6 +30,7 @@ pub(super) fn tasks_view(deck: &mut Deck, cx: &mut Context<Deck>) -> AnyElement 
     div()
         .debug_selector(|| "sidebar-tasks".into())
         .relative()
+        .ml(px(TASK_INDENT))
         .h(px(deck.board.height()))
         .children(cards)
         .into_any_element()
@@ -47,22 +49,22 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
         .as_deref()
         .and_then(|task| deck.tasks.iter().find(|record| record.id == task))
         .is_some_and(|record| record.done_ms.is_some());
-    let mark = task.map(|task| {
+    // The check appears only while the row is hovered, so the list carries
+    // no permanent chrome.
+    let hovered = deck.hovered_task == Some(id);
+    let mark = task.filter(|_| hovered).map(|task| {
         div()
             .id(("card-done", id))
             .debug_selector(move || format!("card-done-{id}"))
             .flex_none()
-            .h(px(20.))
-            .px(px(space::TIGHT))
+            .size(px(20.))
             .flex()
             .items_center()
+            .justify_center()
             .rounded(px(radius::CHIP))
-            .border_1()
-            .border_color(Tokens::edge())
-            .text_size(px(size::SMALL))
-            .text_color(Tokens::text_dim())
+            .text_color(if done { Tokens::lime() } else { Tokens::text_faint().into() })
             .cursor_pointer()
-            .hover(|style| style.bg(Tokens::raised_hover()))
+            .hover(|style| style.bg(Tokens::raised_hover()).text_color(Tokens::text_dim()))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -70,7 +72,7 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
                     this.mark_task(&task, !done, cx);
                 }),
             )
-            .child(if done { "Not done" } else { "Mark done" })
+            .child(glyph(icon::CHECK, 10.))
     });
     let chip = c.lane.chip.as_ref().map(|(dot, label)| {
         super::publication_panel::chip(*dot, label)
@@ -116,12 +118,33 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
         .when(held, |s| s.cursor_grabbing())
         .when(!held, |s| s.cursor_grab())
         .hover(|s| s.bg(Tokens::raised_hover()))
+        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            let hovered = if *hovered {
+                Some(id)
+            } else if this.hovered_task == Some(id) {
+                None
+            } else {
+                return;
+            };
+            if this.hovered_task != hovered {
+                this.hovered_task = hovered;
+                cx.notify();
+            }
+        }))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.grab(id, f32::from(ev.position.y), cx)),
         )
         .child(div().flex_none().size(px(6.)).rounded_full().bg(color))
-        .child(div().flex_1().min_w_0().truncate().text_size(px(size::BODY)).child(c.lane.title.clone()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(size::SMALL))
+                .text_color(if live { Tokens::text() } else { Tokens::text_dim() })
+                .child(c.lane.title.clone()),
+        )
         .children(mark)
         .child(right)
         .into_any_element()

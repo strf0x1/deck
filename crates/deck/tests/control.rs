@@ -210,8 +210,9 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
         json!([
             { "kind": "needs_header", "count": 0 },
             { "kind": "nothing" },
+            { "kind": "projects_header" },
             { "kind": "project", "index": 0, "id": "git:test", "name": "test",
-              "tasks": 3, "attention": false, "selected": true },
+              "tasks": 3, "attention": false, "selected": true, "open": true },
             { "kind": "tasks" },
         ])
     );
@@ -263,4 +264,10 @@ fn state_reports_the_needs_you_strip(cx: &mut TestAppContext) {
         send(&mut cx, &d, json!({ "cmd": "state" }))["needs_you"],
         json!([{ "task": "a", "project": "git:test", "reason": "stopped unexpectedly" }])
     );
+    // The row reads `project › title`, so the state names the project too.
+    let sidebar = send(&mut cx, &d, json!({ "cmd": "state" }))["sidebar"].clone();
+    let need = sidebar.as_array().unwrap().iter().find(|row| row["kind"] == "need").unwrap().clone();
+    assert_eq!(need["project"], json!("test"), "the project's name, not its id");
+    let label = format!("{} › {}", need["project"].as_str().unwrap(), need["title"].as_str().unwrap());
+    assert!(label.starts_with("test › "), "the row reads project › title: {label}");
 }

@@ -24,11 +24,29 @@ pub struct Rail {
     active: Option<usize>,
     hovered: bool,
     pinned: bool,
+    /// The selected project's task list is folded closed.
+    collapsed: bool,
 }
 
 impl Rail {
     pub fn new() -> Self {
-        Rail { width: Spring::at(COLLAPSED), marker: Spring::at(0.), active: None, hovered: false, pinned: false }
+        Rail {
+            width: Spring::at(COLLAPSED),
+            marker: Spring::at(0.),
+            active: None,
+            hovered: false,
+            pinned: false,
+            collapsed: false,
+        }
+    }
+
+    /// Whether the selected project's list is folded.
+    pub fn collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    pub fn toggle_collapsed(&mut self) {
+        self.collapsed = !self.collapsed;
     }
 
     pub fn active(&self) -> Option<usize> {
@@ -66,8 +84,12 @@ impl Rail {
         self.retarget();
     }
 
-    /// Mark project `index` (or none) as the selected one.
+    /// Mark project `index` (or none) as the selected one. A different
+    /// project opens its list again; re-selecting the same one keeps the fold.
     pub fn select(&mut self, index: Option<usize>) {
+        if self.active != index {
+            self.collapsed = false;
+        }
         self.active = index;
         self.marker.target = index.map_or(0., |i| i as f32 * ITEM_H);
     }
@@ -163,6 +185,21 @@ mod tests {
         r.toggle_pin();
         assert_eq!(r.reserved(), COLLAPSED, "immediately, before the spring retracts");
         assert!(r.width.pos > COLLAPSED);
+    }
+
+    #[test]
+    fn collapsing_survives_reselecting_the_same_project_and_opens_on_another() {
+        let mut r = Rail::new();
+        r.select(Some(0));
+        r.toggle_collapsed();
+        assert!(r.collapsed());
+        r.select(Some(0));
+        assert!(r.collapsed(), "a refresh that names the same project keeps the fold");
+        r.select(Some(1));
+        assert!(!r.collapsed(), "another project's list opens");
+        r.toggle_collapsed();
+        r.select(None);
+        assert!(!r.collapsed());
     }
 
     #[test]
