@@ -1,7 +1,9 @@
 # 0010 — One window over all projects, and a "Needs you" strip
 
 Status: proposed, 2026-11-07; §1, §7 and §9 amended 2026-11-09 (one
-sidebar in place of the rail, the strip and the sessions column). Answers #124. Builds on 0001 (tasks and
+sidebar in place of the rail, the strip and the sessions column); §1, §5
+and §9 amended again 2026-11-09 (a project view, task titles, and a
+hierarchy that tells projects from tasks). Answers #124. Builds on 0001 (tasks and
 records), 0002 (live attach), 0004 §5 (the approval queue) and 0008 §3–4
 (the repository is part of the task).
 
@@ -40,7 +42,20 @@ The user's decisions (2026-11-07):
 The window has two regions (amended 2026-11-09):
 - a **sidebar** on the left, holding "Needs you" (§7), the projects and
   their tasks (§9), and the settled fold;
-- the **selected task**: a header with its title, then its transcript.
+- the **main area**, showing either the selected task (a header with its
+  title, then its transcript) or the selected project's **project view**.
+
+The main area shows one of two kinds of place (amended again 2026-11-09):
+- **Clicking a project** in the sidebar shows its project view: the
+  project's name, checkout, branch and origin; a composer that starts a
+  task in it (§5); its unsettled tasks as cards with their status line,
+  publication and last activity; and a footer with the agent command and
+  the project's rules. Selecting a project never jumps to one of its tasks.
+- **Clicking a task**, or a Needs-you item, shows that task.
+- The task header's project name is a link back to the project view.
+
+The sidebar highlights whichever place is shown, so a project row and a
+task row are never highlighted at once.
 
 The sidebar stays narrow until the pointer reaches it, so the transcript
 keeps the screen. Narrow, it shows the Needs-you count, one glyph per
@@ -128,7 +143,8 @@ other checkouts and worktrees.
 
 ### 5. Opening a project starts no task
 
-A project with no tasks shows the composer. The first prompt creates the
+A project's view always has the composer (amended again 2026-11-09: it was
+the empty state of a project with no tasks). The first prompt creates the
 task with the project's `argv` and the selected checkout, then sends the
 prompt. No VM boots until there is work for it.
 
@@ -201,6 +217,31 @@ Below "Needs you", the sidebar lists every visible project (amended
   What a card's second line said (the agent's status) moves to the header.
 - The settled fold closes the list.
 
+**Telling projects from tasks** (amended again 2026-11-09). The first
+version drew both as a dot, a name and a number at one size, and named
+tasks after their directory, so a task called `agent` sat beside a project
+called `agent_dotfiles`. One rule each:
+- **A project** is a group header: a chevron, its letter tile (the same
+  tile the narrow sidebar shows), its name in semibold, and on the right
+  its task count, with an amber dot before it when a task needs you. A
+  project row never has a state dot.
+- **A task** is indented under its project to the tile's edge, in the
+  smaller, dimmer text, and always starts with its state dot. Mark done is
+  a check icon shown on hover.
+- **Needs-you rows** say where they belong: `deck › fix rail drag`.
+- Small "Needs you" and "Projects" labels separate the sections. The
+  wordmark tile at the top goes, since it read as a project.
+- Only the selected project's group opens; its chevron collapses it. A
+  click anywhere else on a project's header selects that project.
+
+**A task's title** is recorded by `deckd` on the task (`Task.title`), set
+once from the first line of its first prompt (at most 60 characters). A
+task that has none yet takes it from its replayed transcript when the
+window attaches. Without either, it is "Untitled" and the first six
+characters of its id. Never the directory name, and never the agent's name.
+An agent-provided session title can replace it later; that is not part of
+this amendment.
+
 The spaces ADR adds spaces inside a project's group. A task outside any
 space then sits in the project's **Inbox**, which is this same list.
 
@@ -209,6 +250,10 @@ space then sits in the project's **Inbox**, which is this same list.
 - **One sidebar** (amendment, 2026-11-09): `ui/rail.rs` becomes the
   sidebar's open/close state, the sessions column and the top strip go,
   and the header moves over the transcript. Slices: #154, #155, #156.
+- **The project view, titles and hierarchy** (amendment, 2026-11-09):
+  `Task.title` and a `title` daemon request; the sidebar's rows restyled;
+  the main area's project view. Slices: #162 (titles, now), #163 (hierarchy, after #160),
+  #164 (the project view, after #163).
 - **The window's single task goes away.** `task.rs` and `ui/attachment.rs`
   manage a set of attachments keyed by task id, and `ui/root.rs` a selection.
   Switching tasks no longer detaches the old one. `New session` creates in
