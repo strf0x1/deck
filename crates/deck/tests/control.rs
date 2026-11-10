@@ -155,10 +155,9 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
         assert!(std::time::Instant::now() < deadline, "the selected task never became ready");
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(
-        send(&mut vcx, &tx, json!({ "cmd": "state" }))["header"],
-        json!({ "title": "name the row", "project": "one", "detail": "ready" })
-    );
+    let s = send(&mut vcx, &tx, json!({ "cmd": "state" }));
+    assert_eq!(s["header"], json!({ "title": "name the row", "project": "one", "detail": "ready" }));
+    assert_eq!(s["main"], json!("task"), "a selected task is what the main area shows");
 
     let own = deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned));
     cx.quit();
@@ -229,7 +228,10 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
     assert_eq!(s["projects"], json!([{ "id": "git:test", "name": "test" }]));
 
     send(&mut cx, &d, json!({ "cmd": "select_rail", "index": 0 }));
-    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["active"], json!(0));
+    let s = send(&mut cx, &d, json!({ "cmd": "state" }));
+    assert_eq!(s["rail"]["active"], json!(0));
+    assert_eq!(s["main"], json!("project"), "selecting a project shows its view, not a task");
+    assert!(cx.debug_bounds("project-view").is_some());
     let err = send_raw(&mut cx, &d, json!({ "cmd": "select_rail", "index": 1 }));
     assert_eq!(err["ok"], json!(false), "there is no rail item 1");
     send(&mut cx, &d, json!({ "cmd": "move", "x": 700, "y": 300 }));

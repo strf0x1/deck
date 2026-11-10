@@ -478,6 +478,18 @@ fn settle(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
     }
 }
 
+/// Draw a frame, so `debug_bounds` sees the current state.
+fn draw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+/// A project-view card's bounds; its debug selector is built at run time.
+fn card_bounds(cx: &mut VisualTestContext, lane: usize) -> gpui::Bounds<gpui::Pixels> {
+    let selector: &'static str = Box::leak(format!("project-view-card-{lane}").into_boxed_str());
+    cx.debug_bounds(selector).unwrap_or_else(|| panic!("no project-view card for lane {lane}"))
+}
+
 fn wait_view(cx: &mut VisualTestContext, mut ready: impl FnMut(&VisualTestContext) -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -1153,21 +1165,36 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     });
     wait_view(&mut vcx, |_| matches!(daemon.task(&t1.id).unwrap().state, State::Running));
 
+    // A project click shows its project view, never one of its tasks.
     let (x, y) = deck.read_with(&vcx, |d, _| d.rail_item_center(index));
     vcx.simulate_click(point(px(x), px(y)), Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none() && d.project() == Some(p2.id.as_str())));
+    assert!(vcx.debug_bounds("project-view").is_some(), "the project view shows");
+    assert!(vcx.debug_bounds("transcript-empty").is_none(), "and not a task's transcript");
+    let lane = deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(p2.id.as_str()));
+        assert_eq!(d.rail().active(), Some(index));
+        assert_eq!(d.board().cards().len(), 1, "only the selected project's task is in the list");
+        assert!(d.attached_ids().contains(&t1.id), "the other project's live session stays attached");
+        d.board().order()[0]
+    });
+    let card = card_bounds(&mut vcx, lane).center();
+    vcx.simulate_click(card, Modifiers::none());
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(t2.id.as_str())));
     wait_view(&mut vcx, |_| matches!(daemon.task(&t2.id).unwrap().state, State::Running));
     deck.read_with(&vcx, |d, _| {
-        assert_eq!(d.project(), Some(p2.id.as_str()));
-        assert_eq!(d.rail().active(), Some(index));
-        assert_eq!(d.board().cards().len(), 1, "only the selected project's task is in the column");
+        assert_eq!(d.board().cards().len(), 1);
         assert_eq!(d.board().cards()[0].lane.id, deck::ui::root::LIVE);
-        assert!(d.attached_ids().contains(&t1.id), "the other project's live session stays attached");
+        assert!(d.attached_ids().contains(&t1.id));
     });
 
     // Back to the first: its live attachment was kept, and the second leaves the column.
     let (x, y) = deck.read_with(&vcx, |d, _| d.rail_item_center(0));
     vcx.simulate_click(point(px(x), px(y)), Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none()));
+    let lane = deck.read_with(&vcx, |d, _| d.board().order()[0]);
+    let card = card_bounds(&mut vcx, lane).center();
+    vcx.simulate_click(card, Modifiers::none());
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(t1.id.as_str())));
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.board().cards().len(), 1);
@@ -1211,7 +1238,8 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
         assert_eq!(d.task_id(), None);
         assert!(d.awaiting_task());
     });
-    assert!(vcx.debug_bounds("project-empty-state").is_some());
+    assert!(vcx.debug_bounds("project-view").is_some(), "an open project shows its project view");
+    assert!(vcx.debug_bounds("project-empty-state").is_some(), "with what a task would see");
 
     vcx.simulate_input("hello");
     vcx.simulate_keystrokes("enter");
@@ -1855,6 +1883,17 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
         assert_eq!(header.project.as_deref(), Some("two"), "and so does the project chip");
     });
 
+    // The project chip leads back to the project view; only the place shown
+    // is highlighted in the sidebar (ADR 0010 §1).
+    open_sidebar(&deck, &mut vcx);
+    assert!(vcx.debug_bounds("sidebar-project-marker").is_none(), "a shown task highlights only its row");
+    click_control(&mut vcx, "hdr-project");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none()));
+    assert!(vcx.debug_bounds("project-view").is_some(), "the project chip shows the project view");
+    assert!(vcx.debug_bounds("transcript-empty").is_none(), "and not the task's transcript");
+    open_sidebar(&deck, &mut vcx);
+    assert!(vcx.debug_bounds("sidebar-project-marker").is_some(), "the project row marks the view shown");
+
     cx.quit();
     for id in [&a, &b] {
         daemon.stop(id).unwrap();
@@ -2119,6 +2158,91 @@ fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppCont
 
     cx.quit();
     for id in [&a, &b] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+/// The project view lists the project's unsettled tasks in the board's
+/// order, a card switches to its task, its footer opens the rules, and the
+/// composer starts another task (issue #164).
+#[cfg(unix)]
+#[gpui::test]
+fn the_project_view_lists_tasks_and_starts_another(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, beta) = two_fake_tasks("project-view");
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    daemon.title(&a, "alpha").unwrap();
+    daemon.title(&b, "beta").unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.attached_ids().len() == 2 && d.board().cards().len() == 2));
+
+    // A project click lists its tasks, newest to oldest, in the board's order.
+    open_sidebar(&deck, &mut vcx);
+    click_control(&mut vcx, "sidebar-project-0");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none()));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("project-view").is_some());
+    assert!(vcx.debug_bounds("transcript-empty").is_none(), "the project view replaces the transcript");
+    assert!(vcx.debug_bounds("hdr-project").is_none(), "no task's header chip while the project shows");
+    assert!(vcx.debug_bounds("project-view-sessions").is_some());
+    assert!(vcx.debug_bounds("project-empty-state").is_none(), "a project with tasks lists them");
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.board().cards().len(), 2, "one card per unsettled task");
+        assert!(d.attached_ids().contains(&a) && d.attached_ids().contains(&b), "attachments survive the switch");
+        let titles: Vec<&str> = d.board().cards().iter().map(|c| c.lane.title.as_str()).collect();
+        assert!(titles.contains(&"alpha") && titles.contains(&"beta"), "{titles:?}");
+    });
+    let order = deck.read_with(&vcx, |d, _| d.board().order());
+    let tops: Vec<f32> = order.iter().map(|lane| card_bounds(&mut vcx, *lane).top().into()).collect();
+    assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "the cards follow the board's order: {tops:?}");
+
+    // A card switches to its task, as a sidebar row does.
+    let beta_lane = lane_named(&deck, &vcx, "beta");
+    let card = card_bounds(&mut vcx, beta_lane).center();
+    vcx.simulate_click(card, Modifiers::none());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(b.as_str())));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("project-view").is_none(), "the card leaves the project view");
+    assert!(vcx.debug_bounds("transcript-empty").is_some(), "and shows that task's transcript");
+    assert!(vcx.debug_bounds("hdr-project").is_some(), "the header names the task's project");
+
+    // The task header's project chip returns to the view; its footer opens
+    // the project's rules.
+    click_control(&mut vcx, "hdr-project");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none()));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("project-view").is_some());
+    click_control(&mut vcx, "project-view-rules");
+    assert!(deck.read_with(&vcx, |d, _| d.access().is_open()), "Rules and grants opens the access panel");
+    assert!(vcx.debug_bounds("project-view").is_none(), "the panel replaces the project view");
+    vcx.simulate_keystrokes("escape");
+    assert!(!deck.read_with(&vcx, |d, _| d.access().is_open()));
+    assert!(vcx.debug_bounds("project-view").is_some(), "closing the panel returns to the project view");
+
+    // Its composer starts another task, even though the project has tasks.
+    vcx.simulate_input("third");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_some_and(|id| id != a && id != b)));
+    let created = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&created));
+    wait_view(&mut vcx, |_| daemon.tasks().unwrap().len() == 3);
+    assert_eq!(said(&deck, &vcx), vec!["third".to_string()], "the prompt created and reached a new task");
+
+    cx.quit();
+    for id in [&a, &b, &created] {
         daemon.stop(id).unwrap();
     }
     drop(daemon);

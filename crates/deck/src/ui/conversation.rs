@@ -77,8 +77,10 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
             super::access_panel::panel(deck, cx).into_any_element()
         } else if deck.open_publication().is_some() {
             super::publication_panel::panel(deck, cx).into_any_element()
+        } else if deck.project().is_some() && !has_task {
+            super::project_view::project_view(deck, cx)
         } else if empty_project {
-            empty(deck, cx)
+            empty(cx)
         } else {
             super::transcript_list::transcript(deck, cx).into_any_element()
         })
@@ -102,12 +104,10 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         )
 }
 
-/// A project with no task: what a task would see, and the composer that
-/// creates it with the first prompt (ADR 0010 §5).
-fn empty(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
-    let project = deck.project_name();
-    let checkout = deck.project_checkout().map(|dir| super::prompt::tilde(&dir));
-    let mut body = div()
+/// No project open: what the window says before there is anywhere to start
+/// a task (ADR 0010 §1). A selected project shows its project view instead.
+fn empty(cx: &mut Context<Deck>) -> AnyElement {
+    div()
         .flex_1()
         .min_h_0()
         .debug_selector(|| "project-empty-state".into())
@@ -117,24 +117,16 @@ fn empty(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .justify_center()
         .gap(px(space::STACK))
         .px(px(space::PAD))
-        .child(match project {
-            Some(name) => div().text_size(px(size::DISPLAY)).font_weight(FontWeight::MEDIUM).child(name.to_string()),
-            None => div().text_size(px(size::DISPLAY)).font_weight(FontWeight::MEDIUM).child("No project open"),
-        })
-        .children(
-            checkout.map(|dir| {
-                div().font_family(MONO).text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(dir)
-            }),
+        .child(div().text_size(px(size::DISPLAY)).font_weight(FontWeight::MEDIUM).child("No project open"))
+        .child(
+            div()
+                .max_w(px(420.))
+                .text_center()
+                .text_size(px(size::LABEL))
+                .text_color(Tokens::text_dim())
+                .child("Open a checkout to start a task in its project."),
         )
-        .child(div().max_w(px(420.)).text_center().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(
-            if project.is_some() {
-                "A task sees the project's tracked and untracked files, but not ignored ones."
-            } else {
-                "Open a checkout to start a task in its project."
-            },
-        ));
-    if project.is_none() {
-        body = body.child(
+        .child(
             div()
                 .id("empty-open")
                 .debug_selector(|| "empty-open".into())
@@ -152,9 +144,8 @@ fn empty(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .on_click(cx.listener(|this, _, _, cx| this.pick_project(cx)))
                 .child(glyph(icon::PLUS, 11.))
                 .child("Open project…"),
-        );
-    }
-    body.into_any_element()
+        )
+        .into_any_element()
 }
 
 /// The host boundary card: an external operation that needs a human

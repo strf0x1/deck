@@ -211,6 +211,13 @@ pub fn state(d: &Deck) -> Value {
             })).collect::<Vec<_>>(),
             "dragging": board.dragging(),
         },
+        "main": if d.task_id().is_some() {
+            "task"
+        } else if d.project().is_some() {
+            "project"
+        } else {
+            "none"
+        },
         "header": {
             "title": header.title,
             "project": header.project,

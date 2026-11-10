@@ -215,11 +215,21 @@ impl Deck {
     /// Switch the window to the task card `lane` shows. Every attached task
     /// keeps running and keeps its state; only `selected` moves.
     pub fn select(&mut self, lane: usize, cx: &mut Context<Self>) {
-        let Some(current) = self.current().task.clone() else { return };
-        let Some(id) = self.lanes.task(lane, Some(current.id())).filter(|_| lane != LIVE) else { return };
+        if lane == LIVE {
+            return;
+        }
+        let from = self.task_id().map(str::to_owned);
+        let Some(id) = self.lanes.task(lane, from.as_deref()) else { return };
         let Some(record) = self.tasks.iter().find(|t| t.id == id).cloned() else { return };
+        // The project view has no selected task, so the card's task supplies
+        // the window's connection.
+        let current =
+            self.current().task.clone().or_else(|| self.daemon.clone().map(|daemon| WindowTask::of(daemon, &record)));
+        let Some(current) = current else { return };
         // The previously selected card takes the selected one's slot.
-        self.lanes.switch(Some(current.id()), lane);
+        if from.is_some() {
+            self.lanes.switch(from.as_deref(), lane);
+        }
         self.select_task(&current, record, cx);
     }
 
@@ -320,15 +330,15 @@ impl Deck {
         cx.notify();
     }
 
-    /// Select the project at rail index `index`, and its most recent task if
-    /// it has one.
+    /// Select the project at rail index `index` and show its project view:
+    /// clicking a project never jumps to one of its tasks (ADR 0010 §1).
     pub fn select_project(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.projects.select_index(index).is_none() {
             return;
         }
         self.projects.clear_error();
         self.rail.select(Some(index));
-        self.switch_project(cx);
+        self.clear_task(cx);
     }
 
     /// Point the column and transcript at the selected project's newest task,
@@ -350,8 +360,9 @@ impl Deck {
         self.clear_task(cx);
     }
 
-    /// Keep the project open with no task: the composer shows its empty state.
-    fn clear_task(&mut self, cx: &mut Context<Self>) {
+    /// Keep the project open with no task: the main area shows its project
+    /// view (ADR 0010 §1). The tasks' attachments stay (ADR 0010 §8).
+    pub(super) fn clear_task(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
         self.pending_prompt = None;
         self.expanded.clear();

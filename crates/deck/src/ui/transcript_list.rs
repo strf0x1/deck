@@ -103,6 +103,7 @@ impl Deck {
 pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     if deck.session().entries.is_empty() && deck.session().status != Status::Detached {
         return div()
+            .debug_selector(|| "transcript-empty".into())
             .flex_1()
             .flex()
             .flex_col()

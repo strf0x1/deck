@@ -51,6 +51,7 @@ fn glyph_row(g: &Glyph, cx: &mut Context<Deck>) -> AnyElement {
         .id(("sidebar-glyph", index))
         .debug_selector(move || format!("sidebar-glyph-{index}"))
         .relative()
+        .w(px(COLLAPSED - 12.))
         .h(px(ITEM_H))
         .flex()
         .items_center()
