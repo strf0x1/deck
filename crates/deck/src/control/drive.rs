@@ -10,6 +10,7 @@
 use super::protocol::{self, Command, Mods, Point, Press};
 use crate::ui::root::Deck;
 use crate::ui::session::{Entry, Status};
+use crate::ui::sidebar;
 use deck_acp::ToolContent;
 use gpui::{
     AnyWindowHandle, AppContext as _, AsyncApp, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
@@ -66,14 +67,14 @@ async fn execute(cmd: Command, deck: WindowHandle<Deck>, cx: &mut AsyncApp) -> a
             Ok(json!({}))
         }
         Command::HoverRail => {
-            let (x, y) = Deck::rail_item_center(0);
+            let (x, y) = deck.read_with(cx, |d, _| d.rail_item_center(0))?;
             pointer_move(window, cx, Point { x, y }, None)?;
             Ok(json!({}))
         }
         Command::SelectRail(i) => {
             let count = deck.read_with(cx, |d, _| d.projects().len())?;
             anyhow::ensure!(i < count, "no rail item {i}");
-            let (x, y) = Deck::rail_item_center(i);
+            let (x, y) = deck.read_with(cx, |d, _| d.rail_item_center(i))?;
             click(window, cx, Point { x, y })?;
             Ok(json!({}))
         }
@@ -87,6 +88,8 @@ async fn execute(cmd: Command, deck: WindowHandle<Deck>, cx: &mut AsyncApp) -> a
                 if waited >= SETTLE_LIMIT {
                     return Ok(json!({ "settled": false }));
                 }
+                // Springs step on a draw, and the test clock alone does not draw.
+                cx.update_window(window, |_, window, _| window.refresh())?;
                 cx.background_executor().timer(FRAME).await;
                 waited += FRAME;
             }
@@ -256,6 +259,54 @@ pub fn state(d: &Deck) -> Value {
             "confirming": d.access().confirming().map(|target| target.label()),
             "busy": d.access().busy(),
         },
+        "sidebar": sidebar_state(d),
         "animating": d.animating(),
     })
+}
+
+/// The sidebar's rows, as `sidebar::rows` builds them, for a test to read.
+fn sidebar_state(d: &Deck) -> Value {
+    let needs: Vec<sidebar::NeedIn> = d
+        .needs_you()
+        .iter()
+        .map(|item| sidebar::NeedIn {
+            task: item.task.clone(),
+            project: item.project.clone(),
+            title: d.task_title(&item.task),
+            word: item.reason.word(),
+            text: item.reason.text(),
+        })
+        .collect();
+    let projects: Vec<sidebar::ProjectIn> = d
+        .projects()
+        .iter()
+        .map(|project| sidebar::ProjectIn {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            tasks: d
+                .tasks()
+                .iter()
+                .filter(|task| {
+                    task.state != deck_runtime::State::Destroyed
+                        && task.spec.project.as_deref() == Some(project.id.as_str())
+                })
+                .count(),
+        })
+        .collect();
+    let rows = sidebar::rows(&needs, &projects, d.project(), d.settled().len());
+    rows.iter()
+        .map(|row| match row {
+            sidebar::Row::NeedsHeader { count } => json!({ "kind": "needs_header", "count": count }),
+            sidebar::Row::Need { index, title, word, .. } => {
+                json!({ "kind": "need", "index": index, "title": title, "word": word })
+            }
+            sidebar::Row::Nothing => json!({ "kind": "nothing" }),
+            sidebar::Row::Project { index, id, name, tasks, attention, selected } => json!({
+                "kind": "project", "index": index, "id": id, "name": name,
+                "tasks": tasks, "attention": attention, "selected": selected,
+            }),
+            sidebar::Row::Tasks => json!({ "kind": "tasks" }),
+            sidebar::Row::Settled { count } => json!({ "kind": "settled", "count": count }),
+        })
+        .collect()
 }

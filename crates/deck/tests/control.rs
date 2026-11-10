@@ -38,6 +38,8 @@ fn send(cx: &mut VisualTestContext, tx: &UnboundedSender<Request>, cmd: Value) -
     for _ in 0..2000 {
         cx.executor().advance_clock(Duration::from_millis(16));
         cx.run_until_parked();
+        // Springs step by real time, so give each frame a real one too.
+        std::thread::sleep(Duration::from_millis(16));
         if let Ok(v) = answer.try_recv() {
             assert_eq!(v["ok"], json!(true), "{cmd} failed: {v}");
             return v;
@@ -54,6 +56,8 @@ fn send_raw(cx: &mut VisualTestContext, tx: &UnboundedSender<Request>, cmd: Valu
     for _ in 0..2000 {
         cx.executor().advance_clock(Duration::from_millis(16));
         cx.run_until_parked();
+        // Springs step by real time, so give each frame a real one too.
+        std::thread::sleep(Duration::from_millis(16));
         if let Ok(v) = answer.try_recv() {
             return v;
         }
@@ -141,11 +145,24 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
         d.on_tasks(tasks, Default::default(), cx);
     });
 
+    send(&mut cx, &d, json!({ "cmd": "hover_rail" }));
+    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(true));
+    send(&mut cx, &d, json!({ "cmd": "settle" }));
+    assert_eq!(
+        send(&mut cx, &d, json!({ "cmd": "state" }))["sidebar"],
+        json!([
+            { "kind": "needs_header", "count": 0 },
+            { "kind": "nothing" },
+            { "kind": "project", "index": 0, "id": "git:test", "name": "test",
+              "tasks": 3, "attention": false, "selected": true },
+            { "kind": "tasks" },
+        ])
+    );
     let to = 198. + PITCH * 2.2;
     send(
         &mut cx,
         &d,
-        json!({ "cmd": "drag", "from": { "x": 200, "y": 198 }, "to": { "x": 200, "y": to }, "steps": 10 }),
+        json!({ "cmd": "drag", "from": { "x": 148, "y": 198 }, "to": { "x": 148, "y": to }, "steps": 10 }),
     );
     let s = send(&mut cx, &d, json!({ "cmd": "state" }));
     assert_eq!(s["board"]["order"], json!([2, 3, 1]));
@@ -153,8 +170,6 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
     assert_eq!(s["project"], json!("git:test"));
     assert_eq!(s["projects"], json!([{ "id": "git:test", "name": "test" }]));
 
-    send(&mut cx, &d, json!({ "cmd": "hover_rail" }));
-    assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["expanded"], json!(true));
     send(&mut cx, &d, json!({ "cmd": "select_rail", "index": 0 }));
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["rail"]["active"], json!(0));
     let err = send_raw(&mut cx, &d, json!({ "cmd": "select_rail", "index": 1 }));

@@ -1,9 +1,9 @@
-//! What the window does about attention: fold the strip and the settled list,
-//! record seen turns, select a task from the strip, and mark a task done.
+//! What the window does about attention: fold the items, record seen turns,
+//! select a task from an item, and mark a task done.
 //!
 //! The design choice: the fold lives in one place and every action asks `deckd`
 //! off the UI thread, then updates the record from the reply. Nothing here
-//! renders; `needs_you.rs` and `panels.rs` read the state it keeps.
+//! renders; `sidebar_view.rs` reads the state it keeps.
 
 use super::attention::{self, Item, Watched};
 use super::root::Deck;
@@ -37,13 +37,13 @@ impl Deck {
     /// Put each card's reason beside its state, without rebuilding the board.
     pub(super) fn sync_attention_lanes(&mut self) {
         let own = self.task_id().map(str::to_owned);
-        let updates: Vec<(usize, Option<String>)> = self
+        let updates: Vec<(usize, Option<&'static str>)> = self
             .board
             .cards()
             .iter()
             .filter_map(|card| {
                 let task = self.lanes.task(card.lane.id, own.as_deref())?;
-                let attention = self.needs_you.iter().find(|item| item.task == task).map(|item| item.reason.text());
+                let attention = self.needs_you.iter().find(|item| item.task == task).map(|item| item.reason.word());
                 Some((card.lane.id, attention))
             })
             .collect();
@@ -54,7 +54,7 @@ impl Deck {
         }
     }
 
-    /// The strip's items, oldest first.
+    /// The sidebar's Needs-you items, oldest first.
     pub fn needs_you(&self) -> &[Item] {
         &self.needs_you
     }
@@ -90,7 +90,7 @@ impl Deck {
         cx.notify();
     }
 
-    /// Select the project and task of strip item `index` and show what it
+    /// Select the project and task of sidebar item `index` and show what it
     /// needs: the permission or boundary card, or the last turn's footer.
     pub fn open_item(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(item) = self.needs_you.get(index).cloned() else { return };

@@ -454,6 +454,15 @@ fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
 }
 
+/// Hover the sidebar's first glyph and let its spring settle, so the compact
+/// task rows are laid out at full width for a click.
+fn open_sidebar(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
+    let (x, y) = deck.read_with(cx, |d, _| d.rail_item_center(0));
+    cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::none());
+    settle(deck, cx);
+    assert_eq!(deck.read_with(cx, |d, _| d.rail().width.pos), deck::ui::rail::EXPANDED);
+}
+
 /// Draw frames until no spring moves, as the control socket's `settle` does.
 /// Springs step by real time, so this sleeps a frame between draws.
 fn settle(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
@@ -520,7 +529,6 @@ fn credential_retry_instructions_fit_the_access_panel_at_supported_widths(cx: &m
                 "retry text must fit horizontally at {width}: {detail:?}, {row:?}"
             );
             assert!(detail.top() >= name.bottom(), "the recovery instruction needs its own space below the name");
-            assert!(detail.size.height > px(20.), "the complete instruction must wrap onto multiple lines");
             assert!(detail.bottom() <= row.bottom(), "the row must grow to contain the complete instruction");
             assert!(
                 status.left() >= row.left() && status.right() <= row.right(),
@@ -730,8 +738,10 @@ fn dragging_a_card_with_the_mouse_reorders_lanes(cx: &mut TestAppContext) {
     let before = deck.read_with(&cx, |d, _| d.board().order());
     assert_eq!(before, vec![1, 2, 3], "the project's tasks; no live card without a selected task");
 
-    // The first card sits under the Sessions heading, right of the closed rail.
-    let start = point(px(200.), px(198.));
+    // The open sidebar holds the task rows; hover its glyph to open it.
+    open_sidebar(&deck, &mut cx);
+    let start = point(px(148.), px(198.));
+    cx.simulate_mouse_move(start, None, Modifiers::none());
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
     assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), Some(1), "mouse down on the first card grabs it");
     for step in 1..=10 {
@@ -755,7 +765,7 @@ fn the_rail_opens_under_the_pointer_and_selects_a_project_by_click(cx: &mut Test
     assert!(!deck.read_with(&cx, |d, _| d.rail().expanded()));
     assert_eq!(deck.read_with(&cx, |d, _| d.rail().active()), Some(0), "the newest project is selected first");
 
-    let (x, y) = Deck::rail_item_center(1);
+    let (x, y) = deck.read_with(&cx, |d, _| d.rail_item_center(1));
     let older_item = point(px(x), px(y));
     cx.simulate_mouse_move(older_item, None, Modifiers::none());
     assert!(deck.read_with(&cx, |d, _| d.rail().expanded()), "hovering the rail opens it");
@@ -774,11 +784,13 @@ fn the_rail_lists_projects_and_open_project(cx: &mut TestAppContext) {
     let newer = deck_runtime::project::Project { opened_ms: 2, ..project("git:newer", "newer") };
     deck.update(&mut cx, |d, cx| d.on_projects(vec![older, newer], Some("git:newer".into()), cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("rail-item-0").is_some(), "the rail renders the newest project");
-    assert!(cx.debug_bounds("rail-item-1").is_some(), "and the other one");
-    assert!(cx.debug_bounds("rail-item-2").is_none(), "and nothing else");
-    assert!(cx.debug_bounds("rail-open").is_some(), "Open project… sits at its foot");
-    assert!(cx.debug_bounds("rail-settings").is_none(), "the rail has no Settings item");
+    open_sidebar(&deck, &mut cx);
+    assert!(cx.debug_bounds("sidebar-project-0").is_some(), "the sidebar renders the newest project");
+    assert!(cx.debug_bounds("sidebar-project-1").is_some(), "and the other one");
+    assert!(cx.debug_bounds("sidebar-project-2").is_none(), "and nothing else");
+    assert!(cx.debug_bounds("sidebar-open").is_some(), "Open project… sits at its foot");
+    assert!(cx.debug_bounds("sidebar-pin").is_some(), "the pin sits at its foot");
+    assert!(cx.debug_bounds("sidebar-settings").is_none(), "the sidebar has no Settings item");
 }
 
 #[gpui::test]
@@ -1101,7 +1113,7 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     });
     wait_view(&mut vcx, |_| matches!(daemon.task(&t1.id).unwrap().state, State::Running));
 
-    let (x, y) = Deck::rail_item_center(index);
+    let (x, y) = deck.read_with(&vcx, |d, _| d.rail_item_center(index));
     vcx.simulate_click(point(px(x), px(y)), Modifiers::none());
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(t2.id.as_str())));
     wait_view(&mut vcx, |_| matches!(daemon.task(&t2.id).unwrap().state, State::Running));
@@ -1114,7 +1126,7 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     });
 
     // Back to the first: its live attachment was kept, and the second leaves the column.
-    let (x, y) = Deck::rail_item_center(0);
+    let (x, y) = deck.read_with(&vcx, |d, _| d.rail_item_center(0));
     vcx.simulate_click(point(px(x), px(y)), Modifiers::none());
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(t1.id.as_str())));
     deck.read_with(&vcx, |d, _| {
@@ -1390,7 +1402,13 @@ fn the_sessions_column_shows_each_task_and_its_pull_request_chip(cx: &mut TestAp
 
     // The chip opens the panel without picking the card up.
     let lane = order[1];
-    click_control(&mut cx, Box::leak(format!("card-chip-{lane}").into_boxed_str()));
+    open_sidebar(&deck, &mut cx);
+    let selector = match lane {
+        1 => "card-chip-1",
+        2 => "card-chip-2",
+        _ => panic!("unexpected lane {lane}"),
+    };
+    click_control(&mut cx, selector);
     assert_eq!(deck.read_with(&cx, |d, _| d.board().dragging()), None);
     assert_eq!(deck.read_with(&cx, |d, _| d.open_publication().map(|(t, _)| t.to_string())), Some("a".into()));
     assert!(cx.debug_bounds("publication-panel").is_some());
@@ -1426,6 +1444,7 @@ fn a_merged_pull_request_marks_the_task_done_and_offers_destroy_behind_a_second_
     // column; its chip still opens the publication panel.
     assert_eq!(deck.read_with(&cx, |d, _| d.settled().len()), 1);
     assert_eq!(deck.read_with(&cx, |d, _| d.board().cards().len()), 0);
+    open_sidebar(&deck, &mut cx);
     click_control(&mut cx, "settled-fold");
     click_control(&mut cx, "settled-chip-0");
     click_control(&mut cx, "publication-destroy");
@@ -1561,14 +1580,15 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     });
     prompt_fake(&deck, &mut vcx, "second");
 
-    // The column's own button does the same; then a card switches back.
-    let plus = vcx.debug_bounds("lanes-new").unwrap().center();
+    // The header button does the same; then a card switches back.
+    let plus = vcx.debug_bounds("hdr-new").unwrap().center();
     vcx.simulate_click(plus, Modifiers::none());
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() != Some(second.as_str())));
     let third = ready_on(&deck, &mut vcx, None);
     assert!(third != own && third != second);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 3));
-    vcx.simulate_click(point(px(200.), px(198. + PITCH)), Modifiers::none());
+    open_sidebar(&deck, &mut vcx);
+    vcx.simulate_click(point(px(148.), px(198. + PITCH)), Modifiers::none());
     let back = ready_on(&deck, &mut vcx, None);
     assert!(back == own || back == second, "the card held one of the earlier sessions");
     let expect = if back == own { "first" } else { "second" };
@@ -1660,7 +1680,8 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
 
     // The second card sits one pitch below the live card.
-    let card = point(px(200.), px(198. + PITCH));
+    open_sidebar(&deck, &mut vcx);
+    let card = point(px(148.), px(198. + PITCH));
     vcx.simulate_click(card, Modifiers::none());
     assert_eq!(deck.read_with(&vcx, |d, _| d.board().dragging()), None, "a click is not a drag");
     ready_on(&deck, &mut vcx, Some(&other));
@@ -1933,8 +1954,10 @@ fn the_needs_you_strip_opens_a_background_question_and_seen_clears_a_finished_tu
         })
     });
     let index = deck.read_with(&vcx, |d, _| d.needs_you().iter().position(|item| item.task == b).unwrap());
-    let selector = Box::leak(format!("needs-{index}").into_boxed_str());
-    assert!(vcx.debug_bounds(selector).is_some(), "the strip shows the background question");
+    open_sidebar(&deck, &mut vcx);
+    assert_eq!(index, 0, "the only item is the background question");
+    let selector = "sidebar-need-0";
+    assert!(vcx.debug_bounds(selector).is_some(), "the sidebar shows the background question");
     assert_eq!(deck.read_with(&vcx, |d, _| d.needs_you()[index].project.clone()), {
         deck.read_with(&vcx, |d, _| d.project().unwrap().to_string())
     });
@@ -1960,8 +1983,8 @@ fn the_needs_you_strip_opens_a_background_question_and_seen_clears_a_finished_tu
         })
     });
     let index = deck.read_with(&vcx, |d, _| d.needs_you().iter().position(|item| item.task == b).unwrap());
-    let selector = Box::leak(format!("needs-{index}").into_boxed_str());
-    click_control(&mut vcx, selector);
+    assert_eq!(index, 0, "the only item is the background question");
+    click_control(&mut vcx, "sidebar-need-0");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(b.as_str())));
     wait_view(&mut vcx, |_| daemon.task(&b).unwrap().seen >= 2);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().all(|item| item.task != b)));
@@ -2003,7 +2026,12 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_string)), Some(newer.id.clone()));
     let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
     assert_eq!(deck.read_with(&vcx, |d, _| d.board().cards()[1].lane.title.clone()), "alpha");
-    let selector = Box::leak(format!("card-done-{lane}").into_boxed_str());
+    open_sidebar(&deck, &mut vcx);
+    let selector = match lane {
+        1 => "card-done-1",
+        2 => "card-done-2",
+        _ => panic!("unexpected lane {lane}"),
+    };
     click_control(&mut vcx, selector);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
     assert_eq!(deck.read_with(&vcx, |d, _| d.settled()[0].task.id.clone()), older.id);

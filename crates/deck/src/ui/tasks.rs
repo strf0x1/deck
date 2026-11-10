@@ -155,7 +155,7 @@ impl Lanes {
             .map(|t| {
                 let view = published.get(&t.id).and_then(|p| publication::view(p, now_ms));
                 let mut lane = lane(self.id(&t.id, own), t, view.as_ref());
-                lane.attention = attention.iter().find(|item| item.task == t.id).map(|item| item.reason.text());
+                lane.attention = attention.iter().find(|item| item.task == t.id).map(|item| item.reason.word());
                 lane
             })
             .collect()
