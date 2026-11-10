@@ -99,6 +99,9 @@ pub struct Deck {
     pub(super) approvals: HashMap<String, Vec<Approval>>,
     /// The highest turn number this window already reported as seen.
     pub(super) seen_sent: HashMap<String, u64>,
+    /// The titles this window already asked `deckd` to record, by task
+    /// (ADR 0010 §9). A task list read before the write landed keeps them.
+    pub(super) titled: HashMap<String, String>,
     /// The column's settled tasks and whether its fold is open.
     pub(super) settled: Vec<super::tasks::Settled>,
     pub(super) settled_open: bool,
@@ -160,6 +163,7 @@ impl Deck {
             attention_since: HashMap::new(),
             approvals: HashMap::new(),
             seen_sent: HashMap::new(),
+            titled: HashMap::new(),
             settled: Vec::new(),
             settled_open: false,
             mark_error: None,
@@ -420,12 +424,17 @@ impl Deck {
             }
             attached.session.apply(ev);
         }
+        // `Ready` follows the replay: a task from before titles takes its
+        // name from the first prompt the transcript holds (ADR 0010 §9).
+        if ready && let Some(id) = id {
+            self.backfill_title(id, cx);
+        }
         if attention_event {
             self.refresh_attention();
             self.sync_attention_lanes();
         }
         if selected && ready {
-            self.send_pending();
+            self.send_pending(cx);
         }
         if selected {
             self.note_seen(cx);
@@ -437,12 +446,15 @@ impl Deck {
     }
 
     /// Send the first prompt now that its new task is connected.
-    pub(super) fn send_pending(&mut self) {
+    pub(super) fn send_pending(&mut self, cx: &mut Context<Self>) {
         let Some(text) = self.pending_prompt.take() else { return };
         let prompt = self.current().client.as_ref().map(|client| client.prompt(&text));
         match prompt {
             Some(Ok(())) => {
                 self.current_mut().session.sent(&text);
+                if let Some(id) = self.selected.clone() {
+                    self.note_title(&id, &text, cx);
+                }
                 // Sending is a request to see the answer: follow the tail again.
                 self.transcript.set_follow_mode(FollowMode::Tail);
             }
@@ -465,7 +477,9 @@ impl Deck {
             attached.boundary.pending().is_some(),
             view.as_ref(),
         );
-        let agent = attached.session.agent.clone();
+        // The row is its record's title, never the agent's name (ADR 0010 §9).
+        let title =
+            self.tasks.iter().find(|task| Some(task.id.as_str()) == self.selected.as_deref()).map(super::tasks::title);
         let chip = view.map(|v| (v.dot, v.label));
         let attention = self
             .needs_you
@@ -473,7 +487,9 @@ impl Deck {
             .find(|item| Some(item.task.as_str()) == self.selected.as_deref())
             .map(|item| item.reason.word());
         if let Some(lane) = self.board.lane_mut(LIVE) {
-            lane.title = agent;
+            if let Some(title) = title {
+                lane.title = title;
+            }
             lane.state = state;
             lane.detail = detail;
             lane.chip = chip;
@@ -507,6 +523,9 @@ impl Deck {
         }
         self.editor.take();
         self.current_mut().session.sent(&text);
+        if let Some(id) = self.selected.clone() {
+            self.note_title(&id, &text, cx);
+        }
         self.sync_live_lane();
         // Sending is a request to see the answer: follow the tail again.
         self.transcript.set_follow_mode(FollowMode::Tail);

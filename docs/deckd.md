@@ -141,6 +141,13 @@ state and are accepted whether it runs or has stopped. `task.json` carries
 event's log-line time, so a recorded time is exactly what a reload reads back.
 Records written before these fields load with `seen` 0 and no times.
 
+`title {id, title}` records the task's human title, from the first line of its
+first prompt (ADR 0010 §9). It appends a `titled` event; the stored title is
+trimmed, an empty one is refused, and one over 60 characters is cut and ends
+in `…`. A later title replaces an earlier one, and recording the title the
+record already has appends nothing. `task.json` carries `title` when set;
+records from before titles load without one.
+
 ## The web and package gateway
 
 A VM task's second gateway kind (ADR 0004 §3) is a proxy: CONNECT tunnels to

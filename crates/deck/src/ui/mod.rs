@@ -5,7 +5,8 @@
 //! state, `board`, `rail`, `session`, `transcript`, `markdown`, `diff`,
 //! `highlight`, `motion`, `editor`, `access`, `new_session`, `projects`,
 //! `sidebar` and `spring` are pure state with their own tests; `header_title`
-//! is the header's text; `theme` is the visual vocabulary.
+//! is the header's text, `titles` records a task's title with the daemon;
+//! `theme` is the visual vocabulary.
 
 pub mod access;
 mod access_grants;
@@ -51,6 +52,7 @@ pub mod sidebar_view;
 pub mod spring;
 pub mod tasks;
 pub mod theme;
+mod titles;
 pub mod transcript;
 mod transcript_list;
 mod turn_footer;

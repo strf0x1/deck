@@ -21,6 +21,25 @@ use std::time::Duration;
 /// How long a stop waits after asking before it forces.
 pub const GRACE: Duration = Duration::from_secs(3);
 
+/// A task title's longest length, in characters: a row shows one line and an
+/// agent-provided title may replace it later (ADR 0010 §9).
+const TITLE_CHARS: usize = 60;
+
+/// A task title as the record keeps it: trimmed, never empty, and at most
+/// [`TITLE_CHARS`] characters, ending in `…` when it was cut.
+fn bounded_title(title: &str) -> Result<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        bail!("a task title cannot be empty");
+    }
+    if trimmed.chars().count() <= TITLE_CHARS {
+        return Ok(trimmed.to_string());
+    }
+    let mut cut: String = trimmed.chars().take(TITLE_CHARS - 1).collect();
+    cut.push('…');
+    Ok(cut)
+}
+
 /// A task changed state; the record already says so.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Notice {
@@ -186,6 +205,20 @@ impl Runtime {
             return Ok(());
         }
         inner.store.append(&mut task, Event::Marked { done })
+    }
+
+    /// Record the task's human title, from the first line of its first prompt
+    /// (ADR 0010 §9). It is trimmed, an empty one is refused, and a long one
+    /// is cut to [`TITLE_CHARS`] characters ending in `…`. Recording the
+    /// title it already has leaves the log unchanged.
+    pub fn title(&self, id: &str, title: &str) -> Result<()> {
+        let title = bounded_title(title)?;
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if task.title.as_deref() == Some(title.as_str()) {
+            return Ok(());
+        }
+        inner.store.append(&mut task, Event::Titled { title })
     }
 
     /// Record the first use of a credential value by a run's gateway.
@@ -386,4 +419,60 @@ fn exit_notice(id: String, me: Weak<Mutex<Inner>>, generation: Arc<()>) -> crate
             let _ = inner.record(&mut task, Event::Stopped { clean: false, reason });
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::Local;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("deck-runtime-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn spec(dir: &Path) -> Spec {
+        Spec { argv: vec!["agent".into()], cwd: dir.to_path_buf(), project: Some("git:test".into()), github: None }
+    }
+
+    #[test]
+    fn a_title_is_trimmed_capped_and_recorded_once() {
+        let dir = scratch("title");
+        let rt = Runtime::open(&dir, Local).unwrap();
+        let id = rt.create(spec(&dir)).unwrap();
+
+        rt.title(&id, "  fix   the rail \n").unwrap();
+        assert_eq!(rt.task(&id).unwrap().title.as_deref(), Some("fix   the rail"), "trimmed, inner spaces kept");
+
+        let log = dir.join("tasks").join(&id).join("events.jsonl");
+        let before = std::fs::read_to_string(&log).unwrap();
+        rt.title(&id, "fix   the rail").unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), before, "the same title appends nothing");
+
+        rt.title(&id, "a later one").unwrap();
+        assert_eq!(rt.task(&id).unwrap().title.as_deref(), Some("a later one"), "a later title replaces it");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_title_is_refused_and_a_long_one_is_cut_on_a_char_boundary() {
+        let dir = scratch("title-bounds");
+        let rt = Runtime::open(&dir, Local).unwrap();
+        let id = rt.create(spec(&dir)).unwrap();
+        assert!(rt.title(&id, " \n\t ").is_err());
+        assert_eq!(rt.task(&id).unwrap().title, None, "nothing was recorded");
+
+        rt.title(&id, &"a".repeat(70)).unwrap();
+        let stored = rt.task(&id).unwrap().title.unwrap();
+        assert_eq!(stored.chars().count(), TITLE_CHARS);
+        assert!(stored.ends_with('…'));
+
+        rt.title(&id, &"修".repeat(70)).unwrap();
+        let stored = rt.task(&id).unwrap().title.unwrap();
+        assert_eq!(stored.chars().count(), TITLE_CHARS, "cut by characters, not bytes");
+        assert!(stored.ends_with('…'));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

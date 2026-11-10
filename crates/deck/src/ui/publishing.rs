@@ -83,6 +83,14 @@ impl Deck {
         // The column lists the selected project's tasks only (ADR 0010 §9),
         // settled ones folding below the rest.
         self.tasks = tasks;
+        // A refresh read before this window's title write landed still says
+        // `None`; keep the title the row already shows (ADR 0010 §9).
+        let titled = &self.titled;
+        for record in &mut self.tasks {
+            if record.title.is_none() {
+                record.title = titled.get(&record.id).cloned();
+            }
+        }
         self.published = published;
         let mut visible = Vec::new();
         for record in &self.tasks {
@@ -155,11 +163,7 @@ impl Deck {
 
     /// The project name of task `id`, for the panel's heading.
     pub fn task_title(&self, id: &str) -> String {
-        self.tasks
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.spec.cwd.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| id.to_string())
+        self.tasks.iter().find(|t| t.id == id).map_or_else(|| id.to_string(), super::tasks::title)
     }
 
     /// The capability warning for the window's own task (ADR 0008 §1).
