@@ -33,8 +33,10 @@ pub(super) fn rows_view(deck: &mut Deck, rows: &[Row], cx: &mut Context<Deck>) -
             }
             Row::Nothing => nothing(),
             Row::ProjectsHeader => projects_header(),
-            Row::Project { index, name, tasks, attention, selected, open, .. } => {
-                project_row(*index, name, *tasks, *attention, *selected, *open, cx)
+            Row::Project { selected, .. } => {
+                // The row marks the place shown: its project view, not a task.
+                let shown = *selected && deck.task_id().is_none();
+                project_row(row, shown, cx)
             }
             Row::Tasks => tasks_view(deck, cx),
             Row::Settled { count } => settled_fold(deck, *count, cx),
@@ -117,18 +119,15 @@ fn nothing() -> AnyElement {
         .into_any_element()
 }
 
-fn project_row(
-    index: usize,
-    name: &str,
-    tasks: usize,
-    attention: bool,
-    selected: bool,
-    open: bool,
-    cx: &mut Context<Deck>,
-) -> AnyElement {
-    let fg = if selected { Tokens::text() } else { Tokens::text_dim() };
+fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement {
+    let Row::Project { index, name, tasks, attention, selected, open, .. } = project else {
+        return div().into_any_element();
+    };
+    let (index, tasks, attention, selected, open) = (*index, *tasks, *attention, *selected, *open);
+    let fg = if shown { Tokens::text() } else { Tokens::text_dim() };
     let chevron = if open { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT };
     let row = div()
+        .relative()
         .id(("sidebar-project", index))
         .debug_selector(move || format!("sidebar-project-{index}"))
         .h(px(super::rail::ITEM_H))
@@ -139,8 +138,19 @@ fn project_row(
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .text_color(fg)
-        .when(selected, |s| s.bg(Tokens::raised_hover()))
+        .when(shown, |s| s.bg(Tokens::raised_hover()))
         .hover(|style| style.bg(Tokens::raised_hover()))
+        .children(shown.then(|| {
+            div()
+                .debug_selector(|| "sidebar-project-marker".into())
+                .absolute()
+                .left(px(0.))
+                .top(px(12.))
+                .w(px(3.))
+                .h(px(16.))
+                .rounded(px(radius::MARK))
+                .bg(Tokens::accent())
+        }))
         .on_click(cx.listener(move |this, _, _, cx| this.select_project(index, cx)))
         .child(
             div()
@@ -163,7 +173,7 @@ fn project_row(
                 }))
                 .child(super::panels::glyph(chevron, 10.)),
         )
-        .child(super::sidebar_narrow::tile(initial(name), selected, TILE))
+        .child(super::sidebar_narrow::tile(initial(name), shown, TILE))
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
         .children(attention.then(|| div().flex_none().size(px(6.)).rounded_full().bg(Tokens::amber())))
         .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(tasks.to_string()));

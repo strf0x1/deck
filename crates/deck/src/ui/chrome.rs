@@ -26,7 +26,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
         .flex()
         .items_center()
         .gap(px(space::STACK))
-        .children(title_block(deck, window))
+        .children(title_block(deck, window, cx))
         .child(div().flex_1())
         .child(
             div()
@@ -164,12 +164,13 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
 
 /// The selected task's title, its project's faint chip and its status line;
 /// the project alone when it has no task yet (ADR 0010 §1).
-fn title_block(deck: &Deck, window: &Window) -> Option<AnyElement> {
+fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<AnyElement> {
     let HeaderTitle { title, project, detail } = deck.header_title();
     if let Some(title) = title {
         let width = title_width(&title, window);
         let chip = project.map(|project| {
             div()
+                .id("hdr-project")
                 .debug_selector(|| "hdr-project".into())
                 .flex_none()
                 .h(px(18.))
@@ -181,6 +182,9 @@ fn title_block(deck: &Deck, window: &Window) -> Option<AnyElement> {
                 .border_color(Tokens::edge())
                 .text_size(px(size::MICRO))
                 .text_color(Tokens::text_faint())
+                .cursor_pointer()
+                .hover(|style| style.text_color(Tokens::text_dim()).bg(Tokens::raised_hover()))
+                .on_click(cx.listener(|this, _, _, cx| this.clear_task(cx)))
                 .child(project)
         });
         return Some(

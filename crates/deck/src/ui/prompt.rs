@@ -85,17 +85,19 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     let has_draft = !deck.editor.is_empty();
     // Keys go to an open card first, so the hint says where they go.
     let hint = if deck.session().ask.is_some() || deck.boundary().pending().is_some() {
-        "Answer the question above first"
+        "Answer the question above first".to_string()
     } else if deck.new_session_state().is_creating() {
-        "Starting the task…"
+        "Starting the task…".to_string()
+    } else if starting {
+        format!("Start a session in {}…", deck.project_name().unwrap_or("this project"))
     } else if ready {
-        "Tell the agent what to do…"
+        "Tell the agent what to do…".to_string()
     } else if deck.project().is_none() {
-        "Open a project to start"
+        "Open a project to start".to_string()
     } else if deck.session().status == super::session::Status::Working {
-        "Working… you can type ahead"
+        "Working… you can type ahead".to_string()
     } else {
-        "Waiting for the agent…"
+        "Waiting for the agent…".to_string()
     };
     let caret: Hsla = tint(Tokens::accent(), if ready { 0.9 } else { 0.35 });
     let (send_bg, send_fg): (Hsla, Hsla) = if ready && has_draft {
