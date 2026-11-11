@@ -4,9 +4,11 @@
 //!
 //! The design choice: the VMM is the task's detached holder (ADR 0001), so
 //! it survives `deckd` and is re-adopted from the record. The guest opens the
-//! ACP stream out to the VMM's forward listener as soon as it starts the
-//! agent, so that connection is both the readiness signal and the stream the
-//! VMM serves through the same relay the local holder uses. Closing Deck's
+//! ACP stream out to the VMM's forward listener as soon as its workspace is
+//! ready, and its transport then becomes the agent with that stream as stdio.
+//! The connection is therefore both the readiness signal and the stream the
+//! VMM serves through the same relay the local holder uses; the ACP handshake
+//! is what proves the agent. Closing Deck's
 //! window does not close the agent's stdin. The guest cannot ask the host to
 //! do anything else.
 
@@ -326,8 +328,10 @@ fn inherited_lock(fd: i32) -> Result<crate::record::RecordLock> {
 }
 
 /// Accept the guest's ACP connection, serve it through the relay, and report
-/// readiness. The guest opens the connection only after it has started the
-/// agent, so the accept is the readiness event; nothing sleeps.
+/// readiness. The guest opens the connection only after its workspace is
+/// prepared; the transport becomes the agent immediately after, and the ACP
+/// handshake proves the agent. The accept itself is the readiness event;
+/// nothing sleeps.
 fn serve(config: &Config, forward: UnixListener, eof: mpsc::Sender<()>, started: Instant) -> Result<()> {
     let stream = accept_within(&forward, START)?;
     eprintln!("vmm: guest connected at {} ms", started.elapsed().as_millis());
@@ -530,7 +534,8 @@ fn control_loop(config: &Config, listener: UnixListener, shutdown: i32) -> Resul
                 if EXITED.load(Ordering::Acquire) {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                crate::wait::readable(listener.as_raw_fd(), Duration::from_millis(20))
+                    .context("waiting for VMM control")?;
             }
             Err(e) => return Err(e).context("accepting VMM control"),
         }

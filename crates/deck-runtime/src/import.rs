@@ -33,6 +33,10 @@ pub fn stage(project: &Path, target: &Path) -> Result<()> {
 /// `project` is not a checkout. A checkout whose ignored list cannot be read
 /// is an error: copying it whole would put the ignored files in the guest.
 fn ignored(project: &Path) -> Result<Option<HashSet<PathBuf>>> {
+    // A plain directory outside any `.git` has no ignored list to ask for.
+    if !is_checkout(project) {
+        return Ok(None);
+    }
     let output = Command::new("git")
         .arg("-C")
         .arg(project)
@@ -47,10 +51,13 @@ fn ignored(project: &Path) -> Result<Option<HashSet<PathBuf>>> {
         Err(_) => return Ok(None),
     };
     if !output.status.success() {
-        if is_checkout(project) {
-            bail!("listing ignored files in {}: {}", project.display(), String::from_utf8_lossy(&output.stderr).trim());
+        // A `.git` above the project is not proof git accepts it: `$HOME` is
+        // a checkout under dotfiles managers, and a linked worktree's `.git`
+        // is a file elsewhere. Ask git itself before failing closed.
+        if !in_work_tree(project) {
+            return Ok(None);
         }
-        return Ok(None);
+        bail!("listing ignored files in {}: {}", project.display(), String::from_utf8_lossy(&output.stderr).trim());
     }
     let mut ignored = HashSet::new();
     for path in output.stdout.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
@@ -66,6 +73,19 @@ fn ignored(project: &Path) -> Result<Option<HashSet<PathBuf>>> {
 /// ignored list cannot be read.
 fn is_checkout(project: &Path) -> bool {
     project.ancestors().any(|path| path.join(".git").exists())
+}
+
+/// Whether git itself treats `project` as inside a work tree. A `.git`
+/// ancestor is only evidence; git may reject it (an unrelated manager's bare
+/// repository, or a `.git` file naming a worktree gitdir).
+fn in_work_tree(project: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .is_ok_and(|output| output.status.success() && output.stdout.starts_with(b"true"))
 }
 
 /// Copy `project` into `target`, skipping `ignored` (relative paths). A
@@ -162,6 +182,22 @@ mod tests {
         assert!(is_checkout(&root));
         assert!(is_checkout(&root.join("src/deep")));
         assert!(!is_checkout(&scratch("plain-ancestor")));
+    }
+
+    #[test]
+    fn an_ancestor_git_that_git_rejects_is_not_a_checkout() {
+        let root = scratch("rejected-ancestor");
+        // Dotfiles managers put a `.git` in $HOME; git may still refuse the
+        // directory, and staging must not fail because of it.
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(".env"), "SECRET=1\n").unwrap();
+        assert!(is_checkout(&project));
+        assert!(!in_work_tree(&project));
+        let target = scratch("rejected-staged");
+        stage(&project, &target).unwrap();
+        assert!(target.join(".env").is_file(), "an unusable .git is no ignore list");
     }
 
     #[test]

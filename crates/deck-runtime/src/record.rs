@@ -198,16 +198,13 @@ impl Store {
         let mut log = OpenOptions::new().create(true).append(true).open(dir.join(LOG))?;
         log.write_all(line.as_bytes())?;
         log.sync_data()?;
-        // The snapshot can lag the log after a crash; the log is what loads.
+        // The snapshot is derived: after a crash it is re-folded from the
+        // log, so it needs no fsync of its own and no directory sync. Only
+        // the line above is the record.
         let tmp = dir.join(format!("{SNAPSHOT}.tmp"));
         let mut snap = File::create(&tmp)?;
         snap.write_all(serde_json::to_string_pretty(task)?.as_bytes())?;
-        snap.sync_data()?;
         fs::rename(&tmp, dir.join(SNAPSHOT))?;
-        // Make the new names durable; not every platform can sync a directory.
-        if let Ok(d) = File::open(&dir) {
-            let _ = d.sync_all();
-        }
         Ok(())
     }
 }

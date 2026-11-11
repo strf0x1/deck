@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod settings;
 pub mod vm;
 pub mod vmm;
+mod wait;
 mod wire;
 
 pub use backend::{Backend, Exited, Instance, Stream};

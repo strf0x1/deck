@@ -297,7 +297,10 @@ fn vm_launch_to_ready_is_event_driven_twenty_times() {
         runtime.start(&id).unwrap();
         let started = launched.elapsed();
         let (_, _, ready) = ready_timed(&runtime, &id, false, launched);
-        println!("launch {run:>2}: runtime.start {started:?}, launch to ACP ready {ready:?}");
+        println!(
+            "launch {run:>2}: runtime.start {started:?}, attach to ACP ready {:?}, launch to ACP ready {ready:?}",
+            ready.saturating_sub(started)
+        );
         launches.push(ready);
         runtime.stop(&id).unwrap();
         runtime.destroy(&id).unwrap();
