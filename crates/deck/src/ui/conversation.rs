@@ -49,11 +49,11 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .flex()
         .flex_col()
         .overflow_hidden()
-        .child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::linear_gradient(
-            90.,
-            gpui::linear_color_stop(tint(edge, 0.7), 0.),
-            gpui::linear_color_stop(tint(edge, 0.), 0.6),
-        )))
+        .child(
+            // A 1px state edge, drawn as the overlay's own top border so it
+            // follows the pane's rounded corners instead of cutting across them.
+            div().absolute().size_full().rounded(px(radius::PANE)).border_t_1().border_color(tint(edge, 0.6)),
+        )
         .child(
             div()
                 .h(px(54.))
