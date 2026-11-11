@@ -110,11 +110,13 @@ pub fn rows(
     rows
 }
 
-/// One glyph of the narrow sidebar: a project's initial letter.
+/// One glyph of the narrow sidebar: a project's initial letter, and the
+/// name its tile takes its hue from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Glyph {
     pub index: usize,
     pub letter: char,
+    pub name: String,
     pub attention: bool,
     pub selected: bool,
 }
@@ -128,6 +130,7 @@ pub fn narrow(needs: &[NeedIn], projects: &[ProjectIn], selected: Option<&str>) 
         .map(|(index, project)| Glyph {
             index,
             letter: initial(&project.name),
+            name: project.name.clone(),
             attention: needs.iter().any(|need| need.project == project.id),
             selected: selected == Some(project.id.as_str()),
         })

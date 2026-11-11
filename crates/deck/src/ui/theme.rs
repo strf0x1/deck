@@ -1,14 +1,16 @@
 //! Deck's colours, type and icons, as named tokens. Every view takes colours
 //! from here, never from a literal, so the look can be retuned in one file.
 //!
-//! The design choice: dark neutral glass, not blue. Surfaces are translucent
-//! whites layered over a near-black base, so depth comes from stacking, and
-//! colour is spent only where the eye should land: a state dot, the active
-//! rail marker, the selected session, the send button. The accents themselves
-//! are vivid; their scarcity is what keeps them loud.
+//! The design choice: neon on deep ink, and every hue means one thing.
+//! Surfaces are cool-tinted glass layered over a blue-black base, so depth
+//! comes from stacking. Colour is never decoration: pink is the user (their
+//! turns, focus, the primary action), cyan is the agent at work, amber waits
+//! on a human, green is done or allowed, red failed or is denied. Tool kinds
+//! run cool to warm by how far they reach: looking is blue, changing files
+//! violet, running code cyan, leaving the machine orange, deleting red.
 
 use super::highlight::Class;
-use gpui::{Background, Hsla, Rgba, linear_color_stop, linear_gradient, rgba};
+use gpui::{Background, BoxShadow, Hsla, Rgba, linear_color_stop, linear_gradient, point, px, rgba};
 
 /// Interface text.
 pub const SANS: &str = "Adwaita Sans";
@@ -42,6 +44,24 @@ pub mod icon {
     pub const COPY: &str = "\u{f0c5}";
     pub const CHEVRON_DOWN: &str = "\u{f078}";
     pub const CHEVRON_RIGHT: &str = "\u{f054}";
+    pub const CUBE: &str = "\u{f1b2}";
+    pub const BOLT: &str = "\u{f0e7}";
+    pub const KEY: &str = "\u{f084}";
+    pub const LOCK: &str = "\u{f023}";
+    pub const STOP: &str = "\u{f04d}";
+    pub const REFRESH: &str = "\u{f021}";
+    pub const WARN: &str = "\u{f071}";
+    pub const QUESTION: &str = "\u{f128}";
+    pub const EYE: &str = "\u{f06e}";
+    pub const DOT: &str = "\u{f111}";
+    pub const RING: &str = "\u{f10c}";
+    pub const GITHUB: &str = "\u{f09b}";
+    pub const EXTERNAL: &str = "\u{f08e}";
+    pub const CLOSE: &str = "\u{f00d}";
+    pub const USER: &str = "\u{f007}";
+    pub const SERVER: &str = "\u{f233}";
+    pub const ARCHIVE: &str = "\u{f187}";
+    pub const GAUGE: &str = "\u{f0e4}";
 }
 
 /// Text sizes by role. Six steps: views pick a role, never a number.
@@ -104,77 +124,108 @@ pub mod space {
 pub struct Tokens;
 
 impl Tokens {
-    /// The whole window: translucent near-black so the compositor's blur shows through.
+    /// The whole window: translucent blue-black so the compositor's blur shows through.
     pub fn base() -> Background {
-        linear_gradient(160., linear_color_stop(rgba(0x141416e6), 0.), linear_color_stop(rgba(0x0a0a0cf2), 1.))
+        linear_gradient(160., linear_color_stop(rgba(0x0d1020e8), 0.), linear_color_stop(rgba(0x05060df4), 1.))
     }
-    /// A pane: one layer of glass.
+    /// A pane: one layer of cool glass.
     pub fn panel() -> Background {
-        linear_gradient(180., linear_color_stop(rgba(0xffffff0d), 0.), linear_color_stop(rgba(0xffffff06), 1.))
+        linear_gradient(180., linear_color_stop(rgba(0xa9bcff10), 0.), linear_color_stop(rgba(0xa9bcff06), 1.))
     }
     /// Something sitting on a pane: a card, a field, a bubble.
     pub fn raised() -> Rgba {
-        rgba(0xffffff0b)
+        rgba(0xb4c4ff0d)
     }
     pub fn raised_hover() -> Rgba {
-        rgba(0xffffff14)
+        rgba(0xb4c4ff1a)
+    }
+    /// A well cut into a card: command text, output, code.
+    pub fn sunken() -> Rgba {
+        rgba(0x03040a66)
     }
     /// A surface that floats over others (the expanded rail): mostly opaque,
     /// since GPUI cannot blur what is behind an element.
     pub fn float() -> Rgba {
-        rgba(0x19191cff)
+        rgba(0x0f1220ff)
     }
     pub fn edge() -> Rgba {
-        rgba(0xffffff12)
+        rgba(0xa9b8ff1c)
     }
     pub fn edge_strong() -> Rgba {
-        rgba(0xffffff26)
+        rgba(0xa9b8ff3a)
     }
     pub fn shadow() -> Hsla {
-        rgba(0x00000080).into()
+        rgba(0x00000090).into()
     }
     pub fn text() -> Rgba {
-        rgba(0xededf0ff)
+        rgba(0xeef0fbff)
     }
     pub fn text_dim() -> Rgba {
-        rgba(0x9b9ba5ff)
+        rgba(0xa0a7c4ff)
     }
     pub fn text_faint() -> Rgba {
-        rgba(0x5d5d67ff)
+        rgba(0x626a8cff)
     }
-    /// Text on a light fill (the one solid button).
+    /// Text on a bright fill (a primary button, a count badge).
     pub fn ink() -> Rgba {
-        rgba(0x111114ff)
+        rgba(0x0a0b14ff)
     }
-    /// The one signature accent: focus, selection, the user's voice.
+    /// The user: their turns, focus, selection, the primary action.
     pub fn accent() -> Hsla {
-        rgba(0x9d8cffff).into()
+        rgba(0xff4fa3ff).into()
     }
-    /// An agent doing work.
-    pub fn mint() -> Hsla {
-        rgba(0x5ee0c8ff).into()
+    /// An agent doing work; running code.
+    pub fn cyan() -> Hsla {
+        rgba(0x2fe3ffff).into()
     }
     /// Decisions waiting on a human.
     pub fn amber() -> Hsla {
-        rgba(0xffb547ff).into()
+        rgba(0xffb62eff).into()
     }
-    /// Done, ready for review.
+    /// Done, allowed, added.
     pub fn lime() -> Hsla {
-        rgba(0xb4e36aff).into()
+        rgba(0x7df26bff).into()
     }
+    /// Failed, denied, removed.
     pub fn red() -> Hsla {
-        rgba(0xff6b6bff).into()
+        rgba(0xff5470ff).into()
+    }
+    /// Changing files; the sealed VM.
+    pub fn violet() -> Hsla {
+        rgba(0xa98bffff).into()
+    }
+    /// Looking: reads and searches.
+    pub fn sky() -> Hsla {
+        rgba(0x5aa9ffff).into()
+    }
+    /// Leaving the machine: the network.
+    pub fn orange() -> Hsla {
+        rgba(0xff8a4cff).into()
+    }
+    /// A stable hue for a name, so a project keeps its colour everywhere.
+    pub fn hue(name: &str) -> Hsla {
+        let hues = [Self::accent(), Self::cyan(), Self::violet(), Self::lime(), Self::sky(), Self::orange()];
+        let sum = name.bytes().fold(0usize, |sum, byte| sum.wrapping_mul(31).wrapping_add(usize::from(byte)));
+        hues[sum % hues.len()]
+    }
+    /// The signature sweep, user to agent: the primary button, the pane's top edge.
+    pub fn sweep(a: f32) -> Background {
+        linear_gradient(
+            90.,
+            linear_color_stop(tint(Self::accent(), a), 0.),
+            linear_color_stop(tint(Self::violet(), a), 1.),
+        )
     }
     /// Code: the accents again, a little softer, plus one blue for types,
     /// so highlighted code sits in the same palette as the window.
     pub fn code(class: Class) -> Hsla {
         match class {
             Class::Comment => Self::text_faint().into(),
-            Class::String => rgba(0xb4e36ae6).into(),
-            Class::Keyword => rgba(0xb0a3ffff).into(),
+            Class::String => rgba(0x9af08ae6).into(),
+            Class::Keyword => rgba(0xff7ab8ff).into(),
             Class::Number | Class::Constant => rgba(0xffc46eff).into(),
-            Class::Function => rgba(0x6fe3cdff).into(),
-            Class::Type => rgba(0x8ec5ffff).into(),
+            Class::Function => rgba(0x6fe9ffff).into(),
+            Class::Type => rgba(0xb9a3ffff).into(),
         }
     }
 }
@@ -182,4 +233,26 @@ impl Tokens {
 /// `color` at alpha `a`, for tints and washes of an accent.
 pub fn tint(color: Hsla, a: f32) -> Hsla {
     Hsla { a, ..color }
+}
+
+/// A neon halo in `color`: what marks the one live thing in a region.
+pub fn glow(color: Hsla, strength: f32) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: tint(color, 0.45 * strength),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(14.),
+        spread_radius: px(0.),
+    }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Tokens;
+
+    #[test]
+    fn a_name_keeps_its_hue_and_names_spread_over_several() {
+        assert_eq!(Tokens::hue("deck"), Tokens::hue("deck"));
+        let hues: Vec<_> = ["deck", "construct", "qwen-engine", "alpha", "dotfiles"].map(Tokens::hue).to_vec();
+        assert!(hues.iter().any(|hue| *hue != hues[0]), "every name landed on one hue");
+    }
 }

@@ -1,16 +1,16 @@
 //! The conversation pane: the live session's title bar, transcript, the
 //! permission question when one is open, and the prompt field.
 //!
-//! The design choice: the transcript is mostly uncoloured. The user's turns
-//! carry the accent as a faint wash, tool cards spend colour only on their
-//! status glyph and diff lines, and a permission question is the one place
-//! amber appears, so a glance at the pane finds what needs attention.
+//! The design choice: the pane's state is said in colour before words. Its
+//! top edge and status pill take the session's colour, a decision card is
+//! the one amber surface, and its answers are green to allow and red to
+//! deny, so a glance finds what needs attention and what each key will do.
 
 use super::chrome::kbd;
-use super::panels::{glyph, pane};
+use super::panels::{glyph, icon_tile, pane, pill, primary};
 use super::root::Deck;
 use super::session::Status;
-use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
+use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use deck_runtime::approvals::Decision;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -25,12 +25,20 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     let empty_project = !has_task && deck.is_launched();
     let (status, color): (&str, Hsla) = match &s.status {
         _ if s.ask.is_some() => ("Needs you", Tokens::amber()),
-        Status::Connecting => ("Connecting", Tokens::text_faint().into()),
+        Status::Connecting => ("Connecting", Tokens::text_dim().into()),
         Status::Ready => ("Ready", Tokens::lime()),
         Status::Waiting => ("Waiting", Tokens::amber()),
-        Status::Working => ("Working", Tokens::mint()),
-        Status::Detached => ("Running, detached", Tokens::mint()),
+        Status::Working => ("Working", Tokens::cyan()),
+        Status::Detached => ("Running, detached", Tokens::cyan()),
         Status::Down(_) => ("Down", Tokens::red()),
+    };
+    // The pane's top edge takes the session's colour, so its state reads
+    // before any word on it does.
+    let edge = if has_task { color } else { Tokens::accent() };
+    let (tile, tile_color) = if empty_project {
+        (icon::PROJECT, deck.project_name().map_or(Tokens::text_dim().into(), Tokens::hue))
+    } else {
+        (icon::AGENTS, color)
     };
     let title = if empty_project { deck.project_name().unwrap_or("No project").to_string() } else { s.agent.clone() };
     let subtitle = if empty_project { "project" } else { "live session" };
@@ -40,15 +48,22 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .min_w_0()
         .flex()
         .flex_col()
+        .overflow_hidden()
+        .child(
+            // A 1px state edge, drawn as the overlay's own top border so it
+            // follows the pane's rounded corners instead of cutting across them.
+            div().absolute().size_full().rounded(px(radius::PANE)).border_t_1().border_color(tint(edge, 0.6)),
+        )
         .child(
             div()
-                .h(px(56.))
-                .px(px(20.))
+                .h(px(54.))
+                .px(px(18.))
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
                 .border_b_1()
                 .border_color(Tokens::edge())
+                .child(icon_tile(tile, tile_color, 26.))
                 .child(
                     div()
                         .debug_selector(move || title_selector.into())
@@ -58,20 +73,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 )
                 .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_faint()).child(subtitle))
                 .child(div().flex_1())
-                .children(has_task.then(|| {
-                    div()
-                        .h(px(26.))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .gap(px(7.))
-                        .rounded_full()
-                        .bg(Tokens::raised())
-                        .text_size(px(size::SMALL))
-                        .text_color(Tokens::text_dim())
-                        .child(div().size(px(6.)).rounded_full().bg(color))
-                        .child(status)
-                })),
+                .children(has_task.then(|| pill(color, status))),
         )
         .child(if deck.access.is_open() {
             super::access_panel::panel(deck, cx).into_any_element()
@@ -117,7 +119,22 @@ fn empty(cx: &mut Context<Deck>) -> AnyElement {
         .justify_center()
         .gap(px(space::STACK))
         .px(px(space::PAD))
-        .child(div().text_size(px(size::DISPLAY)).font_weight(FontWeight::MEDIUM).child("No project open"))
+        .child(
+            div()
+                .mb(px(space::LINE))
+                .size(px(64.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(radius::PANE))
+                .border_1()
+                .border_color(tint(Tokens::accent(), 0.35))
+                .bg(Tokens::sweep(0.14))
+                .shadow(glow(Tokens::accent(), 0.5))
+                .text_color(Tokens::accent())
+                .child(glyph(icon::CUBE, 26.)),
+        )
+        .child(div().text_size(px(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("No project open"))
         .child(
             div()
                 .max_w(px(420.))
@@ -127,19 +144,10 @@ fn empty(cx: &mut Context<Deck>) -> AnyElement {
                 .child("Open a checkout to start a task in its project."),
         )
         .child(
-            div()
+            primary()
+                .mt(px(space::TIGHT))
                 .id("empty-open")
                 .debug_selector(|| "empty-open".into())
-                .h(px(32.))
-                .px(px(space::INSET))
-                .flex()
-                .items_center()
-                .gap(px(space::LINE))
-                .rounded(px(radius::CONTROL))
-                .bg(Tokens::text())
-                .text_color(Tokens::ink())
-                .text_size(px(size::BODY))
-                .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| this.pick_project(cx)))
                 .child(glyph(icon::PLUS, 11.))
@@ -161,33 +169,15 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         (Decision::Deny, "Deny"),
     ];
     let buttons = options.iter().enumerate().map(|(i, (decision, name))| {
-        let primary = i == 0;
-        let deny = *decision == Decision::Deny;
-        let (bg, fg, edge): (Hsla, Hsla, Hsla) = if primary {
-            (Tokens::text().into(), Tokens::ink().into(), Tokens::text().into())
-        } else if deny {
-            (Tokens::raised().into(), Tokens::red(), tint(Tokens::red(), 0.3))
+        let weight = if i == 0 {
+            Weight::Allow
+        } else if *decision == Decision::Deny {
+            Weight::Deny
         } else {
-            (Tokens::raised().into(), Tokens::text_dim().into(), Tokens::edge().into())
+            Weight::Other
         };
         let decision = *decision;
-        div()
-            .id(("boundary-option", i))
-            .h(px(30.))
-            .px(px(space::INSET))
-            .flex()
-            .items_center()
-            .gap(px(space::LINE))
-            .rounded(px(radius::CONTROL))
-            .border_1()
-            .border_color(edge)
-            .bg(bg)
-            .text_color(fg)
-            .text_size(px(size::LABEL))
-            .font_weight(FontWeight::MEDIUM)
-            .cursor_pointer()
-            .child(*name)
-            .child(div().font_family(MONO).text_size(px(size::MICRO)).opacity(0.55).child(format!("{}", i + 1)))
+        option(("boundary-option", i), name, i, weight)
             .on_click(cx.listener(move |this, _, _, cx| this.decide_boundary(decision, cx)))
     });
     let detail = format!(
@@ -202,15 +192,16 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .border_1()
-        .border_color(tint(Tokens::amber(), 0.35))
-        .bg(tint(Tokens::amber(), 0.06))
+        .border_color(tint(Tokens::amber(), 0.5))
+        .bg(tint(Tokens::amber(), 0.07))
+        .shadow(glow(Tokens::amber(), 0.2))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(glyph(icon::SHIELD, 13.).text_color(Tokens::amber()))
-                .child(div().font_weight(FontWeight::MEDIUM).child("External access needs you"))
+                .child(icon_tile(icon::GLOBE, Tokens::amber(), 24.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("External access needs you"))
                 .child(div().flex_1())
                 .child(kbd("1–5")),
         )
@@ -222,7 +213,9 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .px(px(10.))
                 .py(px(7.))
                 .rounded(px(radius::CONTROL))
-                .bg(Tokens::raised())
+                .border_1()
+                .border_color(Tokens::edge())
+                .bg(Tokens::sunken())
                 .font_family(MONO)
                 .text_size(px(size::LABEL))
                 .child(format!("{} · {}", item.gateway, item.destination))
@@ -269,30 +262,14 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let Some(ask) = &deck.session().ask else { return div().into_any_element() };
     let first_allow = ask.options.iter().position(|o| o.allows());
     let buttons = ask.options.iter().enumerate().map(|(i, o)| {
-        let primary = Some(i) == first_allow;
-        let (bg, fg, edge): (Hsla, Hsla, Hsla) = if primary {
-            (Tokens::text().into(), Tokens::ink().into(), Tokens::text().into())
+        let weight = if Some(i) == first_allow {
+            Weight::Allow
+        } else if o.allows() {
+            Weight::Other
         } else {
-            (Tokens::raised().into(), Tokens::text_dim().into(), Tokens::edge().into())
+            Weight::Deny
         };
-        div()
-            .id(("opt", i))
-            .h(px(30.))
-            .px(px(space::INSET))
-            .flex()
-            .items_center()
-            .gap(px(space::LINE))
-            .rounded(px(radius::CONTROL))
-            .border_1()
-            .border_color(edge)
-            .bg(bg)
-            .text_color(fg)
-            .text_size(px(size::LABEL))
-            .font_weight(FontWeight::MEDIUM)
-            .cursor_pointer()
-            .child(o.name.clone())
-            .child(div().font_family(MONO).text_size(px(size::MICRO)).opacity(0.55).child(format!("{}", i + 1)))
-            .on_click(cx.listener(move |this, _, _, cx| this.choose(Some(i), cx)))
+        option(("opt", i), &o.name, i, weight).on_click(cx.listener(move |this, _, _, cx| this.choose(Some(i), cx)))
     });
     div()
         .debug_selector(|| "permission-card".into())
@@ -302,15 +279,16 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
         .border_1()
-        .border_color(tint(Tokens::amber(), 0.35))
-        .bg(tint(Tokens::amber(), 0.06))
+        .border_color(tint(Tokens::amber(), 0.5))
+        .bg(tint(Tokens::amber(), 0.07))
+        .shadow(glow(Tokens::amber(), 0.2))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(glyph(icon::SHIELD, 13.).text_color(Tokens::amber()))
-                .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} wants to run", deck.session().agent)))
+                .child(icon_tile(icon::SHIELD, Tokens::amber(), 24.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{} wants to run", deck.session().agent)))
                 .child(div().flex_1())
                 .child(kbd("esc")),
         )
@@ -319,7 +297,9 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .px(px(10.))
                 .py(px(7.))
                 .rounded(px(radius::CONTROL))
-                .bg(Tokens::raised())
+                .border_1()
+                .border_color(Tokens::edge())
+                .bg(Tokens::sunken())
                 .font_family(MONO)
                 .text_size(px(size::LABEL))
                 .child(ask.title.clone()),
@@ -351,8 +331,10 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .gap(px(space::STACK))
         .p(px(space::PAD))
         .rounded(px(radius::BUBBLE))
-        .bg(Tokens::raised())
-        .child(title)
+        .border_1()
+        .border_color(tint(Tokens::cyan(), 0.3))
+        .bg(tint(Tokens::cyan(), 0.05))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
         .child(div().text_color(Tokens::text_dim()).child(note))
         .child(
             div()
@@ -363,9 +345,53 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(space::STACK))
                 .cursor_pointer()
                 .text_color(Tokens::accent())
+                .font_weight(FontWeight::MEDIUM)
+                .child(glyph(icon::REFRESH, 11.))
                 .child(action)
                 .child(kbd(crate::app::RESTART_HINT))
                 .on_click(cx.listener(|this, _, _, cx| this.restart(cx))),
         )
         .into_any_element()
+}
+
+/// What a decision does, which is what its button's colour says.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Weight {
+    /// The first allowing answer: solid green, the one `1` or enter-like key.
+    Allow,
+    /// A wider or longer allow.
+    Other,
+    Deny,
+}
+
+/// One answer on a decision card, with the digit that picks it.
+fn option(id: impl Into<gpui::ElementId>, name: &str, index: usize, weight: Weight) -> gpui::Stateful<gpui::Div> {
+    let (bg, fg, edge): (Hsla, Hsla, Hsla) = match weight {
+        Weight::Allow => (Tokens::lime(), Tokens::ink().into(), Tokens::lime()),
+        Weight::Other => (tint(Tokens::lime(), 0.08), Tokens::lime(), tint(Tokens::lime(), 0.3)),
+        Weight::Deny => (tint(Tokens::red(), 0.08), Tokens::red(), tint(Tokens::red(), 0.35)),
+    };
+    let hover = match weight {
+        Weight::Allow => tint(Tokens::lime(), 0.88),
+        Weight::Other => tint(Tokens::lime(), 0.16),
+        Weight::Deny => tint(Tokens::red(), 0.16),
+    };
+    div()
+        .id(id.into())
+        .h(px(30.))
+        .px(px(space::INSET))
+        .flex()
+        .items_center()
+        .gap(px(space::LINE))
+        .rounded(px(radius::CONTROL))
+        .border_1()
+        .border_color(edge)
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(size::LABEL))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .child(name.to_string())
+        .child(div().font_family(MONO).text_size(px(size::MICRO)).opacity(0.6).child(format!("{}", index + 1)))
 }

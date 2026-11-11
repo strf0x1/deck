@@ -15,7 +15,8 @@ use gpui::{AnyElement, Div, Hsla, IntoElement, ParentElement as _, Styled as _, 
 
 pub fn diff(changes: &[transcript::Change], open: bool) -> AnyElement {
     let mut cut_total = 0;
-    let mut out = div().flex().flex_col().border_t_1().border_color(Tokens::edge()).py(px(space::DETAIL));
+    let mut out =
+        div().flex().flex_col().border_t_1().border_color(Tokens::edge()).bg(Tokens::sunken()).py(px(space::DETAIL));
     for (n, change) in changes.iter().enumerate() {
         let (rows, cut) = change.diff.preview(2, if open { CAP } else { PREVIEW });
         cut_total += cut;
@@ -52,8 +53,8 @@ fn diff_line(row: DiffRow<'_>, numbered: bool, old: &[highlight::Line], new: &[h
     };
     let (sign, fg, bg): (&str, Hsla, Option<Hsla>) = match line.kind {
         diff::Kind::Same => (" ", Tokens::text_dim().into(), None),
-        diff::Kind::Added => ("+", Tokens::lime(), Some(tint(Tokens::lime(), 0.09))),
-        diff::Kind::Removed => ("−", Tokens::red(), Some(tint(Tokens::red(), 0.09))),
+        diff::Kind::Added => ("+", Tokens::lime(), Some(tint(Tokens::lime(), 0.1))),
+        diff::Kind::Removed => ("−", Tokens::red(), Some(tint(Tokens::red(), 0.1))),
     };
     let number =
         if numbered { line.new.or(line.old).map(|n| n.to_string()).unwrap_or_default() } else { String::new() };
@@ -87,6 +88,7 @@ pub fn output(text: &str, open: bool) -> Option<AnyElement> {
         .py(px(7.))
         .border_t_1()
         .border_color(Tokens::edge())
+        .bg(Tokens::sunken())
         .line_height(px(17.))
         .text_color(Tokens::text_dim())
         .children(lines.into_iter().map(|l| div().child(l.to_string())));

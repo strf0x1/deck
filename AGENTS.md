@@ -41,7 +41,7 @@ settle.
 | `crates/deck/src/ui/session.rs`, `editor.rs`, `markdown.rs`, `diff.rs`, `highlight.rs`, `motion.rs`, `transcript.rs`, `board.rs`, `rail.rs`, `projects.rs`, `boundary.rs`, `access.rs`, `spring.rs` | Pure state with unit tests: transcript folding, agent markdown as blocks, bounded line diffs with previews, syntax classes from syntect (bundled syntaxes, coloured by `theme.rs`, cached), card fade-in and jump-pill springs, transcript rows and what each tool card shows, the composer's text, selection, IME marked range and prompt recall, drag/reorder, rail open/close and its active project, the project list, selection and task resolution, the boundary card's pending items, the access panel's credential listing and revoke confirmation, spring physics. |
 | `crates/deck/src/ui/access_panel.rs`, `access_grants.rs`, `credentials.rs` | The access panel (header shield button): credentials, task grants and saved project rules, plus pending requests that return to the boundary card. Daemon calls (list, revoke) run off the UI thread; grant listings refresh while open. The panel changes from daemon replies and rejects stale listings. |
 | `crates/deck/src/ui/tasks.rs`, `publication.rs`, `publishing.rs`, `publication_panel.rs` | The sidebar's task rows from `deckd`'s task list, filtered to the selected project (the window's own task is the live row; clicking another row switches the window to it; New session, in the header, asks `deckd` to `create` a task with the selected project's command and first checkout and switches to it; `new_session.rs` is the button state), each task's publication chip and the read-only publication panel (ADR 0008 §8). `tasks.rs` and `publication.rs` are pure state with unit tests; `publishing.rs` refreshes tasks, `pull_state` and the pending approvals of tasks the window does not watch off the UI thread every 15 s while the window is open, folds settled tasks out of the column after 14 days, and keeps a settled task's lane so its chip still opens the publication panel; destroy is offered only after a merge, behind a second click. |
-| `crates/deck/src/ui/theme.rs` | Colour tokens, type sizes (`size`), radii (`radius`) and transcript spacing (`space`) by role, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs. Colours, text sizes and radii come only from here. |
+| `crates/deck/src/ui/theme.rs` | Colour tokens, type sizes (`size`), radii (`radius`) and transcript spacing (`space`) by role, fonts (Adwaita Sans for UI, JetBrainsMono Nerd Font for code and icons), icon glyphs, `glow`. Colours, text sizes and radii come only from here. Each hue means one thing: pink the user, cyan the agent at work, amber waiting on a human, green done or allowed, red failed or denied, violet file changes, sky reads, orange the network; `Tokens::hue` gives a project its own. `panels.rs` builds the shared marks from them (`state_mark`, `icon_tile`, `pill`, `primary`, `eyebrow`). |
 | `crates/deck/src/control/` | Dev-only control socket (`DECK_CONTROL`). `protocol.rs` the pure line grammar, `socket.rs` the listener threads, `drive.rs` dispatches commands as GPUI input on the window and reads `state`. |
 | `crates/deck/tests/view.rs` | The view under GPUI's headless test platform: keystrokes, mouse drags, real layout. |
 | `crates/deck/tests/reattach.rs` | Production window connections against daemon-owned fake and optional real Construct agents. Set `CONSTRUCT_BIN` to run the real scripted-model cases. |
@@ -280,8 +280,10 @@ release-tag form remains the default; a candidate commit is not a release.
   glass rather than a visible blur. macOS also draws the standard title bar
   with traffic lights; deck has no custom window chrome there.
 - GPUI has no per-element backdrop blur, so the only real blur is the
-  window's. Panes are translucent white layers over a near-black base;
+  window's. Panes are translucent cool-white layers over a near-black base;
   anything that floats over other content (the open rail) is opaque.
-- Look: dark neutral glass, rounded panes, colour only where the eye should
-  land (state dots, the rail marker, the selected session, send). Motion
-  is springs everywhere, with one tuning (`spring.rs`).
+- Look: neon on deep ink. Cool-tinted glass panes over a blue-black base,
+  and colour that always means something (the table's `theme.rs` row lists
+  the hues); the one live thing in a region glows. A new surface picks its
+  colour by meaning, never for variety. Motion is springs everywhere, with
+  one tuning (`spring.rs`).

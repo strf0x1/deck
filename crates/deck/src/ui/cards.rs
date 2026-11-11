@@ -5,14 +5,15 @@
 //! The design choice: counts first, content on request. An edit shows a few
 //! diff lines around each change, a command the tail of its output, a run
 //! of reads one row of file chips; clicking the header expands the rest.
-//! Colour stays in the status glyph and the diff's added and removed lines.
+//! A card's tile and verb take its kind's hue (`kind`), its status sits at
+//! the right edge, and a running call is lit in the agent's colour.
 
 use super::copy;
-use super::panels::glyph;
+use super::panels::{glyph, icon_tile};
 use super::prose;
 use super::root::Deck;
 use super::session::{Entry, Tool};
-use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
+use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use super::transcript::{self, Row};
 use deck_acp::{ToolKind, ToolStatus};
 use gpui::{
@@ -48,9 +49,10 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                         .px(px(space::PAD))
                         .py(px(9.))
                         .rounded(px(radius::BUBBLE))
+                        .rounded_br(px(radius::CHIP))
                         .border_1()
-                        .border_color(tint(Tokens::accent(), 0.22))
-                        .bg(tint(Tokens::accent(), 0.12))
+                        .border_color(tint(Tokens::accent(), 0.4))
+                        .bg(Tokens::sweep(0.16))
                         .line_height(relative(1.5))
                         .child(t.clone()),
                 )
@@ -63,7 +65,19 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                 .into_any_element(),
             Entry::Thought(t) => super::folds::thought(t, key, open, selected, cx),
             Entry::Tool(tool) => card(deck, tool, key, open, cx),
-            Entry::Note(t) => div().text_color(Tokens::red()).child(t.clone()).into_any_element(),
+            Entry::Note(t) => div()
+                .flex()
+                .gap(px(space::LINE))
+                .px(px(space::INSET))
+                .py(px(space::LINE))
+                .rounded(px(radius::CONTROL))
+                .border_1()
+                .border_color(tint(Tokens::red(), 0.3))
+                .bg(tint(Tokens::red(), 0.07))
+                .text_color(Tokens::red())
+                .child(glyph(icon::WARN, 11.).mt(px(space::HAIR)))
+                .child(div().flex_1().min_w_0().child(t.clone()))
+                .into_any_element(),
         },
     }
 }
@@ -77,23 +91,25 @@ pub(super) fn toggle(
 
 pub(super) fn status(s: ToolStatus) -> (&'static str, Hsla) {
     match s {
-        ToolStatus::Running => (icon::SPIN, Tokens::mint()),
+        ToolStatus::Running => (icon::SPIN, Tokens::cyan()),
         ToolStatus::Done => (icon::CHECK, Tokens::lime()),
         ToolStatus::Failed => (icon::CROSS, Tokens::red()),
     }
 }
 
-fn kind(k: ToolKind) -> (&'static str, &'static str) {
+/// A kind's icon, verb and hue. The hue runs cool to warm by reach:
+/// looking, changing files, running code, leaving the machine, deleting.
+pub(super) fn kind(k: ToolKind) -> (&'static str, &'static str, Hsla) {
     match k {
-        ToolKind::Read => (icon::FILES, "Read"),
-        ToolKind::Edit => (icon::EDIT, "Edit"),
-        ToolKind::Delete => (icon::TRASH, "Delete"),
-        ToolKind::Move => (icon::MOVE, "Move"),
-        ToolKind::Search => (icon::SEARCH, "Search"),
-        ToolKind::Execute => (icon::TERMINAL, "Run"),
-        ToolKind::Think => (icon::BULB, "Think"),
-        ToolKind::Fetch => (icon::GLOBE, "Fetch"),
-        ToolKind::Other => (icon::WRENCH, "Tool"),
+        ToolKind::Read => (icon::FILES, "Read", Tokens::sky()),
+        ToolKind::Search => (icon::SEARCH, "Search", Tokens::sky()),
+        ToolKind::Edit => (icon::EDIT, "Edit", Tokens::violet()),
+        ToolKind::Move => (icon::MOVE, "Move", Tokens::violet()),
+        ToolKind::Execute => (icon::TERMINAL, "Run", Tokens::cyan()),
+        ToolKind::Fetch => (icon::GLOBE, "Fetch", Tokens::orange()),
+        ToolKind::Delete => (icon::TRASH, "Delete", Tokens::red()),
+        ToolKind::Think => (icon::BULB, "Think", Tokens::text_dim().into()),
+        ToolKind::Other => (icon::WRENCH, "Tool", Tokens::text_dim().into()),
     }
 }
 
@@ -104,8 +120,9 @@ pub(super) fn frame(selected: bool) -> Div {
         .flex_col()
         .rounded(px(radius::CARD))
         .border_1()
-        .border_color(if selected { tint(Tokens::accent(), 0.6) } else { Tokens::edge().into() })
+        .border_color(if selected { tint(Tokens::accent(), 0.7) } else { Tokens::edge().into() })
         .bg(Tokens::raised())
+        .when(selected, |d| d.shadow(glow(Tokens::accent(), 0.4)))
         .overflow_hidden()
 }
 
@@ -120,14 +137,15 @@ pub(super) fn more(n: usize, what: &str, open: bool) -> Div {
         .border_t_1()
         .border_color(Tokens::edge())
         .text_size(px(size::SMALL))
-        .text_color(Tokens::text_faint())
+        .bg(Tokens::sunken())
+        .text_color(Tokens::text_dim())
         .child(if open { "show less".to_string() } else { format!("{n} more {what} ⌄") })
 }
 
 fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck>) -> AnyElement {
     let call = &tool.call;
     let (g, color) = status(call.status);
-    let (kg, label) = kind(call.kind);
+    let (kg, label, hue) = kind(call.kind);
     let changes = transcript::changes(call);
     let (added, removed) = changes.iter().fold((0, 0), |(a, r), c| (a + c.diff.added, r + c.diff.removed));
     let subject = match call.kind {
@@ -150,19 +168,28 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         .px(px(space::INSET))
         .flex()
         .items_center()
+        .pl(px(space::TIGHT))
         .gap(px(9.))
         .cursor_pointer()
+        .hover(|s| s.bg(Tokens::raised()))
         .on_click(toggle(key, cx))
-        .child(glyph(g, 10.).text_color(color))
-        .child(glyph(kg, 10.).text_color(Tokens::text_faint()))
-        .child(div().flex_none().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(label))
+        .child(icon_tile(kg, hue, 22.))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(size::LABEL))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(hue)
+                .child(label),
+        )
         .child(mono().flex_1().min_w_0().truncate().text_color(Tokens::text()).child(subject))
         .when(added + removed > 0, |d| {
             d.child(mono().flex_none().text_color(Tokens::lime()).child(format!("+{added}")))
                 .child(mono().flex_none().text_color(Tokens::red()).child(format!("−{removed}")))
         })
         .children(copy)
-        .children(transcript::took(tool).map(|t| mono().flex_none().text_color(Tokens::text_faint()).child(t)));
+        .children(transcript::took(tool).map(|t| mono().flex_none().text_color(Tokens::text_faint()).child(t)))
+        .child(glyph(g, 11.).flex_none().text_color(color));
     let body = match call.kind {
         ToolKind::Execute => super::card_body::output(&transcript::output(call), open),
         _ if !changes.is_empty() => Some(super::card_body::diff(&changes, open)),
@@ -170,7 +197,17 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         _ => None,
     };
     let fade = deck.motion.reveal(&header_key);
-    frame(deck.focused.as_deref() == Some(header_key.as_str()))
+    let selected = deck.focused.as_deref() == Some(header_key.as_str());
+    // A running call is lit in the agent's colour; a failed one keeps a red edge.
+    let edge = match call.status {
+        _ if selected => None,
+        ToolStatus::Running => Some(Tokens::cyan()),
+        ToolStatus::Failed => Some(Tokens::red()),
+        ToolStatus::Done => None,
+    };
+    frame(selected)
+        .when_some(edge, |d, edge| d.border_color(tint(edge, 0.4)))
+        .when(!selected && call.status == ToolStatus::Running, |d| d.shadow(glow(Tokens::cyan(), 0.3)))
         .child(header)
         .children(body.map(|b| div().opacity(fade).child(b)))
         .into_any_element()

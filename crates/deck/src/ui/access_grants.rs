@@ -5,11 +5,12 @@
 //! second approval flow or let hidden keyboard shortcuts decide a request.
 
 use super::access_panel::{button, error};
+use super::panels::{eyebrow, icon_tile};
 use super::root::Deck;
-use super::theme::{MONO, Tokens, radius, size, space};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
+    Styled as _, div, px,
 };
 
 pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
@@ -22,8 +23,11 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .items_center()
             .gap(px(space::SECTION))
             .p(px(space::INSET))
-            .rounded(px(radius::CONTROL))
+            .rounded(px(radius::CARD))
+            .border_1()
+            .border_color(Tokens::edge())
             .bg(Tokens::raised())
+            .child(icon_tile(icon::CHECK, Tokens::lime(), 24.))
             .child(
                 div()
                     .flex_1()
@@ -53,8 +57,11 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .items_center()
             .gap(px(space::SECTION))
             .p(px(space::INSET))
-            .rounded(px(radius::CONTROL))
-            .bg(Tokens::raised())
+            .rounded(px(radius::CARD))
+            .border_1()
+            .border_color(tint(Tokens::amber(), 0.35))
+            .bg(tint(Tokens::amber(), 0.06))
+            .child(icon_tile(icon::BELL, Tokens::amber(), 24.))
             .child(
                 div()
                     .flex_1()
@@ -72,7 +79,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     ))),
             )
             .child(
-                button(("access-review", i), "Review", Tokens::text_dim())
+                button(("access-review", i), "Review", Tokens::amber())
                     .debug_selector(move || format!("access-review-{i}"))
                     .on_click(cx.listener(move |this, _, _, cx| this.review_approval(&id, cx))),
             )
@@ -86,7 +93,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .flex_col()
                 .gap(px(space::LINE))
-                .child(div().font_weight(FontWeight::MEDIUM).child("Pending requests"))
+                .child(eyebrow("Pending requests"))
                 .children(
                     deck.boundary()
                         .items()
@@ -100,7 +107,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .flex_col()
                 .gap(px(space::LINE))
-                .child(div().font_weight(FontWeight::MEDIUM).child("Additional access"))
+                .child(eyebrow("Additional access"))
                 .child(
                     div()
                         .text_size(px(size::SMALL))

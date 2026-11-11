@@ -23,7 +23,7 @@ pub fn dot_color(dot: Dot) -> Hsla {
         Dot::ChecksRunning => Tokens::amber(),
         Dot::ChecksFailing => Tokens::red(),
         Dot::Ready => Tokens::lime(),
-        Dot::Merged => Tokens::accent(),
+        Dot::Merged => Tokens::violet(),
     }
 }
 
@@ -40,10 +40,12 @@ pub fn chip(dot: Dot, label: &str) -> gpui::Div {
         .items_center()
         .gap(px(5.))
         .rounded_full()
-        .bg(Tokens::raised())
+        .border_1()
+        .border_color(super::theme::tint(dot_color(dot), 0.3))
+        .bg(super::theme::tint(dot_color(dot), 0.08))
         .text_size(px(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(div().flex_none().size(px(6.)).rounded_full().bg(dot_color(dot)))
+        .child(glyph(icon::BRANCH, 9.).flex_none().text_color(dot_color(dot)))
         .child(div().min_w_0().truncate().font_family(MONO).child(label.to_owned()))
 }
 
@@ -78,6 +80,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
+                .child(super::panels::icon_tile(icon::GITHUB, Tokens::violet(), 26.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Publication"))
                 .child(div().text_color(Tokens::text_faint()).child(title))
                 .child(div().flex_1())
@@ -139,7 +142,7 @@ fn details(view: &View, confirm: bool, cx: &mut Context<Deck>) -> AnyElement {
                 .pt(px(space::DETAIL))
                 .children(url.map(|url| {
                     button("publication-open", "Open on GitHub", Tokens::text())
-                        .child(glyph(icon::SEND, 10.))
+                        .child(glyph(icon::EXTERNAL, 10.))
                         .gap(px(space::TIGHT))
                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
                 }))

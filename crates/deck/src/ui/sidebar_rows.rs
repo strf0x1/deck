@@ -7,7 +7,7 @@
 use super::root::Deck;
 use super::sidebar::{Row, initial};
 use super::sidebar_tasks::{settled_fold, tasks_view};
-use super::theme::{Tokens, icon, radius, size, space};
+use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -46,23 +46,26 @@ pub(super) fn rows_view(deck: &mut Deck, rows: &[Row], cx: &mut Context<Deck>) -
 }
 
 fn needs_header(count: usize) -> AnyElement {
-    section_label(&format!("Needs you · {count}"), "sidebar-needs-header")
+    section_label(&format!("Needs you · {count}"), "sidebar-needs-header", (count > 0).then(Tokens::amber))
 }
 
 fn projects_header() -> AnyElement {
-    div().mt(px(space::LINE)).child(section_label("Projects", "sidebar-projects-header")).into_any_element()
+    div().mt(px(space::LINE)).child(section_label("Projects", "sidebar-projects-header", None)).into_any_element()
 }
 
-fn section_label(label: &str, selector: &'static str) -> AnyElement {
+/// A section's heading; `lit` gives it the colour of what waits under it.
+fn section_label(label: &str, selector: &'static str, lit: Option<gpui::Hsla>) -> AnyElement {
+    let heading = super::panels::eyebrow(label);
     div()
         .debug_selector(move || selector.into())
         .h(px(28.))
         .px(px(space::TIGHT))
         .flex()
         .items_center()
-        .text_size(px(size::SMALL))
-        .text_color(Tokens::text_faint())
-        .child(label.to_string())
+        .child(match lit {
+            Some(color) => heading.text_color(color),
+            None => heading,
+        })
         .into_any_element()
 }
 
@@ -84,9 +87,10 @@ fn need_row(
         .gap(px(space::LINE))
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
-        .hover(|style| style.bg(Tokens::raised()))
+        .bg(tint(Tokens::amber(), 0.06))
+        .hover(|style| style.bg(tint(Tokens::amber(), 0.13)))
         .on_click(cx.listener(move |this, _, _, cx| this.open_item(index, cx)))
-        .child(div().flex_none().size(px(6.)).rounded_full().bg(Tokens::amber()))
+        .child(super::panels::state_mark(super::board::LaneState::Waiting, 9.))
         .child(
             div()
                 .flex_none()
@@ -98,7 +102,14 @@ fn need_row(
         )
         .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child("›"))
         .child(div().flex_1().min_w_0().truncate().text_size(px(size::BODY)).child(title.to_string()))
-        .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::amber()).child(word))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(size::SMALL))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(Tokens::amber())
+                .child(word),
+        )
         .tooltip(move |_, cx| {
             let text = text.clone();
             cx.new(|_| Tooltip { text }).into()
@@ -138,7 +149,7 @@ fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .text_color(fg)
-        .when(shown, |s| s.bg(Tokens::raised_hover()))
+        .when(shown, |s| s.bg(tint(Tokens::accent(), 0.1)))
         .hover(|style| style.bg(Tokens::raised_hover()))
         .children(shown.then(|| {
             div()
@@ -173,10 +184,32 @@ fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement
                 }))
                 .child(super::panels::glyph(chevron, 10.)),
         )
-        .child(super::sidebar_narrow::tile(initial(name), shown, TILE))
+        .child(super::sidebar_narrow::tile(initial(name), Tokens::hue(name), shown, TILE))
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
-        .children(attention.then(|| div().flex_none().size(px(6.)).rounded_full().bg(Tokens::amber())))
-        .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(tasks.to_string()));
+        .children(attention.then(|| {
+            div()
+                .flex_none()
+                .size(px(6.))
+                .rounded_full()
+                .bg(Tokens::amber())
+                .shadow(super::theme::glow(Tokens::amber(), 0.8))
+        }))
+        .child(
+            div()
+                .flex_none()
+                .min_w(px(18.))
+                .h(px(16.))
+                .px(px(space::DETAIL))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(Tokens::raised())
+                .font_family(super::theme::MONO)
+                .text_size(px(size::MICRO))
+                .text_color(Tokens::text_dim())
+                .child(tasks.to_string()),
+        );
     row.into_any_element()
 }
 
@@ -193,7 +226,7 @@ impl gpui::Render for Tooltip {
             .max_w(px(320.))
             .rounded(px(radius::CONTROL))
             .border_1()
-            .border_color(Tokens::edge())
+            .border_color(Tokens::edge_strong())
             .bg(Tokens::float())
             .text_size(px(size::SMALL))
             .text_color(Tokens::text())

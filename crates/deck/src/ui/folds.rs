@@ -6,7 +6,7 @@
 //! or list is a click away.
 
 use super::cards::{frame, mono, status, toggle};
-use super::panels::glyph;
+use super::panels::{glyph, icon_tile};
 use super::root::Deck;
 use super::session::{Entry, Tool};
 use super::theme::{Tokens, icon, radius, size, space, tint};
@@ -31,8 +31,9 @@ pub fn thought(text: &str, key: String, open: bool, selected: bool, cx: &mut Con
         .cursor_pointer()
         .text_color(Tokens::text_faint())
         .italic()
+        .hover(|s| s.text_color(Tokens::text_dim()))
         .on_click(toggle(key, cx))
-        .child(glyph(icon::BULB, 10.).mt(px(space::DETAIL)))
+        .child(glyph(icon::BULB, 10.).mt(px(space::DETAIL)).text_color(tint(Tokens::amber(), 0.7)))
         .child(if open {
             div().flex_1().min_w_0().line_height(relative(1.5)).child(text.to_string())
         } else {
@@ -61,8 +62,8 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
             .px(px(7.))
             .py(px(space::HAIR))
             .rounded(px(radius::CHIP))
-            .bg(Tokens::raised_hover())
-            .text_color(Tokens::text_dim())
+            .bg(tint(Tokens::sky(), 0.1))
+            .text_color(tint(Tokens::sky(), 0.9))
             .child(transcript::file_name(p).to_string())
     };
     let shown = 4;
@@ -70,18 +71,20 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
         .id(key.clone())
         .min_h(px(space::HEADER))
         .px(px(space::INSET))
+        .pl(px(space::TIGHT))
         .flex()
         .items_center()
         .gap(px(9.))
         .cursor_pointer()
+        .hover(|s| s.bg(Tokens::raised()))
         .on_click(toggle(key, cx))
-        .child(glyph(g, 10.).text_color(color))
-        .child(glyph(icon::FILES, 10.).text_color(Tokens::text_faint()))
+        .child(icon_tile(icon::EYE, Tokens::sky(), 22.))
         .child(
             div()
                 .flex_none()
                 .text_size(px(size::LABEL))
-                .text_color(Tokens::text_dim())
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(Tokens::sky())
                 .child(format!("Looked at {}", tools.len())),
         )
         .child(
@@ -97,7 +100,8 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
                         mono().flex_none().text_color(Tokens::text_faint()).child(format!("+{}", paths.len() - shown)),
                     )
                 }),
-        );
+        )
+        .child(glyph(g, 11.).flex_none().text_color(color));
     let list = open.then(|| {
         mono()
             .flex()
@@ -107,6 +111,7 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
             .gap(px(3.))
             .border_t_1()
             .border_color(Tokens::edge())
+            .bg(Tokens::sunken())
             .children(tools.iter().map(|t| {
                 let (g, color) = status(t.call.status);
                 div()

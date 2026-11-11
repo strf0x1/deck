@@ -41,7 +41,7 @@ fn block(b: &Block) -> AnyElement {
         Block::Quote(inner) => div()
             .pl(px(space::INSET))
             .border_l_2()
-            .border_color(Tokens::edge_strong())
+            .border_color(tint(Tokens::violet(), 0.5))
             .text_color(Tokens::text_dim())
             .child(blocks(inner, 8.))
             .into_any_element(),
@@ -57,7 +57,7 @@ fn block(b: &Block) -> AnyElement {
                 div()
                     .flex()
                     .gap(px(space::LINE))
-                    .child(div().flex_none().min_w(px(16.)).text_color(Tokens::text_faint()).child(marker))
+                    .child(div().flex_none().min_w(px(16.)).text_color(tint(Tokens::accent(), 0.8)).child(marker))
                     .child(div().flex_1().min_w_0().child(blocks(item, 6.)))
             }))
             .into_any_element(),
@@ -73,7 +73,7 @@ pub fn code(lang: &str, text: &str) -> AnyElement {
         .rounded(px(radius::CONTROL))
         .border_1()
         .border_color(Tokens::edge())
-        .bg(Tokens::raised())
+        .bg(Tokens::sunken())
         .font_family(MONO)
         .text_size(px(size::LABEL))
         .children((!lang.is_empty()).then(|| {
@@ -81,7 +81,7 @@ pub fn code(lang: &str, text: &str) -> AnyElement {
                 .px(px(space::INSET))
                 .pt(px(7.))
                 .text_size(px(size::MICRO))
-                .text_color(Tokens::text_faint())
+                .text_color(tint(Tokens::cyan(), 0.7))
                 .child(lang.to_string())
         }))
         .child(div().px(px(space::INSET)).py(px(9.)).line_height(relative(1.45)).child(code_text(
@@ -126,12 +126,18 @@ fn styled(i: &Inline) -> StyledText {
         if mark.italic {
             f.style = FontStyle::Italic;
         }
-        let color = if mark.link { Tokens::accent() } else { Tokens::text().into() };
+        let color = if mark.link {
+            Tokens::sky()
+        } else if mark.code {
+            Tokens::cyan()
+        } else {
+            Tokens::text().into()
+        };
         TextRun {
             len,
             font: f,
             color,
-            background_color: mark.code.then(|| tint(Tokens::text().into(), 0.08)),
+            background_color: mark.code.then(|| tint(Tokens::cyan(), 0.09)),
             underline: mark.link.then(|| UnderlineStyle {
                 color: Some(tint(color, 0.5)),
                 thickness: px(1.),

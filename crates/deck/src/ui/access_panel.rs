@@ -2,8 +2,8 @@
 //! the conversation pane's body while open. No state of its own.
 //!
 //! The design choice: red appears only on what revokes (the button, the
-//! confirmation) and amber only on the reminder that follows, so the panel
-//! stays quiet until a decision is on it.
+//! confirmation) and amber on what is unguarded or still the user's to do
+//! (a local process, the reminder after a revoke); a sealed VM is green.
 
 use super::access::{NOT_CANCELLED, Revoke};
 use super::panels::glyph;
@@ -43,13 +43,16 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(space::TIGHT))
                 .px(px(space::INSET))
                 .py(px(9.))
-                .rounded(px(radius::CONTROL))
+                .rounded(px(radius::CARD))
+                .border_1()
+                .border_color(Tokens::edge())
                 .bg(Tokens::raised())
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(space::SECTION))
+                        .child(glyph(icon::KEY, 11.).text_color(color))
                         .child(
                             div()
                                 .debug_selector(move || format!("access-credential-name-{i}"))
@@ -67,7 +70,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .items_center()
                                 .gap(px(space::TIGHT))
                                 .text_size(px(size::SMALL))
-                                .text_color(Tokens::text_dim())
+                                .text_color(color)
                                 .child(div().size(px(6.)).rounded_full().bg(color))
                                 .child(label),
                         )
@@ -121,7 +124,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .flex_col()
                 .gap(px(space::LINE))
-                .child(div().font_weight(FontWeight::MEDIUM).child("Credentials"))
+                .child(super::panels::eyebrow("Credentials"))
                 .child(
                     div()
                         .text_size(px(size::SMALL))
@@ -146,7 +149,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(glyph(icon::SHIELD, 13.).text_color(Tokens::text_dim()))
+                .child(super::panels::icon_tile(icon::SHIELD, Tokens::violet(), 26.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Access"))
                 .child(div().flex_1())
                 .child(
@@ -159,13 +162,27 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 ),
         )
         .children(deck.current().task.as_ref().map(|task| {
-            div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(
-                if task.boundary_enforced() {
-                    "VM · external access is enforced by host gateways."
-                } else {
-                    "Local process · host network access is not restricted by these grants."
-                },
-            )
+            // Sealed is green; an unrestricted host process is a caution.
+            let (g, color, text) = if task.boundary_enforced() {
+                (icon::LOCK, Tokens::lime(), "VM · external access is enforced by host gateways.")
+            } else {
+                (icon::WARN, Tokens::amber(), "Local process · host network access is not restricted by these grants.")
+            };
+            div()
+                .flex_none()
+                .px(px(space::INSET))
+                .py(px(space::LINE))
+                .flex()
+                .items_center()
+                .gap(px(space::LINE))
+                .rounded(px(radius::CONTROL))
+                .border_1()
+                .border_color(tint(color, 0.25))
+                .bg(tint(color, 0.06))
+                .text_size(px(size::SMALL))
+                .text_color(Tokens::text_dim())
+                .child(glyph(g, 10.).text_color(color))
+                .child(text)
         }))
         .children(access.approvals().map(approval_mode))
         .children(access.approvals_error().map(error))
@@ -273,7 +290,8 @@ pub(super) fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<
         .rounded(px(radius::CONTROL))
         .border_1()
         .border_color(tint(fg, 0.3))
-        .bg(Tokens::raised())
+        .bg(tint(fg, 0.06))
+        .hover(move |style| style.bg(tint(fg, 0.14)))
         .text_color(fg)
         .text_size(px(size::LABEL))
         .font_weight(FontWeight::MEDIUM)
@@ -282,5 +300,12 @@ pub(super) fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<
 }
 
 pub(super) fn error(why: &str) -> AnyElement {
-    div().text_color(Tokens::red()).child(why.to_owned()).into_any_element()
+    div()
+        .flex_none()
+        .flex()
+        .gap(px(space::LINE))
+        .text_color(Tokens::red())
+        .child(glyph(icon::WARN, 11.).mt(px(space::HAIR)))
+        .child(div().flex_1().min_w_0().child(why.to_owned()))
+        .into_any_element()
 }
