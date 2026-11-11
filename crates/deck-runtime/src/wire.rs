@@ -10,6 +10,27 @@ use std::path::PathBuf;
 
 pub(crate) const LIMIT: usize = 1024 * 1024;
 
+/// The control grammar's protocol. Bump it whenever a [`Request`] variant or
+/// its meaning changes: a window then refuses a daemon from another build with
+/// an instruction instead of failing in the middle of a conversation.
+pub const PROTOCOL: u32 = 1;
+
+/// What a daemon answers to [`Request::Hello`]. A daemon predating the
+/// handshake answers `unknown variant`, which the client reports as
+/// incompatible rather than as a protocol error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hello {
+    pub protocol: u32,
+    pub version: String,
+    pub pid: u32,
+    /// The daemon's own executable, captured before a rebuild could replace it.
+    pub executable: PathBuf,
+    /// Process start, in milliseconds since the Unix epoch.
+    pub started: u64,
+    /// The executable on disk was modified after this process started.
+    pub stale: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum Request {
@@ -213,9 +234,37 @@ pub(crate) enum Request {
         task: String,
     },
     Subscribe,
+    /// The compatibility handshake. Answered before the service lock.
+    Hello,
+    /// Exit without touching task holders; the next daemon adopts them.
+    Shutdown,
 }
 
 impl Request {
+    /// Whether repeating this request cannot change the daemon or its tasks.
+    /// A reconnect after a daemon restart retries only these: a mutation may
+    /// already have run, and repeating it could create a second task.
+    pub fn read_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Hello
+                | Self::Tasks
+                | Self::Task { .. }
+                | Self::Projects
+                | Self::Approvals { .. }
+                | Self::ApprovalStatus { .. }
+                | Self::ApprovalWait { .. }
+                | Self::Grants { .. }
+                | Self::AccessGrants { .. }
+                | Self::GithubApprovals { .. }
+                | Self::PullState { .. }
+                | Self::Credentials { .. }
+                | Self::Credential { .. }
+                | Self::ListCredentials
+                | Self::Settings
+        )
+    }
+
     pub fn validate(&self) -> Result<()> {
         let id = match self {
             Self::Start { id }
