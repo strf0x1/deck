@@ -1241,7 +1241,7 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     wait_view(&mut vcx, |_| matches!(daemon.task(&t2.id).unwrap().state, State::Running));
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.board().cards().len(), 1);
-        assert_eq!(d.board().cards()[0].lane.id, deck::ui::root::LIVE);
+        assert_eq!(d.board().cards()[0].lane.id, d.live_lane());
         assert!(d.attached_ids().contains(&t1.id));
     });
 
@@ -1637,7 +1637,7 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
     let deck = window.root(&mut vcx).unwrap();
     vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
-    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.publication_of(deck::ui::root::LIVE).is_some()));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.publication_of(d.live_lane()).is_some()));
     click_control(&mut vcx, "hdr-publication");
     assert_eq!(deck.read_with(&vcx, |d, _| d.open_publication().map(|(t, _)| t.to_string())), Some(task.id.clone()));
     assert!(deck.read_with(&vcx, |d, _| d.publish_notice().is_none()), "a local task has no gateway to warn about");
@@ -1683,7 +1683,7 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     let record = daemon.task(&task.id).unwrap();
     deck.update(&mut vcx, |d, cx| d.on_tasks(vec![record], [(task.id.clone(), merged)].into(), cx));
     let (state, detail) = deck.read_with(&vcx, |d, _| {
-        let card = d.board().cards().iter().find(|c| c.lane.id == deck::ui::root::LIVE).unwrap();
+        let card = d.board().cards().iter().find(|c| c.lane.id == d.live_lane()).unwrap();
         (card.lane.state, card.lane.detail.clone())
     });
     assert_eq!((state, detail.as_str()), (LaneState::Review, "done · merged"));
@@ -1749,9 +1749,15 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     assert!(third != own && third != second);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 3));
     open_sidebar(&deck, &mut vcx);
+    settle(&deck, &mut vcx);
+    let (order, live) = deck.read_with(&vcx, |d, _| (d.board().order(), d.live_lane()));
+    assert_eq!(order[0], live, "the new session starts in the top row: {order:?} live {live}");
     vcx.simulate_click(point(px(148.), px(198. + PITCH)), Modifiers::none());
     let back = ready_on(&deck, &mut vcx, None);
-    assert!(back == own || back == second, "the card held one of the earlier sessions");
+    assert!(
+        back == own || back == second,
+        "the card held one of the earlier sessions: {back} after {order:?} live {live}"
+    );
     let expect = if back == own { "first" } else { "second" };
     assert_eq!(said(&deck, &vcx), vec![expect.to_string()], "its conversation is rebuilt by live attach");
 
@@ -1848,22 +1854,27 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     assert_eq!(own, launched.id, "launch finds the task for its own command and directory");
     prompt_fake(&deck, &mut vcx, "first");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.board().order().len() == 2));
-    let lane = deck.read_with(&vcx, |d, _| d.board().order()[1]);
+    let (first_lane, lane) = deck.read_with(&vcx, |d, _| {
+        let order = d.board().order();
+        (order[0], order[1])
+    });
 
     // The second card sits one pitch below the live card.
     open_sidebar(&deck, &mut vcx);
-    let card = point(px(148.), px(198. + PITCH));
-    vcx.simulate_click(card, Modifiers::none());
+    let first = point(px(148.), px(198.));
+    let second = point(px(148.), px(198. + PITCH));
+    vcx.simulate_click(second, Modifiers::none());
     assert_eq!(deck.read_with(&vcx, |d, _| d.board().dragging()), None, "a click is not a drag");
     ready_on(&deck, &mut vcx, Some(&other));
     deck.read_with(&vcx, |d, _| {
-        assert_eq!(d.board().order(), vec![deck::ui::root::LIVE, lane], "the column keeps its shape");
+        assert_eq!(d.board().order(), vec![first_lane, lane], "rows keep their places");
+        assert_eq!(d.board().cards()[0].lane.title, "alpha", "the previous task stays in its row");
         assert_eq!(
-            d.board().cards()[0].lane.title,
+            d.board().cards()[1].lane.title,
             "beta",
-            "the selected row is its record's title, not the agent's name"
+            "the clicked row keeps the session it showed, titled by its record"
         );
-        assert_eq!(d.board().cards()[1].lane.title, "alpha", "the previous task is an ordinary card");
+        assert_eq!(d.live_lane(), lane, "the highlight moves to the clicked row");
     });
     assert!(said(&deck, &vcx).is_empty(), "the transcript is the selected task's");
     assert_eq!(daemon.task(&own).unwrap().state, State::Running, "switching away only detaches");
@@ -1871,11 +1882,15 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     assert_eq!(said(&deck, &vcx), vec!["second".to_string()]);
 
     // Back: the first task's conversation is rebuilt by live attach.
-    vcx.simulate_click(card, Modifiers::none());
+    vcx.simulate_click(first, Modifiers::none());
     ready_on(&deck, &mut vcx, Some(&own));
     assert_eq!(said(&deck, &vcx), vec!["first".to_string()]);
-    assert_eq!(deck.read_with(&vcx, |d, _| d.board().cards()[1].lane.title.clone()), "beta");
-    vcx.simulate_click(card, Modifiers::none());
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| (d.board().cards()[1].lane.title.clone(), d.live_lane())),
+        ("beta".to_string(), first_lane),
+        "beta stays in its row; the highlight follows back to alpha's"
+    );
+    vcx.simulate_click(second, Modifiers::none());
     ready_on(&deck, &mut vcx, Some(&other));
     assert_eq!(said(&deck, &vcx), vec!["second".to_string()]);
 

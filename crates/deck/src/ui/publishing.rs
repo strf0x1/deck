@@ -10,7 +10,7 @@
 
 use super::board::Lane;
 use super::publication::{self, View};
-use super::root::{Deck, LIVE};
+use super::root::Deck;
 use deck_acp::Inbound;
 use deck_runtime::pull_request::State as Published;
 use deck_runtime::{DaemonClient, Task};
@@ -125,22 +125,23 @@ impl Deck {
         shown.sort_by(|a, b| b.id.cmp(&a.id));
         self.refresh_attention();
         let mut lanes: Vec<Lane> = Vec::new();
-        let had_live = self.board.cards().iter().any(|c| c.lane.id == LIVE);
+        let live_lane = self.lanes.live();
+        let had_live = self.board.cards().iter().any(|c| c.lane.id == live_lane);
         if own.is_some() {
             let live = self
                 .board
                 .cards()
                 .iter()
-                .find(|c| c.lane.id == LIVE)
-                .map_or_else(super::root::live_lane, |c| c.lane.clone());
+                .find(|c| c.lane.id == live_lane)
+                .map_or_else(|| super::root::live_card(live_lane), |c| c.lane.clone());
             lanes.push(live);
         }
         lanes.extend(self.lanes.lanes(&shown, own.as_deref(), &self.published, &self.needs_you, now));
         self.board.sync(lanes);
         // A new live card belongs at the top, where the selected task shows;
-        // an existing one keeps the slot the user put it in.
+        // an existing one keeps the slot the user clicked.
         if own.is_some() && !had_live {
-            self.board.to_front(LIVE);
+            self.board.to_front(live_lane);
         }
         // One small file read for the branch, every refresh, not every frame.
         self.workspace = self.tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);

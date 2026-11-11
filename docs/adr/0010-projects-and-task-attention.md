@@ -3,7 +3,9 @@
 Status: proposed, 2026-11-07; §1, §7 and §9 amended 2026-11-09 (one
 sidebar in place of the rail, the strip and the sessions column); §1, §5
 and §9 amended again 2026-11-09 (a project view, task titles, and a
-hierarchy that tells projects from tasks). Answers #124. Builds on 0001 (tasks and
+hierarchy that tells projects from tasks); §9 amended again 2026-11-11
+(selecting a task moves the highlight to its row, and rows keep their
+sessions; issue #172). Answers #124. Builds on 0001 (tasks and
 records), 0002 (live attach), 0004 §5 (the approval queue) and 0008 §3–4
 (the repository is part of the task).
 
@@ -215,6 +217,12 @@ Below "Needs you", the sidebar lists every visible project (amended
   attention word or its publication (`PR 141`). It keeps its actions
   (Mark done, the publication panel, destroy after a merge) behind hover.
   What a card's second line said (the agent's status) moves to the header.
+- **Selecting a task** (amended 2026-11-11, issue #172) highlights the row
+  that was clicked and leaves every row showing the session it showed. The
+  selected row is the live card: lane ids belong to rows, and selection
+  moves the live lane to the chosen row rather than trading two cards'
+  content. Only `New session` puts a row at the top; any other selection
+  keeps the row where the user has it.
 - The settled fold closes the list.
 
 **Telling projects from tasks** (amended again 2026-11-09). The first

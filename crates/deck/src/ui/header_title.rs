@@ -6,7 +6,7 @@
 //! task list, so the view, the control socket and their tests read the same
 //! text instead of each deriving it.
 
-use super::root::{Deck, LIVE};
+use super::root::Deck;
 
 /// The header's left block, in reading order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,7 +26,8 @@ impl Deck {
         let Some(id) = self.task_id() else {
             return HeaderTitle { title: None, project, detail: None };
         };
-        let detail = self.board().cards().iter().find(|card| card.lane.id == LIVE).map(|card| card.lane.detail.clone());
+        let lane = self.live_lane();
+        let detail = self.board().cards().iter().find(|card| card.lane.id == lane).map(|card| card.lane.detail.clone());
         HeaderTitle { title: Some(self.task_title(id)), project, detail }
     }
 }

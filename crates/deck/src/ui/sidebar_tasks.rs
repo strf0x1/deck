@@ -7,7 +7,7 @@
 
 use super::board::{CARD_H, Card, LaneState};
 use super::panels::{glyph, state_mark};
-use super::root::{Deck, LIVE};
+use super::root::Deck;
 use super::sidebar_rows::TASK_INDENT;
 use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::prelude::FluentBuilder as _;
@@ -38,7 +38,7 @@ pub(super) fn tasks_view(deck: &mut Deck, cx: &mut Context<Deck>) -> AnyElement 
 
 fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> AnyElement {
     let lift = c.lift.pos.clamp(0., 1.2);
-    let live = c.lane.id == LIVE;
+    let live = c.lane.id == deck.live_lane();
     let edge: gpui::Hsla = if live { tint(Tokens::accent(), 0.55) } else { Tokens::edge().into() };
     let edge = if lift > 0.02 { tint(Tokens::text().into(), 0.07 + 0.12 * lift.min(1.)) } else { edge };
     let bg: gpui::Hsla = if live {

@@ -27,8 +27,9 @@ use gpui::{FollowMode, ListState};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-/// The lane id of this window's own task, the live agent session. Every other
-/// task `deckd` knows gets its own lane (`tasks.rs`).
+/// The lane id the window's own card starts on, before any task is selected.
+/// It moves with the selection after that (`tasks::Lanes::live`); every other
+/// task `deckd` knows gets a lane of its own (`tasks.rs`).
 pub const LIVE: usize = 0;
 
 /// Space around and between the window's regions.
@@ -119,12 +120,12 @@ pub struct Deck {
 
 /// Before the first task list arrives the column holds only the live card.
 fn lanes() -> Vec<Lane> {
-    vec![live_lane()]
+    vec![live_card(LIVE)]
 }
 
-/// The selected task's card before its session says anything.
-pub(super) fn live_lane() -> Lane {
-    Lane { id: LIVE, title: "agent".into(), detail: "connecting…".into(), ..Lane::default() }
+/// The selected task's card on lane `id`, before its session says anything.
+pub(super) fn live_card(id: usize) -> Lane {
+    Lane { id, title: "agent".into(), detail: "connecting…".into(), ..Lane::default() }
 }
 
 impl Deck {
@@ -237,6 +238,11 @@ impl Deck {
 
     pub fn board(&self) -> &Board {
         &self.board
+    }
+
+    /// The lane the window's own task (the sidebar's highlighted row) shows.
+    pub fn live_lane(&self) -> usize {
+        self.lanes.live()
     }
 
     pub fn rail(&self) -> &Rail {
@@ -477,7 +483,7 @@ impl Deck {
 
     pub(super) fn sync_live_lane(&mut self) {
         let attached = self.current();
-        let view = self.publication_of(LIVE);
+        let view = self.publication_of(self.lanes.live());
         let (state, detail) = super::tasks::live(
             &attached.session.status,
             attached.session.ask.as_ref().map(|ask| ask.title.as_str()),
@@ -493,7 +499,7 @@ impl Deck {
             .iter()
             .find(|item| Some(item.task.as_str()) == self.selected.as_deref())
             .map(|item| item.reason.word());
-        if let Some(lane) = self.board.lane_mut(LIVE) {
+        if let Some(lane) = self.board.lane_mut(self.lanes.live()) {
             if let Some(title) = title {
                 lane.title = title;
             }
@@ -680,7 +686,7 @@ impl Render for Deck {
                     this.selecting = false;
                     // A press that never became a drag selects the card.
                     if let Some(lane) = this.board.release()
-                        && lane != LIVE
+                        && lane != this.lanes.live()
                     {
                         this.select(lane, cx);
                     }

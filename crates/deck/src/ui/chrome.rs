@@ -19,7 +19,8 @@ use gpui::{
 const TITLE_MAX: f32 = 420.;
 
 pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl IntoElement {
-    let live = deck.board.cards().iter().find(|c| c.lane.id == super::root::LIVE).map(|c| c.lane.state);
+    let live_lane = deck.live_lane();
+    let live = deck.board.cards().iter().find(|c| c.lane.id == live_lane).map(|c| c.lane.state);
     let dot = live.map_or(Tokens::text_faint().into(), state_color);
     div()
         .h(px(40.))
@@ -54,7 +55,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 )
                 .child(div().font_family(MONO).text_size(px(size::SMALL)).child(agent_label(&deck.agent_cmd))),
         )
-        .children(deck.publication_of(super::root::LIVE).map(|view| {
+        .children(deck.publication_of(live_lane).map(|view| {
             super::publication_panel::chip(view.dot, &format!("{} · {}", view.label, view.dot.label()))
                 .max_w(px(240.))
                 .h(px(30.))
@@ -62,7 +63,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .id("hdr-publication")
                 .debug_selector(|| "hdr-publication".into())
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_publication(super::root::LIVE, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_publication(live_lane, cx)))
         }))
         .children(deck.publish_notice().map(|notice| {
             notice_chip(icon::BELL, Tokens::amber(), notice.to_string(), 320.)
