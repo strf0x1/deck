@@ -149,22 +149,30 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
     let changes = transcript::changes(call);
     let (added, removed) = changes.iter().fold((0, 0), |(a, r), c| (a + c.diff.added, r + c.diff.removed));
     let subject = match call.kind {
-        ToolKind::Execute => transcript::command(call).unwrap_or_else(|| call.title.clone()),
+        ToolKind::Execute => transcript::command(call)
+            .map(|c| transcript::oneline(&c))
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| call.title.clone()),
         ToolKind::Read | ToolKind::Search => transcript::paths(call).join(", "),
         _ => changes.first().map(|c| c.path.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| call.title.clone()),
     };
+    // A header is one fixed row; no subject, whatever its kind, may carry a
+    // hard line break into it.
+    let subject = transcript::oneline(&subject);
     // What a copy button on the header copies: the command, or the path.
     let copyable = match call.kind {
         ToolKind::Execute => transcript::command(call),
         _ => changes.first().map(|c| c.path.clone()).filter(|p| !p.is_empty()),
     };
     let copy = copyable.map(|text| copy::button(deck, format!("{key}:subject"), text, cx));
+    let subject_selector = format!("card-subject-{key}");
     let header_key = key.clone();
     let selector = format!("card-{key}");
     let header = div()
         .id(key.clone())
         .debug_selector(move || selector)
         .h(px(space::HEADER))
+        .overflow_hidden()
         .px(px(space::INSET))
         .flex()
         .items_center()
@@ -182,7 +190,15 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
                 .text_color(hue)
                 .child(label),
         )
-        .child(mono().flex_1().min_w_0().truncate().text_color(Tokens::text()).child(subject))
+        .child(
+            mono()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .debug_selector(move || subject_selector)
+                .text_color(Tokens::text())
+                .child(subject),
+        )
         .when(added + removed > 0, |d| {
             d.child(mono().flex_none().text_color(Tokens::lime()).child(format!("+{added}")))
                 .child(mono().flex_none().text_color(Tokens::red()).child(format!("−{removed}")))
@@ -191,7 +207,19 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         .children(transcript::took(tool).map(|t| mono().flex_none().text_color(Tokens::text_faint()).child(t)))
         .child(glyph(g, 11.).flex_none().text_color(color));
     let body = match call.kind {
-        ToolKind::Execute => super::card_body::output(&transcript::output(call), open),
+        ToolKind::Execute => {
+            let output = super::card_body::output(&transcript::output(call), open);
+            let command = open
+                .then(|| transcript::command(call))
+                .flatten()
+                .map(|c| super::card_body::command(&c, format!("card-command-{header_key}")));
+            match (command, output) {
+                (Some(command), Some(output)) => {
+                    Some(div().flex().flex_col().child(command).child(output).into_any_element())
+                }
+                (command, output) => command.or(output),
+            }
+        }
         _ if !changes.is_empty() => Some(super::card_body::diff(&changes, open)),
         _ if open => super::card_body::output(&transcript::output(call), true),
         _ => None,

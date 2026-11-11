@@ -178,6 +178,61 @@ fn a_finished_turn_lists_its_files_and_copy_buttons_copy(cx: &mut TestAppContext
 }
 
 #[gpui::test]
+fn a_multiline_command_stays_in_its_header_and_reads_in_full_when_opened(cx: &mut TestAppContext) {
+    use deck_acp::{ToolCall, ToolContent, ToolKind, ToolStatus};
+    use gpui::size;
+
+    let (deck, mut cx) = open(cx);
+    let command = "python3 - <<'PY'\nimport json\nprint(json.dumps({'a': 1}))\nPY";
+    let run = ToolCall {
+        id: "x1".into(),
+        title: "shell python3 - <<'PY'".into(),
+        kind: ToolKind::Execute,
+        status: ToolStatus::Failed,
+        input: Some(json!({ "command": command })),
+        content: vec![ToolContent::Text(
+            "Traceback (most recent call last):\n  File \"<stdin>\", line 1\nKeyError: 'a'".into(),
+        )],
+        ..ToolCall::default()
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        d.on_inbound(Inbound::UserMessage("run it".into()), cx);
+        d.on_inbound(Inbound::Tool(run), cx);
+    });
+
+    // The header is one fixed row at any width; its subject may not grow past it.
+    for width in [1180., 520.] {
+        cx.simulate_resize(size(px(width), px(760.)));
+        draw(&mut cx);
+        let header = cx.debug_bounds("card-tool:x1").expect("the card header draws");
+        let subject = cx.debug_bounds("card-subject-tool:x1").expect("the header draws its subject");
+        assert!(
+            subject.size.height <= header.size.height,
+            "the subject fits the header at {width}px: subject {subject:?} header {header:?}"
+        );
+        assert!(
+            subject.top() >= header.top() && subject.bottom() <= header.bottom(),
+            "the subject stays inside the header at {width}px: subject {subject:?} header {header:?}"
+        );
+    }
+
+    // Opened, the full command sits in the body, above its output.
+    click_control(&mut cx, "card-tool:x1");
+    assert!(deck.read_with(&cx, |d, _| d.is_expanded("tool:x1")));
+    let header = cx.debug_bounds("card-tool:x1").unwrap();
+    let block = cx.debug_bounds("card-command-tool:x1").expect("the opened card shows the command");
+    assert!(block.top() >= header.bottom(), "the command paints below the header: {block:?} {header:?}");
+    assert!(block.size.height > px(34.), "all four command lines show: {block:?}");
+
+    // Copying still yields the command exactly, newlines included.
+    let copy = cx.debug_bounds("copy-tool:x1:subject").unwrap();
+    cx.simulate_mouse_move(copy.center(), None, Modifiers::none());
+    click_control(&mut cx, "copy-tool:x1:subject");
+    assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some(command));
+}
+
+#[gpui::test]
 fn cards_are_selected_and_opened_from_the_keyboard(cx: &mut TestAppContext) {
     use deck_acp::{ToolCall, ToolKind, ToolStatus};
 

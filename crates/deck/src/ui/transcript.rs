@@ -243,6 +243,13 @@ pub fn command(call: &ToolCall) -> Option<String> {
     }
 }
 
+/// `text` as one line: each line trimmed, blanks dropped, lines joined by a
+/// visible break. A card header is a fixed row, and a hard newline always
+/// makes another text line whatever the white-space style.
+pub fn oneline(text: &str) -> String {
+    text.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ⏎ ")
+}
+
 /// The call's text output, joined.
 pub fn output(call: &ToolCall) -> String {
     call.content
@@ -429,5 +436,12 @@ mod tests {
         let t = |ms| took(&Tool { call: ToolCall::default(), timing: Timing::Took(Duration::from_millis(ms)) });
         assert_eq!((t(350), t(4_200), t(125_000)), (Some("350ms".into()), Some("4.2s".into()), Some("2m 05s".into())));
         assert_eq!(t(40), None);
+        assert_eq!(oneline("cargo test"), "cargo test");
+        assert_eq!(
+            oneline("python3 - <<'PY'\n  import json\n\n  print(1)\nPY\n"),
+            "python3 - <<'PY' ⏎ import json ⏎ print(1) ⏎ PY",
+            "each line trimmed, blanks dropped, breaks visible"
+        );
+        assert_eq!(oneline("  \n\n "), "");
     }
 }
