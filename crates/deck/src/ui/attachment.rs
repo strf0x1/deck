@@ -10,7 +10,7 @@
 
 use super::attached::Attached;
 use super::new_session::NewSession;
-use super::root::{Deck, LIVE};
+use super::root::Deck;
 use super::session::{Session, Status};
 use crate::task::{Connection, WindowTask};
 use deck_acp::Inbound;
@@ -223,7 +223,7 @@ impl Deck {
     /// Switch the window to the task card `lane` shows. Every attached task
     /// keeps running and keeps its state; only `selected` moves.
     pub fn select(&mut self, lane: usize, cx: &mut Context<Self>) {
-        if lane == LIVE {
+        if lane == self.lanes.live() {
             return;
         }
         let from = self.task_id().map(str::to_owned);
@@ -234,10 +234,6 @@ impl Deck {
         let current =
             self.current().task.clone().or_else(|| self.daemon.clone().map(|daemon| WindowTask::of(daemon, &record)));
         let Some(current) = current else { return };
-        // The previously selected card takes the selected one's slot.
-        if from.is_some() {
-            self.lanes.switch(from.as_deref(), lane);
-        }
         self.select_task(&current, record, cx);
     }
 
@@ -428,6 +424,10 @@ impl Deck {
     /// one. Connect it only if it has no attachment yet.
     pub(super) fn select_task(&mut self, current: &WindowTask, record: Task, cx: &mut Context<Self>) {
         let id = record.id.clone();
+        // The selected task's row becomes the live card; the previous one
+        // keeps the lane it had, so rows never trade places on a switch.
+        let from = self.selected.clone();
+        self.lanes.select(from.as_deref(), &id);
         // Insert first, so `current()` resolves while the lanes rebuild: a
         // missing attachment would make the target an ordinary card too.
         let next = (!self.attached.contains_key(&id)).then(|| current.sibling(&record));

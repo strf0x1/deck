@@ -1,12 +1,15 @@
-//! The sessions column from `deckd`'s task list: one card per task that is not
-//! destroyed, the window's own task first as the live card.
+//! The sessions column from `deckd`'s task list: one row per task that is not
+//! destroyed, the window's own task as the live row.
 //!
 //! The design choice: lane ids are the window's, task ids are the daemon's,
 //! and [`Lanes`] is the only place that maps one to the other, so a task
 //! keeps its card (and the card its place and motion) across refreshes. The
-//! window's own card stays [`LIVE`]: its state comes from the live session;
-//! its title from its record, like every other card (ADR 0010 §9), except
-//! that a merged publication marks it done.
+//! lane the window's own task shows is the live card, and selecting a task
+//! moves that lane to the task's row rather than trading what two cards
+//! show: the row the user clicked keeps its session and wears the highlight.
+//! Its state comes from the live session; its title from its record, like
+//! every other card (ADR 0010 §9), except that a merged publication marks it
+//! done.
 
 use super::board::{Lane, LaneState};
 use super::publication::{self, View};
@@ -103,21 +106,34 @@ pub fn live(status: &Status, ask: Option<&str>, boundary_pending: bool, view: Op
 }
 
 /// Lane ids for task ids, stable for the window's life.
-#[derive(Default)]
 pub struct Lanes {
     ids: HashMap<String, usize>,
+    /// The lane the window's own task shows. It moves to the row the user
+    /// selects; a card's lane id never changes hands.
+    live: usize,
     next: usize,
 }
 
+impl Default for Lanes {
+    fn default() -> Self {
+        Lanes { ids: HashMap::new(), live: LIVE, next: 0 }
+    }
+}
+
 impl Lanes {
+    /// The lane the window's own task shows.
+    pub fn live(&self) -> usize {
+        self.live
+    }
+
     fn id(&mut self, task: &str, own: Option<&str>) -> usize {
         if own == Some(task) {
-            return LIVE;
+            return self.live;
         }
         if let Some(id) = self.ids.get(task) {
             return *id;
         }
-        // LIVE is 0, so other lanes start at 1.
+        // The window starts on lane 0, so every other lane comes after it.
         self.next += 1;
         self.ids.insert(task.to_string(), self.next);
         self.next
@@ -130,32 +146,39 @@ impl Lanes {
 
     /// The lane a task already shows, without allocating one.
     pub fn lane_of(&self, task: &str, own: Option<&str>) -> Option<usize> {
-        (own == Some(task)).then_some(LIVE).or_else(|| self.ids.get(task).copied())
+        (own == Some(task)).then_some(self.live).or_else(|| self.ids.get(task).copied())
     }
 
     /// The task a lane shows, or `None` for an unknown lane.
     pub fn task(&self, lane: usize, own: Option<&str>) -> Option<String> {
-        if lane == LIVE {
+        if lane == self.live {
             return own.map(str::to_string);
         }
         self.ids.iter().find(|(_, id)| **id == lane).map(|(task, _)| task.clone())
     }
 
-    /// The window switches from task `from` to the task lane `lane` shows.
-    /// The selected task becomes [`LIVE`], and `from` takes the selected
-    /// card's lane, so the column keeps its shape: the two cards trade what
-    /// they show. Returns the selected task, or `None` for the live lane or
-    /// an unknown one.
-    pub fn switch(&mut self, from: Option<&str>, lane: usize) -> Option<String> {
-        if lane == LIVE {
-            return None;
+    /// The window selects task `to` from `from`. The lane `to` shows becomes
+    /// the live card and `from` keeps the live card's lane, so both rows stay
+    /// where they are and only the highlight moves. A task with no lane yet
+    /// takes a new one, at the bottom of the column. Returns the live lane.
+    pub fn select(&mut self, from: Option<&str>, to: &str) -> usize {
+        if from == Some(to) {
+            return self.live;
         }
-        let to = self.task(lane, from)?;
-        self.ids.remove(&to);
+        let lane = self.ids.get(to).copied().unwrap_or_else(|| {
+            if from.is_some() {
+                self.next += 1;
+                self.next
+            } else {
+                self.live
+            }
+        });
+        self.ids.remove(to);
         if let Some(from) = from {
-            self.ids.insert(from.to_string(), lane);
+            self.ids.insert(from.to_string(), self.live);
         }
-        Some(to)
+        self.live = lane;
+        lane
     }
 
     /// The other tasks' lanes, in the daemon's order. The live lane is not
@@ -286,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_trades_the_live_lane_with_the_selected_card() {
+    fn selecting_moves_the_live_lane_and_the_rows_keep_their_tasks() {
         let mut lanes = Lanes::default();
         let tasks = vec![
             task("own", json!({ "state": "running" }), "local"),
@@ -295,15 +318,23 @@ mod tests {
         ];
         let before = lanes.lanes(&tasks, Some("own"), &HashMap::new(), &[], 0);
         let (a, b) = (before[0].id, before[1].id);
-        assert_eq!(lanes.switch(Some("own"), LIVE), None, "the live card is already the window's");
-        assert_eq!(lanes.switch(Some("own"), 99), None, "an unknown lane selects nothing");
-        assert_eq!(lanes.switch(Some("own"), b).as_deref(), Some("b"));
+        assert_eq!(lanes.select(Some("own"), "own"), lanes.live(), "selecting the live task moves nothing");
+        assert_eq!(lanes.select(Some("own"), "b"), b, "the selected task's row becomes the live card");
+        assert_eq!(lanes.live(), b);
         let after = lanes.lanes(&tasks, Some("b"), &HashMap::new(), &[], 0);
         let shown: Vec<(usize, &str)> = after.iter().map(|l| (l.id, l.title.as_str())).collect();
-        assert_eq!(shown, vec![(b, "Untitled · own"), (a, "Untitled · a")], "the previous task takes b's card");
-        assert_eq!(lanes.task(LIVE, Some("b")).as_deref(), Some("b"));
-        // And back: the first task is live again, b returns to its card.
-        assert_eq!(lanes.switch(Some("b"), b).as_deref(), Some("own"));
-        assert_eq!(lanes.task(b, Some("own")).as_deref(), Some("b"));
+        assert_eq!(
+            shown,
+            vec![(LIVE, "Untitled · own"), (a, "Untitled · a")],
+            "the cards keep their lanes: only the live one moved"
+        );
+        assert_eq!(lanes.task(LIVE, Some("b")).as_deref(), Some("own"), "lane 0 is an ordinary card now");
+        assert_eq!(lanes.task(b, Some("b")).as_deref(), Some("b"), "the clicked lane is the window's");
+        // And back: the first task is live again, where it was.
+        assert_eq!(lanes.select(Some("b"), "own"), LIVE);
+        assert_eq!(lanes.live(), LIVE);
+        let back = lanes.lanes(&tasks, Some("own"), &HashMap::new(), &[], 0);
+        let shown: Vec<(usize, &str)> = back.iter().map(|l| (l.id, l.title.as_str())).collect();
+        assert_eq!(shown, vec![(a, "Untitled · a"), (b, "Untitled · b")], "b is back in its own card");
     }
 }

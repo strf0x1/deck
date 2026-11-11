@@ -116,8 +116,6 @@ impl Deck {
             self.sync_attention_lanes();
             return cx.notify();
         }
-        let lane = self.lanes.slot(id, from.as_deref());
-        self.lanes.switch(from.as_deref(), lane);
         let current =
             self.current().task.clone().or_else(|| self.daemon.clone().map(|daemon| WindowTask::of(daemon, &record)));
         if let Some(current) = current {
