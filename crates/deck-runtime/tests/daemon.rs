@@ -13,7 +13,7 @@ use std::sync::{
     Arc, Barrier,
     atomic::{AtomicU32, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const WAIT: Duration = Duration::from_secs(5);
 const IDLE: Duration = Duration::from_millis(150);
@@ -55,7 +55,11 @@ impl Daemon {
     }
 
     fn spawn(data: &std::path::Path, credentials: Option<&std::path::Path>) -> Child {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_deckd"));
+        Self::spawn_exe(data, credentials, std::path::Path::new(env!("CARGO_BIN_EXE_deckd")))
+    }
+
+    fn spawn_exe(data: &std::path::Path, credentials: Option<&std::path::Path>, exe: &std::path::Path) -> Child {
+        let mut command = Command::new(exe);
         command
             .arg("--data")
             .arg(data)
@@ -1626,4 +1630,73 @@ fn pull_request_state_is_read_through_the_tasks_gateway_and_kept_after_stop() {
     // Only reads went to the gateway, and only one of them.
     assert_eq!(*seen.lock().unwrap(), ["POST /operations/pull_request/review HTTP/1.1"]);
     client.destroy(&task.id).unwrap();
+}
+
+#[test]
+fn a_daemon_reports_itself_stale_after_its_binary_is_rebuilt() {
+    let data = Daemon::data("stale");
+    let exe = data.join("deckd");
+    std::fs::copy(env!("CARGO_BIN_EXE_deckd"), &exe).unwrap();
+    let paths = Paths::for_data(&data).unwrap();
+    let mut daemon =
+        Daemon { data: data.clone(), paths, child: Daemon::spawn_exe(&data, None, &exe), credentials: None };
+    let client = daemon.connect();
+    let hello = client.hello().unwrap();
+    assert_eq!(hello.pid, daemon.child.id(), "the handshake names the process serving the socket");
+    assert_eq!(hello.protocol, deck_runtime::PROTOCOL);
+    assert_eq!(hello.executable.file_name().and_then(|name| name.to_str()), Some("deckd"));
+    assert!(!hello.stale, "a freshly started daemon runs the binary on disk");
+
+    // `cargo build` replaces the file under a running process; the process is
+    // unchanged, so the client must notice from the file's time.
+    // The binary is running, so it can be opened read-only; futimens still
+    // sets its time.
+    std::fs::File::open(&exe)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(60)))
+        .unwrap();
+    assert!(client.hello().unwrap().stale);
+    let error = DaemonClient::connect(&data).err().unwrap().to_string();
+    assert!(error.contains("deck daemon restart"), "{error}");
+    assert!(error.contains(&daemon.child.id().to_string()), "the message names the process: {error}");
+}
+
+#[test]
+fn a_graceful_stop_keeps_the_agent_and_the_next_daemon_adopts_it() {
+    let (mut daemon, client) = Daemon::new("graceful");
+    let run = client.run(daemon.spec(&["cat"])).unwrap();
+    let holder = run.task.holder.clone().unwrap();
+    let agent = run.task.pid.unwrap();
+    client.session(&run.task.id, "grace-session").unwrap();
+    let old = daemon.child.id();
+    drop(client);
+
+    deck_runtime::daemon_cli::run(&daemon.data, &["stop".to_string()]).unwrap();
+    assert!(daemon.wait_exit().success(), "a stop asks deckd to exit; it is not a kill");
+    assert!(running(holder.pid) && running(agent), "task holders and their agents outlive the daemon");
+
+    deck_runtime::daemon_cli::run(&daemon.data, &["restart".to_string()]).unwrap();
+    let (next, hello) = DaemonClient::running(&daemon.data).unwrap().unwrap();
+    assert_ne!(hello.pid, old, "a restart is a new process");
+    let adopted = next.task(&run.task.id).unwrap();
+    assert_eq!(adopted.state, State::Running);
+    assert_eq!(adopted.pid, Some(agent), "adoption keeps the same agent");
+    assert_eq!(adopted.holder, Some(holder.clone()));
+    assert_eq!(adopted.session_id.as_deref(), Some("grace-session"));
+    let log = std::fs::read_to_string(daemon.data.join("tasks").join(&run.task.id).join("events.jsonl")).unwrap();
+    assert_eq!(log.lines().filter(|line| line.contains("\"event\":\"adopted\"")).count(), 1, "adopted, not restarted");
+
+    // The holder's stream is still the agent's: a line written through the
+    // adopted task reaches the same process.
+    let mut stream = next.attach(&run.task.id).unwrap();
+    stream.writer.write_all(b"after restart\n").unwrap();
+    stream.writer.flush().unwrap();
+    let mut line = String::new();
+    stream.reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "after restart\n");
+
+    next.stop(&run.task.id).unwrap();
+    assert!(!running(holder.pid) && !running(agent));
+    next.shutdown().unwrap();
+    eventually(|| !running(hello.pid));
 }

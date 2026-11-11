@@ -24,6 +24,35 @@ use std::time::{Duration, Instant};
 pub const IDLE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
 
+/// What this process is, for the compatibility handshake. The executable is
+/// captured at startup: after a rebuild, `current_exe` can name a file that
+/// was replaced, while this path still resolves to the binary now on disk.
+struct Host {
+    executable: PathBuf,
+    started: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The handshake reply, including whether the binary on disk is newer than
+/// this process: a `cargo build` does not replace a running daemon.
+fn hello(host: &Host) -> Value {
+    let started = std::time::UNIX_EPOCH + Duration::from_millis(host.started);
+    let stale = host.executable.metadata().and_then(|meta| meta.modified()).is_ok_and(|modified| modified > started);
+    json!(wire::Hello {
+        protocol: wire::PROTOCOL,
+        version: env!("CARGO_PKG_VERSION").into(),
+        pid: std::process::id(),
+        executable: host.executable.clone(),
+        started: host.started,
+        stale,
+    })
+}
+
 pub struct Options {
     pub data: PathBuf,
     pub paths: Paths,
@@ -81,8 +110,16 @@ pub fn serve(options: Options) -> Result<()> {
     }));
     let reader = Arc::new(crate::pull_request::Reader::default());
     let clients = Arc::new(AtomicUsize::new(0));
+    let host = Arc::new(Host {
+        executable: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("deckd")),
+        started: now_ms(),
+    });
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut idle_since = Instant::now();
     loop {
+        if shutdown.load(Ordering::Acquire) {
+            break;
+        }
         match listener.accept() {
             Ok((socket, _)) => {
                 clients.fetch_add(1, Ordering::AcqRel);
@@ -91,9 +128,11 @@ pub fn serve(options: Options) -> Result<()> {
                 let boundary = boundary.clone();
                 let broker = broker.clone();
                 let reader = reader.clone();
+                let host = host.clone();
+                let shutdown = shutdown.clone();
                 std::thread::spawn(move || {
                     let _connected = Connected(client_count);
-                    if let Err(e) = connection(socket, service, boundary, broker, reader) {
+                    if let Err(e) = connection(socket, service, boundary, broker, reader, host, shutdown) {
                         eprintln!("deckd: client: {e:#}");
                     }
                 });
@@ -121,6 +160,8 @@ fn connection(
     boundary: Arc<Boundary>,
     broker: Arc<Broker>,
     reader: Arc<crate::pull_request::Reader>,
+    host: Arc<Host>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     socket.set_nonblocking(false)?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -128,6 +169,13 @@ fn connection(
     while let Some(line) = wire::read(&mut input)? {
         let request = serde_json::from_slice::<Request>(&line);
         match request {
+            Ok(Request::Hello) => wire::write(&mut socket, &reply(Ok(hello(&host))))?,
+            Ok(Request::Shutdown) => {
+                // Tasks live in their holders, so exiting ends no agent; the
+                // next daemon adopts them (docs/deckd.md).
+                wire::write(&mut socket, &reply(Ok(json!(null))))?;
+                shutdown.store(true, Ordering::Release);
+            }
             Ok(Request::Subscribe) => {
                 let rx = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.subscribe();
                 wire::write(&mut socket, &Reply { ok: Some(json!(null)), error: None })?;
@@ -599,7 +647,9 @@ impl Service {
             | Request::RetryCredential { .. }
             | Request::RevokeCredential { .. }
             | Request::SetCredential { .. }
-            | Request::DeleteCredential { .. } => unreachable!("handled before service dispatch"),
+            | Request::DeleteCredential { .. }
+            | Request::Hello
+            | Request::Shutdown => unreachable!("handled before service dispatch"),
         }
     }
 

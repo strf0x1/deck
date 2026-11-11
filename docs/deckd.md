@@ -432,8 +432,38 @@ grace period. A failed or unsupported close does not prevent termination. The ru
 before recording a clean stop. Destroy also removes both sockets and startup identity.
 A failed shutdown retains its identity and supervision; destroy retries it.
 
-An open window whose daemon dies still needs to reopen for a new control
-connection. Its ACP stream can remain connected throughout the outage.
+An open window whose daemon dies keeps its ACP streams: they belong to the
+holders, not the daemon. Its shared control connection reconnects on the next
+request, and each approval watch reconnects on its own; the new daemon re-leases
+the task and replays what is still pending. The request that was in flight when
+the daemon exited reports the loss and is not retried, because it may already
+have run.
+
+## Upgrades and the daemon commands
+
+Every client connection starts with private control `hello`. The daemon answers
+with `protocol` (the control grammar's version), `version`, `pid`, `executable`,
+`started`, and `stale`: whether the executable on disk was modified after the
+process started. A rebuilt binary does not replace a running daemon, so a window
+refuses a daemon whose protocol differs or whose binary was replaced, naming
+`deck daemon restart` instead of surfacing an "unknown variant" error from a
+request the old daemon cannot parse. A daemon predating the handshake answers
+`unknown variant`, which is reported as such with the `pkill -x deckd` recovery.
+
+```sh
+deck daemon status     # pid, version, protocol, executable, staleness, tasks
+deck daemon stop       # ask deckd to exit; its task holders keep their agents
+deck daemon restart    # stop, then start the deckd beside this deck binary
+```
+
+The commands use the same data root as the window (`DECK_DATA` or the platform
+default), so side-by-side roots do not touch each other. `stop` and `restart`
+send private control `shutdown`, which makes the serve loop exit without
+signalling any holder; the next connection adopts the running tasks and records
+`Adopted`. A daemon from another protocol cannot be asked to exit, so `restart`
+reports the `pkill -x deckd` recovery instead. A window's long-lived client
+starts deckd again on its next request, so `restart` is the command to use while
+Deck is open; `stop` is for when it is closed.
 
 ## Paths and lifetime
 

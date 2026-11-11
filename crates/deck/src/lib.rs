@@ -7,5 +7,6 @@
 pub mod app;
 #[cfg(unix)]
 pub mod control;
+pub mod daemon;
 pub mod task;
 pub mod ui;
