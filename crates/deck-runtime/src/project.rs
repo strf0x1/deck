@@ -323,6 +323,7 @@ mod tests {
             cwd: cwd.to_path_buf(),
             github: None,
             project: None,
+            model: None,
         }
     }
 

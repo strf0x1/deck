@@ -136,8 +136,9 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
     std::fs::create_dir_all(&lane).unwrap();
     let opener = DaemonClient::connect_or_start(&data).unwrap();
     let project = opener.open_project(&project_root, argv.clone()).unwrap();
-    let task =
-        opener.create(Spec { argv: argv.clone(), cwd: lane.clone(), project: Some(project.id), github: None }).unwrap();
+    let task = opener
+        .create(Spec { argv: argv.clone(), cwd: lane.clone(), project: Some(project.id), github: None, model: None })
+        .unwrap();
     // The header reads the record's title, not the checkout's name (#162).
     opener.title(&task.id, "name the row").unwrap();
 

@@ -9,11 +9,31 @@
 //! platform boundary are UTF-16; [`Editor`](super::editor::Editor)
 //! converts them.
 
+use super::editor::Editor;
 use super::root::Deck;
 use gpui::{Bounds, ClipboardItem, Context, EntityInputHandler, KeyDownEvent, Pixels, Point, UTF16Selection, Window};
 use std::ops::Range;
 
 impl Deck {
+    /// The editor typed text goes to: the settings form's focused field while
+    /// the panel has one open, else the composer.
+    pub(super) fn input_editor(&self) -> &Editor {
+        match self.settings.is_open().then(|| self.settings.editor()).flatten() {
+            Some(editor) => editor,
+            None => &self.editor,
+        }
+    }
+
+    fn input_editor_mut(&mut self) -> &mut Editor {
+        if self.settings.is_open()
+            && self.settings.editor().is_some()
+            && let Some(editor) = self.settings.editor_mut()
+        {
+            return editor;
+        }
+        &mut self.editor
+    }
+
     /// A composer key that is not text: moves, deletes, clipboard, send.
     /// Returns whether it was one; text itself arrives through the input
     /// handler (`composer.rs`), after this declines it.
@@ -111,21 +131,24 @@ impl EntityInputHandler for Deck {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        let range = self.editor.from_utf16(&range);
-        actual.replace(self.editor.to_utf16(&range));
-        self.editor.text().get(range).map(str::to_string)
+        let editor = self.input_editor();
+        let range = editor.from_utf16(&range);
+        actual.replace(editor.to_utf16(&range));
+        editor.text().get(range).map(str::to_string)
     }
 
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        Some(UTF16Selection { range: self.editor.to_utf16(&self.editor.selection()), reversed: self.editor.reversed() })
+        let e = self.input_editor();
+        Some(UTF16Selection { range: e.to_utf16(&e.selection()), reversed: e.reversed() })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.editor.marked().map(|m| self.editor.to_utf16(&m))
+        let e = self.input_editor();
+        e.marked().map(|m| e.to_utf16(&m))
     }
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.editor.unmark();
+        self.input_editor_mut().unmark();
     }
 
     fn replace_text_in_range(
@@ -135,9 +158,13 @@ impl EntityInputHandler for Deck {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let e = self.input_editor_mut();
         match range {
-            Some(r) => self.editor.replace(self.editor.from_utf16(&r), text),
-            None => self.editor.insert(text),
+            Some(r) => {
+                let r = e.from_utf16(&r);
+                e.replace(r, text)
+            }
+            None => e.insert(text),
         }
         cx.notify();
     }
@@ -150,11 +177,11 @@ impl EntityInputHandler for Deck {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range =
-            range.map(|r| self.editor.from_utf16(&r)).or(self.editor.marked()).unwrap_or(self.editor.selection());
+        let e = self.input_editor_mut();
+        let range = range.map(|r| e.from_utf16(&r)).or(e.marked()).unwrap_or(e.selection());
         // `selected` is in UTF-16 units of the new text.
         let selected = selected.map(|s| utf16_to_byte(text, s.start)..utf16_to_byte(text, s.end));
-        self.editor.replace_and_mark(range, text, selected);
+        e.replace_and_mark(range, text, selected);
         cx.notify();
     }
 
@@ -165,7 +192,7 @@ impl EntityInputHandler for Deck {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.composer.bounds_for(self.editor.from_utf16(&range), bounds)
+        self.composer.bounds_for(self.input_editor().from_utf16(&range), bounds)
     }
 
     fn character_index_for_point(
@@ -174,7 +201,7 @@ impl EntityInputHandler for Deck {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(self.editor.offset_to_utf16(self.composer.index_at(position)))
+        Some(self.input_editor().offset_to_utf16(self.composer.index_at(position)))
     }
 }
 

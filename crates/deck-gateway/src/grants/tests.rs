@@ -105,12 +105,12 @@ fn model_grants_match_exact_names_operations_and_the_decided_scope() {
     model["credential"] = json!("KEY");
     std::fs::write(&path, json!([model]).to_string()).unwrap();
     let grants = Grants::new(vec![path], "t".into(), Some("/project".into()));
-    assert!(grants.model("provider/model", "KEY", None).is_some());
-    assert!(grants.model("provider/model", "OTHER_KEY", None).is_none());
-    assert!(grants.model("provider/model", "KEY", Some("task")).is_some());
-    assert!(grants.model("provider/model", "KEY", Some("project")).is_none());
-    assert!(grants.model("provider/Model", "KEY", None).is_none());
-    assert!(grants.model("provider/model/other", "KEY", None).is_none());
+    assert!(grants.model("provider/model", Some("KEY"), None).is_some());
+    assert!(grants.model("provider/model", Some("OTHER_KEY"), None).is_none());
+    assert!(grants.model("provider/model", Some("KEY"), Some("task")).is_some());
+    assert!(grants.model("provider/model", Some("KEY"), Some("project")).is_none());
+    assert!(grants.model("provider/Model", Some("KEY"), None).is_none());
+    assert!(grants.model("provider/model/other", Some("KEY"), None).is_none());
     assert!(grants.web("provider", 443, "connect").is_none());
 }
 
@@ -154,7 +154,7 @@ fn legacy_model_rules_cannot_authorize_a_credential_and_web_rules_cannot_change_
     web["credential"] = json!("KEY");
     std::fs::write(&path, json!([model, web]).to_string()).unwrap();
     let grants = Grants::new(vec![path.clone()], "t".into(), None);
-    assert!(grants.model("m", "KEY", None).is_none());
+    assert!(grants.model("m", Some("KEY"), None).is_none());
     assert!(grants.web("example.com", 443, "connect").is_none());
     std::fs::remove_file(path).unwrap();
 }

@@ -156,6 +156,25 @@ impl Broker {
         Ok(revocation)
     }
 
+    /// Store a value a window entered (ADR 0012 §3) and list the name as it
+    /// is now. The reply and the log carry the fingerprint, never the value.
+    /// A replace does not close requests that used the old value; revoke does.
+    pub fn set(&self, name: &str, value: &credentials::Secret) -> Result<Listed> {
+        self.store.set(name, value.expose())?;
+        let listed = list_one(&self.store, &self.revoked, name.to_string());
+        eprintln!("deckd: set {name} {}", listed.fingerprint.as_deref().unwrap_or("(unreadable after write)"));
+        Ok(listed)
+    }
+
+    /// Remove a name from the store. False when there was nothing to remove.
+    pub fn delete(&self, name: &str) -> Result<bool> {
+        let deleted = self.store.delete(name)?;
+        if deleted {
+            eprintln!("deckd: deleted {name}");
+        }
+        Ok(deleted)
+    }
+
     /// A gateway's watch: the revocations already recorded for its names, and
     /// every later one.
     pub fn watch(&self, names: Vec<String>) -> (Vec<Revocation>, mpsc::UnboundedReceiver<Revocation>) {
@@ -320,5 +339,27 @@ mod tests {
         assert!(Refusal::Missing.reply("K").starts_with("deck_credential_missing: "));
         assert!(Refusal::Refused.reply("K").starts_with("deck_credential_refused: "));
         assert!(Refusal::Unavailable("x".into()).reply("K").starts_with("deck_credential_unavailable: "));
+    }
+
+    #[test]
+    fn a_set_lists_the_new_fingerprint_and_a_revoked_value_stays_revoked() {
+        let (broker, file) = broker("set");
+        let listed = broker.set("OPENAI_API_KEY", &credentials::Secret::new("sk-two")).unwrap();
+        assert_eq!(listed.fingerprint.as_deref(), Some(credentials::fingerprint("sk-two").as_str()));
+        assert!(!listed.revoked);
+        assert!(std::fs::read_to_string(&file).unwrap().contains("sk-two"));
+        // The next fetch reads the new value: there is no cache to refresh.
+        assert_eq!(broker.fetch("t", "OPENAI_API_KEY", &set()).unwrap().value, "sk-two");
+
+        // Putting back a value that was revoked does not un-revoke it.
+        broker.revoke("OPENAI_API_KEY").unwrap();
+        let again = broker.set("OPENAI_API_KEY", &credentials::Secret::new("sk-two")).unwrap();
+        assert!(again.revoked);
+        assert!(!broker.set("OPENAI_API_KEY", &credentials::Secret::new("sk-three")).unwrap().revoked);
+
+        assert!(broker.delete("OPENAI_API_KEY").unwrap());
+        assert!(!broker.delete("OPENAI_API_KEY").unwrap());
+        assert_eq!(broker.fetch("t", "OPENAI_API_KEY", &set()).err(), Some(Refusal::Missing));
+        assert!(broker.set("OPENAI_API_KEY", &credentials::Secret::new("")).is_err(), "an empty value");
     }
 }

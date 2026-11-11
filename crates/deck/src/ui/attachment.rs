@@ -56,6 +56,7 @@ impl Deck {
             }
         };
         deck.daemon = Some(daemon.clone());
+        deck.load_settings(cx);
         deck.launch_project(&daemon, &argv, cwd, cx);
         deck.follow_tasks(cx);
         deck._quit = Some(cx.on_app_quit(|deck, _| {
@@ -127,7 +128,14 @@ impl Deck {
     pub(super) fn project_spec(&self) -> Option<Spec> {
         let project = self.projects.selected()?;
         let checkout = self.projects.checkout()?;
-        Some(Spec { argv: project.argv.clone(), cwd: checkout, project: Some(project.id.clone()), github: None })
+        Some(Spec {
+            argv: project.argv.clone(),
+            cwd: checkout,
+            project: Some(project.id.clone()),
+            github: None,
+            // New session's pick (ADR 0012 §4); none means deckd's default.
+            model: self.settings.session_selector().map(deck_runtime::settings::Pick::Selector),
+        })
     }
 
     /// A detached or failed connection can be rebuilt by restarting its task.

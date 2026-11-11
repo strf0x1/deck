@@ -122,6 +122,7 @@ fn foot(pinned: bool, label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
         .flex_col()
         .gap(px(space::LINE))
         .child(open_project(label_a, cx))
+        .child(settings_item(label_a, cx))
         .child(pin_item(pinned, label_a, cx))
         .into_any_element()
 }
@@ -130,6 +131,14 @@ fn open_project(label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
     rail_item("sidebar-open", icon::PLUS, "Open project…", false, None, label_a)
         .debug_selector(|| "sidebar-open".into())
         .on_click(cx.listener(|this, _, _, cx| this.pick_project(cx)))
+        .into_any_element()
+}
+
+/// The settings panel (ADR 0012 §4): providers, models and secrets.
+fn settings_item(label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
+    rail_item("sidebar-settings", icon::GEAR, "Settings", false, None, label_a)
+        .debug_selector(|| "sidebar-settings".into())
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx)))
         .into_any_element()
 }
 

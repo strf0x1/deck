@@ -25,7 +25,7 @@ impl WindowTask {
     /// Find or start a task, rebuilding an existing live session when supported.
     pub fn run(data: &Path, argv: Vec<String>, cwd: PathBuf) -> Result<(WindowTask, Option<Connection>)> {
         let daemon = DaemonClient::connect_or_start(data)?;
-        let run = daemon.run(Spec { argv, cwd, project: None, github: None })?;
+        let run = daemon.run(Spec { argv, cwd, project: None, github: None, model: None })?;
         let task = WindowTask::of(daemon, &run.task);
         let connection = task.connection(run.started, run.task.session_id)?;
         Ok((task, connection))

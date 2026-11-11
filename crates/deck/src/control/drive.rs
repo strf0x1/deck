@@ -272,6 +272,7 @@ pub fn state(d: &Deck) -> Value {
             "confirming": d.access().confirming().map(|target| target.label()),
             "busy": d.access().busy(),
         },
+        "settings": settings_state(d),
         "sidebar": sidebar_state(d),
         "animating": d.animating(),
     })
@@ -326,4 +327,52 @@ fn sidebar_state(d: &Deck) -> Value {
             sidebar::Row::Settled { count } => json!({ "kind": "settled", "count": count }),
         })
         .collect()
+}
+
+/// The settings panel as the control socket reports it (ADR 0012 §4): what
+/// is drawn, never a field's text, so a secret being typed cannot leave the
+/// window through `state`.
+fn settings_state(d: &Deck) -> serde_json::Value {
+    use crate::ui::settings::{Confirm, Form, Key};
+    let s = d.settings();
+    json!({
+        "open": s.is_open(),
+        "revision": s.snapshot().map(|snap| snap.revision),
+        "stored": s.snapshot().map(|snap| snap.stored),
+        "overrides": s.snapshot().map(|snap| snap.overrides.clone()).unwrap_or_default(),
+        "default": s.settings().map(|settings| settings.default.clone()),
+        "providers": s.provider_rows().iter().map(|row| json!({
+            "name": row.name,
+            "url": row.url,
+            "secret": row.secret,
+            "key": match &row.key {
+                Key::Set(_) => "set",
+                Key::Revoked(_) => "revoked",
+                Key::NotSet => "not_set",
+                Key::Keyless => "keyless",
+                Key::Unknown => "unknown",
+            },
+            "models": row.models,
+            "default": row.default,
+        })).collect::<Vec<_>>(),
+        "secrets": s.secret_rows().iter().map(|row| json!({
+            "name": row.name,
+            "fingerprint": row.listed.as_ref().and_then(|l| l.fingerprint.clone()),
+            "providers": row.providers,
+        })).collect::<Vec<_>>(),
+        "form": s.form().map(|form| match form {
+            Form::Provider { editing, .. } => json!({ "kind": "provider", "editing": editing }),
+            Form::Secret { name, .. } => json!({ "kind": "secret", "name": name }),
+        }),
+        "focused": s.focused().map(|f| format!("{f:?}").to_lowercase()),
+        "confirm": s.confirm().map(|c| match c {
+            Confirm::DeleteProvider(name) => json!({ "delete_provider": name }),
+            Confirm::DeleteSecret(name) => json!({ "delete_secret": name }),
+        }),
+        "busy": s.busy(),
+        "error": s.error(),
+        "notice": s.notice(),
+        "session_model": s.session_model(),
+        "picking": s.picking(),
+    })
 }

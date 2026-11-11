@@ -124,9 +124,9 @@ impl Grants {
     }
 
     /// Model names are exact; a queue reply must name the same persisted scope.
-    pub fn model(&self, model: &str, credential: &str, scope: Option<&str>) -> Option<Permit> {
+    pub fn model(&self, model: &str, credential: Option<&str>, scope: Option<&str>) -> Option<Permit> {
         self.find("model", |rule| {
-            rule.credential.as_deref() == Some(credential)
+            rule.credential.as_deref() == credential
                 && rule.operation == "chat_completions"
                 && rule.destination == model
                 && scope.is_none_or(|scope| rule.scope == scope)

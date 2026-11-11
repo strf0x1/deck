@@ -39,7 +39,13 @@ impl Drop for Scratch {
 }
 
 fn spec(argv: &[&str]) -> Spec {
-    Spec { argv: argv.iter().map(|s| s.to_string()).collect(), cwd: std::env::temp_dir(), project: None, github: None }
+    Spec {
+        argv: argv.iter().map(|s| s.to_string()).collect(),
+        cwd: std::env::temp_dir(),
+        project: None,
+        github: None,
+        model: None,
+    }
 }
 
 fn sh(script: &str) -> Spec {
@@ -84,7 +90,7 @@ fn a_task_records_the_root_commit_of_its_checkout() {
     git(&repo, &["commit", "--quiet", "-m", "one"]);
     let root = git_output(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
     let rt = open(&dir);
-    let id = rt.create(Spec { argv: vec!["cat".into()], cwd: repo, project: None, github: None }).unwrap();
+    let id = rt.create(Spec { argv: vec!["cat".into()], cwd: repo, project: None, github: None, model: None }).unwrap();
     let expected = format!("git:{root}");
     assert_eq!(rt.task(&id).unwrap().spec.project.as_deref(), Some(expected.as_str()));
 }

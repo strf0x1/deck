@@ -33,6 +33,7 @@ mod reconcile;
 pub mod record;
 pub mod relay;
 pub mod runtime;
+pub mod settings;
 pub mod vm;
 pub mod vmm;
 mod wire;

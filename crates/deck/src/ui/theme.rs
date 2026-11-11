@@ -62,6 +62,7 @@ pub mod icon {
     pub const SERVER: &str = "\u{f233}";
     pub const ARCHIVE: &str = "\u{f187}";
     pub const GAUGE: &str = "\u{f0e4}";
+    pub const GEAR: &str = "\u{f013}";
 }
 
 /// Text sizes by role. Six steps: views pick a role, never a number.

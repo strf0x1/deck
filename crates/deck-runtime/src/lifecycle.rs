@@ -25,6 +25,11 @@ pub struct Spec {
     /// daemon can serve projects with different repositories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<crate::github::Policy>,
+    /// The provider and model (ADR 0012 §2). A window may send a selector;
+    /// the VM backend replaces it with the resolved choice before the record
+    /// is written, and a local task records none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<crate::settings::Pick>,
 }
 
 impl Spec {
@@ -102,6 +107,10 @@ pub struct Holder {
 /// One line of a task's record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "events are read once from a task's log and folded; `Created` carries the whole spec by design"
+)]
 pub enum Event {
     Created {
         backend: String,
@@ -364,7 +373,7 @@ mod tests {
     fn created() -> Event {
         Event::Created {
             backend: "local".into(),
-            spec: Spec { argv: vec!["agent".into()], cwd: "/w".into(), project: None, github: None },
+            spec: Spec { argv: vec!["agent".into()], cwd: "/w".into(), project: None, github: None, model: None },
         }
     }
     fn started() -> Event {
@@ -406,6 +415,7 @@ mod tests {
             cwd: "/checkout".into(),
             project: Some("git:abc123".into()),
             github: None,
+            model: None,
         };
         assert_eq!(spec.project_key(), "git:abc123");
     }

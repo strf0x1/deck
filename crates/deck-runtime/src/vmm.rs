@@ -148,8 +148,10 @@ pub struct Gateway {
     pub usage: Usage,
     /// The live budget file the gateway re-reads before each admission.
     pub budget_file: PathBuf,
-    /// The credential name the model gateway fetches the provider key under.
-    pub secret: String,
+    /// The credential name the model gateway fetches the provider key under;
+    /// `None` for a keyless provider (ADR 0012).
+    #[serde(default)]
+    pub secret: Option<String>,
     /// Every credential name this task's gateway may fetch (ADR 0004 §4.3).
     /// `deckd` refuses any other name without reading the store.
     #[serde(default)]
@@ -357,8 +359,6 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         .arg(&gateway.extension_socket)
         .arg("--upstream")
         .arg(&gateway.upstream)
-        .arg("--secret")
-        .arg(&gateway.secret)
         .arg("--budget-file")
         .arg(&gateway.budget_file)
         .arg("--used-requests")
@@ -411,7 +411,11 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
     }
     // The gateway fetches every value from deckd per operation; none reaches
     // it through the environment, even one the runtime failed to strip.
-    for name in gateway.credentials.iter().chain([&gateway.secret, &gateway.github_token]) {
+    match &gateway.secret {
+        Some(name) => command.arg("--secret").arg(name),
+        None => command.arg("--keyless"),
+    };
+    for name in gateway.credentials.iter().chain(gateway.secret.iter()).chain([&gateway.github_token]) {
         if !name.is_empty() {
             command.env_remove(name);
         }
@@ -747,7 +751,7 @@ mod tests {
             token_budget: None,
             usage: Usage::default(),
             budget_file: PathBuf::from("/tmp/task.budget.json"),
-            secret: "KEY".into(),
+            secret: Some("KEY".into()),
             credentials: vec!["KEY".into()],
             control: PathBuf::from("/tmp/task.control"),
             task: "task".into(),

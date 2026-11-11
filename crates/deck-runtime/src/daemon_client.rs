@@ -132,6 +132,21 @@ impl DaemonClient {
         self.request(Request::Mark { id: id.into(), done })
     }
 
+    /// The settings and the revision to save against (ADR 0012 §1).
+    pub fn settings(&self) -> Result<crate::settings::file::Snapshot> {
+        self.request(Request::Settings)
+    }
+
+    /// Replace the settings; a save from an older revision comes back
+    /// [`Stale`](crate::settings::file::Saved::Stale) with what is there now.
+    pub fn set_settings(
+        &self,
+        settings: crate::settings::Settings,
+        revision: u64,
+    ) -> Result<crate::settings::file::Saved> {
+        self.request(Request::SetSettings { settings, revision })
+    }
+
     /// Record the task's human title (ADR 0010 §9).
     pub fn title(&self, id: &str, title: &str) -> Result<()> {
         self.request(Request::Title { id: id.into(), title: title.into() })
@@ -183,6 +198,18 @@ impl DaemonClient {
     /// operations that used it before their next read of the store.
     pub fn revoke_credential(&self, name: &str) -> Result<crate::credentials::revoked::Revocation> {
         Self::at(self.paths.clone())?.request(Request::RevokeCredential { name: name.into() })
+    }
+
+    /// Store a value entered in a window (ADR 0012 §3) and return the name's
+    /// listing: its new fingerprint, never the value. Its own connection, as
+    /// an OS store may wait on a dialog.
+    pub fn set_credential(&self, name: &str, value: crate::credentials::Secret) -> Result<crate::broker::Listed> {
+        Self::at(self.paths.clone())?.request(Request::SetCredential { name: name.into(), value })
+    }
+
+    /// Remove a name from the store; false when nothing was there.
+    pub fn delete_credential(&self, name: &str) -> Result<bool> {
+        Self::at(self.paths.clone())?.request(Request::DeleteCredential { name: name.into() })
     }
 
     /// Ask the daemon's queue for a scope. This may hold for a decision when

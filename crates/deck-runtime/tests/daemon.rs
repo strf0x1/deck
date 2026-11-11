@@ -63,7 +63,10 @@ impl Daemon {
             .arg(IDLE.as_millis().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            // The implicit provider, not whatever the developer's shell names.
+            .env_remove("CONSTRUCT_BASE_URL")
+            .env_remove("CONSTRUCT_MODEL");
         match credentials {
             Some(file) => command.env("DECK_CREDENTIALS", file),
             // Never the developer's own store from the test's environment.
@@ -90,6 +93,7 @@ impl Daemon {
             cwd: self.data.clone(),
             project: None,
             github: None,
+            model: None,
         }
     }
 
@@ -168,6 +172,44 @@ fn projects_open_list_and_forget() {
     assert_eq!(client.projects().unwrap(), vec![project.clone()]);
     client.forget_project(&project.id).unwrap();
     assert!(client.projects().unwrap().is_empty(), "a forgotten project drops out of the list");
+}
+
+#[test]
+fn settings_save_against_a_revision_and_survive_a_restart() {
+    use deck_runtime::settings::{Provider, Settings, file::Saved};
+    let (mut daemon, first) = Daemon::new("settings");
+    let second = DaemonClient::connect(&daemon.data).unwrap();
+    let read = first.settings().unwrap();
+    assert_eq!((read.revision, read.stored), (0, false));
+    assert_eq!(read.settings.providers[0].name, "default");
+
+    let local = Settings {
+        default: "local/qwen3-32b".into(),
+        providers: vec![Provider {
+            name: "local".into(),
+            url: "http://127.0.0.1:8000/v1".into(),
+            secret: None,
+            models: vec!["qwen3-32b".into()],
+        }],
+    };
+    let Saved::Saved(saved) = first.set_settings(local.clone(), read.revision).unwrap() else {
+        panic!("the first save was stale")
+    };
+    assert_eq!((saved.revision, saved.stored), (1, true));
+    // The second window read revision 0 too; its save is refused with the
+    // first window's settings, and nothing is overwritten.
+    let Saved::Stale(now) = second.set_settings(read.settings.clone(), 0).unwrap() else {
+        panic!("a stale save overwrote the first")
+    };
+    assert_eq!(now.settings, local);
+    let mut invalid = local.clone();
+    invalid.default = "local/missing".into();
+    assert!(second.set_settings(invalid, 1).is_err());
+
+    drop((first, second));
+    assert!(daemon.wait_exit().success());
+    let restarted = daemon.restart();
+    assert_eq!(restarted.settings().unwrap(), saved);
 }
 
 #[test]
@@ -710,6 +752,7 @@ fn a_live_approvals_switch_applies_to_the_next_operation() {
                 approvals: Approvals::OwnBranch,
                 identity: Default::default(),
             }),
+            model: None,
         })
         .unwrap();
     let ask = deck_runtime::approvals::Ask {
@@ -1108,6 +1151,64 @@ fn credential_file(name: &str, pairs: &[(&str, &str)]) -> PathBuf {
     std::fs::write(&file, serde_json::to_vec(&map).unwrap()).unwrap();
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
     file
+}
+
+#[test]
+fn a_window_sets_and_deletes_a_value_that_never_reaches_a_reply_or_the_log() {
+    use deck_runtime::credentials::Secret;
+    const VALUE: &str = "sk-entered-in-the-window-0123";
+    let file = credential_file("set-from-window", &[]);
+    let data = Daemon::data("set-from-window");
+    let log = data.join("deckd.stderr");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .arg("--data")
+        .arg(&data)
+        .arg("--idle-ms")
+        .arg(IDLE.as_millis().to_string())
+        .env("DECK_CREDENTIALS", &file)
+        .env_remove("CONSTRUCT_BASE_URL")
+        .env_remove("CONSTRUCT_MODEL")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    let client = loop {
+        if let Ok(client) = DaemonClient::connect(&data) {
+            break client;
+        }
+        assert!(Instant::now() < deadline, "daemon did not open its socket");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    let listed = client.set_credential("OPENROUTER_API_KEY", Secret::new(VALUE)).unwrap();
+    assert_eq!(listed.name, "OPENROUTER_API_KEY");
+    assert!(listed.fingerprint.as_deref().is_some_and(|f| f.starts_with("sha256:")));
+    assert!(!serde_json::to_string(&listed).unwrap().contains(VALUE), "the reply carries no value");
+    assert!(std::fs::read_to_string(&file).unwrap().contains(VALUE), "the daemon's store holds it");
+    let names = client.stored_credentials().unwrap();
+    assert!(
+        names
+            .credentials
+            .iter()
+            .any(|item| item.name == "OPENROUTER_API_KEY" && item.fingerprint == listed.fingerprint)
+    );
+    assert!(client.set_credential("lower_case", Secret::new(VALUE)).is_err());
+
+    assert!(client.delete_credential("OPENROUTER_API_KEY").unwrap());
+    assert!(!client.delete_credential("OPENROUTER_API_KEY").unwrap());
+    assert!(!std::fs::read_to_string(&file).unwrap().contains(VALUE));
+
+    drop(client);
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "daemon did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("set OPENROUTER_API_KEY sha256:"), "{logged}");
+    assert!(!logged.contains(VALUE), "the value reached the daemon's log: {logged}");
 }
 
 #[test]

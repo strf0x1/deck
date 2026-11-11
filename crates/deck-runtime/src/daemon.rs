@@ -36,6 +36,7 @@ struct Service {
     projects: crate::project::Projects,
     boundary: Arc<Boundary>,
     broker: Arc<Broker>,
+    settings: crate::settings::file::Store,
 }
 
 /// Run until there are no running tasks and no control clients for `idle`.
@@ -66,12 +67,17 @@ pub fn serve(options: Options) -> Result<()> {
     let boundary = Boundary::open(&options.data)?;
     let broker = Arc::new(Broker::open(&options.data, store)?);
     eprintln!("deckd: credentials come from the {}", broker.describe());
+    let settings = crate::settings::file::Store::open(&options.data, crate::settings::Env::from_process())?;
+    for note in settings.snapshot()?.overrides {
+        eprintln!("deckd: {note} (settings in {})", settings.path().display());
+    }
     let service = Arc::new(Mutex::new(Service {
         data: options.data.clone(),
         runtime,
         projects,
         boundary: boundary.clone(),
         broker: broker.clone(),
+        settings,
     }));
     let reader = Arc::new(crate::pull_request::Reader::default());
     let clients = Arc::new(AtomicUsize::new(0));
@@ -198,6 +204,16 @@ fn connection(
                 let result = request.validate().and_then(|()| match request {
                     Request::RevokeCredential { name } => Ok(serde_json::to_value(broker.revoke(&name)?)?),
                     _ => unreachable!("matched a revoke request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
+            Ok(request @ (Request::SetCredential { .. } | Request::DeleteCredential { .. })) => {
+                // The store write happens here, off the service lock, like a
+                // revoke: an OS store may wait on a dialog.
+                let result = request.validate().and_then(|()| match request {
+                    Request::SetCredential { name, value } => Ok(serde_json::to_value(broker.set(&name, &value)?)?),
+                    Request::DeleteCredential { name } => Ok(json!(broker.delete(&name)?)),
+                    _ => unreachable!("matched a store write"),
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
@@ -559,6 +575,10 @@ impl Service {
                 self.runtime.set_budget(&task, requests, tokens)?;
                 Ok(json!(null))
             }
+            Request::Settings => Ok(serde_json::to_value(self.settings.snapshot()?)?),
+            Request::SetSettings { settings, revision } => {
+                Ok(serde_json::to_value(self.settings.replace(settings, revision)?)?)
+            }
             Request::Subscribe
             | Request::Watch { .. }
             | Request::Approval { .. }
@@ -577,7 +597,9 @@ impl Service {
             | Request::Credentials { .. }
             | Request::ListCredentials
             | Request::RetryCredential { .. }
-            | Request::RevokeCredential { .. } => unreachable!("handled before service dispatch"),
+            | Request::RevokeCredential { .. }
+            | Request::SetCredential { .. }
+            | Request::DeleteCredential { .. } => unreachable!("handled before service dispatch"),
         }
     }
 

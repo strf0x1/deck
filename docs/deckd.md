@@ -233,6 +233,19 @@ repository). These control requests serve it:
   it to `credentials/revoked.json` before replying, and pushes it to the
   watching gateways, which close the requests and GitHub operations that used
   it. A new value serves again; the revoked one never does.
+- `set_credential {name, value}` stores a value a window entered (ADR 0012
+  §3) through the same store as `deckd credential set`, and replies with the
+  name's listing (fingerprint, revoked state), never the value. The value is
+  a redacting type in `wire.rs`: its `Debug` prints `<redacted>`, and the log
+  line names only the name and new fingerprint. Putting back a revoked value
+  leaves it revoked. A replace does not close requests using the old value;
+  revoke does.
+- `delete_credential {name}` removes the name from the store and replies
+  whether anything was there. A task whose set names it gets
+  `deck_credential_missing` on its next request.
+
+Both store writes, like `revoke_credential`, run off the service lock on
+their own client connection, since an OS store may wait on a dialog.
 
 `deckd credential set NAME` (value on stdin), `delete NAME`, `list` (names,
 fingerprints, store, revoked state) and `revoke NAME` manage it. `list` and
@@ -240,6 +253,36 @@ fingerprints, store, revoked state) and `revoke NAME` manage it. `list` and
 store selection wins over the CLI's environment. If it cannot connect or
 start the daemon, `list` fails without opening an independent store read.
 `set` and `delete` manage the store directly.
+
+## Settings
+
+ADR 0012's settings live in `<data>/settings.json` (0600, atomic rename),
+written only by `deckd`: the named providers (name, url, key *name*,
+models) and the default `<provider>/<model>`. `deckd` refuses to start on a
+file it could not create a task from, or of another `version`, rather than
+rewrite it. Without a file it serves the implicit provider `default` from
+`CONSTRUCT_BASE_URL` / `CONSTRUCT_MODEL` (or Construct's defaults), as before
+settings existed. With one, those two variables still override the default
+provider's url and model, and `deckd` logs each override at start.
+
+- `settings` replies `{revision, stored, settings, overrides}`: the stored
+  settings (or the implicit ones, `revision` 0, `stored` false) and a note
+  for each environment override.
+- `set_settings {settings, revision}` validates and writes them if
+  `revision` is still the file's, replying `{"outcome":"saved", …}` with the
+  new snapshot. A save against an older revision writes nothing and replies
+  `{"outcome":"stale", …}` with what is there now.
+
+A VM task is pinned to one provider at create: `create` resolves the spec's
+`model` (`{"selector": "<provider>/<id>"}` from a window, or the default
+when absent) against the settings with the environment applied, and records
+`{"choice": {provider, model}}` in `task.json`. Every start and resume uses
+the recorded choice for the gateway's upstream, allowlist and key name, and
+the guest's `CONSTRUCT_MODEL`; a later settings edit never reaches a running
+or resumed task. A record from before settings resolves the default at each
+start. A keyless provider (`secret: null`) starts the gateway with
+`--keyless`: it fetches nothing and sends no `Authorization`. A local task
+records no model.
 
 ## The GitHub operation gateway
 

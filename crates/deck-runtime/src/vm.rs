@@ -17,6 +17,7 @@ use crate::holder::{Identity, Reply, Request, WAIT};
 use crate::lifecycle::{Holder, Task};
 use crate::paths::Paths;
 use crate::record::RecordLock;
+use crate::settings::{Choice, Pick};
 use crate::{boundary, github, import};
 use crate::{reconcile, record::Store, vmm};
 use anyhow::{Context as _, Result, bail};
@@ -78,10 +79,9 @@ pub struct Vm {
     ram_mib: u32,
     executable: PathBuf,
     gateway: PathBuf,
-    /// The provider endpoint and model this task may use. They are host
+    /// The providers a task may be created with (ADR 0012). Host
     /// configuration: the guest gets the relay URL and a placeholder key.
-    upstream: String,
-    model: String,
+    settings: crate::settings::file::Store,
     /// The web and package profiles; `None` disables the web gateway.
     web_profiles: Option<Vec<String>>,
     /// `DECK_GITHUB_*` from this daemon's environment, applied only when a
@@ -154,8 +154,7 @@ impl Vm {
                 ram_mib,
                 executable,
                 gateway,
-                upstream: host("CONSTRUCT_BASE_URL").unwrap_or_else(|| boundary::DEFAULT_UPSTREAM.into()),
-                model: host("CONSTRUCT_MODEL").unwrap_or_else(|| boundary::DEFAULT_MODEL.into()),
+                settings: crate::settings::file::Store::open(data, crate::settings::Env::from_process())?,
                 request_budget: number(REQUEST_BUDGET_ENV)?,
                 token_budget: number(TOKEN_BUDGET_ENV)?,
                 web_profiles: web_profiles(host(WEB_PROFILES_ENV))?,
@@ -164,14 +163,25 @@ impl Vm {
         }
     }
 
+    /// The task's recorded provider, or — for a record written before
+    /// settings existed — the one the settings resolve now, so an upgrade
+    /// keeps the task on what `deckd` would have used (ADR 0012 §2).
+    fn choice(&self, pick: Option<&Pick>) -> Result<Choice> {
+        match pick {
+            Some(Pick::Choice(choice)) => Ok(choice.as_ref().clone()),
+            other => self.settings.effective()?.pin(other),
+        }
+    }
+
     fn dir(&self, id: &str) -> PathBuf {
         self.data.join("tasks").join(id)
     }
 
-    /// The names this task's gateway may fetch (ADR 0004 §4.3): the model
-    /// key, and the GitHub token when the task has a repository.
-    fn credentials(github: Option<&github::Policy>) -> Vec<String> {
-        let mut names = vec![boundary::SECRET.to_string()];
+    /// The names this task's gateway may fetch (ADR 0004 §4.3): its
+    /// provider's key unless it is keyless, and the GitHub token when the
+    /// task has a repository.
+    fn credentials(choice: &Choice, github: Option<&github::Policy>) -> Vec<String> {
+        let mut names: Vec<String> = choice.provider.secret.iter().cloned().collect();
         if let Some(github) = github
             && !names.contains(&github.credential)
         {
@@ -220,6 +230,7 @@ impl Backend for Vm {
         if spec.github.is_none() {
             spec.github = github::resolve(&spec.cwd, self.github.as_ref())?;
         }
+        spec.model = Some(Pick::Choice(Box::new(self.choice(spec.model.as_ref())?)));
         Ok(())
     }
 
@@ -251,10 +262,11 @@ impl Backend for Vm {
         }
         let policy = policy_for(task, self.github.as_ref())?;
         let github = policy.as_deref();
-        let credentials = Self::credentials(github);
+        let choice = self.choice(task.spec.model.as_ref())?;
+        let credentials = Self::credentials(&choice, github);
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let env = guest_environment(&guest, args, &self.model, self.web_profiles.is_some(), github.is_some());
+        let env = guest_environment(&guest, args, &choice.model, self.web_profiles.is_some(), github.is_some());
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -301,13 +313,13 @@ impl Backend for Vm {
                 github_branches: github.map(|github| github.branches.clone()).unwrap_or_default(),
                 github_token: github.map(|github| github.credential.clone()).unwrap_or_default(),
                 github_scratch: self.dir(&task.id).join("github"),
-                upstream: self.upstream.clone(),
-                models: vec![self.model.clone()],
+                upstream: choice.provider.url.clone(),
+                models: choice.provider.models.clone(),
                 request_budget: self.request_budget,
                 token_budget: self.token_budget,
                 usage: task.usage,
                 budget_file: self.dir(&task.id).join("budget.json"),
-                secret: boundary::SECRET.into(),
+                secret: choice.provider.secret.clone(),
                 credentials: credentials.clone(),
                 control: self.paths.control(),
                 task: task.id.clone(),
@@ -667,8 +679,8 @@ pub fn credential_set(data: &Path, id: &str) -> Result<Vec<String>> {
 }
 
 /// The VMM config is owner-only: it is the complete description of a guest,
-/// though it never carries a credential value.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+/// though it never carries a credential value. Settings use the same write.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let temp = path.with_extension("tmp");
@@ -778,7 +790,13 @@ mod tests {
         let task = Task {
             id: "legacy".into(),
             backend: "vm".into(),
-            spec: Spec { argv: vec!["construct".into(), "acp".into()], cwd: dir.clone(), project: None, github: None },
+            spec: Spec {
+                argv: vec!["construct".into(), "acp".into()],
+                cwd: dir.clone(),
+                project: None,
+                github: None,
+                model: None,
+            },
             title: None,
             state: State::Created,
             pid: None,
@@ -806,6 +824,45 @@ mod tests {
         });
         assert_eq!(policy_for(&recorded, None).unwrap().unwrap().repository, "recorded/one");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_credential_set_names_the_tasks_provider_key_or_none() {
+        use crate::settings::{Env, Settings};
+        let keyed = Settings::implicit(&Env::default()).resolve(None).unwrap();
+        let policy = github::Policy {
+            repository: "owner/name".into(),
+            base: "main".into(),
+            branches: Vec::new(),
+            credential: github::TOKEN.into(),
+            approvals: Default::default(),
+            identity: Default::default(),
+        };
+        assert_eq!(Vm::credentials(&keyed, None), [boundary::SECRET]);
+        assert_eq!(Vm::credentials(&keyed, Some(&policy)), [boundary::SECRET, github::TOKEN]);
+
+        let mut named = keyed.clone();
+        named.provider.secret = Some("OPENROUTER_API_KEY".into());
+        assert_eq!(Vm::credentials(&named, None), ["OPENROUTER_API_KEY"]);
+
+        // A keyless provider's task may fetch no model key at all.
+        let mut keyless = keyed;
+        keyless.provider.secret = None;
+        assert!(Vm::credentials(&keyless, None).is_empty());
+        assert_eq!(Vm::credentials(&keyless, Some(&policy)), [github::TOKEN]);
+    }
+
+    #[test]
+    fn a_recorded_spec_keeps_its_choice_and_an_old_one_reads_without_it() {
+        // A record from before settings has no `model` and still parses.
+        let old = r#"{"argv":["construct","acp"],"cwd":"/p"}"#;
+        let spec: Spec = serde_json::from_str(old).unwrap();
+        assert_eq!(spec.model, None);
+        let choice = crate::settings::Settings::implicit(&Default::default()).resolve(None).unwrap();
+        let recorded = Spec { model: Some(Pick::Choice(Box::new(choice))), ..spec };
+        let json = serde_json::to_string(&recorded).unwrap();
+        assert!(json.contains(r#""model":{"choice":{"provider":"#), "{json}");
+        assert_eq!(serde_json::from_str::<Spec>(&json).unwrap(), recorded);
     }
 
     #[test]
