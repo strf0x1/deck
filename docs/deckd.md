@@ -272,6 +272,14 @@ provider's url and model, and `deckd` logs each override at start.
   `revision` is still the file's, replying `{"outcome":"saved", …}` with the
   new snapshot. A save against an older revision writes nothing and replies
   `{"outcome":"stale", …}` with what is there now.
+- `list_models {provider, refresh}` asks the saved provider's `<url>/models`
+  on the window's behalf: it resolves the provider from the settings (never
+  from the request), reads the provider's stored key through the broker when
+  it names one, and replies `{provider, url, models, fetched_at, stale,
+  error}`. Lists cache per URL under `<data>/models/` for two hours;
+  `refresh` asks again, and a failed refetch answers the cached list with
+  `stale: true` and the reason. The key never leaves `deckd`, and the
+  request holds the service lock only while copying the settings.
 
 A VM task is pinned to one provider at create: `create` resolves the spec's
 `model` (`{"selector": "<provider>/<id>"}` from a window, or the default

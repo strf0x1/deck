@@ -2690,6 +2690,144 @@ fn an_empty_settings_pane_says_what_is_missing(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("settings-default-0").is_none());
 }
 
+/// A local OpenAI-compatible `/models`: one request, then the scripted body.
+fn models_endpoint() -> String {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                break;
+            }
+        }
+        let body = r#"{"data":[
+            {"id":"qwen3-32b","name":"Qwen 3 32B","max_model_len":32768},
+            {"id":"llama-4","name":"Llama 4"},
+            {"id":"image-only","supported_parameters":[],"architecture":{"input_modalities":["image"]}}
+        ]}"#;
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+    url
+}
+
+#[gpui::test]
+fn settings_fetch_a_providers_models_search_them_and_add_one(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-models-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let store = data.join("credentials.json");
+    std::fs::write(&store, "{}").unwrap();
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let exe = std::env::current_exe().unwrap();
+    let mut deckd = std::process::Command::new(exe.parent().unwrap().parent().unwrap().join("deckd"))
+        .arg("--data")
+        .arg(&data)
+        .env("DECK_CREDENTIALS", &store)
+        .env_remove("CONSTRUCT_BASE_URL")
+        .env_remove("CONSTRUCT_MODEL")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let daemon = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(daemon) = deck_runtime::DaemonClient::connect(&data) {
+                break daemon;
+            }
+            assert!(std::time::Instant::now() < deadline, "deckd did not start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let models = models_endpoint();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|cx| Deck::launch_in(&data, vec!["sleep".into(), "30".into()], data.clone(), cx))
+        })
+        .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+
+    click_control(&mut vcx, "sidebar-settings");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settings().snapshot().is_some()));
+
+    // A keyless provider, so the fetch needs no credential read.
+    click_control(&mut vcx, "settings-add-provider");
+    vcx.simulate_input("local");
+    vcx.simulate_keystrokes("tab");
+    vcx.simulate_input(&models);
+    vcx.simulate_keystrokes("tab");
+    vcx.simulate_input("none");
+    vcx.simulate_keystrokes("tab");
+    vcx.simulate_input("qwen3-32b");
+    click_control(&mut vcx, "settings-save");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.settings().busy() && d.settings().form().is_none()));
+
+    let index = deck.read_with(&vcx, |d, _| d.settings().provider_rows().iter().position(|r| r.name == "local"));
+    let selector: &'static str = Box::leak(format!("settings-provider-models-{}", index.unwrap()).into_boxed_str());
+    click_control(&mut vcx, selector);
+    assert!(vcx.debug_bounds("settings-fetch-models").is_some(), "a saved provider offers the fetch");
+    click_control(&mut vcx, "settings-fetch-models");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.settings().discovery().is_some_and(|m| !m.loading && m.models.len() == 3))
+    });
+
+    // Search is the flow: the tool-less model is not offered, and one word
+    // narrows to one row.
+    deck.read_with(&vcx, |d, _| assert_eq!(d.settings().discovery_shown(), Some((2, 2))));
+    click_control(&mut vcx, "settings-model-search");
+    vcx.simulate_input("llama");
+    deck.read_with(&vcx, |d, _| assert_eq!(d.settings().discovery_shown(), Some((1, 1))));
+    click_control(&mut vcx, "settings-model-0");
+    deck.read_with(&vcx, |d, _| {
+        let Some(deck::ui::settings::Form::Provider { models, .. }) = d.settings().form() else {
+            panic!("no provider form")
+        };
+        assert_eq!(models.text(), "qwen3-32b\nllama-4");
+    });
+
+    click_control(&mut vcx, "settings-save");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.settings().busy() && d.settings().form().is_none()));
+    let saved = daemon.settings().unwrap();
+    assert_eq!(saved.settings.provider("local").unwrap().models, vec!["qwen3-32b".to_string(), "llama-4".into()]);
+
+    drop(daemon);
+    let _ = deckd.kill();
+    let _ = deckd.wait();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[gpui::test]
+fn the_session_model_menu_opens_settings_on_the_provider_to_manage(cx: &mut TestAppContext) {
+    use deck::ui::settings::{Field, Form};
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    cx.run_until_parked();
+    click_control(&mut cx, "hdr-model");
+    click_control(&mut cx, "hdr-model-manage");
+    // A headless deck has no daemon, so the load the pane started never
+    // arrives; hand it the snapshot its pending provider names.
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    cx.run_until_parked();
+    deck.read_with(&cx, |d, _| {
+        assert!(d.settings().is_open());
+        let Some(Form::Provider { editing, .. }) = d.settings().form() else { panic!("no provider form") };
+        assert_eq!((editing.as_deref(), d.settings().focused()), (Some("openrouter"), Some(Field::Models)));
+    });
+}
+
 #[gpui::test]
 fn the_model_menu_picks_what_new_session_starts_on(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);

@@ -13,7 +13,7 @@ pub(crate) const LIMIT: usize = 1024 * 1024;
 /// The control grammar's protocol. Bump it whenever a [`Request`] variant or
 /// its meaning changes: a window then refuses a daemon from another build with
 /// an instruction instead of failing in the middle of a conversation.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// What a daemon answers to [`Request::Hello`]. A daemon predating the
 /// handshake answers `unknown variant`, which the client reports as
@@ -219,6 +219,14 @@ pub(crate) enum Request {
         settings: crate::settings::Settings,
         revision: u64,
     },
+    /// A saved provider's `/models` list, fetched by `deckd` with the key it
+    /// names. The provider is resolved from the settings, never from a
+    /// window-supplied URL (ADR 0012 §4).
+    ListModels {
+        provider: String,
+        #[serde(default)]
+        refresh: bool,
+    },
     /// Store a value from a window (ADR 0012 §3). Replies with the name's
     /// listing; the value is in this request only and is never logged.
     SetCredential {
@@ -261,6 +269,7 @@ impl Request {
                 | Self::Credentials { .. }
                 | Self::Credential { .. }
                 | Self::ListCredentials
+                | Self::ListModels { .. }
                 | Self::Settings
         )
     }
@@ -330,6 +339,11 @@ impl Request {
             && id.is_empty()
         {
             bail!("invalid project id");
+        }
+        if let Self::ListModels { provider, .. } = self
+            && (provider.is_empty() || provider.len() > 64)
+        {
+            bail!("invalid provider name");
         }
         Ok(())
     }

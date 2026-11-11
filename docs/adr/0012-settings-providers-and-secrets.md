@@ -172,6 +172,15 @@ its model list directly. It has three sections:
   `deckd` will and shows `deckd`'s refusal when it doesn't. Delete asks once.
   It does not offer to delete the provider's secret, since another provider
   may name it.
+- **Fetched models.** A saved provider's form can Fetch its `<url>/models`.
+  `deckd` resolves the provider from its settings, reads the key it names
+  through the broker (never handing it to the window), and caches the list
+  per URL under the data root for two hours; Refresh asks again, and a
+  failed refetch shows the cached list with the reason. The form draws a
+  search over the fetched ids (tool-capable only, every word, prefix first);
+  a click adds or removes one in the models text, which stays the allowlist
+  and still accepts hand-typed ids. A new provider is saved first: `deckd`
+  resolves fetches by name.
 - **Default model.** A picker over every `<provider>/<id>`. New sessions use
   it unless the user picks another for that session.
 - **Secrets.** Every stored name with its fingerprint and store
@@ -184,8 +193,10 @@ Colours follow `theme.rs`: green for a set key, amber for a provider whose
 key is not set (waiting on the human), red only on delete and revoke.
 
 New session uses the default model. A small selector beside New session
-picks another `<provider>/<id>` for that one task. The composer status row
-already shows the agent and backend; it gains the task's `provider/id`.
+picks another `<provider>/<id>` for that one task; its menu also offers
+Manage models…, which opens this pane on that provider's form. The composer
+status row already shows the agent and backend; it gains the task's
+`provider/id`.
 
 ### 5. Steps
 

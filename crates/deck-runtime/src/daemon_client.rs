@@ -199,6 +199,12 @@ impl DaemonClient {
         self.request(Request::SetSettings { settings, revision })
     }
 
+    /// A saved provider's `/models` list, resolved and fetched by `deckd`.
+    /// Its own connection: the request may wait on the provider.
+    pub fn list_models(&self, provider: &str, refresh: bool) -> Result<crate::catalog::ModelListing> {
+        Self::at(self.paths.clone(), None)?.request(Request::ListModels { provider: provider.into(), refresh })
+    }
+
     /// Record the task's human title (ADR 0010 §9).
     pub fn title(&self, id: &str, title: &str) -> Result<()> {
         self.request(Request::Title { id: id.into(), title: title.into() })

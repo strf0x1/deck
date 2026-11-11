@@ -265,6 +265,32 @@ fn connection(
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
+            Ok(request @ Request::ListModels { .. }) => {
+                // The fetch waits on the provider, so the lock is held only to
+                // copy what the listing needs; the settings store re-reads its
+                // file on every call.
+                let (settings, data) = {
+                    let service = service.lock().unwrap_or_else(|e| e.into_inner());
+                    (service.settings.clone(), service.data.clone())
+                };
+                let result = request.validate().and_then(|()| match request {
+                    Request::ListModels { provider, refresh } => {
+                        let settings = settings.effective()?;
+                        let Some(provider) = settings.provider(&provider).cloned() else {
+                            bail!("no provider is named {provider:?}");
+                        };
+                        let key = match &provider.secret {
+                            Some(name) => {
+                                Some(broker.value(name).map_err(|refusal| anyhow::anyhow!(refusal.reply(name)))?)
+                            }
+                            None => None,
+                        };
+                        Ok(serde_json::to_value(crate::catalog::listing(&data, &provider, key.as_deref(), refresh)?)?)
+                    }
+                    _ => unreachable!("matched a models request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request)
                 if matches!(
                     &request,
@@ -644,6 +670,7 @@ impl Service {
             | Request::CredentialWatch { .. }
             | Request::Credentials { .. }
             | Request::ListCredentials
+            | Request::ListModels { .. }
             | Request::RetryCredential { .. }
             | Request::RevokeCredential { .. }
             | Request::SetCredential { .. }

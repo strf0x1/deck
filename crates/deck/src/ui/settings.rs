@@ -11,11 +11,12 @@
 
 use super::editor::Editor;
 use deck_runtime::broker::{Listed, Listing};
+use deck_runtime::catalog::ModelListing;
 use deck_runtime::credentials::Secret;
 use deck_runtime::settings::Settings as Stored;
 use deck_runtime::settings::file::{Saved, Snapshot};
 
-pub use super::settings_fields::{Confirm, Field, Form};
+pub use super::settings_fields::{Confirm, Discovery, Field, Form};
 use super::settings_rows::{self as rows, repair_default};
 pub use super::settings_rows::{Key, ProviderRow, SecretRow};
 
@@ -32,6 +33,10 @@ pub struct SettingsPanel {
     notice: Option<String>,
     settings_ticket: u64,
     secrets_ticket: u64,
+    models_ticket: u64,
+    /// A provider to open after the next settings load names one (Manage
+    /// models, from the session header).
+    pending_models: Option<String>,
     /// The New session model, when the user picked one other than the default.
     session_model: Option<String>,
     picking: bool,
@@ -50,13 +55,22 @@ impl SettingsPanel {
         self.confirm = None;
         self.error = None;
         self.notice = None;
+        if !self.open {
+            self.pending_models = None;
+        }
         self.open
     }
 
-    /// Escape: the confirmation, then the form, then the panel. False means
-    /// there was nothing inside to cancel and the panel should close.
+    /// Escape: the confirmation, then the fetched model list, then the form,
+    /// then the panel. False means there was nothing inside to cancel and
+    /// the panel should close.
     pub fn cancel(&mut self) -> bool {
         if self.confirm.take().is_some() {
+            return true;
+        }
+        if let Some(form) = &mut self.form
+            && form.close_discovery()
+        {
             return true;
         }
         self.form.take().is_some()
@@ -106,6 +120,14 @@ impl SettingsPanel {
                 if self.session_model.as_ref().is_some_and(|m| !self.choices().contains(m)) {
                     self.session_model = None;
                 }
+                // Manage models opened the pane to edit a provider; the
+                // settings that name it have only just arrived.
+                if self.open
+                    && let Some(provider) = self.pending_models.take()
+                    && self.settings().is_some_and(|settings| settings.provider(&provider).is_some())
+                {
+                    self.edit_models(&provider);
+                }
             }
             Err(e) => self.error = Some(e),
         }
@@ -148,6 +170,100 @@ impl SettingsPanel {
         }
     }
 
+    /// Edit a provider with its model list in view: what the row's Models
+    /// button does.
+    pub fn edit_models(&mut self, name: &str) {
+        self.edit_provider(name);
+        self.focus(Field::Models);
+    }
+
+    /// The next settings load opens this provider's model list (the session
+    /// header's Manage models, before the snapshot is there).
+    pub fn manage(&mut self, provider: Option<String>) {
+        self.pending_models = provider.filter(|name| !name.is_empty());
+    }
+
+    /// The fetched list under the open form, while the form has one.
+    pub fn discovery(&self) -> Option<&Discovery> {
+        self.form.as_ref()?.discovery()
+    }
+
+    /// Hide the fetched list, keeping the form and its allowlist text.
+    pub fn close_discovery(&mut self) {
+        if let Some(form) = &mut self.form {
+            form.close_discovery();
+        }
+    }
+
+    /// The rows drawn and the matches in all, for the discovery block and
+    /// the control socket.
+    pub fn discovery_shown(&self) -> Option<(usize, usize)> {
+        let discovery = self.discovery()?;
+        let (rows, total) = super::model_search::shown(&discovery.models, discovery.query.text());
+        Some((rows.len(), total))
+    }
+
+    /// Ask `deckd` for the form's saved provider. `None` for a new provider:
+    /// it has no name the daemon could resolve yet, and while the typed URL
+    /// differs from the saved one, since the daemon fetches what is saved.
+    pub fn begin_models(&mut self) -> Option<(String, u64)> {
+        let Form::Provider { editing: Some(provider), .. } = self.form.as_ref()? else { return None };
+        let provider = provider.clone();
+        let saved = self.settings().and_then(|s| s.provider(&provider)).map(|p| p.url.clone());
+        let Form::Provider { url, discovery, .. } = self.form.as_mut()? else { return None };
+        if saved.as_deref() != Some(url.text().trim()) {
+            if let Some(discovery) = discovery {
+                discovery.loading = false;
+                discovery.error = Some("Save the new URL first, then fetch its models.".into());
+            }
+            return None;
+        }
+        let discovery = discovery.get_or_insert_with(|| Discovery::new(provider.clone()));
+        discovery.loading = true;
+        discovery.error = None;
+        self.models_ticket += 1;
+        Some((provider, self.models_ticket))
+    }
+
+    /// Apply a `/models` read; a reply to an older request is dropped.
+    pub fn models_listed(&mut self, ticket: u64, result: Result<ModelListing, String>) {
+        if ticket != self.models_ticket {
+            return;
+        }
+        let Some(discovery) = self.form.as_mut().and_then(Form::discovery_mut) else { return };
+        discovery.loading = false;
+        match result {
+            Ok(listing) => {
+                discovery.models = listing.models;
+                discovery.fetched_at = listing.fetched_at;
+                discovery.stale = listing.stale;
+                discovery.error = listing.error;
+            }
+            Err(error) => {
+                discovery.stale = !discovery.models.is_empty();
+                discovery.error = Some(error);
+            }
+        }
+    }
+
+    /// Add or remove one model from the allowlist text.
+    pub fn toggle_model(&mut self, id: &str) {
+        if let Some(form) = &mut self.form {
+            form.toggle_model(id);
+        }
+    }
+
+    /// Enter in the search: the first match joins (or leaves) the allowlist.
+    pub fn add_top_match(&mut self) {
+        let Some(Form::Provider { discovery: Some(discovery), .. }) = self.form.as_ref() else { return };
+        let id = super::model_search::search(&discovery.models, discovery.query.text())
+            .first()
+            .map(|model| model.id.clone());
+        if let Some(id) = id {
+            self.toggle_model(&id);
+        }
+    }
+
     pub fn open_secret(&mut self, name: &str) {
         self.open_form(Form::Secret { name: name.into(), value: Editor::new() });
     }
@@ -155,6 +271,7 @@ impl SettingsPanel {
     fn open_form(&mut self, form: Form) {
         self.confirm = None;
         self.error = None;
+        self.pending_models = None;
         self.form = Some(form);
     }
 
@@ -486,6 +603,114 @@ mod tests {
         // A listing from an older request is ignored.
         panel.secrets_listed(ticket - 1, Ok(Listing { store: "x".into(), credentials: Vec::new() }));
         assert_eq!(panel.store(), Some("file"));
+    }
+
+    fn listing() -> ModelListing {
+        use deck_runtime::catalog::ModelInfo;
+        ModelListing {
+            provider: "openrouter".into(),
+            url: "https://openrouter.ai/api/v1".into(),
+            models: vec![
+                ModelInfo { id: "openrouter/free".into(), name: "Free".into(), tools: true, ..ModelInfo::default() },
+                ModelInfo {
+                    id: "anthropic/claude-sonnet-5-5".into(),
+                    name: "Claude".into(),
+                    tools: true,
+                    ..ModelInfo::default()
+                },
+            ],
+            fetched_at: Some(1),
+            stale: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_model_list_lands_on_its_open_form_and_toggles_the_allowlist() {
+        let mut panel = loaded();
+        panel.edit_models("openrouter");
+        assert_eq!(panel.focused(), Some(Field::Models));
+        let (provider, ticket) = panel.begin_models().unwrap();
+        assert_eq!(provider, "openrouter");
+        assert!(panel.discovery().unwrap().loading);
+        panel.models_listed(ticket - 1, Ok(listing()));
+        assert!(panel.discovery().unwrap().models.is_empty(), "a reply to an older request is dropped");
+        panel.models_listed(ticket, Ok(listing()));
+        let discovery = panel.discovery().unwrap();
+        assert_eq!((discovery.models.len(), discovery.loading, discovery.stale), (2, false, false));
+        assert_eq!(panel.discovery_shown(), Some((2, 2)));
+
+        panel.toggle_model("anthropic/claude-sonnet-5-5");
+        assert!(panel.editor().unwrap().text().contains("openrouter/free\nanthropic/claude-sonnet-5-5"));
+        panel.toggle_model("anthropic/claude-sonnet-5-5");
+        assert_eq!(panel.editor().unwrap().text(), "openrouter/free");
+
+        // Enter in the search adds the first match to the allowlist.
+        panel.focus(Field::Search);
+        panel.editor_mut().unwrap().insert("claude");
+        assert_eq!(panel.discovery_shown(), Some((1, 1)));
+        panel.add_top_match();
+        panel.focus(Field::Models);
+        assert!(panel.editor().unwrap().text().contains("anthropic/claude-sonnet-5-5"));
+
+        // A new provider has no saved name, so there is nothing to ask for.
+        panel.cancel();
+        panel.add_provider();
+        assert!(panel.begin_models().is_none());
+    }
+
+    #[test]
+    fn a_typed_url_must_be_saved_before_its_models_can_be_fetched() {
+        let mut panel = loaded();
+        panel.edit_models("openrouter");
+        type_into(&mut panel, Field::Url, "http://127.0.0.1:8000/v1");
+        assert!(panel.begin_models().is_none(), "deckd would fetch the saved URL, not this one");
+        type_into(&mut panel, Field::Url, "https://openrouter.ai/api/v1");
+        assert!(panel.begin_models().is_some());
+    }
+
+    #[test]
+    fn a_failed_refetch_keeps_the_list_and_says_why() {
+        let mut panel = loaded();
+        panel.edit_models("openrouter");
+        let (_, ticket) = panel.begin_models().unwrap();
+        panel.models_listed(ticket, Ok(listing()));
+        let (_, ticket) = panel.begin_models().unwrap();
+        panel.models_listed(ticket, Err("model list returned 500".into()));
+        let discovery = panel.discovery().unwrap();
+        assert_eq!(discovery.models.len(), 2);
+        assert!(discovery.stale && discovery.error.as_deref().is_some_and(|e| e.contains("500")));
+    }
+
+    #[test]
+    fn escape_closes_the_fetched_list_before_the_form() {
+        let mut panel = loaded();
+        panel.edit_models("openrouter");
+        let (_, ticket) = panel.begin_models().unwrap();
+        panel.models_listed(ticket, Ok(listing()));
+        assert!(panel.cancel());
+        assert!(panel.form().is_some() && panel.discovery().is_none());
+        assert_eq!(panel.focused(), Some(Field::Models), "the caret returns to the allowlist");
+        assert!(panel.cancel());
+        assert!(panel.form().is_none());
+    }
+
+    #[test]
+    fn manage_models_opens_the_named_provider_after_the_load() {
+        let mut panel = SettingsPanel::default();
+        panel.manage(Some("openrouter".into()));
+        panel.toggle();
+        let ticket = panel.begin_load();
+        panel.loaded(ticket, Ok(snapshot()));
+        assert!(matches!(panel.form(), Some(Form::Provider { editing: Some(name), .. }) if name == "openrouter"));
+        assert_eq!(panel.focused(), Some(Field::Models));
+
+        // A provider the settings do not name leaves the pane on its list.
+        let mut panel = loaded();
+        panel.manage(Some("gone".into()));
+        let ticket = panel.begin_load();
+        panel.loaded(ticket, Ok(snapshot()));
+        assert!(panel.form().is_none());
     }
 
     #[test]
