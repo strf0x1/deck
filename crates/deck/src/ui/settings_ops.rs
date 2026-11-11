@@ -99,6 +99,65 @@ impl Deck {
         cx.notify();
     }
 
+    pub fn edit_models(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.settings.edit_models(name);
+        cx.notify();
+    }
+
+    /// Ask `deckd` for the open provider's models. The first answer may come
+    /// from its cache; Refresh asks the provider again.
+    pub fn fetch_models(&mut self, cx: &mut Context<Self>) {
+        self.read_models(false, cx);
+    }
+
+    pub fn refresh_models(&mut self, cx: &mut Context<Self>) {
+        self.read_models(true, cx);
+    }
+
+    fn read_models(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        let Some((provider, ticket)) = self.settings.begin_models() else { return };
+        cx.notify();
+        let Some(daemon) = self.daemon.clone() else {
+            self.settings.models_listed(ticket, Err("no daemon to ask for a model list".into()));
+            return cx.notify();
+        };
+        let read = cx.background_executor().spawn(async move { daemon.list_models(&provider, refresh) });
+        cx.spawn(async move |this, cx| {
+            let result = read.await.map_err(|e| format!("{e:#}"));
+            let _ = this.update(cx, |deck, cx| {
+                deck.settings.models_listed(ticket, result);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn toggle_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.settings.toggle_model(id);
+        cx.notify();
+    }
+
+    pub fn close_models(&mut self, cx: &mut Context<Self>) {
+        self.settings.close_discovery();
+        cx.notify();
+    }
+
+    /// The session header's Manage models: open the pane on the provider the
+    /// next session would start on, once its settings have loaded.
+    pub fn manage_models(&mut self, cx: &mut Context<Self>) {
+        let provider = self.settings.session_model().and_then(|model| model.split_once('/').map(|(p, _)| p.to_owned()));
+        self.settings.manage(provider);
+        if self.settings.picking() {
+            self.toggle_model_picker(cx);
+        }
+        if self.settings.is_open() {
+            self.load_settings(cx);
+            cx.notify();
+        } else {
+            self.toggle_settings(cx);
+        }
+    }
+
     pub fn focus_settings_field(&mut self, field: Field, cx: &mut Context<Self>) {
         self.settings.focus(field);
         cx.notify();
@@ -192,6 +251,7 @@ impl Deck {
                 }
             }
             "tab" => self.settings.next_field(m.shift),
+            "enter" if self.settings.focused() == Some(Field::Search) => self.settings.add_top_match(),
             "enter" if multiline && !(m.control || m.platform) => {
                 if let Some(e) = self.settings.editor_mut() {
                     e.insert("\n");

@@ -45,6 +45,7 @@ pub enum Saved {
     Stale(Snapshot),
 }
 
+#[derive(Clone)]
 pub struct Store {
     path: PathBuf,
     env: Env,

@@ -32,6 +32,7 @@ pub mod highlight;
 mod input;
 pub mod markdown;
 mod model_menu;
+mod model_search;
 pub mod motion;
 pub mod new_session;
 mod panels;

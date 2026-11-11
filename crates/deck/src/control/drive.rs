@@ -372,6 +372,15 @@ fn settings_state(d: &Deck) -> serde_json::Value {
         "busy": s.busy(),
         "error": s.error(),
         "notice": s.notice(),
+        "models": s.discovery().map(|d| json!({
+            "provider": d.provider,
+            "loading": d.loading,
+            "count": d.models.len(),
+            "shown": s.discovery_shown().map(|(rows, _)| rows),
+            "query": d.query.text(),
+            "stale": d.stale,
+            "error": d.error,
+        })),
         "session_model": s.session_model(),
         "picking": s.picking(),
     })

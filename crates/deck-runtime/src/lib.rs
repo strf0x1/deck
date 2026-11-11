@@ -14,6 +14,7 @@ pub mod approvals;
 pub mod backend;
 pub mod boundary;
 pub mod broker;
+pub mod catalog;
 pub mod child;
 pub mod credentials;
 pub mod daemon;

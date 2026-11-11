@@ -9,10 +9,10 @@
 
 use super::access_panel::button;
 use super::composer;
-use super::panels::glyph;
+use super::panels::{eyebrow, glyph};
 use super::root::Deck;
 use super::settings::{Confirm, Field, Form};
-use super::theme::{MONO, Tokens, radius, size, space, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -20,7 +20,7 @@ use gpui::{
 
 /// The provider form: name, url, key name, models.
 pub fn provider_form(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
-    let Some(Form::Provider { editing, name, url, key, models, focus }) = deck.settings().form() else {
+    let Some(Form::Provider { editing, name, url, key, models, focus, .. }) = deck.settings().form() else {
         return div().into_any_element();
     };
     let title = match editing {
@@ -37,7 +37,169 @@ pub fn provider_form(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .into_iter()
         .map(|(field, label, text, hint)| field_row(field, label, text, hint, *focus == field, false, cx))
         .collect::<Vec<_>>();
+    let mut rows = rows;
+    // A saved provider can name itself to `deckd`, so only its form offers
+    // the fetched list; a new one is saved first.
+    if let Some(saved) = editing
+        .as_deref()
+        .and_then(|name| deck.settings().settings().and_then(|s| s.provider(name)).map(|p| p.url.clone()))
+    {
+        rows.push(discovery_block(deck, cx, url.text(), &saved));
+    }
     form_card(title, rows, "Enter saves · Tab moves · in Models, ctrl-Enter saves", deck.settings().busy(), cx)
+}
+
+/// The provider's models as its endpoint serves them: fetch, filter, and a
+/// click to add or remove one from the Models allowlist (ADR 0012 §4).
+fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) -> AnyElement {
+    let Some(Form::Provider { models, focus, discovery, .. }) = deck.settings().form() else {
+        return div().into_any_element();
+    };
+    let Some(discovery) = discovery else { return fetch_row(cx, url, saved) };
+    let listed = models.text().to_owned();
+    let focused = *focus == Field::Search;
+    let query = discovery.query.text().to_owned();
+    let (rows, total) = super::model_search::shown(&discovery.models, &query);
+    let drawn = rows.len();
+    let model_rows = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, model)| {
+            let on = super::settings_fields::lists(&listed, &model.id);
+            let id = model.id.clone();
+            let context = model.context.map(|tokens| format!("{}k", tokens / 1000));
+            div()
+                .id(("settings-model", i))
+                .debug_selector(move || format!("settings-model-{i}"))
+                .h(px(26.))
+                .px(px(space::TIGHT))
+                .flex()
+                .items_center()
+                .gap(px(space::LINE))
+                .rounded(px(radius::CONTROL))
+                .cursor_pointer()
+                .hover(|style| style.bg(Tokens::raised_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_model(&id, cx)))
+                .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 9.).text_color(Tokens::lime()))))
+                .child(div().font_family(MONO).text_size(px(size::SMALL)).child(model.id.clone()))
+                .children((model.name != model.id && !model.name.is_empty()).then(|| {
+                    div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(model.name.clone())
+                }))
+                .child(div().flex_1())
+                .children(context.map(|tokens| {
+                    div().font_family(MONO).text_size(px(size::MICRO)).text_color(Tokens::text_faint()).child(tokens)
+                }))
+        })
+        .collect::<Vec<_>>();
+    let note = discovery.error.as_ref().map(|error| {
+        let (color, text) = if discovery.stale {
+            (Tokens::amber(), format!("Using the cached list: {error}"))
+        } else {
+            (Tokens::red(), error.clone())
+        };
+        div().debug_selector(|| "settings-models-error".into()).text_size(px(size::SMALL)).text_color(color).child(text)
+    });
+    let search: Option<AnyElement> = (!discovery.models.is_empty()).then(|| {
+        let body: AnyElement = if focused {
+            composer::Field::new(cx.entity(), Tokens::accent(), "search models…").into_any_element()
+        } else if query.is_empty() {
+            div().text_color(Tokens::text_faint()).child("search models…").into_any_element()
+        } else {
+            div().child(query.clone()).into_any_element()
+        };
+        div()
+            .id("settings-model-search")
+            .debug_selector(|| "settings-model-search".into())
+            .flex()
+            .items_center()
+            .gap(px(space::TIGHT))
+            .px(px(space::INSET))
+            .py(px(3.))
+            .rounded(px(radius::CONTROL))
+            .border_1()
+            .border_color(if focused { tint(Tokens::accent(), 0.55) } else { Tokens::edge().into() })
+            .bg(Tokens::raised())
+            .font_family(MONO)
+            .text_size(px(size::SMALL))
+            .cursor_text()
+            .on_click(cx.listener(|this, _, _, cx| this.focus_settings_field(Field::Search, cx)))
+            .child(glyph(icon::SEARCH, 10.).text_color(Tokens::text_faint()))
+            .child(body)
+            .into_any_element()
+    });
+    let footer = if discovery.models.is_empty() {
+        (discovery.loading).then_some("Fetching the provider's models…")
+    } else if total == 0 {
+        Some("No model matches.")
+    } else if total > drawn {
+        Some("Showing the first matches; type to narrow.")
+    } else {
+        Some("Click a model to add or remove it; Enter adds the first match.")
+    };
+    div()
+        .debug_selector(|| "settings-models".into())
+        .flex()
+        .flex_col()
+        .gap(px(space::TIGHT))
+        .p(px(space::INSET))
+        .rounded(px(radius::CARD))
+        .border_1()
+        .border_color(Tokens::edge())
+        .bg(Tokens::sunken())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(space::LINE))
+                .child(eyebrow("Models from the provider"))
+                .child(div().flex_1())
+                .child(
+                    button("settings-refresh-models", "Refresh", Tokens::text_dim())
+                        .debug_selector(|| "settings-refresh-models".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_models(cx))),
+                )
+                .child(
+                    super::chrome::icon_button("settings-models-close", icon::CLOSE)
+                        .debug_selector(|| "settings-models-close".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.close_models(cx))),
+                ),
+        )
+        .children(note)
+        .children(search)
+        .child(
+            div().id("settings-models-list").flex().flex_col().max_h(px(260.)).overflow_y_scroll().children(model_rows),
+        )
+        .children(
+            footer.map(|text| div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(text.to_owned())),
+        )
+        .into_any_element()
+}
+
+fn fetch_row(cx: &mut Context<Deck>, url: &str, saved: &str) -> AnyElement {
+    if saved != url.trim() {
+        return div()
+            .debug_selector(|| "settings-fetch-unsaved".into())
+            .text_size(px(size::SMALL))
+            .text_color(Tokens::text_faint())
+            .child("Save the new URL first, then fetch its models.")
+            .into_any_element();
+    }
+    div()
+        .flex()
+        .items_center()
+        .gap(px(space::STACK))
+        .child(
+            button("settings-fetch-models", "Fetch models", Tokens::text_dim())
+                .debug_selector(|| "settings-fetch-models".into())
+                .on_click(cx.listener(|this, _, _, cx| this.fetch_models(cx))),
+        )
+        .child(
+            div()
+                .text_size(px(size::SMALL))
+                .text_color(Tokens::text_faint())
+                .child(format!("Ask {url} for the models it serves, then click one to add it.")),
+        )
+        .into_any_element()
 }
 
 /// The masked secret form, under the secret's row.
@@ -146,6 +308,7 @@ fn field_name(field: Field) -> &'static str {
         Field::Url => "url",
         Field::Key => "key",
         Field::Models => "models",
+        Field::Search => "search",
         Field::Secret => "secret",
     }
 }

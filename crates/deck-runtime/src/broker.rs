@@ -134,6 +134,26 @@ impl Broker {
         Ok(Fetched { value, fingerprint, first_use })
     }
 
+    /// A host-initiated read for a settings action: listing a provider's
+    /// models. The name is the saved provider's, never one a window names for
+    /// an operation, and a revoked value is refused exactly as a gateway read
+    /// is. The value stays inside `deckd`.
+    pub fn value(&self, name: &str) -> Result<String, Refusal> {
+        if !credentials::valid_name(name) {
+            return Err(Refusal::Refused);
+        }
+        let value = self.store.read(name).map_err(|absent| match absent {
+            Absent::Missing => Refusal::Missing,
+            Absent::Denied => Refusal::Unavailable(credentials::denied_message(name)),
+            Absent::Unavailable(why) => Refusal::Unavailable(why),
+        })?;
+        let fingerprint = credentials::fingerprint(&value);
+        if self.revoked.is_revoked(&fingerprint) {
+            return Err(Refusal::Revoked(fingerprint));
+        }
+        Ok(value)
+    }
+
     /// Revoke `name`'s current value: record it, then tell every gateway
     /// whose set holds the name. Fails when there is no value to revoke.
     pub fn revoke(&self, name: &str) -> Result<Revocation> {
@@ -243,6 +263,16 @@ mod tests {
 
     fn set() -> Vec<String> {
         vec!["OPENAI_API_KEY".into()]
+    }
+
+    #[test]
+    fn a_host_read_returns_the_value_and_refuses_a_revoked_one() {
+        let (broker, _) = broker("host-value");
+        assert_eq!(broker.value("OPENAI_API_KEY").unwrap(), "sk-one");
+        assert_eq!(broker.value("lower").err(), Some(Refusal::Refused));
+        assert_eq!(broker.value("MISSING_KEY").err(), Some(Refusal::Missing));
+        let revocation = broker.revoke("OPENAI_API_KEY").unwrap();
+        assert_eq!(broker.value("OPENAI_API_KEY").err(), Some(Refusal::Revoked(revocation.fingerprint)));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use super::access_panel::{button, error};
 use super::chrome::kbd;
 use super::panels::{eyebrow, glyph, icon_tile};
 use super::root::Deck;
-use super::settings::{Field, Form, Key};
+use super::settings::{Form, Key};
 use super::settings_form::{banner, confirm, provider_form, secret_form, status, tag};
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
@@ -195,10 +195,7 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .child(
                 button(("settings-provider-models", i), &format!("Models ({})", row.models), Tokens::text_dim())
                     .debug_selector(move || format!("settings-provider-models-{i}"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.edit_provider(&models, cx);
-                        this.focus_settings_field(Field::Models, cx);
-                    })),
+                    .on_click(cx.listener(move |this, _, _, cx| this.edit_models(&models, cx))),
             )
             .child(
                 button(("settings-provider-edit", i), "Edit", Tokens::text_dim())
