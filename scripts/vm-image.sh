@@ -222,13 +222,13 @@ export DECK_BOUNDARY_URL="http://127.0.0.1:${boundary_port}"
 cd /workspace || cd /
 # The guest opens the ACP stream to the host, so the connection itself is the
 # readiness signal: no listener race, no fixed delay, and the agent starts
-# while the host is still finishing the launch. Do not add socat's `stderr`
-# option: it merges the agent's diagnostics into the ACP socket. They inherit
-# the guest console instead, so the relay only ever carries protocol frames.
+# while the host is still finishing the launch. `deck-egress --acp` makes the
+# connection and then becomes the agent with that stream as stdin and stdout,
+# so no socat process sits between them. The agent's diagnostics inherit the
+# guest console, so the stream only ever carries protocol frames.
 mark "connecting port=$port"
-# The agent is the first address, so socat starts it immediately and only then
-# connects the stream; its startup overlaps the vsock handshake.
-exec /usr/bin/socat "SYSTEM:${DECK_AGENT} ${DECK_ARGS}" "VSOCK-CONNECT:2:${port}"
+exec /usr/local/bin/deck-egress --acp --vsock "2:${port}" \
+  -- /bin/sh -c "exec ${DECK_AGENT} ${DECK_ARGS}"
 GUEST
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest"
 # Test-only guest entry for crates/deck-runtime/tests/vm.rs: start the real

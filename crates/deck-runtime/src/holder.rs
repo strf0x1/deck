@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, Write as _};
-use std::os::fd::{FromRawFd as _, RawFd};
+use std::os::fd::{AsRawFd as _, FromRawFd as _, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -147,7 +147,10 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
                     wire::write(&mut socket, &stopped)?;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                crate::wait::readable(listener.as_raw_fd(), POLL)?;
+            }
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting holder control"),
         }
     }

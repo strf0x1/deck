@@ -202,7 +202,8 @@ Linux/x86_64 (same 2 vCPU / 2048 MiB, btrfs host):
 
 | | |
 |---|---|
-| Launch to ACP ready, before #30 | **0.53–0.62 s** (525, 577, 596, 618 ms); not re-measured here after #30 |
+| Launch to ACP ready, before #30 | **0.53–0.62 s** (525, 577, 596, 618 ms) |
+| Launch to ACP ready, after #30 + the ACP transport | **212–249 ms mean** over 20 consecutive starts, 224–274 ms worst (paired runs below) |
 | Prompt + permission | 40–60 ms round trip; the permission ask/answer was 20–40 ms |
 | Prompt with no ask (scripted `read`) | 20.1 ms |
 | Stop (runtime control, grace 3 s) | ≈ 3.4 s; the record lock is free within 6 ms of the group |
@@ -250,7 +251,46 @@ The #30 target (<150 ms on both arches) is therefore **not met on macOS**:
 guest boot plus Construct's first handshake alone exceeds it, and neither is
 in the readiness code. Hiding the boot needs a pre-warmed VM/snapshot
 (libkrun 1.19.7 exposes no snapshot API) or a lean libkrunfw; #30's item 3.
-Linux was not re-measured on this host after #30.
+
+### Launch path with the ACP transport (Linux/x86_64, 2026-11-11)
+
+The macOS table above was taken with socat carrying the ACP stream. The guest
+entry now execs `deck-egress --acp`: it connects the host port, then becomes
+the agent with that stream as stdin and stdout. The connection is still the
+readiness event; the agent starts immediately after it, and the ACP handshake
+proves the agent. `socat` is no longer in the ACP path.
+
+`vm_launch_to_ready_is_event_driven_twenty_times` (`--ignored`), 2 vCPU /
+2048 MiB, btrfs data root, three paired 20-launch runs (socat → transport):
+
+| pair | socat mean / worst | `deck-egress --acp` mean / worst |
+|---|---|---|
+| 1 | 227.3 / 242.5 ms | 211.9 / 223.7 ms |
+| 2 | 259.2 / 298.5 ms | 249.3 / 273.5 ms |
+| 3 | 238.1 / 285.0 ms | 219.0 / 273.8 ms |
+
+The host's boot floor moved by 30–60 ms between runs, so the paired delta
+(10–20 ms) is the reliable number. Guest console timestamps and the VMM log
+split the path as follows (transport image):
+
+| stage | Linux |
+|---|---|
+| `runtime.start` before spawn (record, clone, stage, config) | ≈3 ms |
+| spawn → first `deck-guest` console line (libkrun pre-guest + kernel + init) | ≈115–186 ms |
+| guest entry: virtiofs mount, import copy, `sync`, journal mount | ≈19 ms first boot |
+| guest entry → host accepts the ACP connection | **≈2–4 ms** (was ≈10–13 ms with socat) |
+| guest connect → `runtime.start` returns (relay + record) | ≈1–2 ms |
+| `attach` → ACP `Ready` (Construct start + initialize + session/new) | ≈53–56 ms |
+| launch → ACP ready | **≈212–249 ms mean** |
+
+The nonblocking accept loops in the relay, daemon, holder and VMM control
+socket now wait with `poll(2)` (`wait::readable`) instead of sleeping for
+10–20 ms, so an attach or control request wakes them immediately.
+
+The <150 ms target is **not met on Linux either**. The first console line is
+already ~115–186 ms into the launch and the first ACP handshake adds ~55 ms;
+neither is readiness code. A lean libkrunfw (or a pre-warmed VM, which
+libkrun 1.19.7 cannot snapshot) is required to move the floor.
 
 ## Journal placement and flush
 

@@ -9,6 +9,30 @@ use std::os::unix::net::UnixListener;
 use std::sync::mpsc as channel;
 
 #[test]
+fn a_failed_write_reconnects_even_for_a_mutation() {
+    let directory = PathBuf::from(format!("/tmp/deck-client-write-retry-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let paths = Paths { directory };
+    let _ = std::fs::remove_file(paths.control());
+    let listener = UnixListener::bind(paths.control()).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = BufReader::new(stream);
+        let line = wire::read(&mut socket).unwrap().expect("request");
+        let request: Request = serde_json::from_slice(&line).unwrap();
+        assert!(matches!(request, Request::Stop { id } if id == "t"));
+        writeln!(socket.get_mut(), "{}", json!({"ok": null})).unwrap();
+    });
+    // A control connection whose daemon has gone away: the write fails, so
+    // the request never reached a peer and a mutation may be retried.
+    let (dead, peer) = UnixStream::pair().unwrap();
+    drop(peer);
+    let client = DaemonClient { socket: Arc::new(Mutex::new(Some(BufReader::new(dead)))), paths, start: None };
+    client.stop("t").unwrap();
+    server.join().unwrap();
+}
+
+#[test]
 fn credential_reads_leave_grant_controls_available() {
     let directory = PathBuf::from(format!("/tmp/deck-client-isolated-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

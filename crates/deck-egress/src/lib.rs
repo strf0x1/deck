@@ -6,6 +6,7 @@
 //! process or open the vsock port itself; the host gateway applies the same
 //! policy either way, so bypassing the relay widens nothing.
 
+pub mod acp;
 pub mod vsock;
 
 use std::io;

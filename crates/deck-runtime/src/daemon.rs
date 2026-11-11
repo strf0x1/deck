@@ -13,6 +13,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read as _};
+use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{
@@ -138,6 +139,9 @@ pub fn serve(options: Options) -> Result<()> {
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            // A peer may connect and close before the accept; macOS reports
+            // that as ECONNABORTED. It is not a reason to end the daemon.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting daemon client"),
         }
         let running = {
@@ -149,7 +153,8 @@ pub fn serve(options: Options) -> Result<()> {
         } else if idle_since.elapsed() >= options.idle {
             break;
         }
-        std::thread::sleep(POLL);
+        // A client wakes this wait; the timeout keeps the idle check alive.
+        crate::wait::readable(listener.as_raw_fd(), POLL).context("waiting for a daemon client")?;
     }
     Ok(())
 }

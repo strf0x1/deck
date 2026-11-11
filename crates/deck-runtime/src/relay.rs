@@ -7,6 +7,7 @@ use crate::Stream;
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Write as _};
 use std::net::Shutdown;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -77,7 +78,18 @@ impl Relay {
                         }
                         let _ = serve_peer(socket, slot, &input_peer, &accept_writer);
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Wake on the peer's connection, not on a poll tick:
+                        // the window attaches immediately after start.
+                        if crate::wait::readable(listener.as_raw_fd(), POLL).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+                        ) => {}
                     Err(_) => break,
                 }
             }

@@ -4,7 +4,9 @@
 //!
 //! The design choice: no configuration file and no policy. The guest entry
 //! starts it before the agent, and a connection it cannot carry is refused
-//! rather than sent somewhere else.
+//! rather than sent somewhere else. With `--acp` the same binary is also the
+//! agent's transport: it connects out first, then becomes the agent, so the
+//! connection is readiness and the agent starts without an extra socat.
 
 use deck_egress::vsock::{self, Address, HOST_CID};
 use std::io::{self, Write as _};
@@ -17,6 +19,15 @@ const DEFAULT_PORT: u32 = 1026;
 /// The extension port's key frame: a 4-byte big-endian length, then the kind.
 const MAX_KIND: usize = 4 * 1024;
 
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    /// Carry guest loopback TCP to the host gateway.
+    Relay { listen: String, kind: Option<String> },
+    /// Connect the host ACP port and become the agent, with the stream as
+    /// stdin and stdout.
+    Acp { command: Vec<String> },
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -28,18 +39,23 @@ fn main() -> ExitCode {
 }
 
 fn run() -> io::Result<()> {
-    let (listen, address, kind) = parse(std::env::args().skip(1)).map_err(io::Error::other)?;
-    let listener = TcpListener::bind(&listen)?;
-    let named = kind.as_deref().map(|kind| format!(" kind={kind}")).unwrap_or_default();
-    println!("deck-egress: {} -> cid {} port {}{named}", listener.local_addr()?, address.cid, address.port);
-    io::stdout().flush()?;
-    deck_egress::serve(listener, move || {
-        let mut host = vsock::connect(address)?;
-        if let Some(kind) = &kind {
-            write_kind(&mut host, kind)?;
+    let (mode, address) = parse(std::env::args().skip(1)).map_err(io::Error::other)?;
+    match mode {
+        Mode::Relay { listen, kind } => {
+            let listener = TcpListener::bind(&listen)?;
+            let named = kind.as_deref().map(|kind| format!(" kind={kind}")).unwrap_or_default();
+            println!("deck-egress: {} -> cid {} port {}{named}", listener.local_addr()?, address.cid, address.port);
+            io::stdout().flush()?;
+            deck_egress::serve(listener, move || {
+                let mut host = vsock::connect(address)?;
+                if let Some(kind) = &kind {
+                    write_kind(&mut host, kind)?;
+                }
+                Ok(host)
+            })
         }
-        Ok(host)
-    })
+        Mode::Acp { command } => deck_egress::acp::exec(address, &command),
+    }
 }
 
 /// Name the gateway kind the extension port should dispatch. The host reads
@@ -53,22 +69,41 @@ fn write_kind(host: &mut UnixStream, kind: &str) -> io::Result<()> {
     host.flush()
 }
 
-fn parse(args: impl IntoIterator<Item = String>) -> Result<(String, Address, Option<String>), String> {
-    let mut listen = DEFAULT_LISTEN.to_string();
+fn parse(args: impl IntoIterator<Item = String>) -> Result<(Mode, Address), String> {
+    let mut listen = None;
     let mut address = Address { cid: HOST_CID, port: DEFAULT_PORT };
     let mut kind = None;
+    let mut acp = false;
+    let mut command = Vec::new();
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--listen" => listen = args.next().ok_or("--listen needs a value")?,
+            "--listen" => listen = Some(args.next().ok_or("--listen needs a value")?),
             "--vsock" => {
                 address = Address::parse(&args.next().ok_or("--vsock needs a value")?)?;
             }
             "--kind" => kind = Some(args.next().ok_or("--kind needs a value")?),
+            "--acp" => acp = true,
+            "--" => {
+                command.extend(args.by_ref());
+                break;
+            }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    Ok((listen, address, kind))
+    if acp {
+        if command.is_empty() {
+            return Err("--acp needs the agent command after --".into());
+        }
+        if listen.is_some() || kind.is_some() {
+            return Err("--acp takes no --listen or --kind".into());
+        }
+        return Ok((Mode::Acp { command }, address));
+    }
+    if !command.is_empty() {
+        return Err("a command after -- needs --acp".into());
+    }
+    Ok((Mode::Relay { listen: listen.unwrap_or_else(|| DEFAULT_LISTEN.into()), kind }, address))
 }
 
 #[cfg(test)]
@@ -81,16 +116,26 @@ mod tests {
 
     #[test]
     fn defaults_are_the_guest_contract() {
-        assert_eq!(parse(args(&[])).unwrap(), (DEFAULT_LISTEN.into(), Address { cid: 2, port: 1026 }, None));
+        assert_eq!(
+            parse(args(&[])).unwrap(),
+            (Mode::Relay { listen: DEFAULT_LISTEN.into(), kind: None }, Address { cid: 2, port: 1026 })
+        );
     }
 
     #[test]
     fn flags_override_the_defaults() {
-        let (listen, address, kind) =
+        let (mode, address) =
             parse(args(&["--listen", "127.0.0.1:9000", "--vsock", "2:1030", "--kind", "boundary"])).unwrap();
-        assert_eq!(listen, "127.0.0.1:9000");
+        assert_eq!(mode, Mode::Relay { listen: "127.0.0.1:9000".into(), kind: Some("boundary".into()) });
         assert_eq!(address, Address { cid: 2, port: 1030 });
-        assert_eq!(kind.as_deref(), Some("boundary"));
+    }
+
+    #[test]
+    fn acp_takes_the_stream_port_and_the_agent_command() {
+        let (mode, address) =
+            parse(args(&["--acp", "--vsock", "2:1024", "--", "/bin/sh", "-c", "exec construct acp"])).unwrap();
+        assert_eq!(mode, Mode::Acp { command: vec!["/bin/sh".into(), "-c".into(), "exec construct acp".into()] });
+        assert_eq!(address, Address { cid: 2, port: 1024 });
     }
 
     #[cfg(unix)]
@@ -114,5 +159,8 @@ mod tests {
     fn a_malformed_flag_is_refused() {
         assert!(parse(args(&["--vsock", "nope"])).is_err());
         assert!(parse(args(&["--unknown"])).is_err());
+        assert!(parse(args(&["--acp"])).is_err(), "acp needs a command");
+        assert!(parse(args(&["--acp", "--listen", "127.0.0.1:1", "--", "x"])).is_err());
+        assert!(parse(args(&["--", "x"])).is_err(), "a command needs --acp");
     }
 }
