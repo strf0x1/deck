@@ -11,7 +11,10 @@ use super::highlight;
 use super::prose;
 use super::theme::{Tokens, space, tint};
 use super::transcript;
-use gpui::{AnyElement, Div, Hsla, IntoElement, ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px};
+use gpui::{
+    AnyElement, Div, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, div,
+    prelude::FluentBuilder as _, px,
+};
 
 pub fn diff(changes: &[transcript::Change], open: bool) -> AnyElement {
     let mut cut_total = 0;
@@ -74,6 +77,24 @@ fn diff_line(row: DiffRow<'_>, numbered: bool, old: &[highlight::Line], new: &[h
         .when(numbered, |d| d.child(div().flex_none().w(px(34.)).text_color(Tokens::text_faint()).child(number)))
         .child(div().flex_none().w(px(14.)).text_color(fg).child(sign))
         .child(div().flex_1().min_w_0().when(line.kind == diff::Kind::Same, |d| d.opacity(0.7)).child(text))
+}
+
+/// An execute card's full command, above its output: the header shows a
+/// multiline command as one line, so an opened card is where it is read.
+pub fn command(text: &str, selector: String) -> AnyElement {
+    mono()
+        .flex()
+        .flex_col()
+        .px(px(space::INSET))
+        .py(px(7.))
+        .border_t_1()
+        .border_color(Tokens::edge())
+        .bg(Tokens::sunken())
+        .line_height(px(17.))
+        .text_color(Tokens::text())
+        .debug_selector(move || selector)
+        .children(text.trim_end_matches('\n').lines().map(|l| div().child(l.to_string())))
+        .into_any_element()
 }
 
 pub fn output(text: &str, open: bool) -> Option<AnyElement> {
