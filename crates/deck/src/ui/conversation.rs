@@ -75,7 +75,9 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .child(div().flex_1())
                 .children(has_task.then(|| pill(color, status))),
         )
-        .child(if deck.access.is_open() {
+        .child(if deck.settings.is_open() {
+            super::settings_panel::panel(deck, cx)
+        } else if deck.access.is_open() {
             super::access_panel::panel(deck, cx).into_any_element()
         } else if deck.open_publication().is_some() {
             super::publication_panel::panel(deck, cx).into_any_element()
@@ -96,7 +98,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
                 .children(s.ask.as_ref().map(|_| ask(deck, cx)))
                 // Access takes the keyboard, so the field it would block is not shown.
-                .children((!deck.access.is_open()).then(|| {
+                .children((!deck.access.is_open() && !deck.settings.is_open()).then(|| {
                     if deck.can_restart() {
                         restart(deck, cx)
                     } else {

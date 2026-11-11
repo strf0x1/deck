@@ -14,6 +14,9 @@ use std::time::Duration;
 impl Deck {
     pub fn toggle_access(&mut self, cx: &mut Context<Self>) {
         if self.access.toggle() {
+            if self.settings.is_open() {
+                self.settings.toggle();
+            }
             self.refresh_access(cx);
             let executor = cx.background_executor().clone();
             self.access_refresh = Some(cx.spawn(async move |this, cx| {

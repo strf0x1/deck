@@ -1,6 +1,9 @@
 //! The composer field as a GPUI element: wrapped text, selection, the IME's
 //! marked text and the caret, plus the platform input handler that feeds
-//! typed and composed text into [`Editor`](super::editor::Editor).
+//! typed and composed text into [`Editor`](super::editor::Editor). The same
+//! element draws a settings form's focused field (ADR 0012 §4), masked for a
+//! secret; only one is ever painted, so the one input handler and `Layout`
+//! always belong to the field on screen.
 //!
 //! The design choice: the element owns no state. It reads the editor from
 //! [`Deck`], shapes the text at the width layout gives it, and leaves the
@@ -90,20 +93,30 @@ pub struct Field {
     deck: Entity<Deck>,
     caret: Hsla,
     placeholder: SharedString,
+    masked: bool,
 }
 
 impl Field {
     pub fn new(deck: Entity<Deck>, caret: Hsla, placeholder: impl Into<SharedString>) -> Self {
-        Field { deck, caret, placeholder: placeholder.into() }
+        Field { deck, caret, placeholder: placeholder.into(), masked: false }
+    }
+
+    /// Draw `*` for every byte, so byte offsets (selection, caret, hit tests)
+    /// line up with what is drawn and the text itself never is.
+    pub fn masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
+        self
     }
 
     /// The text to shape and its runs: the draft (marked text underlined),
     /// or the faint placeholder when it is empty.
     fn runs(&self, window: &Window, cx: &App) -> (SharedString, Vec<TextRun>) {
         let style = window.text_style();
-        let editor = &self.deck.read(cx).editor;
+        let editor = self.deck.read(cx).input_editor();
         let (text, color): (SharedString, Hsla) = if editor.is_empty() {
             (self.placeholder.clone(), Tokens::text_faint().into())
+        } else if self.masked {
+            ("*".repeat(editor.text().len()).into(), style.color)
         } else {
             (editor.text().to_string().into(), style.color)
         };
@@ -208,7 +221,7 @@ impl Element for Field {
         let line_height = window.line_height();
         let (focus, text_len, selection, cursor, empty, old_scroll) = {
             let d = self.deck.read(cx);
-            let e = &d.editor;
+            let e = d.input_editor();
             (d.focus.clone(), e.text().len(), e.selection(), e.cursor(), e.is_empty(), d.composer.scroll)
         };
         let mut rows = Vec::with_capacity(lines.len());

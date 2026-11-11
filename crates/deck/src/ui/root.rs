@@ -48,6 +48,8 @@ pub struct Deck {
     pub(super) next_generation: u64,
     pub(super) access: Access,
     pub(super) access_refresh: Option<gpui::Task<()>>,
+    /// The settings panel and New session's model (ADR 0012 §4).
+    pub(super) settings: super::settings::SettingsPanel,
     pub(super) editor: Editor,
     /// What the composer drew last, for hit tests and up/down moves.
     pub(super) composer: composer::Layout,
@@ -138,6 +140,7 @@ impl Deck {
             next_generation: 0,
             access: Access::new(),
             access_refresh: None,
+            settings: super::settings::SettingsPanel::default(),
             editor: Editor::new(),
             composer: composer::Layout::default(),
             selecting: false,
@@ -557,6 +560,18 @@ impl Deck {
     /// key here, so typed text never reaches the field behind a card.
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
+        if self.settings.picking() && k.key == "escape" {
+            cx.stop_propagation();
+            return self.toggle_model_picker(cx);
+        }
+        // Settings take the keyboard like Access. A key the panel declines is
+        // text for its focused field, which the input handler delivers.
+        if self.settings.is_open() {
+            if self.settings_key(ev, cx) || self.settings.form().is_none() {
+                cx.stop_propagation();
+            }
+            return;
+        }
         // While Access is open, hidden prompt and approval shortcuts cannot
         // consume typing. Review returns to the existing boundary card.
         if self.access.is_open() {
@@ -695,6 +710,10 @@ impl Render for Deck {
             )
             // Last, so the open sidebar floats over the transcript.
             .child(sidebar_view::sidebar_view(self, GUTTER, cx))
+            // Over everything: New session's model menu, under its chip.
+            .children(
+                self.settings.picking().then(|| super::model_menu::model_menu(self, GUTTER + 44., GUTTER + 8., cx)),
+            )
     }
 }
 

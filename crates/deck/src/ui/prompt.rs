@@ -27,6 +27,9 @@ pub struct Workspace {
     pub backend: String,
     pub branch: Option<String>,
     pub tokens: u64,
+    /// The task's pinned `provider/model` (ADR 0012 §2); `None` for a local
+    /// task, whose provider is Construct's own config.
+    pub model: Option<String>,
 }
 
 impl Workspace {
@@ -36,6 +39,13 @@ impl Workspace {
             backend: task.backend.clone(),
             branch: branch(&task.spec.cwd),
             tokens: task.usage.tokens,
+            model: match &task.spec.model {
+                Some(deck_runtime::settings::Pick::Choice(choice)) => {
+                    Some(format!("{}/{}", choice.provider.name, choice.model))
+                }
+                Some(deck_runtime::settings::Pick::Selector(selector)) => Some(selector.clone()),
+                None => None,
+            },
         }
     }
 }
@@ -198,6 +208,13 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .text_color(Tokens::text_dim())
         .child(item(icon::AGENTS, Tokens::cyan(), agent, false))
         .children(w.map(backend))
+        .children(w.map(|w| match &w.model {
+            Some(model) => item(icon::BOLT, Tokens::cyan(), model.clone(), true),
+            None if w.backend == "local" => {
+                item(icon::BOLT, Tokens::text_faint().into(), "construct config".into(), false)
+            }
+            None => item(icon::BOLT, Tokens::text_faint().into(), "deckd default".into(), false),
+        }))
         .children(w.map(|w| item(icon::PROJECT, Tokens::sky(), tilde(&w.cwd), true)))
         .children(
             w.is_none()

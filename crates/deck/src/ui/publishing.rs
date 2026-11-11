@@ -180,6 +180,9 @@ impl Deck {
         if self.publication_open.is_some() && self.access.is_open() {
             self.toggle_access(cx);
         }
+        if self.publication_open.is_some() && self.settings.is_open() {
+            self.settings.toggle();
+        }
         cx.notify();
     }
 

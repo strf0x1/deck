@@ -6,7 +6,9 @@ approval reuse and credential-prompt amendment is accepted 2026-11-05;
 implementation has started (§11 item 10). Answers #9; the input is
 `SANDBOX-DESIGN.md`, ADR 0001 and the #16 spike. #8 owns publication
 operations; #12 compares runtimes. Its extension names are superseded in
-part by ADR 0005.
+part by ADR 0005. ADR 0012 amends §3 (one upstream per daemon becomes one
+provider per task, from settings) and §4.2 (a value can be entered in the
+window).
 
 ## Context
 

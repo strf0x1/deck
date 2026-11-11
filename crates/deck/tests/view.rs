@@ -803,7 +803,7 @@ fn the_rail_lists_projects_and_open_project(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("sidebar-project-2").is_none(), "and nothing else");
     assert!(cx.debug_bounds("sidebar-open").is_some(), "Open project… sits at its foot");
     assert!(cx.debug_bounds("sidebar-pin").is_some(), "the pin sits at its foot");
-    assert!(cx.debug_bounds("sidebar-settings").is_none(), "the sidebar has no Settings item");
+    assert!(cx.debug_bounds("sidebar-settings").is_some(), "Settings sits at its foot (ADR 0012 §4)");
     assert!(cx.debug_bounds("sidebar-projects-header").is_some(), "the Projects label separates the sections");
     assert!(cx.debug_bounds("sidebar-project-chevron-0").is_some(), "a project group has a chevron");
     // Clicking another project's header still selects it.
@@ -2465,4 +2465,191 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     }
     drop(daemon);
     cleanup_daemon(&data);
+}
+
+fn settings_snapshot() -> deck_runtime::settings::file::Snapshot {
+    use deck_runtime::settings::{Provider, Settings};
+    deck_runtime::settings::file::Snapshot {
+        revision: 1,
+        stored: true,
+        settings: Settings {
+            default: "openrouter/openrouter/free".into(),
+            providers: vec![Provider {
+                name: "openrouter".into(),
+                url: "https://openrouter.ai/api/v1".into(),
+                secret: Some("OPENROUTER_API_KEY".into()),
+                models: vec!["openrouter/free".into(), "anthropic/claude-sonnet-5-5".into()],
+            }],
+        },
+        overrides: Vec::new(),
+    }
+}
+
+#[gpui::test]
+fn settings_forms_take_typing_by_real_keys_and_a_secret_never_reaches_the_composer(cx: &mut TestAppContext) {
+    use deck::ui::settings::{Field, Form};
+    let (deck, mut cx) = open(cx);
+    click_control(&mut cx, "sidebar-settings");
+    assert!(deck.read_with(&cx, |d, _| d.settings().is_open()));
+    // A headless deck has no daemon, so nothing was requested: the reply is
+    // applied by hand at the current ticket, and a later ticket is stale.
+    deck.update(&mut cx, |d, cx| d.on_settings(7, Ok(settings_snapshot()), cx));
+    assert!(deck.read_with(&cx, |d, _| d.settings().snapshot().is_none()), "a reply to no request is dropped");
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("settings-provider-0").is_some());
+
+    click_control(&mut cx, "settings-add-provider");
+    cx.simulate_keystrokes("l o c a l tab");
+    cx.simulate_input("http://10.0.0.5:8000/v1");
+    cx.simulate_keystrokes("tab tab");
+    cx.simulate_input("qwen3-32b");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("qwen3-8b");
+    deck.read_with(&cx, |d, _| {
+        let Some(Form::Provider { name, url, models, .. }) = d.settings().form() else { panic!("no provider form") };
+        assert_eq!(
+            (name.text(), url.text(), models.text()),
+            ("local", "http://10.0.0.5:8000/v1", "qwen3-32b\nqwen3-8b")
+        );
+        assert_eq!(d.settings().focused(), Some(Field::Models));
+        assert_eq!(d.draft(), "", "nothing typed into the panel reaches the composer");
+    });
+    // Saving with no daemon is refused with a reason, and the form stays.
+    cx.simulate_keystrokes("ctrl-enter");
+    deck.read_with(&cx, |d, _| {
+        assert!(d.settings().error().is_some_and(|e| e.contains("no daemon")), "{:?}", d.settings().error());
+        assert!(d.settings().form().is_some() && !d.settings().busy());
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(deck.read_with(&cx, |d, _| d.settings().form().is_none() && d.settings().is_open()));
+
+    // The secret field is masked, and its value leaves on submit.
+    click_control(&mut cx, "settings-secret-set-0");
+    cx.simulate_input("sk-typed-in-the-window");
+    cx.run_until_parked();
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.settings().focused(), Some(Field::Secret));
+        assert_eq!(d.draft(), "");
+    });
+    cx.simulate_keystrokes("enter");
+    deck.read_with(&cx, |d, _| {
+        let Some(Form::Secret { value, .. }) = d.settings().form() else { panic!("the form stays for a retry") };
+        assert_eq!(value.text(), "", "the value left the field when it was submitted");
+        assert!(!d.settings().error().unwrap_or_default().contains("sk-typed"));
+    });
+    cx.simulate_keystrokes("escape escape");
+    assert!(deck.read_with(&cx, |d, _| !d.settings().is_open()));
+}
+
+#[gpui::test]
+fn the_model_menu_picks_what_new_session_starts_on(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    // No chip until settings arrive; a headless deck applies them by hand.
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("hdr-model").is_none());
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    click_control(&mut cx, "hdr-model");
+    assert!(cx.debug_bounds("hdr-model-menu").is_some());
+    click_control(&mut cx, "hdr-model-1");
+    deck.read_with(&cx, |d, _| {
+        assert!(!d.settings().picking());
+        assert_eq!(d.settings().session_model().as_deref(), Some("openrouter/anthropic/claude-sonnet-5-5"));
+        assert_eq!(d.settings().session_selector().as_deref(), Some("openrouter/anthropic/claude-sonnet-5-5"));
+    });
+    click_control(&mut cx, "hdr-model");
+    cx.simulate_keystrokes("escape");
+    assert!(deck.read_with(&cx, |d, _| !d.settings().picking()));
+}
+
+#[gpui::test]
+fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let store = data.join("credentials.json");
+    std::fs::write(&store, "{}").unwrap();
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // The daemon gets its own file store: never the developer's keyring.
+    let exe = std::env::current_exe().unwrap();
+    let mut deckd = std::process::Command::new(exe.parent().unwrap().parent().unwrap().join("deckd"))
+        .arg("--data")
+        .arg(&data)
+        .env("DECK_CREDENTIALS", &store)
+        .env_remove("CONSTRUCT_BASE_URL")
+        .env_remove("CONSTRUCT_MODEL")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let daemon = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(daemon) = deck_runtime::DaemonClient::connect(&data) {
+                break daemon;
+            }
+            assert!(std::time::Instant::now() < deadline, "deckd did not start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|cx| Deck::launch_in(&data, vec!["sleep".into(), "30".into()], data.clone(), cx))
+        })
+        .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+
+    click_control(&mut vcx, "sidebar-settings");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.settings().snapshot().is_some() && d.settings().store().is_some())
+    });
+    assert_eq!(deck.read_with(&vcx, |d, _| d.settings().provider_rows()[0].name.clone()), "default");
+
+    click_control(&mut vcx, "settings-add-provider");
+    vcx.simulate_input("local");
+    vcx.simulate_keystrokes("tab");
+    vcx.simulate_input("http://127.0.0.1:8000/v1");
+    vcx.simulate_keystrokes("tab tab");
+    vcx.simulate_input("qwen3-32b");
+    click_control(&mut vcx, "settings-save");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.settings().busy() && d.settings().form().is_none()));
+    let saved = daemon.settings().unwrap();
+    assert_eq!((saved.revision, saved.stored), (1, true));
+    let local = saved.settings.provider("local").unwrap();
+    assert_eq!(local.secret.as_deref(), Some("LOCAL_API_KEY"), "an empty key field names the provider's key");
+
+    // Its key is not set yet: amber in the panel, then set through the masked field.
+    let row = deck.read_with(&vcx, |d, _| d.settings().secret_rows().iter().position(|r| r.name == "LOCAL_API_KEY"));
+    let selector: &'static str = Box::leak(format!("settings-secret-set-{}", row.unwrap()).into_boxed_str());
+    click_control(&mut vcx, selector);
+    vcx.simulate_input("sk-local-0123456789");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.settings()
+                .provider_rows()
+                .iter()
+                .any(|r| r.name == "local" && matches!(r.key, deck::ui::settings::Key::Set(_)))
+        })
+    });
+    assert!(std::fs::read_to_string(&store).unwrap().contains("sk-local-0123456789"));
+    let notice = deck.read_with(&vcx, |d, _| d.settings().notice().unwrap_or_default().to_string());
+    assert!(notice.contains("LOCAL_API_KEY") && !notice.contains("sk-local"), "{notice}");
+
+    // Make it the default by a click.
+    let index = deck.read_with(&vcx, |d, _| d.settings().choices().iter().position(|c| c == "local/qwen3-32b"));
+    let selector: &'static str = Box::leak(format!("settings-default-{}", index.unwrap()).into_boxed_str());
+    click_control(&mut vcx, selector);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.settings().busy()));
+    assert_eq!(daemon.settings().unwrap().settings.default, "local/qwen3-32b");
+
+    drop(daemon);
+    let _ = deckd.kill();
+    let _ = deckd.wait();
+    let _ = std::fs::remove_dir_all(&data);
 }

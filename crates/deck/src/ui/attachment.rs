@@ -56,6 +56,7 @@ impl Deck {
             }
         };
         deck.daemon = Some(daemon.clone());
+        deck.load_settings(cx);
         deck.launch_project(&daemon, &argv, cwd, cx);
         deck.follow_tasks(cx);
         deck._quit = Some(cx.on_app_quit(|deck, _| {
@@ -132,7 +133,8 @@ impl Deck {
             cwd: checkout,
             project: Some(project.id.clone()),
             github: None,
-            model: None,
+            // New session's pick (ADR 0012 §4); none means deckd's default.
+            model: self.settings.session_selector().map(deck_runtime::settings::Pick::Selector),
         })
     }
 
