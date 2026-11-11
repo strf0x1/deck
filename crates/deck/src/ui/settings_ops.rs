@@ -115,7 +115,7 @@ impl Deck {
     }
 
     fn read_models(&mut self, refresh: bool, cx: &mut Context<Self>) {
-        let Some((provider, ticket)) = self.settings.begin_models() else { return };
+        let Some((provider, ticket)) = self.settings.begin_models() else { return cx.notify() };
         cx.notify();
         let Some(daemon) = self.daemon.clone() else {
             self.settings.models_listed(ticket, Err("no daemon to ask for a model list".into()));
