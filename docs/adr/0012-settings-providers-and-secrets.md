@@ -159,8 +159,11 @@ This replaces 0004 §4.2's "Entering a value in the UI is deferred."
 
 A gear button in a new footer row at the bottom of the sidebar opens it
 (and its narrow glyph column). It takes the conversation
-pane's body while open, like the access panel, and escape closes it. It has
-three sections:
+pane's body while open, like the access panel, and escape closes it. The
+panel's header carries a visible Close button. A first install (no settings
+file) shows a setup card that opens the same add-provider form; every
+section has an empty state, and each provider row has Models, which opens
+its model list directly. It has three sections:
 
 - **Providers.** One row each: name, url, key status (`set` with
   fingerprint, `not set`, `none` for keyless), model count, and the

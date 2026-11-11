@@ -2613,6 +2613,84 @@ fn settings_forms_take_typing_by_real_keys_and_a_secret_never_reaches_the_compos
 }
 
 #[gpui::test]
+fn the_settings_close_button_dismisses_the_panel_and_drops_its_form(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    click_control(&mut cx, "sidebar-settings");
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("settings-close").is_some(), "the pane carries a visible close button");
+
+    click_control(&mut cx, "settings-add-provider");
+    cx.simulate_input("local");
+    deck.read_with(&cx, |d, _| assert!(d.settings().form().is_some()));
+
+    click_control(&mut cx, "settings-close");
+    deck.read_with(&cx, |d, _| {
+        assert!(!d.settings().is_open());
+        assert!(d.settings().form().is_none(), "closing drops the form and whatever was typed into it");
+    });
+    assert!(cx.debug_bounds("settings-panel").is_none());
+}
+
+#[gpui::test]
+fn a_fresh_settings_pane_guides_setup_and_the_model_flow(cx: &mut TestAppContext) {
+    use deck::ui::settings::{Field, Form};
+    let (deck, mut cx) = open(cx);
+    click_control(&mut cx, "sidebar-settings");
+    // A first install: deckd's built-in provider, nothing saved yet.
+    let mut snapshot = settings_snapshot();
+    snapshot.stored = false;
+    snapshot.settings.providers[0].name = "default".into();
+    snapshot.settings.providers[0].secret = Some("DEFAULT_API_KEY".into());
+    snapshot.settings.default = "default/openrouter/free".into();
+    snapshot.settings.providers[0].models = vec!["openrouter/free".into()];
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(snapshot), cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("settings-first-run").is_some(), "a first run says where to begin");
+    assert!(cx.debug_bounds("settings-default-0").is_some(), "the built-in model is the default");
+    assert!(cx.debug_bounds("settings-next-model").is_some(), "the pane says what the next session starts on");
+
+    // The first-run button opens the same provider form as the section.
+    click_control(&mut cx, "settings-first-run-add");
+    deck.read_with(&cx, |d, _| {
+        let Some(Form::Provider { editing, .. }) = d.settings().form() else { panic!("no provider form") };
+        assert_eq!((editing.as_deref(), d.settings().focused()), (None, Some(Field::Name)));
+    });
+    cx.simulate_keystrokes("escape");
+
+    // A provider row opens its model list directly, without hunting in Edit.
+    click_control(&mut cx, "settings-provider-models-0");
+    deck.read_with(&cx, |d, _| {
+        let Some(Form::Provider { editing, .. }) = d.settings().form() else { panic!("no provider form") };
+        assert_eq!((editing.as_deref(), d.settings().focused()), (Some("default"), Some(Field::Models)));
+    });
+    deck.update(&mut cx, |d, cx| d.settings_cancel(cx));
+
+    // Picking a default chip is the model-selection flow, and the pane
+    // confirms what the next New session will start on.
+    click_control(&mut cx, "settings-default-0");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.settings().settings().unwrap().default, "default/openrouter/free");
+        assert!(d.settings().error().is_some_and(|e| e.contains("no daemon")), "the save went to deckd");
+    });
+}
+
+#[gpui::test]
+fn an_empty_settings_pane_says_what_is_missing(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    click_control(&mut cx, "sidebar-settings");
+    let mut snapshot = settings_snapshot();
+    snapshot.settings.providers.clear();
+    snapshot.settings.default.clear();
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(snapshot), cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("settings-providers-empty").is_some(), "no provider rows, with a next step");
+    assert!(cx.debug_bounds("settings-default-empty").is_some(), "no models to pick");
+    assert!(cx.debug_bounds("settings-secrets-empty").is_some(), "no keys to name");
+    assert!(cx.debug_bounds("settings-default-0").is_none());
+}
+
+#[gpui::test]
 fn the_model_menu_picks_what_new_session_starts_on(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
     // No chip until settings arrive; a headless deck applies them by hand.
