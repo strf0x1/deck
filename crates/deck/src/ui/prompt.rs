@@ -116,8 +116,9 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .debug_selector(|| "composer".into())
         .flex_1()
         .min_w_0()
+        .text_size(size::scaled(size::BODY))
         .py(px(15.))
-        .line_height(px(21.))
+        .line_height(size::scaled(21.))
         .cursor_text()
         .on_mouse_down(
             MouseButton::Left,
@@ -195,7 +196,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
     let project_dir = deck.project_checkout();
     let enter = if deck.editor.text().contains('\n') { "enter send · shift-enter newline" } else { "enter send" };
     div()
-        .h(px(30.))
+        .min_h(px(30.))
         .px(px(16.))
         .flex()
         .items_center()
@@ -204,7 +205,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .border_color(Tokens::edge())
         .bg(Tokens::raised())
         .font_family(MONO)
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
         .child(item(icon::AGENTS, Tokens::cyan(), agent, false))
         .children(w.map(backend))

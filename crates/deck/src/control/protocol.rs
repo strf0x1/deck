@@ -36,6 +36,10 @@ pub enum Command {
     Keys(Vec<Press>),
     Click(Point),
     Move(Point),
+    Scroll {
+        at: Point,
+        delta: Point,
+    },
     Drag {
         from: Point,
         to: Point,
@@ -79,6 +83,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "key" => Command::Keys(vec![key(&v)?]),
         "click" => Command::Click(point(&v)?),
         "move" => Command::Move(point(&v)?),
+        "scroll" => Command::Scroll { at: point(&v)?, delta: point(v.get("delta").ok_or("missing \"delta\"")?)? },
         "drag" => {
             let from = point(v.get("from").ok_or("missing \"from\"")?)?;
             let to = point(v.get("to").ok_or("missing \"to\"")?)?;
@@ -198,6 +203,11 @@ mod tests {
             parse(r#"{"cmd":"drag","from":{"x":1,"y":2},"to":{"x":3,"y":4}}"#),
             Ok(Command::Drag { from: Point { x: 1., y: 2. }, to: Point { x: 3., y: 4. }, steps: 12 })
         );
+        assert_eq!(
+            parse(r#"{"cmd":"scroll","x":400,"y":300,"delta":{"x":0,"y":-240}}"#),
+            Ok(Command::Scroll { at: Point { x: 400., y: 300. }, delta: Point { x: 0., y: -240. } })
+        );
+        assert!(parse(r#"{"cmd":"scroll","x":400,"y":300}"#).is_err());
     }
 
     #[test]

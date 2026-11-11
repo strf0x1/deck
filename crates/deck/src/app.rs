@@ -47,6 +47,9 @@ pub fn bind(cx: &mut App) {
 pub fn run(argv: Vec<String>, cwd: PathBuf) {
     application().run(move |cx: &mut App| {
         bind(cx);
+        if let Err(e) = crate::ui::fonts::load(cx) {
+            eprintln!("deck: loading bundled fonts: {e:#}");
+        }
         let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

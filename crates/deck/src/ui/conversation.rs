@@ -56,7 +56,8 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         )
         .child(
             div()
-                .h(px(54.))
+                .min_h(px(54.))
+                .flex_none()
                 .px(px(18.))
                 .flex()
                 .items_center()
@@ -67,11 +68,11 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .child(
                     div()
                         .debug_selector(move || title_selector.into())
-                        .text_size(px(size::TITLE))
+                        .text_size(size::scaled(size::TITLE))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(title),
                 )
-                .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_faint()).child(subtitle))
+                .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_faint()).child(subtitle))
                 .child(div().flex_1())
                 .children(has_task.then(|| pill(color, status))),
         )
@@ -136,12 +137,12 @@ fn empty(cx: &mut Context<Deck>) -> AnyElement {
                 .text_color(Tokens::accent())
                 .child(glyph(icon::CUBE, 26.)),
         )
-        .child(div().text_size(px(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("No project open"))
+        .child(div().text_size(size::scaled(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("No project open"))
         .child(
             div()
                 .max_w(px(420.))
                 .text_center()
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .text_color(Tokens::text_dim())
                 .child("Open a checkout to start a task in its project."),
         )
@@ -219,7 +220,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .border_color(Tokens::edge())
                 .bg(Tokens::sunken())
                 .font_family(MONO)
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .child(format!("{} · {}", item.gateway, item.destination))
                 .children(item.credential.as_ref().map(|credential| {
                     div().text_color(Tokens::text_faint()).child(format!("credential {credential}"))
@@ -232,26 +233,25 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex_col()
                 .gap(px(space::HAIR))
                 .child(
-                    div().text_size(px(size::MICRO)).text_color(Tokens::text_faint()).child("the agent's description"),
+                    div()
+                        .text_size(size::scaled(size::MICRO))
+                        .text_color(Tokens::text_faint())
+                        .child("the agent's description"),
                 )
-                .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(format!(
+                .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(format!(
                     "{} · {} commit{}",
                     summary.subject,
                     summary.count,
                     if summary.count == 1 { "" } else { "s" }
                 )))
         }))
-        .children(
-            (!detail.trim().is_empty()).then(|| {
-                div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).font_family(MONO).child(detail)
-            }),
-        )
-        .children(
-            item.reason
-                .as_ref()
-                .map(|reason| div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(reason.clone())),
-        )
-        .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(if item.waiters > 0 {
+        .children((!detail.trim().is_empty()).then(|| {
+            div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).font_family(MONO).child(detail)
+        }))
+        .children(item.reason.as_ref().map(|reason| {
+            div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(reason.clone())
+        }))
+        .child(div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(if item.waiters > 0 {
             "the agent is waiting for this decision"
         } else {
             "the agent has moved on"
@@ -303,7 +303,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .border_color(Tokens::edge())
                 .bg(Tokens::sunken())
                 .font_family(MONO)
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .child(ask.title.clone()),
         )
         .child(div().flex().gap(px(space::LINE)).children(buttons))
@@ -380,7 +380,7 @@ fn option(id: impl Into<gpui::ElementId>, name: &str, index: usize, weight: Weig
     };
     div()
         .id(id.into())
-        .h(px(30.))
+        .min_h(px(30.))
         .px(px(space::INSET))
         .flex()
         .items_center()
@@ -390,10 +390,12 @@ fn option(id: impl Into<gpui::ElementId>, name: &str, index: usize, weight: Weig
         .border_color(edge)
         .bg(bg)
         .text_color(fg)
-        .text_size(px(size::LABEL))
+        .text_size(size::scaled(size::LABEL))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
         .hover(move |style| style.bg(hover))
         .child(name.to_string())
-        .child(div().font_family(MONO).text_size(px(size::MICRO)).opacity(0.6).child(format!("{}", index + 1)))
+        .child(
+            div().font_family(MONO).text_size(size::scaled(size::MICRO)).opacity(0.6).child(format!("{}", index + 1)),
+        )
 }

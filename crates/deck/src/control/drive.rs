@@ -95,7 +95,31 @@ async fn execute(cmd: Command, deck: WindowHandle<Deck>, cx: &mut AsyncApp) -> a
             }
             Ok(json!({ "settled": true }))
         }
-        Command::State => deck.read_with(cx, |d, _| state(d)),
+        Command::Scroll { at, delta } => {
+            dispatch(
+                window,
+                cx,
+                PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                    position: point(px(at.x), px(at.y)),
+                    delta: gpui::ScrollDelta::Pixels(point(px(delta.x), px(delta.y))),
+                    modifiers: Modifiers::none(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                }),
+            )?;
+            Ok(json!({}))
+        }
+        Command::State => deck.read_with(cx, |d, cx| {
+            let mut snapshot = state(d);
+            let fonts = crate::ui::typography::CodeFont::ALL
+                .into_iter()
+                .map(|face| {
+                    let report = crate::ui::fonts::resolve(face.family(), cx);
+                    json!({ "requested": report.requested, "resolved": report.resolved })
+                })
+                .collect::<Vec<_>>();
+            snapshot["typography"]["resolution"] = json!(fonts);
+            snapshot
+        }),
         Command::Geometry => cx.update_window(window, |_, window, _| {
             let b = window.bounds();
             let v = window.viewport_size();
@@ -263,6 +287,14 @@ pub fn state(d: &Deck) -> Value {
             "waiting": item.waiters > 0,
         })),
         "draft": d.draft(),
+        "typography": {
+            "open": d.appearance_open(),
+            "percent": d.typography().percent(),
+            "interface": d.typography().interface.family(),
+            "output": d.typography().code.family(),
+            "values": d.typography().code.value_family(),
+            "icons": crate::ui::theme::ICONS,
+        },
         "access": {
             "open": d.access().is_open(),
             "grants": d.access().grants().iter().map(|grant| json!({

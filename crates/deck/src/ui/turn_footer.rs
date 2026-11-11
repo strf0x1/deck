@@ -18,13 +18,13 @@ use std::ops::Range;
 pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyElement {
     let files = touched(&deck.session().entries[turn.clone()]);
     let (added, removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-    let count = |text: String| div().flex_none().font_family(MONO).text_size(px(size::SMALL)).child(text);
+    let count = |text: String| div().flex_none().font_family(MONO).text_size(size::scaled(size::SMALL)).child(text);
     div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(px(space::TIGHT))
-        .text_size(px(size::LABEL))
+        .text_size(size::scaled(size::LABEL))
         .text_color(Tokens::text_faint())
         .child(glyph(icon::EDIT, 10.).text_color(tint(Tokens::violet(), 0.8)))
         .child(format!("{} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" }))
@@ -52,7 +52,7 @@ pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyEle
                 .hover(|s| s.bg(Tokens::raised_hover()).border_color(tint(Tokens::violet(), 0.5)))
                 .cursor_pointer()
                 .font_family(MONO)
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .on_click(cx.listener(move |this, _, _, cx| this.reveal(entry, cx)))
                 .child(div().text_color(Tokens::text_dim()).child(file_name(&f.path).to_string()))
                 .child(div().text_color(Tokens::lime()).child(format!("+{}", f.added)))

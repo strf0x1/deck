@@ -44,7 +44,7 @@ pub fn state_mark(s: LaneState, size: f32) -> Div {
 
 /// A Nerd Font icon at `size` pixels.
 pub fn glyph(g: &'static str, size: f32) -> Div {
-    div().font_family(MONO).text_size(px(size)).line_height(px(size + 2.)).child(g)
+    div().font_family(super::theme::ICONS).text_size(px(size)).line_height(px(size + 2.)).child(g)
 }
 
 /// An icon on a square wash of its own colour: what kind of thing a row is.
@@ -65,7 +65,7 @@ pub fn icon_tile(g: &'static str, color: Hsla, side: f32) -> Div {
 pub fn pill(color: Hsla, label: impl Into<String>) -> Div {
     div()
         .flex_none()
-        .h(px(24.))
+        .min_h(px(24.))
         .px(px(10.))
         .flex()
         .items_center()
@@ -74,7 +74,7 @@ pub fn pill(color: Hsla, label: impl Into<String>) -> Div {
         .border_1()
         .border_color(tint(color, 0.28))
         .bg(tint(color, 0.1))
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
         .child(div().size(px(6.)).rounded_full().bg(color).shadow(glow(color, 0.8)))
@@ -84,7 +84,7 @@ pub fn pill(color: Hsla, label: impl Into<String>) -> Div {
 /// The one loud button in a region: the user's own colour, lit.
 pub fn primary() -> Div {
     div()
-        .h(px(32.))
+        .min_h(px(32.))
         .px(px(space::PAD))
         .flex()
         .items_center()
@@ -93,7 +93,7 @@ pub fn primary() -> Div {
         .bg(Tokens::sweep(1.))
         .shadow(glow(Tokens::accent(), 0.7))
         .text_color(Tokens::ink())
-        .text_size(px(size::BODY))
+        .text_size(size::scaled(size::BODY))
         .font_weight(FontWeight::SEMIBOLD)
 }
 
@@ -101,7 +101,7 @@ pub fn primary() -> Div {
 pub fn eyebrow(label: &str) -> Div {
     div()
         .font_family(MONO)
-        .text_size(px(size::MICRO))
+        .text_size(size::scaled(size::MICRO))
         .font_weight(FontWeight::MEDIUM)
         .text_color(Tokens::text_faint())
         .child(label.to_uppercase())

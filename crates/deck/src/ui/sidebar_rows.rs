@@ -96,16 +96,16 @@ fn need_row(
                 .flex_none()
                 .max_w(px(104.))
                 .truncate()
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::text_faint())
                 .child(project_name.to_string()),
         )
-        .child(div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child("›"))
-        .child(div().flex_1().min_w_0().truncate().text_size(px(size::BODY)).child(title.to_string()))
+        .child(div().flex_none().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child("›"))
+        .child(div().flex_1().min_w_0().truncate().text_size(size::scaled(size::BODY)).child(title.to_string()))
         .child(
             div()
                 .flex_none()
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(Tokens::amber())
                 .child(word),
@@ -124,7 +124,7 @@ fn nothing() -> AnyElement {
         .px(px(space::TIGHT))
         .flex()
         .items_center()
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_faint())
         .child("Nothing needs you")
         .into_any_element()
@@ -206,7 +206,7 @@ fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement
                 .rounded_full()
                 .bg(Tokens::raised())
                 .font_family(super::theme::MONO)
-                .text_size(px(size::MICRO))
+                .text_size(size::scaled(size::MICRO))
                 .text_color(Tokens::text_dim())
                 .child(tasks.to_string()),
         );
@@ -228,7 +228,7 @@ impl gpui::Render for Tooltip {
             .border_1()
             .border_color(Tokens::edge_strong())
             .bg(Tokens::float())
-            .text_size(px(size::SMALL))
+            .text_size(size::scaled(size::SMALL))
             .text_color(Tokens::text())
             .child(self.text.clone())
     }

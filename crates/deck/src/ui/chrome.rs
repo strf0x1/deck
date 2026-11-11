@@ -8,7 +8,7 @@
 use super::header_title::HeaderTitle;
 use super::panels::{glyph, primary, state_color};
 use super::root::Deck;
-use super::theme::{MONO, SANS, Tokens, icon, radius, size, space, tint};
+use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, Div, Font, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
     StatefulInteractiveElement as _, Styled as _, TextRun, Window, div, prelude::FluentBuilder as _, px,
@@ -23,7 +23,8 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
     let live = deck.board.cards().iter().find(|c| c.lane.id == live_lane).map(|c| c.lane.state);
     let dot = live.map_or(Tokens::text_faint().into(), state_color);
     div()
-        .h(px(40.))
+        .min_h(px(40.))
+        .flex_none()
         .flex()
         .items_center()
         .gap(px(space::STACK))
@@ -31,7 +32,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
         .child(div().flex_1())
         .child(
             div()
-                .h(px(30.))
+                .min_h(px(30.))
                 .pl(px(space::DETAIL))
                 .pr(px(space::INSET))
                 .flex()
@@ -53,12 +54,14 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                         .text_color(dot)
                         .child(glyph(icon::AGENTS, 10.)),
                 )
-                .child(div().font_family(MONO).text_size(px(size::SMALL)).child(agent_label(&deck.agent_cmd))),
+                .child(
+                    div().font_family(MONO).text_size(size::scaled(size::SMALL)).child(agent_label(&deck.agent_cmd)),
+                ),
         )
         .children(deck.publication_of(live_lane).map(|view| {
             super::publication_panel::chip(view.dot, &format!("{} · {}", view.label, view.dot.label()))
                 .max_w(px(240.))
-                .h(px(30.))
+                .min_h(px(30.))
                 .px(px(11.))
                 .id("hdr-publication")
                 .debug_selector(|| "hdr-publication".into())
@@ -90,7 +93,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
         .children(deck.can_stop().then(|| {
             div()
                 .id("hdr-stop")
-                .h(px(32.))
+                .min_h(px(32.))
                 .px(px(space::INSET))
                 .flex()
                 .items_center()
@@ -98,7 +101,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .rounded(px(radius::CONTROL))
                 .border_1()
                 .border_color(Tokens::edge())
-                .text_size(px(size::BODY))
+                .text_size(size::scaled(size::BODY))
                 .text_color(Tokens::text_dim())
                 .debug_selector(|| "hdr-stop".into())
                 .cursor_pointer()
@@ -115,7 +118,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .id("hdr-model")
                 .debug_selector(|| "hdr-model".into())
                 .max_w(px(240.))
-                .h(px(32.))
+                .min_h(px(32.))
                 .px(px(space::INSET))
                 .flex()
                 .items_center()
@@ -124,7 +127,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .border_1()
                 .border_color(Tokens::edge())
                 .when(deck.settings().picking(), |d| d.border_color(tint(Tokens::cyan(), 0.5)))
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .font_family(super::theme::MONO)
                 .text_color(Tokens::text_dim())
                 .cursor_pointer()
@@ -150,7 +153,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
 fn notice_chip(g: &'static str, color: Hsla, text: String, max: f32) -> Div {
     div()
         .max_w(px(max))
-        .h(px(30.))
+        .min_h(px(30.))
         .px(px(11.))
         .flex()
         .items_center()
@@ -160,7 +163,7 @@ fn notice_chip(g: &'static str, color: Hsla, text: String, max: f32) -> Div {
         .border_1()
         .border_color(tint(color, 0.3))
         .bg(tint(color, 0.08))
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .text_color(color)
         .child(glyph(g, 10.))
         .child(div().min_w_0().truncate().child(text))
@@ -171,14 +174,14 @@ fn notice_chip(g: &'static str, color: Hsla, text: String, max: f32) -> Div {
 fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<AnyElement> {
     let HeaderTitle { title, project, detail } = deck.header_title();
     if let Some(title) = title {
-        let width = title_width(&title, window);
+        let width = title_width(&title, deck.typography.interface.family(), window);
         let chip = project.map(|project| {
             let hue = Tokens::hue(&project);
             div()
                 .id("hdr-project")
                 .debug_selector(|| "hdr-project".into())
                 .flex_none()
-                .h(px(18.))
+                .min_h(px(18.))
                 .px(px(space::TIGHT))
                 .flex()
                 .items_center()
@@ -186,7 +189,7 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                 .border_1()
                 .border_color(tint(hue, 0.3))
                 .bg(tint(hue, 0.08))
-                .text_size(px(size::MICRO))
+                .text_size(size::scaled(size::MICRO))
                 .text_color(tint(hue, 0.85))
                 .cursor_pointer()
                 .hover(move |style| style.text_color(hue).bg(tint(hue, 0.16)))
@@ -215,8 +218,8 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                                 .min_w_0()
                                 .truncate()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(size::TITLE))
-                                .line_height(px(17.))
+                                .text_size(size::scaled(size::TITLE))
+                                .line_height(size::scaled(17.))
                                 .child(title),
                         )
                         .children(chip),
@@ -226,8 +229,8 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                         .debug_selector(|| "hdr-detail".into())
                         .min_w_0()
                         .truncate()
-                        .line_height(px(14.))
-                        .text_size(px(size::SMALL))
+                        .line_height(size::scaled(14.))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child(detail)
                 }))
@@ -237,13 +240,13 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
     project.map(|project| {
         div()
             .debug_selector(|| "hdr-title".into())
-            .w(title_width(&project, window))
+            .w(title_width(&project, deck.typography.interface.family(), window))
             .flex_shrink()
             .min_w_0()
             .truncate()
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(px(size::TITLE))
-            .line_height(px(17.))
+            .text_size(size::scaled(size::TITLE))
+            .line_height(size::scaled(17.))
             .child(project)
             .into_any_element()
     })
@@ -252,10 +255,13 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
 /// The width the header title needs, capped at [`TITLE_MAX`]. A truncating
 /// text measures as its ellipsis inside a flex row, so the title's own width
 /// is measured here and the project chip can follow the text.
-fn title_width(text: &str, window: &Window) -> Pixels {
-    let font = Font { family: SANS.into(), weight: FontWeight::SEMIBOLD, ..Font::default() };
+fn title_width(text: &str, family: &str, window: &Window) -> Pixels {
+    let font = Font { family: family.to_owned().into(), weight: FontWeight::SEMIBOLD, ..Font::default() };
     let run = TextRun { len: text.len(), font, ..TextRun::default() };
-    let width = window.text_system().layout_line(text, px(size::TITLE), &[run], None).width;
+    let width = window
+        .text_system()
+        .layout_line(text, size::scaled(size::TITLE).to_pixels(window.rem_size()), &[run], None)
+        .width;
     (width + px(1.)).min(px(TITLE_MAX))
 }
 
@@ -282,7 +288,7 @@ pub fn kbd(keys: &'static str) -> impl IntoElement {
         .border_color(Tokens::edge())
         .bg(Tokens::sunken())
         .font_family(MONO)
-        .text_size(px(size::MICRO))
+        .text_size(size::scaled(size::MICRO))
         .text_color(Tokens::text_dim())
         .child(keys)
 }

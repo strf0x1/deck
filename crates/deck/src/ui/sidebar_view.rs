@@ -189,7 +189,7 @@ fn rail_item(
                 .pl(px(6. + 10. * (1. - label_a)))
                 .opacity(label_a)
                 .whitespace_nowrap()
-                .text_size(px(size::BODY))
+                .text_size(size::scaled(size::BODY))
                 .font_weight(if active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
                 .child(label.to_string()),
         )
