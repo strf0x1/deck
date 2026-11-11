@@ -150,6 +150,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 crate::wait::readable(listener.as_raw_fd(), POLL)?;
             }
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting holder control"),
         }
     }

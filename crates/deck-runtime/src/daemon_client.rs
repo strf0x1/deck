@@ -464,7 +464,12 @@ impl DaemonClient {
                 *socket = Some(self.connect_control()?);
             }
             let outcome = match socket.as_mut() {
-                Some(stream) => wire::write(stream.get_mut(), &request).and_then(|()| wire::read(&mut *stream)),
+                // `true` means the request reached the socket; a failed write
+                // sent nothing, so even a mutation may safely be retried.
+                Some(stream) => match wire::write(stream.get_mut(), &request) {
+                    Ok(()) => wire::read(&mut *stream).map_err(|e| (true, e)),
+                    Err(e) => Err((false, e)),
+                },
                 None => bail!("no control connection"),
             };
             match outcome {
@@ -481,8 +486,14 @@ impl DaemonClient {
                     }
                     bail!("deckd closed the control connection; it may have restarted")
                 }
-                Err(e) => {
+                Err((sent, e)) => {
                     *socket = None;
+                    if !sent && !retried {
+                        // A closed control connection, e.g. after the daemon
+                        // was replaced. The request never left this process.
+                        retried = true;
+                        continue;
+                    }
                     if request.read_only() && !retried {
                         retried = true;
                         continue;

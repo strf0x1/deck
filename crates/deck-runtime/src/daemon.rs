@@ -139,6 +139,9 @@ pub fn serve(options: Options) -> Result<()> {
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            // A peer may connect and close before the accept; macOS reports
+            // that as ECONNABORTED. It is not a reason to end the daemon.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting daemon client"),
         }
         let running = {

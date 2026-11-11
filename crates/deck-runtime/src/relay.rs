@@ -85,6 +85,11 @@ impl Relay {
                             break;
                         }
                     }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+                        ) => {}
                     Err(_) => break,
                 }
             }

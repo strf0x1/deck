@@ -537,6 +537,7 @@ fn control_loop(config: &Config, listener: UnixListener, shutdown: i32) -> Resul
                 crate::wait::readable(listener.as_raw_fd(), Duration::from_millis(20))
                     .context("waiting for VMM control")?;
             }
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting VMM control"),
         }
     }
