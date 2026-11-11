@@ -59,8 +59,8 @@ pub struct Config {
     pub upstream: String,
     pub models: Vec<String>,
     /// The credential name the provider key is fetched under, per request,
-    /// from `deckd` (ADR 0004 §4.4).
-    pub secret: String,
+    /// from `deckd` (ADR 0004 §4.4). `None` for a keyless provider (ADR 0012).
+    pub secret: Option<String>,
     /// The daemon queue that decides a model the task was not configured with.
     pub control: Option<Control>,
     /// Host identities and persisted grant files, independent of web egress.

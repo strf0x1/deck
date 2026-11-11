@@ -260,6 +260,17 @@ provider's url and model, and `deckd` logs each override at start.
   new snapshot. A save against an older revision writes nothing and replies
   `{"outcome":"stale", …}` with what is there now.
 
+A VM task is pinned to one provider at create: `create` resolves the spec's
+`model` (`{"selector": "<provider>/<id>"}` from a window, or the default
+when absent) against the settings with the environment applied, and records
+`{"choice": {provider, model}}` in `task.json`. Every start and resume uses
+the recorded choice for the gateway's upstream, allowlist and key name, and
+the guest's `CONSTRUCT_MODEL`; a later settings edit never reaches a running
+or resumed task. A record from before settings resolves the default at each
+start. A keyless provider (`secret: null`) starts the gateway with
+`--keyless`: it fetches nothing and sends no `Authorization`. A local task
+records no model.
+
 ## The GitHub operation gateway
 
 A VM task's third gateway kind (ADR 0007) publishes to the project's GitHub

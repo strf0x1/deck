@@ -434,7 +434,26 @@ mod tests {
     }
 
     fn spec(dir: &Path) -> Spec {
-        Spec { argv: vec!["agent".into()], cwd: dir.to_path_buf(), project: Some("git:test".into()), github: None }
+        Spec {
+            argv: vec!["agent".into()],
+            cwd: dir.to_path_buf(),
+            project: Some("git:test".into()),
+            github: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn a_local_task_records_no_model() {
+        // Construct's own config decides a local task's provider (ADR 0012
+        // §2), so a selector from the window is not written into its record.
+        let dir = scratch("local-model");
+        let rt = Runtime::open(&dir, Local).unwrap();
+        let mut spec = spec(&dir);
+        spec.model = Some(crate::settings::Pick::Selector("local/qwen3-32b".into()));
+        let id = rt.create(spec).unwrap();
+        assert_eq!(rt.task(&id).unwrap().spec.model, None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

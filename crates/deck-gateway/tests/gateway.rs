@@ -229,10 +229,12 @@ struct Launch<'a> {
     limits: Limits,
     budget_file: Option<&'a Path>,
     grants: Option<&'a Path>,
+    /// A provider with no key (ADR 0012): `--keyless` in place of `--secret`.
+    keyless: bool,
 }
 
 fn start_launch(name: &str, upstream: &str, models: &[&str], key: Option<&str>, launch: Launch<'_>) -> Gateway {
-    let Launch { control, limits, budget_file, grants } = launch;
+    let Launch { control, limits, budget_file, grants, keyless } = launch;
     let dir = scratch(name);
     let values: Vec<(&str, &str)> = key.map(|key| ("DECK_GATEWAY_TEST_KEY", key)).into_iter().collect();
     let deckd = Deckd::start(&dir, &values, control.map(|(socket, _)| socket));
@@ -244,8 +246,6 @@ fn start_launch(name: &str, upstream: &str, models: &[&str], key: Option<&str>, 
         .arg(dir.join("extension.sock"))
         .arg("--upstream")
         .arg(upstream)
-        .arg("--secret")
-        .arg("DECK_GATEWAY_TEST_KEY")
         .arg("--used-requests")
         .arg(limits.used_requests.to_string())
         .arg("--used-tokens")
@@ -256,6 +256,11 @@ fn start_launch(name: &str, upstream: &str, models: &[&str], key: Option<&str>, 
         .stderr(Stdio::null());
     for model in models {
         command.args(["--model", model]);
+    }
+    if keyless {
+        command.arg("--keyless");
+    } else {
+        command.args(["--secret", "DECK_GATEWAY_TEST_KEY"]);
     }
     if let Some(limit) = limits.requests {
         command.arg("--request-budget").arg(limit.to_string());
@@ -351,6 +356,25 @@ fn the_host_key_replaces_guest_credentials_and_responses_stream() {
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert!(response.contains("transfer-encoding: chunked"), "{response}");
     assert!(response.contains("chatcmpl-1"), "{response}");
+    provider.join().unwrap();
+}
+
+#[test]
+fn a_keyless_provider_gets_no_authorization_at_all() {
+    let (port, provider) = provider(|request| {
+        assert_eq!(request.header("authorization"), None, "the guest placeholder must not reach a keyless provider");
+        assert_eq!(request.header("x-api-key"), None);
+    });
+    let upstream = format!("http://127.0.0.1:{port}/v1");
+    let gateway = start_launch("keyless", &upstream, &["allowed"], None, Launch { keyless: true, ..Launch::default() });
+    let body = r#"{"model":"allowed","messages":[]}"#;
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: relay\r\ncontent-type: application/json\r\n\
+         authorization: Bearer deck-placeholder\r\nx-api-key: guest\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let response = send(&gateway.ready.model, &request);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     provider.join().unwrap();
 }
 

@@ -127,7 +127,13 @@ impl Deck {
     pub(super) fn project_spec(&self) -> Option<Spec> {
         let project = self.projects.selected()?;
         let checkout = self.projects.checkout()?;
-        Some(Spec { argv: project.argv.clone(), cwd: checkout, project: Some(project.id.clone()), github: None })
+        Some(Spec {
+            argv: project.argv.clone(),
+            cwd: checkout,
+            project: Some(project.id.clone()),
+            github: None,
+            model: None,
+        })
     }
 
     /// A detached or failed connection can be rebuilt by restarting its task.

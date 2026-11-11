@@ -29,7 +29,7 @@ impl Model {
         if self.models.allows(model) {
             return Ok(None);
         }
-        if let Some(permit) = self.grants.model(model, &self.secret, None) {
+        if let Some(permit) = self.grants.model(model, self.secret.as_deref(), None) {
             return Ok(Some(permit));
         }
         let Some(control) = &self.control else {
@@ -38,7 +38,7 @@ impl Model {
         let ask = Ask {
             operation: "chat_completions".into(),
             destination: model.into(),
-            credential: Some(self.secret.clone()),
+            credential: self.secret.clone(),
             method: Some(request.method.clone()),
             path: Some(request.target.clone()),
             size: Some(request.body.len() as u64),
@@ -47,7 +47,7 @@ impl Model {
             Answer::Allowed(scope) if scope == "once" => Ok(None),
             Answer::Allowed(scope) if matches!(scope.as_str(), "timed" | "task" | "project") => self
                 .grants
-                .model(model, &self.secret, Some(&scope))
+                .model(model, self.secret.as_deref(), Some(&scope))
                 .map(Some)
                 .ok_or_else(|| Denial::new(None, false, "the authorizing model grant is no longer present".into())),
             Answer::Allowed(_) => Err(Denial::new(None, false, "the queue returned an unknown scope".into())),

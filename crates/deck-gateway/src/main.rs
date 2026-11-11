@@ -19,7 +19,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] --secret NAME [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--grants PATH] [--project ID] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] (--secret NAME | --keyless) [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--grants PATH] [--project ID] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
 
 fn main() -> ExitCode {
     match run() {
@@ -33,6 +33,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let (config, secret, watch_stdin) = parse(std::env::args().skip(1))?;
+    let secret = secret.unwrap_or_else(|| "none (keyless)".into());
     if watch_stdin {
         // The VMM holds the write end. Its death closes this pipe, which
         // stops the gateway even when the VM's process group was not signalled.
@@ -52,12 +53,13 @@ fn run() -> Result<()> {
     server::serve(config).with_context(|| format!("serving the gateway for secret {secret}"))
 }
 
-fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool)> {
+fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<String>, bool)> {
     let mut model_socket = None;
     let mut extension_socket = None;
     let mut upstream = None;
     let mut models = Vec::new();
     let mut secret = None;
+    let mut keyless = false;
     let mut request_budget = None;
     let mut token_budget = None;
     let mut used_requests = 0;
@@ -89,6 +91,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             "--upstream" => upstream = Some(value(&mut args, &flag)?),
             "--model" => models.push(value(&mut args, &flag)?),
             "--secret" => secret = Some(value(&mut args, &flag)?),
+            "--keyless" => keyless = true,
             "--request-budget" => request_budget = Some(number(&mut args, &flag)?),
             "--token-budget" => token_budget = Some(number(&mut args, &flag)?),
             "--used-requests" => used_requests = number(&mut args, &flag)?,
@@ -122,7 +125,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, String, bool
             other => bail!("unknown argument {other:?}\n{USAGE}"),
         }
     }
-    let secret = secret.context(USAGE)?;
+    // Exactly one of them, so a forgotten flag is an error rather than a
+    // provider that silently gets no key (ADR 0012 §2).
+    let secret = match (secret, keyless) {
+        (Some(name), false) => Some(name),
+        (None, true) => None,
+        (Some(_), true) => bail!("--secret and --keyless are exclusive"),
+        (None, false) => bail!("{USAGE}"),
+    };
     let upstream = upstream.context(USAGE)?;
     if !upstream.starts_with("http://") && !upstream.starts_with("https://") {
         bail!("--upstream must be an http(s) URL, not {upstream:?}");
@@ -246,6 +256,27 @@ mod tests {
     }
 
     #[test]
+    fn a_provider_key_is_named_or_explicitly_absent() {
+        let base = args(&[
+            "--model-socket",
+            "/tmp/m",
+            "--extension-socket",
+            "/tmp/e",
+            "--upstream",
+            "http://10.0.0.5:8000/v1",
+            "--model",
+            "m",
+        ]);
+        assert!(parse(base.clone()).is_err(), "neither --secret nor --keyless");
+        let mut keyless = base.clone();
+        keyless.push("--keyless".into());
+        let (config, secret, _) = parse(keyless.clone()).unwrap();
+        assert_eq!((config.secret, secret), (None, None));
+        keyless.extend(args(&["--secret", "KEY"]));
+        assert!(parse(keyless).is_err(), "both");
+    }
+
+    #[test]
     fn grant_policy_is_available_without_web_but_requires_a_task_identity() {
         let mut flags = args(&[
             "--model-socket",
@@ -338,7 +369,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(config.models, ["a", "b"]);
-        assert_eq!(secret, "DECK_GATEWAY_TEST_SECRET");
+        assert_eq!(secret.as_deref(), Some("DECK_GATEWAY_TEST_SECRET"));
         assert!(!watch);
     }
 }

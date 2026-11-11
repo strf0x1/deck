@@ -609,7 +609,7 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let project = daemon.open_project(&data, argv.clone()).unwrap();
     let task = daemon
-        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None })
+        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None, model: None })
         .unwrap()
         .task;
     let ask = Ask {
@@ -690,6 +690,7 @@ fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext
                 approvals: Approvals::Ask,
                 identity: Identity::default(),
             }),
+            model: None,
         })
         .unwrap()
         .task;
@@ -868,8 +869,9 @@ fn quitting_detaches_and_the_windows_task_keeps_running(cx: &mut TestAppContext)
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let project = daemon.open_project(&cwd, argv.clone()).unwrap();
-    let task =
-        daemon.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    let task = daemon
+        .create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
+        .unwrap();
     daemon.start(&task.id).unwrap();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -912,7 +914,7 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let project = daemon.open_project(&cwd, argv.clone()).unwrap();
     let original = daemon
-        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None })
+        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
         .unwrap()
         .task;
     cx.update(deck::app::bind);
@@ -975,7 +977,7 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let project = daemon.open_project(&cwd, argv.clone()).unwrap();
     let original = daemon
-        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None })
+        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
         .unwrap()
         .task;
     cx.update(deck::app::bind);
@@ -1017,7 +1019,7 @@ fn the_stop_binding_stops_the_task(cx: &mut TestAppContext) {
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let project = daemon.open_project(&cwd, argv.clone()).unwrap();
     let original = daemon
-        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None })
+        .run(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
         .unwrap()
         .task;
     cx.update(deck::app::bind);
@@ -1144,11 +1146,11 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let p1 = daemon.open_project(&one, argv.clone()).unwrap();
     let t1 = daemon
-        .create(Spec { argv: argv.clone(), cwd: one.clone(), project: Some(p1.id.clone()), github: None })
+        .create(Spec { argv: argv.clone(), cwd: one.clone(), project: Some(p1.id.clone()), github: None, model: None })
         .unwrap();
     let p2 = daemon.open_project(&two, argv.clone()).unwrap();
     let t2 = daemon
-        .create(Spec { argv: argv.clone(), cwd: two.clone(), project: Some(p2.id.clone()), github: None })
+        .create(Spec { argv: argv.clone(), cwd: two.clone(), project: Some(p2.id.clone()), github: None, model: None })
         .unwrap();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, one, cx))).unwrap()
@@ -1295,7 +1297,9 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
     let cwd = std::env::temp_dir();
     let opener = DaemonClient::connect_or_start(&data).unwrap();
     let project = opener.open_project(&cwd, argv.clone()).unwrap();
-    opener.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    opener
+        .create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
+        .unwrap();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
     });
@@ -1363,7 +1367,9 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     let cwd = std::env::temp_dir();
     let opener = DaemonClient::connect_or_start(&data).unwrap();
     let project = opener.open_project(&cwd, argv.clone()).unwrap();
-    opener.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    opener
+        .create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
+        .unwrap();
     drop(opener);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd, cx))).unwrap()
@@ -1560,7 +1566,7 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let project = daemon.open_project(&data, argv.clone()).unwrap();
     let task = daemon
-        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None })
+        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None, model: None })
         .unwrap()
         .task;
     let pull = Publication::PullRequest {
@@ -1599,7 +1605,7 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let project = daemon.open_project(&data, argv.clone()).unwrap();
     let task = daemon
-        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None })
+        .run(Spec { argv: argv.clone(), cwd: data.clone(), project: Some(project.id), github: None, model: None })
         .unwrap()
         .task;
     let window = cx.update(|cx| {
@@ -1647,7 +1653,9 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
     let opener = DaemonClient::connect_or_start(&data).unwrap();
     let project = opener.open_project(&cwd, argv.clone()).unwrap();
-    opener.create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None }).unwrap();
+    opener
+        .create(Spec { argv: argv.clone(), cwd: cwd.clone(), project: Some(project.id), github: None, model: None })
+        .unwrap();
     drop(opener);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, cwd.clone(), cx))).unwrap()
@@ -1758,10 +1766,17 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     let project = daemon.open_project(&repo, agent("alpha")).unwrap();
     // The second task has never run: selecting it starts it.
     let other = daemon
-        .create(Spec { argv: agent("beta"), cwd: repo.join("beta"), project: Some(project.id.clone()), github: None })
+        .create(Spec {
+            argv: agent("beta"),
+            cwd: repo.join("beta"),
+            project: Some(project.id.clone()),
+            github: None,
+            model: None,
+        })
         .unwrap()
         .id;
-    let alpha = Spec { argv: agent("alpha"), cwd: repo.join("alpha"), project: Some(project.id), github: None };
+    let alpha =
+        Spec { argv: agent("alpha"), cwd: repo.join("alpha"), project: Some(project.id), github: None, model: None };
     std::fs::create_dir_all(&alpha.cwd).unwrap();
     let launched = daemon.create(alpha.clone()).unwrap();
     // The rows read their records' titles, not their checkouts' names.
@@ -1843,6 +1858,7 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
         cwd: cwd.to_path_buf(),
         project: Some(project.to_string()),
         github: None,
+        model: None,
     };
     let a = daemon.create(spec(&alpha, &first.id)).unwrap().id;
     let b = daemon.create(spec(&beta, &second.id)).unwrap().id;
@@ -2364,7 +2380,7 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     let spec = |name: &str| {
         let cwd = repo.join(name);
         std::fs::create_dir_all(&cwd).unwrap();
-        Spec { argv: argv.clone(), cwd, project: Some(project.id.clone()), github: None }
+        Spec { argv: argv.clone(), cwd, project: Some(project.id.clone()), github: None, model: None }
     };
     let older = daemon.create(spec("alpha")).unwrap();
     let newer = daemon.create(spec("beta")).unwrap();

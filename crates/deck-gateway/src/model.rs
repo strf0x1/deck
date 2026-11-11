@@ -41,8 +41,9 @@ pub struct Settings {
     /// Fetches the provider key per request and closes requests whose key
     /// was revoked.
     pub credentials: Arc<Broker>,
-    /// The credential name the key is stored under.
-    pub secret: String,
+    /// The credential name the key is stored under; `None` for a keyless
+    /// provider, which gets no `Authorization` at all.
+    pub secret: Option<String>,
     pub control: Option<Control>,
     pub status: Arc<Status>,
     pub budget: Budget,
@@ -55,7 +56,7 @@ pub struct Model {
     models: Models,
     grants: Arc<Grants>,
     credentials: Arc<Broker>,
-    secret: String,
+    secret: Option<String>,
     control: Option<Control>,
     status: Arc<Status>,
     ledger: Arc<Ledger>,
@@ -142,13 +143,16 @@ impl Model {
         };
         // Watch the grant before the bounded credential fetch, so a slow
         // store cannot delay revocation or allow a late provider request.
-        let credential = match self.credentials.fetch(&self.secret) {
+        let credential = match self.secret.as_deref().map(|name| self.credentials.fetch(name)).transpose() {
             Ok(credential) => credential,
             Err(refusal) => return operation.refuse(|guest| refusal.write(guest)),
         };
-        let _registration = match self
-            .credentials
-            .register(&credential, operation.revoker(Revocation::Credential(credential.revoked())))
+        let _registration = match credential
+            .as_ref()
+            .map(|credential| {
+                self.credentials.register(credential, operation.revoker(Revocation::Credential(credential.revoked())))
+            })
+            .transpose()
         {
             Ok(registration) => registration,
             Err(refusal) => return operation.refuse(|guest| refusal.write(guest)),
@@ -161,7 +165,7 @@ impl Model {
         {
             return operation.refuse(|guest| http::write_error(guest, 429, "deck_budget_exhausted", &spent.message()));
         }
-        let key = credential.value();
+        let authorization = credential.as_ref().map(|credential| format!("Bearer {}", credential.value()));
 
         let suffix = request.target.strip_prefix("/v1").unwrap_or_default();
         let url = format!("{}{}", self.upstream, suffix);
@@ -173,7 +177,10 @@ impl Model {
                         builder = builder.header(name.as_str(), value.as_str());
                     }
                 }
-                builder.header("authorization", format!("Bearer {key}")).send(request.body.as_slice())
+                if let Some(authorization) = &authorization {
+                    builder = builder.header("authorization", authorization.as_str());
+                }
+                builder.send(request.body.as_slice())
             }
             _ => {
                 let mut builder =
@@ -183,7 +190,10 @@ impl Model {
                         builder = builder.header(name.as_str(), value.as_str());
                     }
                 }
-                builder.header("authorization", format!("Bearer {key}")).call()
+                if let Some(authorization) = &authorization {
+                    builder = builder.header("authorization", authorization.as_str());
+                }
+                builder.call()
             }
         };
         let response = match response {

@@ -40,6 +40,18 @@ pub struct Choice {
     pub model: String,
 }
 
+/// A task spec's model: what a window asked for, until the backend pins it.
+/// Only [`Pick::Choice`] is ever recorded by a VM task; a local task records
+/// none (ADR 0012 §2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pick {
+    /// `<provider>/<id>` from the window, resolved at create.
+    Selector(String),
+    /// The provider and model the task was created with.
+    Choice(Box<Choice>),
+}
+
 /// The two variables `deckd` read before settings existed. They define the
 /// implicit provider, and override a settings file (logged at start).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -106,6 +118,16 @@ impl Settings {
             bail!("provider {name:?} does not list the model {model:?}");
         }
         Ok(Choice { provider: provider.clone(), model: model.into() })
+    }
+
+    /// What a task runs with: its recorded choice, else `pick`'s selector or
+    /// the default resolved now (a record from before settings existed).
+    pub fn pin(&self, pick: Option<&Pick>) -> Result<Choice> {
+        match pick {
+            Some(Pick::Choice(choice)) => Ok(choice.as_ref().clone()),
+            Some(Pick::Selector(selector)) => self.resolve(Some(selector)),
+            None => self.resolve(None),
+        }
     }
 
     /// These settings with the environment applied: `CONSTRUCT_BASE_URL`
@@ -230,6 +252,20 @@ mod tests {
         assert!(settings.resolve(Some("local/unlisted")).is_err());
         assert!(settings.resolve(Some("nowhere/qwen3-32b")).is_err());
         assert!(settings.resolve(Some("qwen3-32b")).is_err());
+    }
+
+    #[test]
+    fn a_recorded_choice_wins_over_the_settings() {
+        let settings = two();
+        let recorded = settings.resolve(Some("local/qwen3-32b")).unwrap();
+        let mut changed = two();
+        changed.providers.retain(|p| p.name != "local");
+        changed.validate().unwrap();
+        // The provider is gone from the settings; the task keeps what it had.
+        assert_eq!(changed.pin(Some(&Pick::Choice(Box::new(recorded.clone())))).unwrap(), recorded);
+        assert_eq!(settings.pin(Some(&Pick::Selector("local/qwen3-32b".into()))).unwrap(), recorded);
+        assert_eq!(settings.pin(None).unwrap(), settings.resolve(None).unwrap());
+        assert!(changed.pin(Some(&Pick::Selector("local/qwen3-32b".into()))).is_err());
     }
 
     #[test]

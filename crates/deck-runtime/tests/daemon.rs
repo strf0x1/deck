@@ -93,6 +93,7 @@ impl Daemon {
             cwd: self.data.clone(),
             project: None,
             github: None,
+            model: None,
         }
     }
 
@@ -751,6 +752,7 @@ fn a_live_approvals_switch_applies_to_the_next_operation() {
                 approvals: Approvals::OwnBranch,
                 identity: Default::default(),
             }),
+            model: None,
         })
         .unwrap();
     let ask = deck_runtime::approvals::Ask {

@@ -30,9 +30,11 @@ pub trait Backend: Send {
     fn name(&self) -> &'static str;
 
     /// Resolve what the backend adds to a spec before the record is written.
-    /// A local task needs nothing; a VM task records its project's GitHub
-    /// policy here (ADR 0008 §3).
-    fn prepare(&mut self, _spec: &mut crate::lifecycle::Spec) -> Result<()> {
+    /// A VM task records its project's GitHub policy (ADR 0008 §3) and its
+    /// provider (ADR 0012 §2) here. A local task drops any model selector:
+    /// Construct's own config decides, and the record must not say otherwise.
+    fn prepare(&mut self, spec: &mut crate::lifecycle::Spec) -> Result<()> {
+        spec.model = None;
         Ok(())
     }
 
