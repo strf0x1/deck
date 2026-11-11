@@ -1,13 +1,15 @@
 //! Deck's colours, type and icons, as named tokens. Every view takes colours
 //! from here, never from a literal, so the look can be retuned in one file.
 //!
-//! The design choice: neon on deep ink, and every hue means one thing.
-//! Surfaces are cool-tinted glass layered over a blue-black base, so depth
-//! comes from stacking. Colour is never decoration: pink is the user (their
-//! turns, focus, the primary action), cyan is the agent at work, amber waits
-//! on a human, green is done or allowed, red failed or is denied. Tool kinds
-//! run cool to warm by how far they reach: looking is blue, changing files
-//! violet, running code cyan, leaving the machine orange, deleting red.
+//! The design choice: charcoal glass with colour spent sparingly, and every
+//! hue means one thing. Surfaces are neutral translucent layers over a
+//! near-black base, so depth comes from stacking. A coloured mark keeps a
+//! solid dark body and puts its hue in its text and border (`well`), so it
+//! pops off the glass without a wash of colour. Purple is the user (their
+//! turns, focus, the primary action), light teal is the agent at work, warm
+//! amber waits on a human, green is done or allowed, red failed or is denied.
+//! Tool kinds: looking is steel blue, changing files lavender, running code
+//! teal, leaving the machine orange, deleting red.
 
 use super::highlight::Class;
 use gpui::{Background, BoxShadow, Hsla, Rgba, linear_color_stop, linear_gradient, point, px, rgba};
@@ -132,96 +134,107 @@ pub mod space {
 pub struct Tokens;
 
 impl Tokens {
-    /// The whole window: translucent blue-black so the compositor's blur shows through.
+    /// The whole window: translucent charcoal so the compositor's blur shows through.
     pub fn base() -> Background {
-        linear_gradient(160., linear_color_stop(rgba(0x0d1020e8), 0.), linear_color_stop(rgba(0x05060df4), 1.))
+        linear_gradient(160., linear_color_stop(rgba(0x17171ae8), 0.), linear_color_stop(rgba(0x0c0c0ef4), 1.))
     }
-    /// A pane: one layer of cool glass.
+    /// A pane: one layer of neutral glass.
     pub fn panel() -> Background {
-        linear_gradient(180., linear_color_stop(rgba(0xa9bcff10), 0.), linear_color_stop(rgba(0xa9bcff06), 1.))
+        linear_gradient(180., linear_color_stop(rgba(0xffffff0c), 0.), linear_color_stop(rgba(0xffffff05), 1.))
     }
     /// Something sitting on a pane: a card, a field, a bubble.
     pub fn raised() -> Rgba {
-        rgba(0xb4c4ff0d)
+        rgba(0xffffff0a)
     }
     pub fn raised_hover() -> Rgba {
-        rgba(0xb4c4ff1a)
+        rgba(0xffffff14)
     }
     /// A well cut into a card: command text, output, code.
     pub fn sunken() -> Rgba {
-        rgba(0x03040a66)
+        rgba(0x0000004d)
+    }
+    /// The solid dark body of a coloured mark (a button, a decision card,
+    /// a chip): its colour lives in its text and border, never its fill, so
+    /// it reads as darker than the glass around it.
+    pub fn well() -> Rgba {
+        rgba(0x0e0e11f2)
     }
     /// A surface that floats over others (the expanded rail): mostly opaque,
     /// since GPUI cannot blur what is behind an element.
     pub fn float() -> Rgba {
-        rgba(0x0f1220ff)
+        rgba(0x18181bff)
     }
     pub fn edge() -> Rgba {
-        rgba(0xa9b8ff1c)
+        rgba(0xffffff14)
     }
     pub fn edge_strong() -> Rgba {
-        rgba(0xa9b8ff3a)
+        rgba(0xffffff2a)
     }
     pub fn shadow() -> Hsla {
-        rgba(0x00000090).into()
+        rgba(0x00000088).into()
     }
     pub fn text() -> Rgba {
-        rgba(0xeef0fbff)
+        rgba(0xececf0ff)
     }
     pub fn text_dim() -> Rgba {
-        rgba(0xa0a7c4ff)
+        rgba(0x9d9da8ff)
     }
     pub fn text_faint() -> Rgba {
-        rgba(0x626a8cff)
+        rgba(0x60606bff)
     }
-    /// Text on a bright fill (a primary button, a count badge).
+    /// Text on a bright fill (a count badge).
     pub fn ink() -> Rgba {
-        rgba(0x0a0b14ff)
+        rgba(0x111114ff)
     }
     /// The user: their turns, focus, selection, the primary action.
     pub fn accent() -> Hsla {
-        rgba(0xff4fa3ff).into()
+        rgba(0xa38bffff).into()
     }
-    /// An agent doing work; running code.
+    /// Emphasis in agent prose (markdown bold): the accent, lighter.
+    pub fn emphasis() -> Hsla {
+        rgba(0xcbbdffff).into()
+    }
+    /// An agent doing work; running code. A light teal.
     pub fn cyan() -> Hsla {
-        rgba(0x2fe3ffff).into()
+        rgba(0x6fdccbff).into()
     }
-    /// Decisions waiting on a human.
+    /// Decisions waiting on a human. Warm, so it is spent on borders and
+    /// text, not fills.
     pub fn amber() -> Hsla {
-        rgba(0xffb62eff).into()
+        rgba(0xf5a65bff).into()
     }
     /// Done, allowed, added.
     pub fn lime() -> Hsla {
-        rgba(0x7df26bff).into()
+        rgba(0x9fd67aff).into()
     }
     /// Failed, denied, removed.
     pub fn red() -> Hsla {
-        rgba(0xff5470ff).into()
+        rgba(0xf07a7aff).into()
     }
-    /// Changing files; the sealed VM.
+    /// Changing files; the sealed VM. A pinker lavender than the accent.
     pub fn violet() -> Hsla {
-        rgba(0xa98bffff).into()
+        rgba(0xd29cf0ff).into()
     }
-    /// Looking: reads and searches.
+    /// Looking: reads and searches. A quiet steel blue.
     pub fn sky() -> Hsla {
-        rgba(0x5aa9ffff).into()
+        rgba(0x8db4dcff).into()
     }
     /// Leaving the machine: the network.
     pub fn orange() -> Hsla {
-        rgba(0xff8a4cff).into()
+        rgba(0xf08c5aff).into()
     }
     /// A stable hue for a name, so a project keeps its colour everywhere.
     pub fn hue(name: &str) -> Hsla {
-        let hues = [Self::accent(), Self::cyan(), Self::violet(), Self::lime(), Self::sky(), Self::orange()];
+        let hues = [Self::accent(), Self::cyan(), Self::amber(), Self::lime(), Self::sky(), Self::violet()];
         let sum = name.bytes().fold(0usize, |sum, byte| sum.wrapping_mul(31).wrapping_add(usize::from(byte)));
         hues[sum % hues.len()]
     }
-    /// The signature sweep, user to agent: the primary button, the pane's top edge.
+    /// A faint accent wash, for the user's own turns and the pane's top edge.
     pub fn sweep(a: f32) -> Background {
         linear_gradient(
             90.,
             linear_color_stop(tint(Self::accent(), a), 0.),
-            linear_color_stop(tint(Self::violet(), a), 1.),
+            linear_color_stop(tint(Self::accent(), a * 0.4), 1.),
         )
     }
     /// Code: the accents again, a little softer, plus one blue for types,
@@ -229,11 +242,11 @@ impl Tokens {
     pub fn code(class: Class) -> Hsla {
         match class {
             Class::Comment => Self::text_faint().into(),
-            Class::String => rgba(0x9af08ae6).into(),
-            Class::Keyword => rgba(0xff7ab8ff).into(),
-            Class::Number | Class::Constant => rgba(0xffc46eff).into(),
-            Class::Function => rgba(0x6fe9ffff).into(),
-            Class::Type => rgba(0xb9a3ffff).into(),
+            Class::String => rgba(0xb0d98ee6).into(),
+            Class::Keyword => rgba(0xb4a3ffff).into(),
+            Class::Number | Class::Constant => rgba(0xf2b880ff).into(),
+            Class::Function => rgba(0x7fdccdff).into(),
+            Class::Type => rgba(0x9cc0e6ff).into(),
         }
     }
 }
@@ -243,12 +256,13 @@ pub fn tint(color: Hsla, a: f32) -> Hsla {
     Hsla { a, ..color }
 }
 
-/// A neon halo in `color`: what marks the one live thing in a region.
+/// A soft halo in `color`: what marks the one live thing in a region. Kept
+/// faint, so a lit mark reads as lit without turning into a neon sign.
 pub fn glow(color: Hsla, strength: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: tint(color, 0.45 * strength),
+        color: tint(color, 0.22 * strength),
         offset: point(px(0.), px(0.)),
-        blur_radius: px(14.),
+        blur_radius: px(10.),
         spread_radius: px(0.),
     }]
 }

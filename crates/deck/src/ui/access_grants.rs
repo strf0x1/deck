@@ -62,7 +62,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .rounded(px(radius::CARD))
             .border_1()
             .border_color(tint(Tokens::amber(), 0.35))
-            .bg(tint(Tokens::amber(), 0.06))
+            .bg(super::theme::Tokens::well())
             .child(icon_tile(icon::BELL, Tokens::amber(), 24.))
             .child(
                 div()

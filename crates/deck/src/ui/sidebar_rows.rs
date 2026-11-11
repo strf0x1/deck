@@ -7,7 +7,7 @@
 use super::root::Deck;
 use super::sidebar::{Row, initial};
 use super::sidebar_tasks::{settled_fold, tasks_view};
-use super::theme::{Tokens, icon, radius, size, space, tint};
+use super::theme::{Tokens, icon, radius, size, space};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -87,8 +87,7 @@ fn need_row(
         .gap(px(space::LINE))
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
-        .bg(tint(Tokens::amber(), 0.06))
-        .hover(|style| style.bg(tint(Tokens::amber(), 0.13)))
+        .hover(|style| style.bg(Tokens::raised_hover()))
         .on_click(cx.listener(move |this, _, _, cx| this.open_item(index, cx)))
         .child(super::panels::state_mark(super::board::LaneState::Waiting, 9.))
         .child(
@@ -149,7 +148,7 @@ fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .text_color(fg)
-        .when(shown, |s| s.bg(tint(Tokens::accent(), 0.1)))
+        .when(shown, |s| s.bg(Tokens::raised()))
         .hover(|style| style.bg(Tokens::raised_hover()))
         .children(shown.then(|| {
             div()
@@ -186,14 +185,7 @@ fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement
         )
         .child(super::sidebar_narrow::tile(initial(name), Tokens::hue(name), shown, TILE))
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
-        .children(attention.then(|| {
-            div()
-                .flex_none()
-                .size(px(6.))
-                .rounded_full()
-                .bg(Tokens::amber())
-                .shadow(super::theme::glow(Tokens::amber(), 0.8))
-        }))
+        .children(attention.then(|| div().flex_none().size(px(6.)).rounded_full().bg(Tokens::amber())))
         .child(
             div()
                 .flex_none()

@@ -201,6 +201,6 @@ trait PinExt {
 
 impl PinExt for gpui::Stateful<gpui::Div> {
     fn when_pinned(self, pinned: bool) -> Self {
-        if pinned { self.text_color(Tokens::accent()).bg(tint(Tokens::accent(), 0.08)) } else { self }
+        if pinned { self.text_color(Tokens::accent()).bg(Tokens::raised()) } else { self }
     }
 }

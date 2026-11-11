@@ -28,7 +28,7 @@ pub(super) fn narrow_view(glyphs: &[Glyph], marker: f32, cx: &mut Context<Deck>)
                 .right_0()
                 .h(px(ITEM_H))
                 .rounded(px(radius::CONTROL))
-                .bg(tint(Tokens::accent(), 0.1))
+                .bg(Tokens::raised())
                 .child(
                     div()
                         .absolute()
@@ -89,7 +89,7 @@ pub(super) fn tile(letter: char, hue: gpui::Hsla, selected: bool, size: f32) -> 
         .rounded(px(if size >= 32. { radius::CONTROL } else { radius::CHIP }))
         .border_1()
         .border_color(tint(hue, if selected { 0.55 } else { 0.22 }))
-        .bg(tint(hue, if selected { 0.22 } else { 0.1 }))
+        .bg(super::theme::Tokens::well())
         .text_color(tint(hue, if selected { 1. } else { 0.8 }))
         .child(div().font_weight(FontWeight::BOLD).text_size(size::scaled(font)).child(letter.to_string()))
 }

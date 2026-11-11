@@ -37,7 +37,9 @@ pub fn state_mark(s: LaneState, size: f32) -> Div {
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(tint(color, if lit { 0.16 } else { 0.08 }))
+        .border_1()
+        .border_color(tint(color, if lit { 0.55 } else { 0.3 }))
+        .bg(Tokens::well())
         .text_color(color)
         .child(glyph(g, size))
 }
@@ -47,7 +49,7 @@ pub fn glyph(g: &'static str, size: f32) -> Div {
     div().font_family(super::theme::ICONS).text_size(px(size)).line_height(px(size + 2.)).child(g)
 }
 
-/// An icon on a square wash of its own colour: what kind of thing a row is.
+/// An icon on a dark square edged in its own colour: what kind of thing a row is.
 pub fn icon_tile(g: &'static str, color: Hsla, side: f32) -> Div {
     div()
         .flex_none()
@@ -56,12 +58,14 @@ pub fn icon_tile(g: &'static str, color: Hsla, side: f32) -> Div {
         .items_center()
         .justify_center()
         .rounded(px(radius::CHIP))
-        .bg(tint(color, 0.14))
+        .border_1()
+        .border_color(tint(color, 0.35))
+        .bg(Tokens::well())
         .text_color(color)
         .child(glyph(g, (side * 0.5).round()))
 }
 
-/// A status pill: a dot and a word in the state's colour, on a wash of it.
+/// A status pill: a dot and a word in the state's colour, edged in it.
 pub fn pill(color: Hsla, label: impl Into<String>) -> Div {
     div()
         .flex_none()
@@ -72,27 +76,33 @@ pub fn pill(color: Hsla, label: impl Into<String>) -> Div {
         .gap(px(7.))
         .rounded_full()
         .border_1()
-        .border_color(tint(color, 0.28))
-        .bg(tint(color, 0.1))
+        .border_color(tint(color, 0.4))
+        .bg(Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
-        .child(div().size(px(6.)).rounded_full().bg(color).shadow(glow(color, 0.8)))
+        .child(div().size(px(6.)).rounded_full().bg(color))
         .child(label.into())
 }
 
-/// The one loud button in a region: the user's own colour, lit.
+/// A dark body that wears `color` in its text and border instead of a fill:
+/// how a coloured mark stands off the glass without a wash of colour.
+pub fn outlined(color: Hsla) -> Div {
+    div().border_1().border_color(tint(color, 0.5)).bg(Tokens::well()).text_color(color)
+}
+
+/// The one loud button in a region: the user's own colour, in its border
+/// and text on a dark body, with a faint halo.
 pub fn primary() -> Div {
-    div()
+    outlined(Tokens::accent())
         .min_h(px(32.))
         .px(px(space::PAD))
         .flex()
         .items_center()
         .gap(px(space::LINE))
         .rounded(px(radius::CONTROL))
-        .bg(Tokens::sweep(1.))
-        .shadow(glow(Tokens::accent(), 0.7))
-        .text_color(Tokens::ink())
+        .border_color(tint(Tokens::accent(), 0.7))
+        .shadow(glow(Tokens::accent(), 0.6))
         .text_size(size::scaled(size::BODY))
         .font_weight(FontWeight::SEMIBOLD)
 }

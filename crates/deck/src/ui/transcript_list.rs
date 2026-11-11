@@ -120,7 +120,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .rounded(px(radius::PANE))
                     .border_1()
                     .border_color(tint(Tokens::cyan(), 0.35))
-                    .bg(tint(Tokens::cyan(), 0.1))
+                    .bg(super::theme::Tokens::well())
                     .shadow(glow(Tokens::cyan(), 0.5))
                     .text_color(Tokens::cyan())
                     .child(glyph(icon::BOLT, 22.)),

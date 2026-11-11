@@ -242,7 +242,7 @@ fn form_card(title: String, rows: Vec<AnyElement>, hint: &str, busy: bool, cx: &
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::accent(), 0.3))
-        .bg(tint(Tokens::accent(), 0.04))
+        .bg(super::theme::Tokens::well())
         .child(div().font_weight(FontWeight::MEDIUM).child(title))
         .children(rows)
         .child(
@@ -368,7 +368,7 @@ pub(super) fn banner(g: &'static str, color: Hsla, text: String) -> AnyElement {
         .rounded(px(radius::CONTROL))
         .border_1()
         .border_color(tint(color, 0.25))
-        .bg(tint(color, 0.06))
+        .bg(super::theme::Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
         .child(glyph(g, 10.).text_color(color))
@@ -402,7 +402,7 @@ pub(super) fn confirm(target: &Confirm, cx: &mut Context<Deck>) -> AnyElement {
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::red(), 0.35))
-        .bg(tint(Tokens::red(), 0.06))
+        .bg(super::theme::Tokens::well())
         .child(div().font_weight(FontWeight::MEDIUM).child(title))
         .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(detail))
         .child(

@@ -150,7 +150,13 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .items_center()
         .justify_center()
         .rounded(px(radius::CONTROL))
-        .when(armed, |d| d.bg(Tokens::sweep(1.)).shadow(glow(Tokens::accent(), 0.8)).text_color(Tokens::ink()))
+        .when(armed, |d| {
+            d.border_1()
+                .border_color(tint(Tokens::accent(), 0.7))
+                .bg(Tokens::well())
+                .shadow(glow(Tokens::accent(), 0.6))
+                .text_color(Tokens::accent())
+        })
         .when(!armed, |d| d.bg(Tokens::raised()).text_color(Tokens::text_faint()))
         .child(glyph(icon::SEND, 13.));
     div()
