@@ -50,6 +50,7 @@ pub fn sidebar_view(deck: &mut Deck, inset: f32, cx: &mut Context<Deck>) -> impl
     let weak = cx.entity().downgrade();
     let marker = deck.rail.marker.pos;
     let pinned = deck.rail.pinned();
+    let settings_open = deck.settings().is_open();
     let width = deck.rail.width.pos;
 
     let open_view = div()
@@ -64,7 +65,7 @@ pub fn sidebar_view(deck: &mut Deck, inset: f32, cx: &mut Context<Deck>) -> impl
         .py(px(PAD_Y))
         .child(rows_view(deck, &rows, cx))
         .child(div().flex_1())
-        .child(foot(pinned, label_a, cx));
+        .child(foot(pinned, settings_open, label_a, cx));
     let narrow = div()
         .absolute()
         .top_0()
@@ -78,7 +79,7 @@ pub fn sidebar_view(deck: &mut Deck, inset: f32, cx: &mut Context<Deck>) -> impl
         .children((count > 0).then(|| count_badge(count)))
         .child(narrow_view(&glyphs, marker, cx))
         .child(div().flex_1())
-        .child(foot(pinned, 0., cx));
+        .child(foot(pinned, settings_open, 0., cx));
 
     div()
         .id("sidebar")
@@ -115,14 +116,14 @@ pub fn sidebar_view(deck: &mut Deck, inset: f32, cx: &mut Context<Deck>) -> impl
         })
 }
 
-/// The foot's two actions, stacked with the same gap in both views.
-fn foot(pinned: bool, label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
+/// The foot's three actions, stacked with the same gap in both views.
+fn foot(pinned: bool, settings_open: bool, label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(space::LINE))
         .child(open_project(label_a, cx))
-        .child(settings_item(label_a, cx))
+        .child(settings_item(settings_open, label_a, cx))
         .child(pin_item(pinned, label_a, cx))
         .into_any_element()
 }
@@ -134,9 +135,10 @@ fn open_project(label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
         .into_any_element()
 }
 
-/// The settings panel (ADR 0012 §4): providers, models and secrets.
-fn settings_item(label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
-    rail_item("sidebar-settings", icon::GEAR, "Settings", false, None, label_a)
+/// The settings panel (ADR 0012 §4): providers, models and secrets. It lights
+/// while the panel is open, which is also the second way to close it.
+fn settings_item(active: bool, label_a: f32, cx: &mut Context<Deck>) -> AnyElement {
+    rail_item("sidebar-settings", icon::GEAR, "Settings", active, None, label_a)
         .debug_selector(|| "sidebar-settings".into())
         .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx)))
         .into_any_element()

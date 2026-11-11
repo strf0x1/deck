@@ -6,11 +6,15 @@
 //! green, one a provider needs and does not have is amber (waiting on the
 //! human), and red appears only on delete; the environment's overrides are
 //! amber too, because they are why the panel and a new task may disagree.
+//! Every section says what it is for and how it changes the next session, and
+//! the panel's own header carries the close button, so neither the dismissal
+//! nor the provider-to-model flow depends on knowing a shortcut first.
 
 use super::access_panel::{button, error};
+use super::chrome::kbd;
 use super::panels::{eyebrow, glyph, icon_tile};
 use super::root::Deck;
-use super::settings::{Form, Key};
+use super::settings::{Field, Form, Key};
 use super::settings_form::{banner, confirm, provider_form, secret_form, status, tag};
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
@@ -20,14 +24,9 @@ use gpui::{
 
 pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let s = deck.settings();
-    let notes = s.snapshot().map(|snap| {
-        let mut notes: Vec<String> =
-            snap.overrides.iter().map(|o| format!("{o}: new tasks use the variable.")).collect();
-        if !snap.stored {
-            notes.push("deckd is using its built-in provider. Saving writes settings.json.".into());
-        }
-        notes
-    });
+    let notes = s
+        .snapshot()
+        .map(|snap| snap.overrides.iter().map(|o| format!("{o}: new tasks use the variable.")).collect::<Vec<_>>());
     let body = div()
         .id("settings-body")
         .flex_1()
@@ -36,6 +35,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(space::ROW))
+        .children(s.snapshot().is_some_and(|snap| !snap.stored).then(|| first_run(cx)))
         .child(providers(deck, cx))
         .child(default_model(deck, cx))
         .child(secrets(deck, cx))
@@ -54,6 +54,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex_col()
         .gap(px(space::STACK))
         .p(px(space::PAD))
+        .child(header(cx))
         .children(notes.into_iter().flatten().map(|note| banner(icon::WARN, Tokens::amber(), note)))
         .children(s.confirm().map(|c| confirm(c, cx)))
         .children(s.error().map(error))
@@ -63,6 +64,71 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         } else {
             body.into_any_element()
         })
+        .into_any_element()
+}
+
+/// The panel's own title bar: what this pane is, and the one click that
+/// leaves it. Escape does the same once no form is open.
+fn header(cx: &mut Context<Deck>) -> AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(space::STACK))
+        .child(icon_tile(icon::GEAR, Tokens::accent(), 26.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(space::HAIR))
+                .child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child("Settings"))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(size::SMALL))
+                        .text_color(Tokens::text_faint())
+                        .child("Where new sessions run, which model they start on, and the keys deckd keeps."),
+                ),
+        )
+        .child(kbd("esc"))
+        .child(
+            button("settings-close", "Close", Tokens::text_dim())
+                .debug_selector(|| "settings-close".into())
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
+        )
+        .into_any_element()
+}
+
+/// A first install has only `deckd`'s built-in provider, so the pane says
+/// where to begin instead of leaving an unfamiliar row to interpret.
+fn first_run(cx: &mut Context<Deck>) -> AnyElement {
+    div()
+        .debug_selector(|| "settings-first-run".into())
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(px(space::STACK))
+        .p(px(space::PAD))
+        .rounded(px(radius::BUBBLE))
+        .border_1()
+        .border_color(tint(Tokens::accent(), 0.28))
+        .bg(tint(Tokens::accent(), 0.05))
+        .child(div().font_weight(FontWeight::MEDIUM).child("Set up where new sessions run"))
+        .child(
+            div()
+                .text_size(px(size::LABEL))
+                .text_color(Tokens::text_dim())
+                .child("Deck starts on one built-in provider. Add your own OpenAI-compatible endpoint and the models it offers; each listed model can be the default below. Only names are saved here — the key goes to deckd's store."),
+        )
+        .child(
+            div().flex().items_center().gap(px(space::LINE)).child(
+                button("settings-first-run-add", "Add a provider", Tokens::accent())
+                    .debug_selector(|| "settings-first-run-add".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.add_provider(cx))),
+            ),
+        )
         .into_any_element()
 }
 
@@ -83,7 +149,7 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             Key::Keyless => ("keyless".into(), Tokens::text_dim().into()),
             Key::Unknown => (row.secret.clone().unwrap_or_default(), Tokens::text_faint().into()),
         };
-        let (edit, delete) = (row.name.clone(), row.name.clone());
+        let (edit, delete, models) = (row.name.clone(), row.name.clone(), row.name.clone());
         let set_key = (row.key == Key::NotSet).then(|| row.secret.clone()).flatten();
         div()
             .debug_selector(move || format!("settings-provider-{i}"))
@@ -110,12 +176,7 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                             .items_center()
                             .gap(px(space::LINE))
                             .child(div().font_family(MONO).font_weight(FontWeight::MEDIUM).child(row.name.clone()))
-                            .children(row.default.then(|| tag("default", Tokens::accent())))
-                            .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(format!(
-                                "{} model{}",
-                                row.models,
-                                if row.models == 1 { "" } else { "s" }
-                            ))),
+                            .children(row.default.then(|| tag("default", Tokens::accent()))),
                     )
                     .child(
                         div()
@@ -132,6 +193,14 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .on_click(cx.listener(move |this, _, _, cx| this.open_secret(&name, cx)))
             }))
             .child(
+                button(("settings-provider-models", i), &format!("Models ({})", row.models), Tokens::text_dim())
+                    .debug_selector(move || format!("settings-provider-models-{i}"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.edit_provider(&models, cx);
+                        this.focus_settings_field(Field::Models, cx);
+                    })),
+            )
+            .child(
                 button(("settings-provider-edit", i), "Edit", Tokens::text_dim())
                     .debug_selector(move || format!("settings-provider-edit-{i}"))
                     .on_click(cx.listener(move |this, _, _, cx| this.edit_provider(&edit, cx))),
@@ -144,6 +213,7 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .into_any_element()
     });
     let rows: Vec<AnyElement> = rows.collect();
+    let empty = rows.is_empty();
     section(
         "Providers",
         Some(
@@ -153,6 +223,24 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .into_any_element(),
         ),
     )
+    .child(
+        div()
+            .text_size(px(size::SMALL))
+            .text_color(Tokens::text_faint())
+            .child("Each provider is an OpenAI-compatible endpoint with the models a session may start on there. Models opens that list; Edit changes the URL and key name."),
+    )
+    .children(empty.then(|| {
+        div()
+            .debug_selector(|| "settings-providers-empty".into())
+            .px(px(space::INSET))
+            .py(px(space::PAD))
+            .rounded(px(radius::CARD))
+            .border_1()
+            .border_color(Tokens::edge())
+            .text_size(px(size::LABEL))
+            .text_color(Tokens::text_dim())
+            .child("No providers yet. Add provider names an endpoint and lists its models.")
+    }))
     .children((editing == Some(None)).then(|| provider_form(deck, cx)))
     .children(rows)
     .into_any_element()
@@ -161,7 +249,10 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
 fn default_model(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let s = deck.settings();
     let current = s.settings().map(|settings| settings.default.clone());
-    let chips = s.choices().into_iter().enumerate().map(|(i, choice)| {
+    let choices = s.choices();
+    let next = s.session_model().filter(|model| choices.contains(model));
+    let picked = s.session_selector().is_some();
+    let chips = choices.iter().enumerate().map(|(i, choice)| {
         let on = current.as_deref() == Some(choice.as_str());
         let fg: Hsla = if on { Tokens::accent() } else { Tokens::text_dim().into() };
         let pick = choice.clone();
@@ -184,16 +275,35 @@ fn default_model(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .hover(move |st| st.bg(tint(fg, 0.12)))
             .on_click(cx.listener(move |this, _, _, cx| this.set_default_model(&pick, cx)))
             .children(on.then(|| glyph(icon::CHECK, 9.)))
-            .child(choice)
+            .child(choice.clone())
     });
     section("Default model", None)
         .child(
             div()
                 .text_size(px(size::SMALL))
                 .text_color(Tokens::text_faint())
-                .child("New sessions start here unless you pick another beside New session."),
+                .child("New sessions start on this model and keep it: the choice is pinned when the session is created. Pick a one-off from the chip in the header before New session."),
         )
+        .children(choices.is_empty().then(|| {
+            div()
+                .debug_selector(|| "settings-default-empty".into())
+                .text_size(px(size::LABEL))
+                .text_color(Tokens::text_dim())
+                .child("No models to pick yet. Add a provider above and list the models new sessions may use.")
+        }))
         .child(div().flex().flex_wrap().gap(px(space::LINE)).children(chips))
+        .children(next.map(|model| {
+            div()
+                .debug_selector(|| "settings-next-model".into())
+                .font_family(MONO)
+                .text_size(px(size::SMALL))
+                .text_color(if picked { Tokens::cyan() } else { Tokens::text_dim().into() })
+                .child(if picked {
+                    format!("Next New session: {model} (picked for one session)")
+                } else {
+                    format!("Next New session: {model}")
+                })
+        }))
         .into_any_element()
 }
 
@@ -265,10 +375,18 @@ fn secrets(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         div().flex().flex_col().gap(px(space::LINE)).child(card).children(form).into_any_element()
     });
     let rows: Vec<AnyElement> = rows.collect();
+    let empty = rows.is_empty();
     section("Secrets", None)
         .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(match s.store() {
             Some(store) => format!("Kept by deckd in the {store}. The window shows names and fingerprints only."),
             None => "Kept by deckd. The window shows names and fingerprints only.".into(),
+        }))
+        .children(empty.then(|| {
+            div()
+                .debug_selector(|| "settings-secrets-empty".into())
+                .text_size(px(size::LABEL))
+                .text_color(Tokens::text_dim())
+                .child("No keys yet. A provider's key name appears here; Set stores the value with deckd, which fetches it per request for a task that uses it.")
         }))
         .children(rows)
         .into_any_element()
