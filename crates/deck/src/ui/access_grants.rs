@@ -36,10 +36,12 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .flex()
                     .flex_col()
                     .gap(px(space::DETAIL))
-                    .child(div().font_family(MONO).text_size(px(size::LABEL)).child(grant.destination.clone()))
+                    .child(
+                        div().font_family(MONO).text_size(size::scaled(size::LABEL)).child(grant.destination.clone()),
+                    )
                     .child(
                         div()
-                            .text_size(px(size::SMALL))
+                            .text_size(size::scaled(size::SMALL))
                             .text_color(Tokens::text_dim())
                             .child(deck.access.grant_detail(grant, now)),
                     ),
@@ -70,8 +72,8 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .flex()
                     .flex_col()
                     .gap(px(space::DETAIL))
-                    .child(div().font_family(MONO).text_size(px(size::LABEL)).child(item.destination.clone()))
-                    .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(format!(
+                    .child(div().font_family(MONO).text_size(size::scaled(size::LABEL)).child(item.destination.clone()))
+                    .child(div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_dim()).child(format!(
                         "{} · {} · {}",
                         item.gateway,
                         item.operation,
@@ -110,7 +112,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(eyebrow("Additional access"))
                 .child(
                     div()
-                        .text_size(px(size::SMALL))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child("Grants for this task and saved rules for its project."),
                 )

@@ -43,7 +43,7 @@ pub fn chip(dot: Dot, label: &str) -> gpui::Div {
         .border_1()
         .border_color(super::theme::tint(dot_color(dot), 0.3))
         .bg(super::theme::tint(dot_color(dot), 0.08))
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
         .child(glyph(icon::BRANCH, 9.).flex_none().text_color(dot_color(dot)))
         .child(div().min_w_0().truncate().font_family(MONO).child(label.to_owned()))
@@ -54,7 +54,7 @@ fn row(label: &'static str, value: impl Into<String>) -> AnyElement {
         .flex()
         .gap(px(space::SECTION))
         .child(div().w(px(110.)).flex_none().text_color(Tokens::text_faint()).child(label))
-        .child(div().min_w_0().truncate().font_family(MONO).text_size(px(size::LABEL)).child(value.into()))
+        .child(div().min_w_0().truncate().font_family(MONO).text_size(size::scaled(size::LABEL)).child(value.into()))
         .into_any_element()
 }
 
@@ -81,7 +81,9 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .items_center()
                 .gap(px(space::STACK))
                 .child(super::panels::icon_tile(icon::GITHUB, Tokens::violet(), 26.))
-                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Publication"))
+                .child(
+                    div().font_weight(FontWeight::SEMIBOLD).text_size(size::scaled(size::TITLE)).child("Publication"),
+                )
                 .child(div().text_color(Tokens::text_faint()).child(title))
                 .child(div().flex_1())
                 .child(
@@ -134,7 +136,11 @@ fn details(view: &View, confirm: bool, cx: &mut Context<Deck>) -> AnyElement {
         .children((!checks.is_empty()).then(|| {
             div().flex().flex_col().gap(px(space::TIGHT)).pt(px(space::DETAIL)).children(checks).into_any_element()
         }))
-        .children(view.note.clone().map(|n| div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(n)))
+        .children(
+            view.note
+                .clone()
+                .map(|n| div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(n)),
+        )
         .child(
             div()
                 .flex()
@@ -155,7 +161,7 @@ fn details(view: &View, confirm: bool, cx: &mut Context<Deck>) -> AnyElement {
         )
         .children(confirm.then(|| {
             div()
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::amber())
                 .child("Destroying deletes the task's VM and disk. The pull request stays on GitHub.")
         }))

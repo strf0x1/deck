@@ -609,6 +609,7 @@ fn credential_retry_instructions_fit_the_access_panel_at_supported_widths(cx: &m
             );
         }
     }
+    scroll_into_view(&mut cx, "access-revoke-1", "access-body");
     click_control(&mut cx, "access-revoke-1");
     assert_eq!(
         deck.read_with(&cx, |d, _| d.access().confirming().map(|target| target.label())),
@@ -2597,6 +2598,12 @@ fn settings_forms_take_typing_by_real_keys_and_a_secret_never_reaches_the_compos
     // The secret field is masked, and its value leaves on submit.
     click_control(&mut cx, "settings-secret-set-0");
     cx.simulate_input("sk-typed-in-the-window");
+    cx.simulate_keystrokes("ctrl-= cmd-shift-= ctrl-0");
+    deck.read_with(&cx, |d, _| {
+        let Some(Form::Secret { value, .. }) = d.settings().form() else { panic!("missing secret form") };
+        assert_eq!(value.text(), "sk-typed-in-the-window", "resize keys cannot type into or clear a secret field");
+        assert_eq!(d.typography().percent(), 100);
+    });
     cx.run_until_parked();
     deck.read_with(&cx, |d, _| {
         assert_eq!(d.settings().focused(), Some(Field::Secret));
@@ -2784,6 +2791,13 @@ fn settings_fetch_a_providers_models_search_them_and_add_one(cx: &mut TestAppCon
         deck.read_with(cx, |d, _| d.settings().discovery().is_some_and(|m| !m.loading && m.models.len() == 3))
     });
 
+    vcx.simulate_keystrokes("ctrl-= ctrl-= ctrl-= ctrl-=");
+    vcx.run_until_parked();
+    let row = vcx.debug_bounds("settings-model-0").unwrap();
+    let label = vcx.debug_bounds("settings-model-label-0").unwrap();
+    assert!(label.top() >= row.top() && label.bottom() <= row.bottom(), "fetched-model text must fit at 140%");
+    vcx.simulate_keystrokes("ctrl-0");
+
     // Search is the flow: the tool-less model is not offered, and one word
     // narrows to one row.
     deck.read_with(&vcx, |d, _| assert_eq!(d.settings().discovery_shown(), Some((2, 2))));
@@ -2815,6 +2829,10 @@ fn the_session_model_menu_opens_settings_on_the_provider_to_manage(cx: &mut Test
     let (deck, mut cx) = open(cx);
     deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
     cx.run_until_parked();
+    click_control(&mut cx, "sidebar-settings");
+    click_control(&mut cx, "settings-appearance");
+    assert!(deck.read_with(&cx, |d, _| d.appearance_open()));
+    cx.simulate_keystrokes("escape");
     click_control(&mut cx, "hdr-model");
     click_control(&mut cx, "hdr-model-manage");
     // A headless deck has no daemon, so the load the pane started never
@@ -2823,6 +2841,7 @@ fn the_session_model_menu_opens_settings_on_the_provider_to_manage(cx: &mut Test
     cx.run_until_parked();
     deck.read_with(&cx, |d, _| {
         assert!(d.settings().is_open());
+        assert!(!d.appearance_open(), "Manage models must show the provider form after an Appearance trial");
         let Some(Form::Provider { editing, .. }) = d.settings().form() else { panic!("no provider form") };
         assert_eq!((editing.as_deref(), d.settings().focused()), (Some("openrouter"), Some(Field::Models)));
     });
@@ -2938,4 +2957,121 @@ fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut Tes
     let _ = deckd.kill();
     let _ = deckd.wait();
     let _ = std::fs::remove_dir_all(&data);
+}
+
+fn scroll_into_view(cx: &mut VisualTestContext, target: &'static str, viewport: &'static str) {
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds(target).unwrap();
+    let pane = cx.debug_bounds(viewport).unwrap();
+    let delta = if bounds.bottom() > pane.bottom() {
+        pane.bottom() - bounds.bottom() - px(12.)
+    } else if bounds.top() < pane.top() {
+        pane.top() - bounds.top() + px(12.)
+    } else {
+        px(0.)
+    };
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position: pane.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), delta)),
+                modifiers: Modifiers::none(),
+                touch_phase: gpui::TouchPhase::Moved,
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn text_resize_keys_work_before_permissions_and_preserve_the_draft(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    cx.simulate_keystrokes("h i");
+    for (keys, percent) in [
+        ("ctrl-=", 110),
+        ("ctrl-shift-=", 120),
+        ("ctrl-+", 130),
+        ("ctrl--", 120),
+        ("ctrl-0", 100),
+        ("cmd-=", 110),
+        ("cmd-shift-=", 120),
+        ("cmd-+", 130),
+        ("cmd--", 120),
+        ("cmd-0", 100),
+    ] {
+        cx.simulate_keystrokes(keys);
+        deck.read_with(&cx, |d, _| {
+            assert_eq!(d.typography().percent(), percent, "{keys}");
+            assert_eq!(d.draft(), "hi");
+        });
+    }
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Permission {
+                request: json!(83),
+                title: "Read files".into(),
+                options: vec![PermissionOption { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() }],
+            },
+            cx,
+        )
+    });
+    cx.simulate_keystrokes("ctrl-= ctrl-1 cmd-1 alt-1");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.typography().percent(), 110);
+        assert!(d.session().ask.is_some());
+        assert_eq!(d.draft(), "hi");
+    });
+    deck.update(&mut cx, |d, cx| d.on_boundary(approval("font-test"), cx));
+    cx.simulate_keystrokes("cmd-= ctrl-1 cmd-2 alt-3");
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.typography().percent(), 120);
+        assert!(d.boundary().pending().is_some());
+        assert!(d.session().ask.is_some());
+    });
+    click_control(&mut cx, "hdr-access");
+    cx.simulate_keystrokes("ctrl-= cmd-0");
+    assert_eq!(deck.read_with(&cx, |d, _| d.typography().percent()), 100);
+}
+
+#[gpui::test]
+fn appearance_controls_live_inside_settings_and_resize_real_markdown(cx: &mut TestAppContext) {
+    use gpui::size;
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Message("Review the changes and run the tests.\n\n```rust\nlet ready = true;\n```".into()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let normal = cx.debug_bounds("agent-prose").unwrap();
+    let normal_code = cx.debug_bounds("agent-code").unwrap();
+    cx.simulate_keystrokes("ctrl-= ctrl-= ctrl-= ctrl-=");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("agent-prose").unwrap().size.height > normal.size.height);
+    assert!(cx.debug_bounds("agent-code").unwrap().size.height > normal_code.size.height);
+    cx.simulate_input("keep this draft");
+    click_control(&mut cx, "sidebar-settings");
+    click_control(&mut cx, "settings-appearance");
+    assert!(deck.read_with(&cx, |d, _| d.appearance_open()));
+    for (width, height) in [(1180., 760.), (760., 480.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+        for selector in ["appearance", "settings-close", "type-larger", "type-smaller"] {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            assert!(bounds.left() >= px(0.) && bounds.right() <= px(width), "{selector} at {width}: {bounds:?}");
+            assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(height), "{selector} at {height}: {bounds:?}");
+        }
+    }
+    cx.simulate_keystrokes("ctrl-0");
+    click_control(&mut cx, "type-larger");
+    assert_eq!(deck.read_with(&cx, |d, _| d.typography().percent()), 110);
+    cx.simulate_keystrokes("a 1 enter cmd-0 escape");
+    deck.read_with(&cx, |d, _| {
+        assert!(!d.settings().is_open());
+        assert!(!d.appearance_open());
+        assert_eq!(d.typography().percent(), 100);
+        assert_eq!(d.draft(), "keep this draft");
+    });
 }

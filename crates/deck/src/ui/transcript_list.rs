@@ -126,7 +126,10 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .child(glyph(icon::BOLT, 22.)),
             )
             .child(
-                div().text_size(px(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("What should we work on?"),
+                div()
+                    .text_size(size::scaled(size::DISPLAY))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("What should we work on?"),
             )
             .child(
                 div().text_color(Tokens::text_faint()).child("The agent's work, tool calls and questions land here."),
@@ -165,7 +168,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .border_color(tint(Tokens::cyan(), 0.5))
                 .bg(Tokens::float())
                 .shadow(glow(Tokens::cyan(), 0.5))
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::cyan())
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {

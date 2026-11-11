@@ -71,7 +71,7 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
             div()
                 .id(("settings-model", i))
                 .debug_selector(move || format!("settings-model-{i}"))
-                .h(px(26.))
+                .min_h(px(26.))
                 .px(px(space::TIGHT))
                 .flex()
                 .items_center()
@@ -81,13 +81,26 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
                 .hover(|style| style.bg(Tokens::raised_hover()))
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_model(&id, cx)))
                 .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 9.).text_color(Tokens::lime()))))
-                .child(div().font_family(MONO).text_size(px(size::SMALL)).child(model.id.clone()))
+                .child(
+                    div()
+                        .debug_selector(move || format!("settings-model-label-{i}"))
+                        .font_family(MONO)
+                        .text_size(size::scaled(size::SMALL))
+                        .child(model.id.clone()),
+                )
                 .children((model.name != model.id && !model.name.is_empty()).then(|| {
-                    div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(model.name.clone())
+                    div()
+                        .text_size(size::scaled(size::SMALL))
+                        .text_color(Tokens::text_faint())
+                        .child(model.name.clone())
                 }))
                 .child(div().flex_1())
                 .children(context.map(|tokens| {
-                    div().font_family(MONO).text_size(px(size::MICRO)).text_color(Tokens::text_faint()).child(tokens)
+                    div()
+                        .font_family(MONO)
+                        .text_size(size::scaled(size::MICRO))
+                        .text_color(Tokens::text_faint())
+                        .child(tokens)
                 }))
         })
         .collect::<Vec<_>>();
@@ -97,7 +110,11 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
         } else {
             (Tokens::red(), error.clone())
         };
-        div().debug_selector(|| "settings-models-error".into()).text_size(px(size::SMALL)).text_color(color).child(text)
+        div()
+            .debug_selector(|| "settings-models-error".into())
+            .text_size(size::scaled(size::SMALL))
+            .text_color(color)
+            .child(text)
     });
     let search: Option<AnyElement> = (!discovery.models.is_empty()).then(|| {
         let body: AnyElement = if focused {
@@ -120,7 +137,7 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
             .border_color(if focused { tint(Tokens::accent(), 0.55) } else { Tokens::edge().into() })
             .bg(Tokens::raised())
             .font_family(MONO)
-            .text_size(px(size::SMALL))
+            .text_size(size::scaled(size::SMALL))
             .cursor_text()
             .on_click(cx.listener(|this, _, _, cx| this.focus_settings_field(Field::Search, cx)))
             .child(glyph(icon::SEARCH, 10.).text_color(Tokens::text_faint()))
@@ -169,9 +186,9 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
         .child(
             div().id("settings-models-list").flex().flex_col().max_h(px(260.)).overflow_y_scroll().children(model_rows),
         )
-        .children(
-            footer.map(|text| div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(text.to_owned())),
-        )
+        .children(footer.map(|text| {
+            div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(text.to_owned())
+        }))
         .into_any_element()
 }
 
@@ -179,7 +196,7 @@ fn fetch_row(cx: &mut Context<Deck>, url: &str, saved: &str) -> AnyElement {
     if saved != url.trim() {
         return div()
             .debug_selector(|| "settings-fetch-unsaved".into())
-            .text_size(px(size::SMALL))
+            .text_size(size::scaled(size::SMALL))
             .text_color(Tokens::text_faint())
             .child("Save the new URL first, then fetch its models.")
             .into_any_element();
@@ -195,7 +212,7 @@ fn fetch_row(cx: &mut Context<Deck>, url: &str, saved: &str) -> AnyElement {
         )
         .child(
             div()
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::text_faint())
                 .child(format!("Ask {url} for the models it serves, then click one to add it.")),
         )
@@ -246,7 +263,11 @@ fn form_card(title: String, rows: Vec<AnyElement>, hint: &str, busy: bool, cx: &
                         })),
                 )
                 .child(
-                    div().flex_1().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(hint.to_owned()),
+                    div()
+                        .flex_1()
+                        .text_size(size::scaled(size::SMALL))
+                        .text_color(Tokens::text_faint())
+                        .child(hint.to_owned()),
                 ),
         )
         .into_any_element()
@@ -277,7 +298,7 @@ fn field_row(
                 .flex_none()
                 .w(px(78.))
                 .pt(px(5.))
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .text_color(Tokens::text_dim())
                 .child(label),
         )
@@ -294,7 +315,7 @@ fn field_row(
                 .border_color(if focused { tint(Tokens::accent(), 0.55) } else { Tokens::edge().into() })
                 .bg(Tokens::sunken())
                 .font_family(MONO)
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .cursor_text()
                 .on_click(cx.listener(move |this, _, _, cx| this.focus_settings_field(field, cx)))
                 .child(body),
@@ -318,7 +339,7 @@ pub(super) fn status(color: Hsla, label: String) -> gpui::Div {
         .flex()
         .items_center()
         .gap(px(space::TIGHT))
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .text_color(color)
         .child(div().flex_none().size(px(6.)).rounded_full().bg(color))
         // Clipped, not truncated: a truncating text in a flex row measures as
@@ -332,7 +353,7 @@ pub(super) fn tag(label: &'static str, color: Hsla) -> gpui::Div {
         .rounded_full()
         .bg(tint(color, 0.12))
         .text_color(color)
-        .text_size(px(size::MICRO))
+        .text_size(size::scaled(size::MICRO))
         .font_family(MONO)
         .child(label)
 }
@@ -348,7 +369,7 @@ pub(super) fn banner(g: &'static str, color: Hsla, text: String) -> AnyElement {
         .border_1()
         .border_color(tint(color, 0.25))
         .bg(tint(color, 0.06))
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
         .child(glyph(g, 10.).text_color(color))
         .child(div().flex_1().min_w_0().child(text))
@@ -383,7 +404,7 @@ pub(super) fn confirm(target: &Confirm, cx: &mut Context<Deck>) -> AnyElement {
         .border_color(tint(Tokens::red(), 0.35))
         .bg(tint(Tokens::red(), 0.06))
         .child(div().font_weight(FontWeight::MEDIUM).child(title))
-        .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(detail))
+        .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(detail))
         .child(
             div()
                 .flex()

@@ -91,7 +91,7 @@ pub(super) fn tile(letter: char, hue: gpui::Hsla, selected: bool, size: f32) -> 
         .border_color(tint(hue, if selected { 0.55 } else { 0.22 }))
         .bg(tint(hue, if selected { 0.22 } else { 0.1 }))
         .text_color(tint(hue, if selected { 1. } else { 0.8 }))
-        .child(div().font_weight(FontWeight::BOLD).text_size(px(font)).child(letter.to_string()))
+        .child(div().font_weight(FontWeight::BOLD).text_size(size::scaled(font)).child(letter.to_string()))
 }
 
 pub(super) fn count_badge(count: usize) -> AnyElement {
@@ -110,7 +110,7 @@ pub(super) fn count_badge(count: usize) -> AnyElement {
                 .rounded_full()
                 .bg(Tokens::amber())
                 .shadow(glow(Tokens::amber(), 0.8))
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::ink())
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(count.to_string()),

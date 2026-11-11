@@ -38,6 +38,7 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
         Row::Summary(turn) => super::turn_footer::footer(deck, turn.clone(), cx),
         Row::One(i) => match &entries[*i] {
             Entry::You(t) => div()
+                .text_size(size::scaled(size::BODY))
                 .flex()
                 .justify_end()
                 .items_center()
@@ -58,9 +59,10 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                 )
                 .into_any_element(),
             Entry::Agent(t) => div()
+                .debug_selector(|| "agent-prose".into())
                 .flex()
                 .gap(px(space::TIGHT))
-                .child(div().flex_1().min_w_0().max_w(relative(0.9)).child(prose::prose(t)))
+                .child(div().flex_1().min_w_0().max_w(relative(0.9)).child(prose::prose(t, &deck.typography)))
                 .child(copy::button(deck, key, t.clone(), cx))
                 .into_any_element(),
             Entry::Thought(t) => super::folds::thought(t, key, open, selected, cx),
@@ -127,7 +129,7 @@ pub(super) fn frame(selected: bool) -> Div {
 }
 
 pub(super) fn mono() -> Div {
-    div().font_family(MONO).text_size(px(size::SMALL))
+    div().font_family(MONO).text_size(size::scaled(size::SMALL))
 }
 
 pub(super) fn more(n: usize, what: &str, open: bool) -> Div {
@@ -136,7 +138,7 @@ pub(super) fn more(n: usize, what: &str, open: bool) -> Div {
         .py(px(5.))
         .border_t_1()
         .border_color(Tokens::edge())
-        .text_size(px(size::SMALL))
+        .text_size(size::scaled(size::SMALL))
         .bg(Tokens::sunken())
         .text_color(Tokens::text_dim())
         .child(if open { "show less".to_string() } else { format!("{n} more {what} ⌄") })
@@ -185,13 +187,14 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         .child(
             div()
                 .flex_none()
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(hue)
                 .child(label),
         )
         .child(
             mono()
+                .font_family(deck.typography.code.family())
                 .flex_1()
                 .min_w_0()
                 .truncate()
@@ -208,11 +211,11 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         .child(glyph(g, 11.).flex_none().text_color(color));
     let body = match call.kind {
         ToolKind::Execute => {
-            let output = super::card_body::output(&transcript::output(call), open);
+            let output = super::card_body::output(&transcript::output(call), open, &deck.typography);
             let command = open
                 .then(|| transcript::command(call))
                 .flatten()
-                .map(|c| super::card_body::command(&c, format!("card-command-{header_key}")));
+                .map(|c| super::card_body::command(&c, format!("card-command-{header_key}"), &deck.typography));
             match (command, output) {
                 (Some(command), Some(output)) => {
                     Some(div().flex().flex_col().child(command).child(output).into_any_element())
@@ -220,8 +223,8 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
                 (command, output) => command.or(output),
             }
         }
-        _ if !changes.is_empty() => Some(super::card_body::diff(&changes, open)),
-        _ if open => super::card_body::output(&transcript::output(call), true),
+        _ if !changes.is_empty() => Some(super::card_body::diff(&changes, open, &deck.typography)),
+        _ if open => super::card_body::output(&transcript::output(call), true, &deck.typography),
         _ => None,
     };
     let fade = deck.motion.reveal(&header_key);

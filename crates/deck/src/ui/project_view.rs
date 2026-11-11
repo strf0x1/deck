@@ -35,7 +35,7 @@ pub fn project_view(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .border_1()
             .border_color(tint(Tokens::violet(), 0.25))
             .bg(tint(Tokens::violet(), 0.05))
-            .text_size(px(size::LABEL))
+            .text_size(size::scaled(size::LABEL))
             .text_color(Tokens::text_dim())
             .child(super::panels::icon_tile(icon::SHIELD, Tokens::violet(), 26.))
             .child("A task sees the project's tracked and untracked files, but not ignored ones.")
@@ -73,7 +73,7 @@ pub fn project_view(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .min_w_0()
                         .truncate()
                         .font_family(MONO)
-                        .text_size(px(size::SMALL))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child(agent),
                 )
@@ -91,7 +91,7 @@ pub fn project_view(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .border_1()
                         .border_color(tint(Tokens::violet(), 0.3))
                         .bg(tint(Tokens::violet(), 0.07))
-                        .text_size(px(size::SMALL))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_dim())
                         .cursor_pointer()
                         .hover(|style| style.bg(tint(Tokens::violet(), 0.16)).text_color(Tokens::text()))
@@ -121,7 +121,7 @@ fn header(name: &str, checkout: Option<&str>, checkouts: usize) -> AnyElement {
                 .child(
                     div()
                         .debug_selector(|| "project-view-name".into())
-                        .text_size(px(size::DISPLAY))
+                        .text_size(size::scaled(size::DISPLAY))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(name.to_string()),
                 )
@@ -129,7 +129,7 @@ fn header(name: &str, checkout: Option<&str>, checkouts: usize) -> AnyElement {
                     div()
                         .debug_selector(|| "project-view-checkout".into())
                         .font_family(MONO)
-                        .text_size(px(size::SMALL))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child(line)
                 })),
@@ -176,11 +176,11 @@ fn card_row(card: &Card, cx: &mut Context<Deck>) -> AnyElement {
                 .child(
                     div()
                         .truncate()
-                        .text_size(px(size::BODY))
+                        .text_size(size::scaled(size::BODY))
                         .font_weight(FontWeight::MEDIUM)
                         .child(lane.title.clone()),
                 )
-                .child(div().truncate().text_size(px(size::SMALL)).child(line)),
+                .child(div().truncate().text_size(size::scaled(size::SMALL)).child(line)),
         )
         .children(chip)
         .child(super::panels::glyph(icon::CHEVRON_RIGHT, 9.).text_color(Tokens::text_faint()))

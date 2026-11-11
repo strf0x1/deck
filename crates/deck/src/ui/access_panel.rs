@@ -59,7 +59,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .flex_1()
                                 .min_w_0()
                                 .font_family(MONO)
-                                .text_size(px(size::LABEL))
+                                .text_size(size::scaled(size::LABEL))
                                 .child(item.name.clone()),
                         )
                         .child(
@@ -69,7 +69,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                                 .flex()
                                 .items_center()
                                 .gap(px(space::TIGHT))
-                                .text_size(px(size::SMALL))
+                                .text_size(size::scaled(size::SMALL))
                                 .text_color(color)
                                 .child(div().size(px(6.)).rounded_full().bg(color))
                                 .child(label),
@@ -97,7 +97,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .w_full()
                         .whitespace_normal()
                         .font_family(MONO)
-                        .text_size(px(size::SMALL))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child(detail),
                 )
@@ -112,6 +112,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     });
     let contents = div()
         .id("access-body")
+        .debug_selector(|| "access-body".into())
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
@@ -127,7 +128,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(super::panels::eyebrow("Credentials"))
                 .child(
                     div()
-                        .text_size(px(size::SMALL))
+                        .text_size(size::scaled(size::SMALL))
                         .text_color(Tokens::text_faint())
                         .child("Values stay on the host. This lists names and fingerprints only."),
                 )
@@ -150,7 +151,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .items_center()
                 .gap(px(space::STACK))
                 .child(super::panels::icon_tile(icon::SHIELD, Tokens::violet(), 26.))
-                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(size::TITLE)).child("Access"))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(size::scaled(size::TITLE)).child("Access"))
                 .child(div().flex_1())
                 .child(
                     button("access-refresh", "Refresh", Tokens::text_dim())
@@ -179,7 +180,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .border_1()
                 .border_color(tint(color, 0.25))
                 .bg(tint(color, 0.06))
-                .text_size(px(size::SMALL))
+                .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::text_dim())
                 .child(glyph(g, 10.).text_color(color))
                 .child(text)
@@ -190,7 +191,11 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .children(access.revoked().map(notice))
         .children(access.revoke_error().map(error))
         .children(access.retry_message().map(|message| {
-            div().flex_none().text_size(px(size::SMALL)).text_color(Tokens::text_dim()).child(message.to_owned())
+            div()
+                .flex_none()
+                .text_size(size::scaled(size::SMALL))
+                .text_color(Tokens::text_dim())
+                .child(message.to_owned())
         }))
         .child(contents)
         .into_any_element()
@@ -219,9 +224,12 @@ fn approval_mode(mode: deck_runtime::github::Approvals) -> AnyElement {
         .flex_col()
         .gap(px(3.))
         .child(
-            div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(format!("GitHub approvals: {label}")),
+            div()
+                .text_size(size::scaled(size::LABEL))
+                .text_color(Tokens::text_dim())
+                .child(format!("GitHub approvals: {label}")),
         )
-        .child(div().text_size(px(size::SMALL)).text_color(Tokens::text_faint()).child(detail))
+        .child(div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(detail))
         .into_any_element()
 }
 
@@ -237,7 +245,7 @@ fn confirm(target: &Revoke, busy: bool, cx: &mut Context<Deck>) -> AnyElement {
         .bg(tint(Tokens::red(), 0.06))
         .flex_none()
         .child(div().font_weight(FontWeight::MEDIUM).child(format!("Revoke {}?", target.label())))
-        .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(target.explanation()))
+        .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(target.explanation()))
         .child(
             div()
                 .flex()
@@ -275,7 +283,7 @@ fn notice(target: &Revoke) -> AnyElement {
         .bg(tint(Tokens::amber(), 0.06))
         .flex_none()
         .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} revoked", target.label())))
-        .child(div().text_size(px(size::LABEL)).text_color(Tokens::text_dim()).child(text))
+        .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(text))
         .into_any_element()
 }
 
@@ -283,7 +291,7 @@ pub(super) fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<
     let fg = fg.into();
     div()
         .id(id.into())
-        .h(px(28.))
+        .min_h(px(28.))
         .px(px(space::INSET))
         .flex()
         .items_center()
@@ -293,7 +301,7 @@ pub(super) fn button(id: impl Into<gpui::ElementId>, label: &str, fg: impl Into<
         .bg(tint(fg, 0.06))
         .hover(move |style| style.bg(tint(fg, 0.14)))
         .text_color(fg)
-        .text_size(px(size::LABEL))
+        .text_size(size::scaled(size::LABEL))
         .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
         .child(label.to_owned())

@@ -15,7 +15,8 @@ use super::composer;
 use super::editor::Editor;
 use super::rail::Rail;
 use super::session::Session;
-use super::theme::{SANS, Tokens, size, tint};
+use super::theme::{Tokens, size, tint};
+use super::typography::Typography;
 use super::{chrome, conversation, sidebar_view};
 use deck_acp::{Client, Inbound};
 use deck_runtime::approvals::{Approval, Decision, State};
@@ -36,6 +37,8 @@ pub const LIVE: usize = 0;
 const GUTTER: f32 = 12.;
 
 pub struct Deck {
+    pub(super) typography: Typography,
+    pub(super) appearance_open: bool,
     pub(super) focus: FocusHandle,
     pub(super) board: Board,
     pub(super) rail: Rail,
@@ -132,6 +135,8 @@ impl Deck {
     /// A Deck with no agent attached: tests feed it events with [`Deck::on_inbound`].
     pub fn detached(cx: &mut Context<Self>) -> Self {
         Deck {
+            typography: Typography::default(),
+            appearance_open: false,
             focus: cx.focus_handle(),
             board: Board::new(lanes()),
             rail: Rail::new(),
@@ -566,6 +571,16 @@ impl Deck {
     /// key here, so typed text never reaches the field behind a card.
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
+        if self.resize_text(ev, cx) {
+            return cx.stop_propagation();
+        }
+        if self.appearance_open() {
+            cx.stop_propagation();
+            if k.key == "escape" {
+                self.toggle_settings(cx);
+            }
+            return;
+        }
         if self.settings.picking() && k.key == "escape" {
             cx.stop_propagation();
             return self.toggle_model_picker(cx);
@@ -593,6 +608,9 @@ impl Deck {
         }
         if self.current().session.ask.is_some() && !self.current().boundary.is_reviewing() {
             cx.stop_propagation();
+            if k.modifiers.control || k.modifiers.platform || k.modifiers.alt {
+                return;
+            }
             match k.key.as_str() {
                 "escape" => self.choose(None, cx),
                 d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) && d != "0" => {
@@ -605,6 +623,9 @@ impl Deck {
         }
         if self.current().boundary.pending().is_some() {
             cx.stop_propagation();
+            if k.modifiers.control || k.modifiers.platform || k.modifiers.alt {
+                return;
+            }
             match k.key.as_str() {
                 "1" => self.decide_boundary(Decision::Once, cx),
                 "2" => self.decide_boundary(Decision::Timed, cx),
@@ -664,6 +685,7 @@ impl Focusable for Deck {
 
 impl Render for Deck {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(px(self.typography.base_px()));
         self.sync_transcript();
         // Aim the pill before stepping, so it starts moving this frame.
         self.motion.pill_to(self.scrolled_back());
@@ -699,8 +721,8 @@ impl Render for Deck {
             .gap(px(GUTTER))
             .p(px(GUTTER))
             .bg(Tokens::base())
-            .font_family(SANS)
-            .text_size(px(size::BODY))
+            .font_family(self.typography.interface.family())
+            .text_size(size::scaled(size::LABEL))
             .text_color(Tokens::text())
             .child(ambient())
             .child(div().flex_none().w(px(self.rail.reserved())))

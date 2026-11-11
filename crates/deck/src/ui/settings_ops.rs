@@ -90,16 +90,19 @@ impl Deck {
     }
 
     pub fn add_provider(&mut self, cx: &mut Context<Self>) {
+        self.appearance_open = false;
         self.settings.add_provider();
         cx.notify();
     }
 
     pub fn edit_provider(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.appearance_open = false;
         self.settings.edit_provider(name);
         cx.notify();
     }
 
     pub fn edit_models(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.appearance_open = false;
         self.settings.edit_models(name);
         cx.notify();
     }
@@ -145,6 +148,7 @@ impl Deck {
     /// The session header's Manage models: open the pane on the provider the
     /// next session would start on, once its settings have loaded.
     pub fn manage_models(&mut self, cx: &mut Context<Self>) {
+        self.appearance_open = false;
         let provider = self.settings.session_model().and_then(|model| model.split_once('/').map(|(p, _)| p.to_owned()));
         self.settings.manage(provider);
         if self.settings.picking() {
@@ -186,6 +190,7 @@ impl Deck {
     }
 
     pub fn open_secret(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.appearance_open = false;
         self.settings.open_secret(name);
         cx.notify();
     }

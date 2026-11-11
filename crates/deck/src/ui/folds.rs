@@ -82,7 +82,7 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
         .child(
             div()
                 .flex_none()
-                .text_size(px(size::LABEL))
+                .text_size(size::scaled(size::LABEL))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(Tokens::sky())
                 .child(format!("Looked at {}", tools.len())),

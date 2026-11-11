@@ -16,6 +16,8 @@ use gpui::{Background, BoxShadow, Hsla, Rgba, linear_color_stop, linear_gradient
 pub const SANS: &str = "Adwaita Sans";
 /// Code, tool calls, and Nerd Font icons.
 pub const MONO: &str = "JetBrainsMono Nerd Font";
+/// Icons never inherit a selected output font or its masking features.
+pub const ICONS: &str = "JetBrainsMono Nerd Font";
 
 /// Nerd Font (Font Awesome range) glyphs; render with [`MONO`].
 pub mod icon {
@@ -68,17 +70,22 @@ pub mod icon {
 /// Text sizes by role. Six steps: views pick a role, never a number.
 pub mod size {
     /// Key hints, language labels, counters on chips.
-    pub const MICRO: f32 = 10.5;
+    pub const MICRO: f32 = 11.;
     /// Mono detail: tool subjects, diffs, output, the status row.
-    pub const SMALL: f32 = 11.5;
+    pub const SMALL: f32 = 13.;
     /// Interface labels: buttons, card kinds, pills.
-    pub const LABEL: f32 = 12.5;
+    pub const LABEL: f32 = 14.;
     /// Reading text: prose, the prompt, the transcript.
-    pub const BODY: f32 = 13.5;
+    pub const BODY: f32 = 15.;
     /// Pane titles and second-level headings.
-    pub const TITLE: f32 = 15.;
+    pub const TITLE: f32 = 17.;
     /// The empty state and first-level headings.
-    pub const DISPLAY: f32 = 17.;
+    pub const DISPLAY: f32 = 21.;
+
+    /// Role sizes scale together from a 14px rem base set by the window.
+    pub fn scaled(pixels: f32) -> gpui::Rems {
+        gpui::rems(pixels / 14.)
+    }
 }
 
 /// Corner radii by role, from the smallest mark to a pane.
