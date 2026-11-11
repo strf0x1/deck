@@ -198,6 +198,16 @@ pub(crate) enum Request {
         settings: crate::settings::Settings,
         revision: u64,
     },
+    /// Store a value from a window (ADR 0012 §3). Replies with the name's
+    /// listing; the value is in this request only and is never logged.
+    SetCredential {
+        name: String,
+        value: crate::credentials::Secret,
+    },
+    /// Remove a name from the store.
+    DeleteCredential {
+        name: String,
+    },
     /// A capable window attaches to this task for the connection's lifetime.
     Watch {
         task: String,
@@ -258,7 +268,11 @@ impl Request {
         {
             bail!("invalid approval id");
         }
-        if let Self::Credential { name, .. } | Self::RevokeCredential { name } | Self::RetryCredential { name } = self
+        if let Self::Credential { name, .. }
+        | Self::RevokeCredential { name }
+        | Self::RetryCredential { name }
+        | Self::SetCredential { name, .. }
+        | Self::DeleteCredential { name } = self
             && !crate::credentials::valid_name(name)
         {
             bail!("invalid credential name");

@@ -1154,6 +1154,64 @@ fn credential_file(name: &str, pairs: &[(&str, &str)]) -> PathBuf {
 }
 
 #[test]
+fn a_window_sets_and_deletes_a_value_that_never_reaches_a_reply_or_the_log() {
+    use deck_runtime::credentials::Secret;
+    const VALUE: &str = "sk-entered-in-the-window-0123";
+    let file = credential_file("set-from-window", &[]);
+    let data = Daemon::data("set-from-window");
+    let log = data.join("deckd.stderr");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deckd"))
+        .arg("--data")
+        .arg(&data)
+        .arg("--idle-ms")
+        .arg(IDLE.as_millis().to_string())
+        .env("DECK_CREDENTIALS", &file)
+        .env_remove("CONSTRUCT_BASE_URL")
+        .env_remove("CONSTRUCT_MODEL")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    let client = loop {
+        if let Ok(client) = DaemonClient::connect(&data) {
+            break client;
+        }
+        assert!(Instant::now() < deadline, "daemon did not open its socket");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    let listed = client.set_credential("OPENROUTER_API_KEY", Secret::new(VALUE)).unwrap();
+    assert_eq!(listed.name, "OPENROUTER_API_KEY");
+    assert!(listed.fingerprint.as_deref().is_some_and(|f| f.starts_with("sha256:")));
+    assert!(!serde_json::to_string(&listed).unwrap().contains(VALUE), "the reply carries no value");
+    assert!(std::fs::read_to_string(&file).unwrap().contains(VALUE), "the daemon's store holds it");
+    let names = client.stored_credentials().unwrap();
+    assert!(
+        names
+            .credentials
+            .iter()
+            .any(|item| item.name == "OPENROUTER_API_KEY" && item.fingerprint == listed.fingerprint)
+    );
+    assert!(client.set_credential("lower_case", Secret::new(VALUE)).is_err());
+
+    assert!(client.delete_credential("OPENROUTER_API_KEY").unwrap());
+    assert!(!client.delete_credential("OPENROUTER_API_KEY").unwrap());
+    assert!(!std::fs::read_to_string(&file).unwrap().contains(VALUE));
+
+    drop(client);
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "daemon did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("set OPENROUTER_API_KEY sha256:"), "{logged}");
+    assert!(!logged.contains(VALUE), "the value reached the daemon's log: {logged}");
+}
+
+#[test]
 fn cli_credential_list_uses_the_running_daemons_store() {
     let file = credential_file("cli-authority", &[("OPENAI_API_KEY", "daemon-key")]);
     let other = credential_file("cli-decoy", &[("OTHER_KEY", "cli-key")]);

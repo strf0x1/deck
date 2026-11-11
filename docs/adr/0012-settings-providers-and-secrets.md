@@ -139,8 +139,9 @@ This replaces 0004 §4.2's "Entering a value in the UI is deferred."
   store), never the value. `credential list` is unchanged.
 - The control socket is already user-only (0700 runtime directory). The
   value crosses it once, in one request line. `deckd` does not log request
-  lines that carry a value, and `wire.rs`'s `Debug` for `SetCredential`
-  redacts it.
+  lines that carry a value, and the value's type (`credentials::Secret`)
+  serializes as a plain string but redacts itself in `Debug` and has no
+  `Display`.
 - The window holds the typed value only in the field's editor while the
   field is open. Submitting sends it on a background task and clears the
   editor before the reply arrives. A failed write shows the error and

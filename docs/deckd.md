@@ -233,6 +233,19 @@ repository). These control requests serve it:
   it to `credentials/revoked.json` before replying, and pushes it to the
   watching gateways, which close the requests and GitHub operations that used
   it. A new value serves again; the revoked one never does.
+- `set_credential {name, value}` stores a value a window entered (ADR 0012
+  §3) through the same store as `deckd credential set`, and replies with the
+  name's listing (fingerprint, revoked state), never the value. The value is
+  a redacting type in `wire.rs`: its `Debug` prints `<redacted>`, and the log
+  line names only the name and new fingerprint. Putting back a revoked value
+  leaves it revoked. A replace does not close requests using the old value;
+  revoke does.
+- `delete_credential {name}` removes the name from the store and replies
+  whether anything was there. A task whose set names it gets
+  `deck_credential_missing` on its next request.
+
+Both store writes, like `revoke_credential`, run off the service lock on
+their own client connection, since an OS store may wait on a dialog.
 
 `deckd credential set NAME` (value on stdin), `delete NAME`, `list` (names,
 fingerprints, store, revoked state) and `revoke NAME` manage it. `list` and

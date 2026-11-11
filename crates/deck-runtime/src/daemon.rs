@@ -207,6 +207,16 @@ fn connection(
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
+            Ok(request @ (Request::SetCredential { .. } | Request::DeleteCredential { .. })) => {
+                // The store write happens here, off the service lock, like a
+                // revoke: an OS store may wait on a dialog.
+                let result = request.validate().and_then(|()| match request {
+                    Request::SetCredential { name, value } => Ok(serde_json::to_value(broker.set(&name, &value)?)?),
+                    Request::DeleteCredential { name } => Ok(json!(broker.delete(&name)?)),
+                    _ => unreachable!("matched a store write"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request)
                 if matches!(
                     &request,
@@ -587,7 +597,9 @@ impl Service {
             | Request::Credentials { .. }
             | Request::ListCredentials
             | Request::RetryCredential { .. }
-            | Request::RevokeCredential { .. } => unreachable!("handled before service dispatch"),
+            | Request::RevokeCredential { .. }
+            | Request::SetCredential { .. }
+            | Request::DeleteCredential { .. } => unreachable!("handled before service dispatch"),
         }
     }
 

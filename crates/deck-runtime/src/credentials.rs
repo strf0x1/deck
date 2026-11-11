@@ -30,6 +30,29 @@ pub const SERVICE: &str = "com.sprawlcommons.deck";
 /// How long one store read may take before it is reported unavailable.
 pub const READ_BOUND: Duration = Duration::from_secs(5);
 
+/// A credential value on its way into the store from a window (ADR 0012
+/// §3). It serializes as the plain string, but its `Debug` never shows it and
+/// it has no `Display`, so a logged request or error cannot carry it.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
 /// Whether `name` is a credential name: `[A-Z][A-Z0-9_]{0,63}`, the shape of
 /// the environment variables it replaces.
 pub fn valid_name(name: &str) -> bool {

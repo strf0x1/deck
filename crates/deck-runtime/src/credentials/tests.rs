@@ -11,6 +11,15 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
+fn a_secret_serializes_plainly_but_never_debugs() {
+    let secret = Secret::new("sk-live-value");
+    assert_eq!(serde_json::to_string(&secret).unwrap(), r#""sk-live-value""#);
+    assert_eq!(serde_json::from_str::<Secret>(r#""sk-live-value""#).unwrap(), secret);
+    let shown = format!("{secret:?} {:?}", Some(&secret));
+    assert!(!shown.contains("sk-live"), "{shown}");
+}
+
+#[test]
 fn names_have_the_shape_of_environment_variables() {
     for good in ["OPENAI_API_KEY", "DECK_GITHUB_TOKEN", "A", "K9"] {
         assert!(valid_name(good), "{good}");

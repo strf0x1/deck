@@ -200,6 +200,18 @@ impl DaemonClient {
         Self::at(self.paths.clone())?.request(Request::RevokeCredential { name: name.into() })
     }
 
+    /// Store a value entered in a window (ADR 0012 §3) and return the name's
+    /// listing: its new fingerprint, never the value. Its own connection, as
+    /// an OS store may wait on a dialog.
+    pub fn set_credential(&self, name: &str, value: crate::credentials::Secret) -> Result<crate::broker::Listed> {
+        Self::at(self.paths.clone())?.request(Request::SetCredential { name: name.into(), value })
+    }
+
+    /// Remove a name from the store; false when nothing was there.
+    pub fn delete_credential(&self, name: &str) -> Result<bool> {
+        Self::at(self.paths.clone())?.request(Request::DeleteCredential { name: name.into() })
+    }
+
     /// Ask the daemon's queue for a scope. This may hold for a decision when
     /// a capable window is attached; the gateway is the normal caller.
     pub fn request_approval(&self, task: &str, ask: Ask) -> Result<Approval> {
