@@ -667,8 +667,8 @@ pub fn credential_set(data: &Path, id: &str) -> Result<Vec<String>> {
 }
 
 /// The VMM config is owner-only: it is the complete description of a guest,
-/// though it never carries a credential value.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+/// though it never carries a credential value. Settings use the same write.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let temp = path.with_extension("tmp");

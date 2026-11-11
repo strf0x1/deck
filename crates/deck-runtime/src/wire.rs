@@ -190,6 +190,14 @@ pub(crate) enum Request {
     RevokeCredential {
         name: String,
     },
+    /// The stored settings, or the implicit provider, with their revision
+    /// (ADR 0012 §1).
+    Settings,
+    /// Replace the settings if `revision` is still the stored one.
+    SetSettings {
+        settings: crate::settings::Settings,
+        revision: u64,
+    },
     /// A capable window attaches to this task for the connection's lifetime.
     Watch {
         task: String,

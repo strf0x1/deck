@@ -63,7 +63,10 @@ impl Daemon {
             .arg(IDLE.as_millis().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            // The implicit provider, not whatever the developer's shell names.
+            .env_remove("CONSTRUCT_BASE_URL")
+            .env_remove("CONSTRUCT_MODEL");
         match credentials {
             Some(file) => command.env("DECK_CREDENTIALS", file),
             // Never the developer's own store from the test's environment.
@@ -168,6 +171,44 @@ fn projects_open_list_and_forget() {
     assert_eq!(client.projects().unwrap(), vec![project.clone()]);
     client.forget_project(&project.id).unwrap();
     assert!(client.projects().unwrap().is_empty(), "a forgotten project drops out of the list");
+}
+
+#[test]
+fn settings_save_against_a_revision_and_survive_a_restart() {
+    use deck_runtime::settings::{Provider, Settings, file::Saved};
+    let (mut daemon, first) = Daemon::new("settings");
+    let second = DaemonClient::connect(&daemon.data).unwrap();
+    let read = first.settings().unwrap();
+    assert_eq!((read.revision, read.stored), (0, false));
+    assert_eq!(read.settings.providers[0].name, "default");
+
+    let local = Settings {
+        default: "local/qwen3-32b".into(),
+        providers: vec![Provider {
+            name: "local".into(),
+            url: "http://127.0.0.1:8000/v1".into(),
+            secret: None,
+            models: vec!["qwen3-32b".into()],
+        }],
+    };
+    let Saved::Saved(saved) = first.set_settings(local.clone(), read.revision).unwrap() else {
+        panic!("the first save was stale")
+    };
+    assert_eq!((saved.revision, saved.stored), (1, true));
+    // The second window read revision 0 too; its save is refused with the
+    // first window's settings, and nothing is overwritten.
+    let Saved::Stale(now) = second.set_settings(read.settings.clone(), 0).unwrap() else {
+        panic!("a stale save overwrote the first")
+    };
+    assert_eq!(now.settings, local);
+    let mut invalid = local.clone();
+    invalid.default = "local/missing".into();
+    assert!(second.set_settings(invalid, 1).is_err());
+
+    drop((first, second));
+    assert!(daemon.wait_exit().success());
+    let restarted = daemon.restart();
+    assert_eq!(restarted.settings().unwrap(), saved);
 }
 
 #[test]

@@ -241,6 +241,25 @@ store selection wins over the CLI's environment. If it cannot connect or
 start the daemon, `list` fails without opening an independent store read.
 `set` and `delete` manage the store directly.
 
+## Settings
+
+ADR 0012's settings live in `<data>/settings.json` (0600, atomic rename),
+written only by `deckd`: the named providers (name, url, key *name*,
+models) and the default `<provider>/<model>`. `deckd` refuses to start on a
+file it could not create a task from, or of another `version`, rather than
+rewrite it. Without a file it serves the implicit provider `default` from
+`CONSTRUCT_BASE_URL` / `CONSTRUCT_MODEL` (or Construct's defaults), as before
+settings existed. With one, those two variables still override the default
+provider's url and model, and `deckd` logs each override at start.
+
+- `settings` replies `{revision, stored, settings, overrides}`: the stored
+  settings (or the implicit ones, `revision` 0, `stored` false) and a note
+  for each environment override.
+- `set_settings {settings, revision}` validates and writes them if
+  `revision` is still the file's, replying `{"outcome":"saved", …}` with the
+  new snapshot. A save against an older revision writes nothing and replies
+  `{"outcome":"stale", …}` with what is there now.
+
 ## The GitHub operation gateway
 
 A VM task's third gateway kind (ADR 0007) publishes to the project's GitHub
