@@ -130,6 +130,41 @@ fn tool_cards_expand_and_the_transcript_follows_until_scrolled_back(cx: &mut Tes
 }
 
 #[gpui::test]
+fn the_scrollbar_jumps_on_a_track_click_and_a_drag_to_the_end_follows_again(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        for i in 0..40 {
+            d.on_inbound(Inbound::UserMessage(format!("question {i}")), cx);
+            d.on_inbound(Inbound::Message(format!("answer {i}")), cx);
+        }
+    });
+    cx.run_until_parked();
+    assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "new output is followed");
+
+    // The strip is the pane's right edge; hovering it reveals the bar.
+    let pane = cx.debug_bounds("transcript").unwrap();
+    let x = pane.right() - px(7.);
+    let top = point(x, pane.top() + px(12.));
+    cx.simulate_mouse_move(top, None, Modifiers::none());
+    settle(&deck, &mut cx);
+    cx.simulate_click(top, Modifiers::none());
+    cx.run_until_parked();
+    assert!(deck.read_with(&cx, |d, _| d.scrolled_back()), "a click near the top jumps back");
+
+    // The thumb now sits at the top; drag it to the bottom of the track.
+    let bottom = point(x, pane.bottom() - px(2.));
+    cx.simulate_mouse_down(top, MouseButton::Left, Modifiers::none());
+    for step in 1..=10 {
+        let y = top.y + (bottom.y - top.y) * (step as f32 / 10.);
+        cx.simulate_mouse_move(point(x, y), Some(MouseButton::Left), Modifiers::none());
+    }
+    cx.simulate_mouse_up(bottom, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "letting go at the end follows again");
+}
+
+#[gpui::test]
 fn a_finished_turn_lists_its_files_and_copy_buttons_copy(cx: &mut TestAppContext) {
     use deck_acp::{ToolCall, ToolContent, ToolKind, ToolStatus};
 

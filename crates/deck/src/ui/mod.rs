@@ -48,6 +48,8 @@ mod publication_panel;
 mod publishing;
 pub mod rail;
 pub mod root;
+pub mod scrollbar;
+mod scrollbar_element;
 pub mod session;
 pub mod settings;
 mod settings_fields;

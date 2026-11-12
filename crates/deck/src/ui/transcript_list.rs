@@ -1,11 +1,12 @@
 //! The transcript pane as a virtualized list: rows from `transcript.rs`
 //! drawn by `cards.rs`, following new output until the user scrolls up,
-//! with a pill back to the end.
+//! with a pill back to the end and an overlay scrollbar (`scrollbar.rs`).
 //!
-//! The design choice: GPUI's `list` measures only rows near the viewport,
-//! so a long session costs what is on screen. The Deck tells it which rows
-//! changed by comparing row signatures every render, from the first change
-//! to the end, so streaming re-measures the last row alone.
+//! The design choice: GPUI's `list` draws only rows near the viewport, but
+//! measures each row once when it arrives, so the scrollbar knows the
+//! session's real height. The Deck tells it which rows changed by comparing
+//! row signatures every render, from the first change to the end, so
+//! streaming re-measures the last row alone.
 
 use super::panels::glyph;
 use super::root::Deck;
@@ -17,8 +18,11 @@ use gpui::{
 };
 
 /// A transcript list that sticks to new output until the user scrolls up.
+/// It measures every row, not only those drawn, so the scrollbar's thumb
+/// and track clicks see the whole session (`sync_transcript` keeps that
+/// true as rows arrive).
 pub(super) fn following() -> ListState {
-    let list = ListState::new(0, ListAlignment::Top, px(600.));
+    let list = ListState::new(0, ListAlignment::Top, px(600.)).measure_all();
     list.set_follow_mode(FollowMode::Tail);
     list
 }
@@ -83,6 +87,13 @@ impl Deck {
         let first = super::transcript::first_change(&self.row_sigs, &sigs);
         if first < self.row_sigs.len() || first < sigs.len() {
             self.transcript.splice(first..self.row_sigs.len(), sigs.len() - first);
+            // More than the streaming row changed (a history load, a card
+            // opened above): measure the new rows off screen too, so the
+            // scrollbar's thumb stays honest. An empty range measures only
+            // the unmeasured rows; measured ones keep their size.
+            if sigs.len() - first > 1 {
+                self.transcript.remeasure_items(first..first);
+            }
         }
         self.row_sigs = sigs;
     }
@@ -186,6 +197,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex_1()
         .min_h_0()
         .child(rows)
+        .child(super::scrollbar_element::scrollbar(&deck.transcript))
         .children(jump)
         .into_any_element()
 }
