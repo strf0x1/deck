@@ -41,7 +41,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .rounded_full()
                 .border_1()
                 .border_color(tint(dot, 0.3))
-                .bg(tint(dot, 0.07))
+                .bg(super::theme::Tokens::well())
                 .text_color(Tokens::text_dim())
                 .child(
                     div()
@@ -87,7 +87,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
         .child(
             icon_button("hdr-access", icon::SHIELD)
                 .debug_selector(|| "hdr-access".into())
-                .when(deck.access.is_open(), |d| d.bg(tint(Tokens::violet(), 0.16)).text_color(Tokens::violet()))
+                .when(deck.access.is_open(), |d| d.bg(Tokens::raised_hover()).text_color(Tokens::accent()))
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx))),
         )
         .children(deck.can_stop().then(|| {
@@ -105,9 +105,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .text_color(Tokens::text_dim())
                 .debug_selector(|| "hdr-stop".into())
                 .cursor_pointer()
-                .hover(|s| {
-                    s.border_color(tint(Tokens::red(), 0.5)).bg(tint(Tokens::red(), 0.08)).text_color(Tokens::text())
-                })
+                .hover(|s| s.border_color(tint(Tokens::red(), 0.5)).bg(Tokens::well()).text_color(Tokens::text()))
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
                 .child(glyph(icon::STOP, 9.).text_color(Tokens::red()))
                 .child("Stop")
@@ -162,7 +160,7 @@ fn notice_chip(g: &'static str, color: Hsla, text: String, max: f32) -> Div {
         .rounded_full()
         .border_1()
         .border_color(tint(color, 0.3))
-        .bg(tint(color, 0.08))
+        .bg(super::theme::Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .text_color(color)
         .child(glyph(g, 10.))
@@ -188,11 +186,11 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                 .rounded_full()
                 .border_1()
                 .border_color(tint(hue, 0.3))
-                .bg(tint(hue, 0.08))
+                .bg(super::theme::Tokens::well())
                 .text_size(size::scaled(size::MICRO))
                 .text_color(tint(hue, 0.85))
                 .cursor_pointer()
-                .hover(move |style| style.text_color(hue).bg(tint(hue, 0.16)))
+                .hover(move |style| style.text_color(hue).bg(Tokens::raised_hover()))
                 .on_click(cx.listener(|this, _, _, cx| this.clear_task(cx)))
                 .child(project)
         });

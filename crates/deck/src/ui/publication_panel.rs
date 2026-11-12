@@ -42,7 +42,7 @@ pub fn chip(dot: Dot, label: &str) -> gpui::Div {
         .rounded_full()
         .border_1()
         .border_color(super::theme::tint(dot_color(dot), 0.3))
-        .bg(super::theme::tint(dot_color(dot), 0.08))
+        .bg(super::theme::Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
         .child(glyph(icon::BRANCH, 9.).flex_none().text_color(dot_color(dot)))

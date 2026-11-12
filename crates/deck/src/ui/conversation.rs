@@ -132,8 +132,7 @@ fn empty(cx: &mut Context<Deck>) -> AnyElement {
                 .rounded(px(radius::PANE))
                 .border_1()
                 .border_color(tint(Tokens::accent(), 0.35))
-                .bg(Tokens::sweep(0.14))
-                .shadow(glow(Tokens::accent(), 0.5))
+                .bg(Tokens::well())
                 .text_color(Tokens::accent())
                 .child(glyph(icon::CUBE, 26.)),
         )
@@ -196,7 +195,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.5))
-        .bg(tint(Tokens::amber(), 0.07))
+        .bg(super::theme::Tokens::well())
         .shadow(glow(Tokens::amber(), 0.2))
         .child(
             div()
@@ -282,7 +281,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::amber(), 0.5))
-        .bg(tint(Tokens::amber(), 0.07))
+        .bg(super::theme::Tokens::well())
         .shadow(glow(Tokens::amber(), 0.2))
         .child(
             div()
@@ -335,7 +334,7 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .rounded(px(radius::BUBBLE))
         .border_1()
         .border_color(tint(Tokens::cyan(), 0.3))
-        .bg(tint(Tokens::cyan(), 0.05))
+        .bg(super::theme::Tokens::well())
         .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
         .child(div().text_color(Tokens::text_dim()).child(note))
         .child(
@@ -359,7 +358,7 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
 /// What a decision does, which is what its button's colour says.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Weight {
-    /// The first allowing answer: solid green, the one `1` or enter-like key.
+    /// The first allowing answer: the brightest green edge, the one `1` or enter-like key.
     Allow,
     /// A wider or longer allow.
     Other,
@@ -369,15 +368,11 @@ enum Weight {
 /// One answer on a decision card, with the digit that picks it.
 fn option(id: impl Into<gpui::ElementId>, name: &str, index: usize, weight: Weight) -> gpui::Stateful<gpui::Div> {
     let (bg, fg, edge): (Hsla, Hsla, Hsla) = match weight {
-        Weight::Allow => (Tokens::lime(), Tokens::ink().into(), Tokens::lime()),
-        Weight::Other => (tint(Tokens::lime(), 0.08), Tokens::lime(), tint(Tokens::lime(), 0.3)),
-        Weight::Deny => (tint(Tokens::red(), 0.08), Tokens::red(), tint(Tokens::red(), 0.35)),
+        Weight::Allow => (Tokens::well().into(), Tokens::lime(), tint(Tokens::lime(), 0.75)),
+        Weight::Other => (Tokens::well().into(), Tokens::lime(), tint(Tokens::lime(), 0.3)),
+        Weight::Deny => (Tokens::well().into(), Tokens::red(), tint(Tokens::red(), 0.35)),
     };
-    let hover = match weight {
-        Weight::Allow => tint(Tokens::lime(), 0.88),
-        Weight::Other => tint(Tokens::lime(), 0.16),
-        Weight::Deny => tint(Tokens::red(), 0.16),
-    };
+    let hover = Tokens::raised_hover();
     div()
         .id(id.into())
         .min_h(px(30.))

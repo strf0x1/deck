@@ -42,7 +42,7 @@ fn block(b: &Block, typography: &Typography) -> AnyElement {
         Block::Quote(inner) => div()
             .pl(px(space::INSET))
             .border_l_2()
-            .border_color(tint(Tokens::violet(), 0.5))
+            .border_color(tint(Tokens::accent(), 0.45))
             .text_color(Tokens::text_dim())
             .child(blocks(inner, 8., typography))
             .into_any_element(),
@@ -139,6 +139,8 @@ fn styled(i: &Inline, typography: &Typography) -> StyledText {
             Tokens::sky()
         } else if mark.code {
             Tokens::cyan()
+        } else if mark.bold {
+            Tokens::emphasis()
         } else {
             Tokens::text().into()
         };
@@ -146,7 +148,7 @@ fn styled(i: &Inline, typography: &Typography) -> StyledText {
             len,
             font: f,
             color,
-            background_color: mark.code.then(|| tint(Tokens::cyan(), 0.09)),
+            background_color: mark.code.then(|| Tokens::sunken().into()),
             underline: mark.link.then(|| UnderlineStyle {
                 color: Some(tint(color, 0.5)),
                 thickness: px(1.),

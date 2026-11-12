@@ -53,7 +53,7 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                         .rounded_br(px(radius::CHIP))
                         .border_1()
                         .border_color(tint(Tokens::accent(), 0.4))
-                        .bg(Tokens::sweep(0.16))
+                        .bg(Tokens::well())
                         .line_height(relative(1.5))
                         .child(t.clone()),
                 )
@@ -75,7 +75,7 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                 .rounded(px(radius::CONTROL))
                 .border_1()
                 .border_color(tint(Tokens::red(), 0.3))
-                .bg(tint(Tokens::red(), 0.07))
+                .bg(Tokens::well())
                 .text_color(Tokens::red())
                 .child(glyph(icon::WARN, 11.).mt(px(space::HAIR)))
                 .child(div().flex_1().min_w_0().child(t.clone()))
