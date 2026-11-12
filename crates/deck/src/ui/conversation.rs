@@ -7,7 +7,8 @@
 //! deny, so a glance finds what needs attention and what each key will do.
 
 use super::chrome::kbd;
-use super::panels::{glyph, icon_tile, pane, pill, primary};
+use super::glyph::glyph;
+use super::panels::{icon_mark, pane, pill, primary};
 use super::root::Deck;
 use super::session::Status;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
@@ -35,7 +36,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     // The pane's top edge takes the session's colour, so its state reads
     // before any word on it does.
     let edge = if has_task { color } else { Tokens::accent() };
-    let (tile, tile_color) = if empty_project {
+    let (mark, mark_color) = if empty_project {
         (icon::PROJECT, deck.project_name().map_or(Tokens::text_dim().into(), Tokens::hue))
     } else {
         (icon::AGENTS, color)
@@ -64,7 +65,7 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .gap(px(space::STACK))
                 .border_b_1()
                 .border_color(Tokens::edge())
-                .child(icon_tile(tile, tile_color, 26.))
+                .child(icon_mark(mark, mark_color, 26.))
                 .child(
                     div()
                         .debug_selector(move || title_selector.into())
@@ -134,7 +135,7 @@ fn empty(cx: &mut Context<Deck>) -> AnyElement {
                 .border_color(tint(Tokens::accent(), 0.35))
                 .bg(Tokens::well())
                 .text_color(Tokens::accent())
-                .child(glyph(icon::CUBE, 26.)),
+                .child(glyph(icon::CUBE, 28.)),
         )
         .child(div().text_size(size::scaled(size::DISPLAY)).font_weight(FontWeight::SEMIBOLD).child("No project open"))
         .child(
@@ -152,7 +153,7 @@ fn empty(cx: &mut Context<Deck>) -> AnyElement {
                 .debug_selector(|| "empty-open".into())
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| this.pick_project(cx)))
-                .child(glyph(icon::PLUS, 11.))
+                .child(glyph(icon::PLUS, 13.))
                 .child("Open project…"),
         )
         .into_any_element()
@@ -202,7 +203,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(icon_tile(icon::GLOBE, Tokens::amber(), 24.))
+                .child(icon_mark(icon::GLOBE, Tokens::amber(), 24.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child("External access needs you"))
                 .child(div().flex_1())
                 .child(kbd("1–5")),
@@ -288,7 +289,7 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(icon_tile(icon::SHIELD, Tokens::amber(), 24.))
+                .child(icon_mark(icon::SHIELD, Tokens::amber(), 24.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{} wants to run", deck.session().agent)))
                 .child(div().flex_1())
                 .child(kbd("esc")),
@@ -347,7 +348,7 @@ fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .cursor_pointer()
                 .text_color(Tokens::accent())
                 .font_weight(FontWeight::MEDIUM)
-                .child(glyph(icon::REFRESH, 11.))
+                .child(glyph(icon::REFRESH, 13.))
                 .child(action)
                 .child(kbd(crate::app::RESTART_HINT))
                 .on_click(cx.listener(|this, _, _, cx| this.restart(cx))),

@@ -9,7 +9,8 @@
 
 use super::access_panel::button;
 use super::composer;
-use super::panels::{eyebrow, glyph};
+use super::glyph::glyph;
+use super::panels::eyebrow;
 use super::root::Deck;
 use super::settings::{Confirm, Field, Form};
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
@@ -80,7 +81,7 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
                 .cursor_pointer()
                 .hover(|style| style.bg(Tokens::raised_hover()))
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_model(&id, cx)))
-                .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 9.).text_color(Tokens::lime()))))
+                .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 11.).text_color(Tokens::lime()))))
                 .child(
                     div()
                         .debug_selector(move || format!("settings-model-label-{i}"))
@@ -140,7 +141,7 @@ fn discovery_block(deck: &Deck, cx: &mut Context<Deck>, url: &str, saved: &str) 
             .text_size(size::scaled(size::SMALL))
             .cursor_text()
             .on_click(cx.listener(|this, _, _, cx| this.focus_settings_field(Field::Search, cx)))
-            .child(glyph(icon::SEARCH, 10.).text_color(Tokens::text_faint()))
+            .child(glyph(icon::SEARCH, 12.).text_color(Tokens::text_faint()))
             .child(body)
             .into_any_element()
     });
@@ -371,7 +372,7 @@ pub(super) fn banner(g: &'static str, color: Hsla, text: String) -> AnyElement {
         .bg(super::theme::Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(glyph(g, 10.).text_color(color))
+        .child(glyph(g, 12.).text_color(color))
         .child(div().flex_1().min_w_0().child(text))
         .into_any_element()
 }

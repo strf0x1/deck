@@ -6,7 +6,8 @@
 //! header's chip, so it floats over the transcript instead of growing the
 //! header; a pick only changes what the next create sends.
 
-use super::panels::{eyebrow, glyph};
+use super::glyph::glyph;
+use super::panels::eyebrow;
 use super::root::Deck;
 use super::settings_form::tag;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
@@ -36,7 +37,7 @@ pub fn model_menu(deck: &Deck, top: f32, right: f32, cx: &mut Context<Deck>) -> 
             .text_color(if on { Tokens::text() } else { Tokens::text_dim() })
             .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text()))
             .on_click(cx.listener(move |this, _, _, cx| this.pick_session_model(&pick, cx)))
-            .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 9.).text_color(Tokens::cyan()))))
+            .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 11.).text_color(Tokens::cyan()))))
             .child(div().flex_1().font_family(MONO).text_size(size::scaled(size::SMALL)).child(choice.clone()))
             .children((default.as_deref() == Some(choice.as_str())).then(|| tag("default", Tokens::accent())))
     });
@@ -82,7 +83,7 @@ pub fn model_menu(deck: &Deck, top: f32, right: f32, cx: &mut Context<Deck>) -> 
                 .text_color(Tokens::text_dim())
                 .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text()))
                 .on_click(cx.listener(|this, _, _, cx| this.manage_models(cx)))
-                .child(glyph(icon::GEAR, 9.))
+                .child(glyph(icon::GEAR, 11.))
                 .child("Manage models…"),
         )
         .into_any_element()

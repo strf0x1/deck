@@ -6,7 +6,8 @@
 //! or list is a click away.
 
 use super::cards::{frame, mono, status, toggle};
-use super::panels::{glyph, icon_tile};
+use super::glyph::glyph;
+use super::panels::icon_mark;
 use super::root::Deck;
 use super::session::{Entry, Tool};
 use super::theme::{Tokens, icon, radius, size, space, tint};
@@ -33,7 +34,7 @@ pub fn thought(text: &str, key: String, open: bool, selected: bool, cx: &mut Con
         .italic()
         .hover(|s| s.text_color(Tokens::text_dim()))
         .on_click(toggle(key, cx))
-        .child(glyph(icon::BULB, 10.).mt(px(space::DETAIL)).text_color(tint(Tokens::amber(), 0.7)))
+        .child(glyph(icon::BULB, 12.).mt(px(space::DETAIL)).text_color(tint(Tokens::amber(), 0.7)))
         .child(if open {
             div().flex_1().min_w_0().line_height(relative(1.5)).child(text.to_string())
         } else {
@@ -80,7 +81,7 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
         .cursor_pointer()
         .hover(|s| s.bg(Tokens::raised()))
         .on_click(toggle(key, cx))
-        .child(icon_tile(icon::EYE, Tokens::sky(), 22.))
+        .child(icon_mark(icon::EYE, Tokens::sky(), 22.))
         .child(
             div()
                 .flex_none()
@@ -103,7 +104,7 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
                     )
                 }),
         )
-        .child(glyph(g, 11.).flex_none().text_color(color));
+        .child(glyph(g, 13.).flex_none().text_color(color));
     let list = open.then(|| {
         mono()
             .flex()
@@ -119,7 +120,7 @@ pub fn reads(entries: &[Entry], key: String, open: bool, selected: bool, cx: &mu
                 div()
                     .flex()
                     .gap(px(space::LINE))
-                    .child(glyph(g, 9.).text_color(color))
+                    .child(glyph(g, 11.).text_color(color))
                     .child(div().text_color(Tokens::text_dim()).child(t.call.title.clone()))
             }))
     });

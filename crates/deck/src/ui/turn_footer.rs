@@ -5,7 +5,7 @@
 //! screen, so it is quiet text with chips, and a chip is a way back to the
 //! card, not a second copy of the diff.
 
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use super::transcript::{file_name, touched};
@@ -26,7 +26,7 @@ pub fn footer(deck: &Deck, turn: Range<usize>, cx: &mut Context<Deck>) -> AnyEle
         .gap(px(space::TIGHT))
         .text_size(size::scaled(size::LABEL))
         .text_color(Tokens::text_faint())
-        .child(glyph(icon::EDIT, 10.).text_color(tint(Tokens::violet(), 0.8)))
+        .child(glyph(icon::EDIT, 12.).text_color(tint(Tokens::violet(), 0.8)))
         .child(format!("{} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" }))
         // With one file its chip already says it.
         .when(files.len() > 1, |d| {

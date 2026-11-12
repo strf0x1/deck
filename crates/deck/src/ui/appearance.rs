@@ -4,7 +4,7 @@
 use super::fonts;
 use super::root::Deck;
 use super::specimens::{self, code, label, surface};
-use super::theme::{ICONS, Tokens, size, space, tint};
+use super::theme::{Tokens, size, space, tint};
 use super::typography::{CodeFont, InterfaceFont, Resize};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -128,7 +128,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(label("The code font applies to Markdown blocks, diffs, commands and tool output. Masked code uses one colour so key masking can cross syntax boundaries."))
                 .child(label("Font resolution"))
                 .children([
-                    typeface.interface.family(), typeface.code.family(), typeface.code.value_family(), ICONS,
+                    typeface.interface.family(), typeface.code.family(), typeface.code.value_family(),
                 ].map(|family| div().flex_none().text_size(size::scaled(size::SMALL)).child(fonts::resolve(family, cx).label())))
                 .child(label("Unavailable font choices are dimmed. Install the family and reopen Deck to try it."))
                 .child(label("Keys"))

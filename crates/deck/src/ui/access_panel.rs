@@ -6,7 +6,7 @@
 //! (a local process, the reminder after a revoke); a sealed VM is green.
 
 use super::access::{NOT_CANCELLED, Revoke};
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
@@ -52,7 +52,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .flex()
                         .items_center()
                         .gap(px(space::SECTION))
-                        .child(glyph(icon::KEY, 11.).text_color(color))
+                        .child(glyph(icon::KEY, 13.).text_color(color))
                         .child(
                             div()
                                 .debug_selector(move || format!("access-credential-name-{i}"))
@@ -150,7 +150,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(super::panels::icon_tile(icon::SHIELD, Tokens::violet(), 26.))
+                .child(super::panels::icon_mark(icon::SHIELD, Tokens::violet(), 26.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(size::scaled(size::TITLE)).child("Access"))
                 .child(div().flex_1())
                 .child(
@@ -182,7 +182,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .bg(super::theme::Tokens::well())
                 .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::text_dim())
-                .child(glyph(g, 10.).text_color(color))
+                .child(glyph(g, 12.).text_color(color))
                 .child(text)
         }))
         .children(access.approvals().map(approval_mode))
@@ -313,7 +313,7 @@ pub(super) fn error(why: &str) -> AnyElement {
         .flex()
         .gap(px(space::LINE))
         .text_color(Tokens::red())
-        .child(glyph(icon::WARN, 11.).mt(px(space::HAIR)))
+        .child(glyph(icon::WARN, 13.).mt(px(space::HAIR)))
         .child(div().flex_1().min_w_0().child(why.to_owned()))
         .into_any_element()
 }

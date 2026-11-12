@@ -6,7 +6,7 @@
 //! chrome. After a copy it shows a check for a moment; the Deck remembers
 //! which button was clicked and clears it on a timer.
 
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::root::Deck;
 use super::theme::{Tokens, icon, radius};
 use gpui::{
@@ -43,7 +43,7 @@ pub fn button(deck: &Deck, key: String, text: String, cx: &mut Context<Deck>) ->
             cx.stop_propagation();
             this.copy(&key, &text, cx);
         }))
-        .child(glyph(if done { icon::CHECK } else { icon::COPY }, 10.))
+        .child(glyph(if done { icon::CHECK } else { icon::COPY }, 12.))
         .into_any_element()
 }
 

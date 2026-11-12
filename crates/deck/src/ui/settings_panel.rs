@@ -12,7 +12,8 @@
 
 use super::access_panel::{button, error};
 use super::chrome::kbd;
-use super::panels::{eyebrow, glyph, icon_tile};
+use super::glyph::glyph;
+use super::panels::{eyebrow, icon_mark};
 use super::root::Deck;
 use super::settings::{Form, Key};
 use super::settings_form::{banner, confirm, provider_form, secret_form, status, tag};
@@ -77,7 +78,7 @@ fn header(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(space::STACK))
-        .child(icon_tile(icon::GEAR, Tokens::accent(), 26.))
+        .child(icon_mark(icon::GEAR, Tokens::accent(), 26.))
         .child(
             div()
                 .flex_1()
@@ -173,7 +174,7 @@ fn providers(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .border_1()
             .border_color(Tokens::edge())
             .bg(Tokens::raised())
-            .child(icon_tile(icon::SERVER, Tokens::hue(&row.name), 24.))
+            .child(icon_mark(icon::SERVER, Tokens::hue(&row.name), 24.))
             .child(
                 div()
                     .flex_1()
@@ -282,7 +283,7 @@ fn default_model(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .cursor_pointer()
             .hover(move |st| st.bg(Tokens::raised_hover()))
             .on_click(cx.listener(move |this, _, _, cx| this.set_default_model(&pick, cx)))
-            .children(on.then(|| glyph(icon::CHECK, 9.)))
+            .children(on.then(|| glyph(icon::CHECK, 11.)))
             .child(choice.clone())
     });
     section("Default model", None)
@@ -347,7 +348,7 @@ fn secrets(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .border_1()
             .border_color(Tokens::edge())
             .bg(Tokens::raised())
-            .child(glyph(icon::KEY, 11.).text_color(color))
+            .child(glyph(icon::KEY, 13.).text_color(color))
             .child(
                 div()
                     .flex_1()

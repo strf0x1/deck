@@ -5,8 +5,9 @@
 //! The design choice: the header is one row that stays put; the sidebar is the
 //! only navigation, so the header carries no project or session controls.
 
+use super::glyph::glyph;
 use super::header_title::HeaderTitle;
-use super::panels::{glyph, primary, state_color};
+use super::panels::{primary, state_color};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
@@ -52,7 +53,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                         .rounded_full()
                         .bg(tint(dot, 0.18))
                         .text_color(dot)
-                        .child(glyph(icon::AGENTS, 10.)),
+                        .child(glyph(icon::AGENTS, 12.)),
                 )
                 .child(
                     div().font_family(MONO).text_size(size::scaled(size::SMALL)).child(agent_label(&deck.agent_cmd)),
@@ -107,7 +108,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .cursor_pointer()
                 .hover(|s| s.border_color(tint(Tokens::red(), 0.5)).bg(Tokens::well()).text_color(Tokens::text()))
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-                .child(glyph(icon::STOP, 9.).text_color(Tokens::red()))
+                .child(glyph(icon::STOP, 11.).text_color(Tokens::red()))
                 .child("Stop")
                 .child(kbd(crate::app::STOP_HINT))
         }))
@@ -131,9 +132,9 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .cursor_pointer()
                 .hover(|s| s.text_color(Tokens::text()).bg(Tokens::raised()))
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_model_picker(cx)))
-                .child(glyph(icon::BOLT, 10.).text_color(Tokens::cyan()))
+                .child(glyph(icon::BOLT, 12.).text_color(Tokens::cyan()))
                 .child(div().overflow_hidden().whitespace_nowrap().child(model))
-                .child(glyph(icon::CHEVRON_DOWN, 8.))
+                .child(glyph(icon::CHEVRON_DOWN, 10.))
         }))
         .child(
             primary()
@@ -142,7 +143,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.9))
                 .on_click(cx.listener(|this, _, _, cx| this.new_session(cx)))
-                .child(glyph(icon::PLUS, 11.))
+                .child(glyph(icon::PLUS, 13.))
                 .child(deck.new_session_state().label()),
         )
 }
@@ -163,7 +164,7 @@ fn notice_chip(g: &'static str, color: Hsla, text: String, max: f32) -> Div {
         .bg(super::theme::Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .text_color(color)
-        .child(glyph(g, 10.))
+        .child(glyph(g, 12.))
         .child(div().min_w_0().truncate().child(text))
 }
 
@@ -274,7 +275,7 @@ pub fn icon_button(id: &'static str, g: &'static str) -> gpui::Stateful<gpui::Di
         .text_color(Tokens::text_dim())
         .cursor_pointer()
         .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text()))
-        .child(glyph(g, 13.))
+        .child(glyph(g, 15.))
 }
 
 pub fn kbd(keys: &'static str) -> impl IntoElement {

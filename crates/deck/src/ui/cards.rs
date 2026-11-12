@@ -5,11 +5,12 @@
 //! The design choice: counts first, content on request. An edit shows a few
 //! diff lines around each change, a command the tail of its output, a run
 //! of reads one row of file chips; clicking the header expands the rest.
-//! A card's tile and verb take its kind's hue (`kind`), its status sits at
+//! A card's mark and verb take its kind's hue (`kind`), its status sits at
 //! the right edge, and a running call is lit in the agent's colour.
 
 use super::copy;
-use super::panels::{glyph, icon_tile};
+use super::glyph::glyph;
+use super::panels::icon_mark;
 use super::prose;
 use super::root::Deck;
 use super::session::{Entry, Tool};
@@ -77,7 +78,7 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                 .border_color(tint(Tokens::red(), 0.3))
                 .bg(Tokens::well())
                 .text_color(Tokens::red())
-                .child(glyph(icon::WARN, 11.).mt(px(space::HAIR)))
+                .child(glyph(icon::WARN, 13.).mt(px(space::HAIR)))
                 .child(div().flex_1().min_w_0().child(t.clone()))
                 .into_any_element(),
         },
@@ -183,7 +184,7 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         .cursor_pointer()
         .hover(|s| s.bg(Tokens::raised()))
         .on_click(toggle(key, cx))
-        .child(icon_tile(kg, hue, 22.))
+        .child(icon_mark(kg, hue, 22.))
         .child(
             div()
                 .flex_none()
@@ -208,7 +209,7 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         })
         .children(copy)
         .children(transcript::took(tool).map(|t| mono().flex_none().text_color(Tokens::text_faint()).child(t)))
-        .child(glyph(g, 11.).flex_none().text_color(color));
+        .child(glyph(g, 13.).flex_none().text_color(color));
     let body = match call.kind {
         ToolKind::Execute => {
             let output = super::card_body::output(&transcript::output(call), open, &deck.typography);

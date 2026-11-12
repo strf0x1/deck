@@ -5,6 +5,7 @@
 //! GPUI, so that work builds and tests without it.
 
 pub mod app;
+pub mod assets;
 #[cfg(unix)]
 pub mod control;
 pub mod daemon;

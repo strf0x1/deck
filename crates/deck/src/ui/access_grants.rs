@@ -5,7 +5,7 @@
 //! second approval flow or let hidden keyboard shortcuts decide a request.
 
 use super::access_panel::{button, error};
-use super::panels::{eyebrow, icon_tile};
+use super::panels::{eyebrow, icon_mark};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
@@ -27,7 +27,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .border_1()
             .border_color(Tokens::edge())
             .bg(Tokens::raised())
-            .child(icon_tile(icon::CHECK, Tokens::lime(), 24.))
+            .child(icon_mark(icon::CHECK, Tokens::lime(), 24.))
             .child(
                 div()
                     .flex_1()
@@ -63,7 +63,7 @@ pub(super) fn sections(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .border_1()
             .border_color(tint(Tokens::amber(), 0.35))
             .bg(super::theme::Tokens::well())
-            .child(icon_tile(icon::BELL, Tokens::amber(), 24.))
+            .child(icon_mark(icon::BELL, Tokens::amber(), 24.))
             .child(
                 div()
                     .flex_1()

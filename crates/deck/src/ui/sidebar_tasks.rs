@@ -6,7 +6,8 @@
 //! drag's springs and order stay the board's and nothing here owns state.
 
 use super::board::{CARD_H, Card, LaneState};
-use super::panels::{glyph, state_mark};
+use super::glyph::glyph;
+use super::panels::state_mark;
 use super::root::Deck;
 use super::sidebar_rows::TASK_INDENT;
 use super::theme::{Tokens, icon, radius, size, space, tint};
@@ -77,7 +78,7 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
                     this.mark_task(&task, !done, cx);
                 }),
             )
-            .child(glyph(icon::CHECK, 10.))
+            .child(glyph(icon::CHECK, 12.))
     });
     let chip = c.lane.chip.as_ref().map(|(dot, label)| {
         super::publication_panel::chip(*dot, label)
@@ -153,7 +154,7 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
             cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.grab(id, f32::from(ev.position.y), cx)),
         )
         // A row that asks wears the waiting mark, whatever its process is doing.
-        .child(state_mark(if c.lane.attention.is_some() { LaneState::Waiting } else { c.lane.state }, 8.))
+        .child(state_mark(if c.lane.attention.is_some() { LaneState::Waiting } else { c.lane.state }, 12.))
         .child(
             div()
                 .flex_1()
@@ -196,8 +197,8 @@ pub(super) fn settled_fold(deck: &mut Deck, count: usize, cx: &mut Context<Deck>
                 .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::text_faint())
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_settled(cx)))
-                .child(glyph(if open { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT }, 8.))
-                .child(glyph(icon::ARCHIVE, 10.))
+                .child(glyph(if open { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT }, 10.))
+                .child(glyph(icon::ARCHIVE, 12.))
                 .child(format!("Settled ({count})")),
         )
         .children(rows)

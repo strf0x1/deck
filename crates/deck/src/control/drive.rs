@@ -293,7 +293,6 @@ pub fn state(d: &Deck) -> Value {
             "interface": d.typography().interface.family(),
             "output": d.typography().code.family(),
             "values": d.typography().code.value_family(),
-            "icons": crate::ui::theme::ICONS,
         },
         "access": {
             "open": d.access().is_open(),

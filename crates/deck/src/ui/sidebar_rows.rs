@@ -4,6 +4,7 @@
 //! The design choice: the row builders are free functions over the rows
 //! `sidebar::rows` returns, so the shell (`sidebar_view.rs`) stays a layout.
 
+use super::glyph::glyph;
 use super::root::Deck;
 use super::sidebar::{Row, initial};
 use super::sidebar_tasks::{settled_fold, tasks_view};
@@ -89,7 +90,7 @@ fn need_row(
         .cursor_pointer()
         .hover(|style| style.bg(Tokens::raised_hover()))
         .on_click(cx.listener(move |this, _, _, cx| this.open_item(index, cx)))
-        .child(super::panels::state_mark(super::board::LaneState::Waiting, 9.))
+        .child(super::panels::state_mark(super::board::LaneState::Waiting, 12.))
         .child(
             div()
                 .flex_none()
@@ -181,7 +182,7 @@ fn project_row(project: &Row, shown: bool, cx: &mut Context<Deck>) -> AnyElement
                         this.select_project(index, cx);
                     }
                 }))
-                .child(super::panels::glyph(chevron, 10.)),
+                .child(glyph(chevron, 12.)),
         )
         .child(super::sidebar_narrow::tile(initial(name), Tokens::hue(name), shown, TILE))
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
