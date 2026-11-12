@@ -7,7 +7,7 @@
 //! destroying the task once its pull request is merged, behind a second click.
 
 use super::access_panel::button;
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::publication::{Dot, View};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, size, space};
@@ -45,7 +45,7 @@ pub fn chip(dot: Dot, label: &str) -> gpui::Div {
         .bg(super::theme::Tokens::well())
         .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(glyph(icon::BRANCH, 9.).flex_none().text_color(dot_color(dot)))
+        .child(glyph(icon::BRANCH, 11.).flex_none().text_color(dot_color(dot)))
         .child(div().min_w_0().truncate().font_family(MONO).child(label.to_owned()))
 }
 
@@ -80,7 +80,7 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(super::panels::icon_tile(icon::GITHUB, Tokens::violet(), 26.))
+                .child(super::panels::icon_mark(icon::GITHUB, Tokens::violet(), 26.))
                 .child(
                     div().font_weight(FontWeight::SEMIBOLD).text_size(size::scaled(size::TITLE)).child("Publication"),
                 )
@@ -148,7 +148,7 @@ fn details(view: &View, confirm: bool, cx: &mut Context<Deck>) -> AnyElement {
                 .pt(px(space::DETAIL))
                 .children(url.map(|url| {
                     button("publication-open", "Open on GitHub", Tokens::text())
-                        .child(glyph(icon::EXTERNAL, 10.))
+                        .child(glyph(icon::EXTERNAL, 12.))
                         .gap(px(space::TIGHT))
                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
                 }))

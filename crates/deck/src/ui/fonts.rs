@@ -7,7 +7,6 @@ use std::borrow::Cow;
 pub fn load(cx: &App) -> anyhow::Result<()> {
     cx.text_system().add_fonts(vec![
         Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono.ttf")),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf")),
         Cow::Borrowed(include_bytes!("../../assets/fonts/ObelMono-Regular.ttf")),
         Cow::Borrowed(include_bytes!("../../assets/fonts/ObelMonoMasked-Regular.ttf")),
     ])

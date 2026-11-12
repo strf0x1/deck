@@ -9,7 +9,7 @@
 //! rows live in `sidebar_rows.rs`, the task rows in `sidebar_tasks.rs`, and
 //! the narrow glyphs in `sidebar_narrow.rs`.
 
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::rail::{COLLAPSED, ITEM_H};
 use super::root::Deck;
 use super::sidebar;
@@ -181,7 +181,7 @@ fn rail_item(
                 .w(px(COLLAPSED - 12.))
                 .flex()
                 .justify_center()
-                .child(glyph(icon, 15.))
+                .child(glyph(icon, 17.))
                 .children(badge.map(|c| div().absolute().top(px(-2.)).right(px(8.)).size(px(7.)).rounded_full().bg(c))),
         )
         .child(

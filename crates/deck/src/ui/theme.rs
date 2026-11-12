@@ -16,57 +16,69 @@ use gpui::{Background, BoxShadow, Hsla, Rgba, linear_color_stop, linear_gradient
 
 /// Interface text.
 pub const SANS: &str = "Adwaita Sans";
-/// Code, tool calls, and Nerd Font icons.
-pub const MONO: &str = "JetBrainsMono Nerd Font";
-/// Icons never inherit a selected output font or its masking features.
-pub const ICONS: &str = "JetBrainsMono Nerd Font";
+/// Code, tool calls and command output; the bundled face `ui::fonts` loads.
+pub const MONO: &str = "JetBrains Mono";
 
-/// Nerd Font (Font Awesome range) glyphs; render with [`MONO`].
+/// The window's icons: Material Symbols Outlined, drawn from the SVGs in
+/// `assets/icons`. A view names one; `ui::glyph` sizes and tints it.
 pub mod icon {
-    pub const SESSIONS: &str = "\u{f009}";
-    pub const PROJECT: &str = "\u{f07b}";
-    pub const AGENTS: &str = "\u{f1b3}";
-    pub const FILES: &str = "\u{f114}";
-    pub const SEARCH: &str = "\u{f002}";
-    pub const PLUS: &str = "\u{f067}";
-    pub const BELL: &str = "\u{f0a2}";
-    pub const SEND: &str = "\u{f1d8}";
-    pub const TERMINAL: &str = "\u{f120}";
-    pub const CHECK: &str = "\u{f00c}";
-    pub const CROSS: &str = "\u{f00d}";
-    pub const SPIN: &str = "\u{f1ce}";
-    pub const SHIELD: &str = "\u{f132}";
-    pub const PIN: &str = "\u{f08d}";
-    pub const BRANCH: &str = "\u{f126}";
-    pub const EDIT: &str = "\u{f040}";
-    pub const TRASH: &str = "\u{f1f8}";
-    pub const MOVE: &str = "\u{f0ec}";
-    pub const GLOBE: &str = "\u{f0ac}";
-    pub const WRENCH: &str = "\u{f0ad}";
-    pub const BULB: &str = "\u{f0eb}";
-    pub const DOWN: &str = "\u{f063}";
-    pub const COPY: &str = "\u{f0c5}";
-    pub const CHEVRON_DOWN: &str = "\u{f078}";
-    pub const CHEVRON_RIGHT: &str = "\u{f054}";
-    pub const CUBE: &str = "\u{f1b2}";
-    pub const BOLT: &str = "\u{f0e7}";
-    pub const KEY: &str = "\u{f084}";
-    pub const LOCK: &str = "\u{f023}";
-    pub const STOP: &str = "\u{f04d}";
-    pub const REFRESH: &str = "\u{f021}";
-    pub const WARN: &str = "\u{f071}";
-    pub const QUESTION: &str = "\u{f128}";
-    pub const EYE: &str = "\u{f06e}";
-    pub const DOT: &str = "\u{f111}";
-    pub const RING: &str = "\u{f10c}";
-    pub const GITHUB: &str = "\u{f09b}";
-    pub const EXTERNAL: &str = "\u{f08e}";
-    pub const CLOSE: &str = "\u{f00d}";
-    pub const USER: &str = "\u{f007}";
-    pub const SERVER: &str = "\u{f233}";
-    pub const ARCHIVE: &str = "\u{f187}";
-    pub const GAUGE: &str = "\u{f0e4}";
-    pub const GEAR: &str = "\u{f013}";
+    /// The one list of names and asset paths. It also generates [`ALL`], so
+    /// naming an icon here without shipping its file fails
+    /// `crate::assets::tests::every_named_icon_ships_bytes`.
+    macro_rules! icons {
+        ($($name:ident => $path:literal),* $(,)?) => {
+            $(pub const $name: &str = $path;)*
+            /// Every icon path the set names.
+            pub const ALL: &[&str] = &[$($path),*];
+        };
+    }
+
+    icons! {
+    SESSIONS          => "icons/grid_view.svg",
+    PROJECT           => "icons/folder.svg",
+    AGENTS            => "icons/smart_toy.svg",
+    FILES             => "icons/folder_open.svg",
+    SEARCH            => "icons/search.svg",
+    PLUS              => "icons/add.svg",
+    BELL              => "icons/notifications.svg",
+    SEND              => "icons/send.svg",
+    TERMINAL          => "icons/terminal.svg",
+    CHECK             => "icons/check.svg",
+    CROSS             => "icons/close.svg",
+    SPIN              => "icons/progress_activity.svg",
+    SHIELD            => "icons/shield.svg",
+    PIN               => "icons/push_pin.svg",
+    BRANCH            => "icons/commit.svg",
+    EDIT              => "icons/edit.svg",
+    TRASH             => "icons/delete.svg",
+    MOVE              => "icons/swap_horiz.svg",
+    GLOBE             => "icons/language.svg",
+    WRENCH            => "icons/build.svg",
+    BULB              => "icons/lightbulb.svg",
+    DOWN              => "icons/arrow_downward.svg",
+    COPY              => "icons/content_copy.svg",
+    CHEVRON_DOWN      => "icons/keyboard_arrow_down.svg",
+    CHEVRON_RIGHT     => "icons/keyboard_arrow_right.svg",
+    CUBE              => "icons/view_in_ar.svg",
+    BOLT              => "icons/bolt.svg",
+    KEY               => "icons/key.svg",
+    LOCK              => "icons/lock.svg",
+    STOP              => "icons/stop.svg",
+    REFRESH           => "icons/refresh.svg",
+    WARN              => "icons/warning.svg",
+    QUESTION          => "icons/help.svg",
+    EYE               => "icons/visibility.svg",
+    DOT               => "icons/lens.svg",
+    RING              => "icons/circle.svg",
+    GITHUB            => "icons/github.svg",
+    EXTERNAL          => "icons/open_in_new.svg",
+    CLOSE             => "icons/close.svg",
+    USER              => "icons/person.svg",
+    SERVER            => "icons/dns.svg",
+    ARCHIVE           => "icons/inventory_2.svg",
+    GAUGE             => "icons/speed.svg",
+    GEAR              => "icons/settings.svg",
+    }
 }
 
 /// Text sizes by role. Six steps: views pick a role, never a number.

@@ -45,7 +45,7 @@ pub fn bind(cx: &mut App) {
 }
 
 pub fn run(argv: Vec<String>, cwd: PathBuf) {
-    application().run(move |cx: &mut App| {
+    application().with_assets(crate::assets::Assets).run(move |cx: &mut App| {
         bind(cx);
         if let Err(e) = crate::ui::fonts::load(cx) {
             eprintln!("deck: loading bundled fonts: {e:#}");

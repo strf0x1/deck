@@ -7,7 +7,7 @@
 //! changed by comparing row signatures every render, from the first change
 //! to the end, so streaming re-measures the last row alone.
 
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::root::Deck;
 use super::session::Status;
 use super::theme::{Tokens, glow, icon, radius, size, space, tint};
@@ -123,7 +123,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .bg(super::theme::Tokens::well())
                     .shadow(glow(Tokens::cyan(), 0.5))
                     .text_color(Tokens::cyan())
-                    .child(glyph(icon::BOLT, 22.)),
+                    .child(glyph(icon::BOLT, 24.)),
             )
             .child(
                 div()
@@ -175,7 +175,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     this.transcript.set_follow_mode(FollowMode::Tail);
                     cx.notify();
                 }))
-                .child(glyph(icon::DOWN, 10.))
+                .child(glyph(icon::DOWN, 12.))
                 .child("Jump to latest"),
         )
     });

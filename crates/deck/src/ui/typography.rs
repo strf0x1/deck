@@ -28,9 +28,8 @@ impl InterfaceFont {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CodeFont {
-    JetBrains,
     #[default]
-    JetBrainsNerd,
+    JetBrains,
     Geist,
     Proto,
     Obel,
@@ -38,13 +37,11 @@ pub enum CodeFont {
 }
 
 impl CodeFont {
-    pub const ALL: [Self; 6] =
-        [Self::JetBrains, Self::JetBrainsNerd, Self::Geist, Self::Proto, Self::Obel, Self::ObelMasked];
+    pub const ALL: [Self; 5] = [Self::JetBrains, Self::Geist, Self::Proto, Self::Obel, Self::ObelMasked];
 
     pub fn family(self) -> &'static str {
         match self {
             Self::JetBrains => "JetBrains Mono",
-            Self::JetBrainsNerd => "JetBrainsMono Nerd Font",
             Self::Geist => "GeistMono Nerd Font",
             Self::Proto => "0xProto Nerd Font",
             Self::Obel => "Obel Mono",
@@ -59,7 +56,6 @@ impl CodeFont {
     pub fn label(self) -> &'static str {
         match self {
             Self::JetBrains => "JetBrains",
-            Self::JetBrainsNerd => "JB Nerd",
             Self::Geist => "Geist",
             Self::Proto => "0xProto",
             Self::Obel => "Obel",

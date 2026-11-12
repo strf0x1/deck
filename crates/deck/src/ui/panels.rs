@@ -1,12 +1,12 @@
-//! Render helpers for the small shared pieces other regions use: icon glyphs,
-//! state colours and marks, tinted tiles and pills, the two button weights
-//! and panes.
+//! Render helpers for the small shared pieces other regions use: icon marks,
+//! state colours, pills, the two button weights and panes.
 //!
 //! The design choice: free functions, not separate entities. Nothing here owns
 //! state; every interaction calls back into `Deck`. A colour arrives as an
 //! argument, so each caller says what the hue means where it is used.
 
 use super::board::LaneState;
+use super::glyph::glyph;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use gpui::{Div, FontWeight, Hsla, ParentElement as _, Styled as _, div, px};
 
@@ -20,8 +20,9 @@ pub fn state_color(s: LaneState) -> Hsla {
 }
 
 /// A task's state as a mark: a shape as well as a hue, so it reads without
-/// colour. It does not glow: a task the window is not showing reports only
-/// that its agent is running, not that a turn is.
+/// colour. It does not glow, and nothing frames it — the shape is the whole
+/// mark. A task the window is not showing reports only that its agent is
+/// running, not that a turn is.
 pub fn state_mark(s: LaneState, size: f32) -> Div {
     let (g, lit) = match s {
         LaneState::Idle => (icon::RING, false),
@@ -32,37 +33,26 @@ pub fn state_mark(s: LaneState, size: f32) -> Div {
     let color = state_color(s);
     div()
         .flex_none()
-        .size(px(size + 8.))
+        .size(px(size + 4.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded_full()
-        .border_1()
-        .border_color(tint(color, if lit { 0.55 } else { 0.3 }))
-        .bg(Tokens::well())
-        .text_color(color)
+        .text_color(if lit { color } else { tint(color, 0.75) })
         .child(glyph(g, size))
 }
 
-/// A Nerd Font icon at `size` pixels.
-pub fn glyph(g: &'static str, size: f32) -> Div {
-    div().font_family(super::theme::ICONS).text_size(px(size)).line_height(px(size + 2.)).child(g)
-}
-
-/// An icon on a dark square edged in its own colour: what kind of thing a row is.
-pub fn icon_tile(g: &'static str, color: Hsla, side: f32) -> Div {
+/// The mark that says what kind of row this is: an icon in a `side`-pixel
+/// column, in the row's own hue. The column is what keeps a card's headers and
+/// a panel's rows aligned; the icon fills most of it, since nothing else frames it.
+pub fn icon_mark(g: &'static str, color: Hsla, side: f32) -> Div {
     div()
         .flex_none()
         .size(px(side))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(radius::CHIP))
-        .border_1()
-        .border_color(tint(color, 0.35))
-        .bg(Tokens::well())
         .text_color(color)
-        .child(glyph(g, (side * 0.5).round()))
+        .child(glyph(g, (side * 0.72).round()))
 }
 
 /// A status pill: a dot and a word in the state's colour, edged in it.

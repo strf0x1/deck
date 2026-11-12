@@ -10,7 +10,7 @@
 
 use super::chrome::agent_label;
 use super::composer::Field;
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::root::Deck;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use gpui::{
@@ -158,7 +158,7 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 .text_color(Tokens::accent())
         })
         .when(!armed, |d| d.bg(Tokens::raised()).text_color(Tokens::text_faint()))
-        .child(glyph(icon::SEND, 13.));
+        .child(glyph(icon::SEND, 15.));
     div()
         .flex()
         .flex_col()
@@ -183,7 +183,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
             .gap(px(space::TIGHT))
             .when(shrinks, |d| d.min_w_0().flex_shrink())
             .when(!shrinks, |d| d.flex_none())
-            .child(glyph(g, 10.).text_color(tint(color, 0.85)))
+            .child(glyph(g, 12.).text_color(tint(color, 0.85)))
             // Clipped, not truncated: a truncating text measures as its ellipsis
             // in a flex row and would collapse to "…" with room to spare.
             .child(div().overflow_hidden().whitespace_nowrap().child(text))

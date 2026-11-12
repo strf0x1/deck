@@ -1,7 +1,7 @@
 //! Native typography specimens used by Appearance. All candidates receive
 //! identical synthetic text; masking changes glyphs, never the source string.
 
-use super::panels::glyph;
+use super::glyph::glyph;
 use super::theme::{Tokens, icon, size, space};
 use super::typography::Typography;
 use gpui::{Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, div, px, relative};
@@ -63,11 +63,11 @@ pub fn hierarchy(typeface: &Typography) -> impl IntoElement {
         .child(code(typeface.code.family(), format!("OPENAI_API_KEY={DUMMY_KEY}")))
         .child(label("Editable values use the regular build"))
         .child(code(typeface.code.value_family(), DUMMY_KEY).debug_selector(|| "type-value".into()))
-        .child(label("Icons keep their own Nerd Font"))
+        .child(label("Icons are SVG, tinted by the text colour around them"))
         .child(
             div().flex().items_center().gap(px(space::PANE_V)).children(
                 [icon::SESSIONS, icon::TERMINAL, icon::SHIELD, icon::CHECK, icon::GEAR, icon::SEND]
-                    .map(|icon| glyph(icon, 14.)),
+                    .map(|icon| glyph(icon, 16.)),
             ),
         )
 }

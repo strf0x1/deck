@@ -6,6 +6,7 @@
 //! click selects the card's lane exactly as a sidebar row does.
 
 use super::board::Card;
+use super::glyph::glyph;
 use super::panels::{eyebrow, state_color, state_mark};
 use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
@@ -37,7 +38,7 @@ pub fn project_view(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
             .bg(super::theme::Tokens::well())
             .text_size(size::scaled(size::LABEL))
             .text_color(Tokens::text_dim())
-            .child(super::panels::icon_tile(icon::SHIELD, Tokens::violet(), 26.))
+            .child(super::panels::icon_mark(icon::SHIELD, Tokens::violet(), 26.))
             .child("A task sees the project's tracked and untracked files, but not ignored ones.")
     } else {
         div().flex().flex_col().gap(px(space::LINE)).children(cards.iter().map(|card| card_row(card, cx)))
@@ -66,7 +67,7 @@ pub fn project_view(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(space::STACK))
-                .child(super::panels::glyph(icon::AGENTS, 10.).text_color(Tokens::text_faint()))
+                .child(glyph(icon::AGENTS, 12.).text_color(Tokens::text_faint()))
                 .child(
                     div()
                         .flex_1()
@@ -96,7 +97,7 @@ pub fn project_view(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .cursor_pointer()
                         .hover(|style| style.bg(Tokens::raised_hover()).text_color(Tokens::text()))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_access(cx)))
-                        .child(super::panels::glyph(icon::SHIELD, 10.).text_color(Tokens::violet()))
+                        .child(glyph(icon::SHIELD, 12.).text_color(Tokens::violet()))
                         .child("Rules and grants"),
                 ),
         )
@@ -165,7 +166,7 @@ fn card_row(card: &Card, cx: &mut Context<Deck>) -> AnyElement {
         .cursor_pointer()
         .hover(move |style| style.bg(Tokens::raised_hover()).border_color(tint(color, 0.5)))
         .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
-        .child(state_mark(if lane.attention.is_some() { super::board::LaneState::Waiting } else { lane.state }, 11.))
+        .child(state_mark(if lane.attention.is_some() { super::board::LaneState::Waiting } else { lane.state }, 13.))
         .child(
             div()
                 .flex_1()
@@ -183,6 +184,6 @@ fn card_row(card: &Card, cx: &mut Context<Deck>) -> AnyElement {
                 .child(div().truncate().text_size(size::scaled(size::SMALL)).child(line)),
         )
         .children(chip)
-        .child(super::panels::glyph(icon::CHEVRON_RIGHT, 9.).text_color(Tokens::text_faint()))
+        .child(glyph(icon::CHEVRON_RIGHT, 11.).text_color(Tokens::text_faint()))
         .into_any_element()
 }

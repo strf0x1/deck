@@ -1,7 +1,7 @@
 //! Deck's GPUI views. `root` is the window's view and owns all state;
 //! `chrome`, `panels`, `conversation`, `project_view`, `sidebar_view`, `transcript_list`, `cards`, `card_body`, `folds`,
 //! `turn_footer`, `prose`, `prompt`, `access_panel`, `settings_panel`, `settings_form` and `model_menu` render it, `composer` is the text field's
-//! element and `input` its keys and IME; `attached` is one task's connection
+//! element and `input` its keys and IME; `glyph` is the icon element; `attached` is one task's connection
 //! state, `board`, `rail`, `session`, `transcript`, `markdown`, `diff`,
 //! `highlight`, `motion`, `editor`, `access`, `settings`, `settings_rows`, `new_session`, `projects`,
 //! `sidebar` and `spring` are pure state with their own tests; `header_title`
@@ -30,6 +30,7 @@ pub mod diff;
 pub mod editor;
 mod folds;
 pub mod fonts;
+mod glyph;
 mod header_title;
 pub mod highlight;
 mod input;
