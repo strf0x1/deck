@@ -128,7 +128,7 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-control-header-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let argv = vec![fake.display().to_string()];
     let project_root = data.join("one");
