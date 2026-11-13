@@ -35,7 +35,7 @@ impl Fixture {
         let cwd = root.join("work");
         std::fs::create_dir_all(&cwd).unwrap();
         let cwd = cwd.canonicalize().unwrap();
-        let bin = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deckd");
+        let bin = deck_runtime::daemon_client::sibling_binary("deckd").unwrap();
         let daemon_child = Command::new(bin)
             .arg("--data")
             .arg(root.join("data"))
@@ -51,7 +51,7 @@ impl Fixture {
 
     pub fn fake(name: &str) -> Self {
         let mut fixture = Self::new(name);
-        let bin = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+        let bin = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
         assert!(bin.is_file(), "build the workspace binaries first");
         fixture.argv = vec![
             "env".into(),
@@ -130,7 +130,7 @@ impl Fixture {
     pub fn crash_and_restart_daemon(&mut self) {
         self.daemon_child.kill().unwrap();
         self.daemon_child.wait().unwrap();
-        let bin = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deckd");
+        let bin = deck_runtime::daemon_client::sibling_binary("deckd").unwrap();
         self.daemon_child = Command::new(bin)
             .arg("--data")
             .arg(self.root.join("data"))
