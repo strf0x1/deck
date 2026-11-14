@@ -182,6 +182,13 @@ impl Tokens {
     pub fn edge_strong() -> Rgba {
         rgba(0xffffff2a)
     }
+    /// A scrollbar thumb: neutral glass, brighter while hovered or held.
+    pub fn thumb() -> Rgba {
+        rgba(0xffffff33)
+    }
+    pub fn thumb_active() -> Rgba {
+        rgba(0xffffff66)
+    }
     pub fn shadow() -> Hsla {
         rgba(0x00000088).into()
     }

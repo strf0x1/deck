@@ -130,6 +130,41 @@ fn tool_cards_expand_and_the_transcript_follows_until_scrolled_back(cx: &mut Tes
 }
 
 #[gpui::test]
+fn the_scrollbar_jumps_on_a_track_click_and_a_drag_to_the_end_follows_again(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        for i in 0..40 {
+            d.on_inbound(Inbound::UserMessage(format!("question {i}")), cx);
+            d.on_inbound(Inbound::Message(format!("answer {i}")), cx);
+        }
+    });
+    cx.run_until_parked();
+    assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "new output is followed");
+
+    // The strip is the pane's right edge; hovering it reveals the bar.
+    let pane = cx.debug_bounds("transcript").unwrap();
+    let x = pane.right() - px(7.);
+    let top = point(x, pane.top() + px(12.));
+    cx.simulate_mouse_move(top, None, Modifiers::none());
+    settle(&deck, &mut cx);
+    cx.simulate_click(top, Modifiers::none());
+    cx.run_until_parked();
+    assert!(deck.read_with(&cx, |d, _| d.scrolled_back()), "a click near the top jumps back");
+
+    // The thumb now sits at the top; drag it to the bottom of the track.
+    let bottom = point(x, pane.bottom() - px(2.));
+    cx.simulate_mouse_down(top, MouseButton::Left, Modifiers::none());
+    for step in 1..=10 {
+        let y = top.y + (bottom.y - top.y) * (step as f32 / 10.);
+        cx.simulate_mouse_move(point(x, y), Some(MouseButton::Left), Modifiers::none());
+    }
+    cx.simulate_mouse_up(bottom, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert!(!deck.read_with(&cx, |d, _| d.scrolled_back()), "letting go at the end follows again");
+}
+
+#[gpui::test]
 fn a_finished_turn_lists_its_files_and_copy_buttons_copy(cx: &mut TestAppContext) {
     use deck_acp::{ToolCall, ToolContent, ToolKind, ToolStatus};
 
@@ -1275,7 +1310,7 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
     let data = std::env::temp_dir().join(format!("deck-view-first-prompt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let repo = git_repo(&data, "repo");
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
     let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
@@ -1415,7 +1450,7 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-boundary-note-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     // `env` gives the agent a boundary endpoint, so it advertises the
     // capability and accepts the notification.
@@ -1701,7 +1736,7 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-new-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let cwd = data.join("alpha");
     std::fs::create_dir_all(&cwd).unwrap();
@@ -1815,7 +1850,7 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-switch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let agent = |name: &str| {
         let journal = format!("DECK_FAKE_STATE={}", data.join(format!("journal-{name}")).display());
@@ -1912,7 +1947,7 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-header-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let argv = vec![fake.display().to_string()];
     let one = git_repo(&data, "one");
@@ -2114,7 +2149,7 @@ fn git_repo(data: &std::path::Path, name: &str) -> std::path::PathBuf {
 fn two_fake_tasks(name: &str) -> (std::path::PathBuf, Vec<String>, std::path::PathBuf, std::path::PathBuf) {
     let data = std::env::temp_dir().join(format!("deck-view-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
-    let fake = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("deck-fake-agent");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let argv = vec![fake.display().to_string()];
     let repo = git_repo(&data, "repo");
@@ -2735,8 +2770,7 @@ fn settings_fetch_a_providers_models_search_them_and_add_one(cx: &mut TestAppCon
     let store = data.join("credentials.json");
     std::fs::write(&store, "{}").unwrap();
     std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let exe = std::env::current_exe().unwrap();
-    let mut deckd = std::process::Command::new(exe.parent().unwrap().parent().unwrap().join("deckd"))
+    let mut deckd = std::process::Command::new(deck_runtime::daemon_client::sibling_binary("deckd").unwrap())
         .arg("--data")
         .arg(&data)
         .env("DECK_CREDENTIALS", &store)
@@ -2878,8 +2912,7 @@ fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut Tes
     std::fs::write(&store, "{}").unwrap();
     std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o600)).unwrap();
     // The daemon gets its own file store: never the developer's keyring.
-    let exe = std::env::current_exe().unwrap();
-    let mut deckd = std::process::Command::new(exe.parent().unwrap().parent().unwrap().join("deckd"))
+    let mut deckd = std::process::Command::new(deck_runtime::daemon_client::sibling_binary("deckd").unwrap())
         .arg("--data")
         .arg(&data)
         .env("DECK_CREDENTIALS", &store)

@@ -11,20 +11,18 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 const BRANCH: &str = "deck/t-1";
 
-/// The fake agent is a sibling of this test's binary in the workspace target
-/// directory; `cargo test` builds every workspace binary before running any
-/// test. A package-local `cargo test -p deck-gateway` does not, so the
-/// message says what to build.
+/// The fake agent is in the workspace target directory, above this test's
+/// binary (`deps/` up to Rust 1.99, `build/<package>/<hash>/…` since 1.100);
+/// `cargo test` builds every workspace binary before running any test. A
+/// package-local `cargo test -p deck-gateway` does not, so the message says
+/// what to build.
 fn fake_agent() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    let target = exe.parent().and_then(Path::parent).unwrap();
-    let path = target.join(format!("deck-fake-agent{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        path.exists(),
-        "{} is missing; run `cargo build -p deck-acp --bin deck-fake-agent` or the workspace's `cargo test`",
-        path.display()
-    );
-    path
+    let file = format!("deck-fake-agent{}", std::env::consts::EXE_SUFFIX);
+    let found = exe.ancestors().skip(1).take(6).map(|d| d.join(&file)).find(|p| p.exists());
+    found.unwrap_or_else(|| {
+        panic!("{file} is missing; run `cargo build -p deck-acp --bin deck-fake-agent` or the workspace's `cargo test`")
+    })
 }
 
 fn git(cwd: &Path, args: &[&str]) {

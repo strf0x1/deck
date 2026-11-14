@@ -623,18 +623,24 @@ fn executable() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("DECKD") {
         return Ok(path.into());
     }
+    sibling_binary("deckd")
+}
+
+/// A workspace binary named `name` beside the running executable, or in the
+/// nearest directory above it that has one. An installed `deck` finds its
+/// `deckd` next to it. A test executable lives somewhere under the target
+/// directory (`deps/` up to Rust 1.99, `build/<package>/<hash>/…` since
+/// 1.100), while Cargo still places finished binaries in the profile
+/// directory, so searching upward covers both layouts.
+pub fn sibling_binary(name: &str) -> Result<PathBuf> {
     let current = std::env::current_exe()?;
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let dir = current.parent().context("executable has no parent directory")?;
-    let dir = if dir.file_name().is_some_and(|n| n == "deps") {
-        dir.parent().context("test directory has no parent")?
-    } else {
-        dir
-    };
-    let path = dir.join("deckd");
-    if !path.is_file() {
-        return Err(anyhow!("{} is missing; build deckd alongside deck", path.display()));
-    }
-    Ok(path)
+    dir.ancestors()
+        .take(6)
+        .map(|d| d.join(&file))
+        .find(|p| p.is_file())
+        .ok_or_else(|| anyhow!("{} is missing; build {name} alongside deck", dir.join(&file).display()))
 }
 
 #[cfg(test)]
