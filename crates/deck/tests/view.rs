@@ -3,6 +3,9 @@
 //! without looking at the screen.
 #![expect(clippy::unwrap_used, reason = "setup helpers outside #[test] fns; a failure is a test failure")]
 
+#[path = "../../deck-runtime/tests/support/holders.rs"]
+mod holders;
+
 use deck::ui::board::PITCH;
 use deck::ui::root::Deck;
 use deck::ui::session::{Entry, Status, Timing};
@@ -695,6 +698,7 @@ fn access_grants_are_revoked_by_real_clicks_and_pending_requests_return_to_the_c
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-access-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
@@ -764,6 +768,7 @@ fn the_access_panel_shows_the_tasks_github_approval_mode(cx: &mut TestAppContext
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-mode-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
@@ -956,6 +961,7 @@ fn quitting_detaches_and_the_windows_task_keeps_running(cx: &mut TestAppContext)
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-quit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -1000,6 +1006,7 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-restart-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -1063,6 +1070,7 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-stop-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -1105,6 +1113,7 @@ fn the_stop_binding_stops_the_task(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-stop-key-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -1141,6 +1150,7 @@ fn launching_inside_a_checkout_opens_its_project(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-launch-repo-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let repo = git_repo(&data, "repo");
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let expected = deck_runtime::project::identify(&repo).unwrap().id;
@@ -1174,6 +1184,7 @@ fn launching_outside_a_checkout_selects_the_project_opened_last(cx: &mut TestApp
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-launch-last-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let repo = git_repo(&data, "repo");
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let opened = {
@@ -1203,6 +1214,7 @@ fn launching_with_no_projects_shows_the_empty_state(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-launch-none-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let plain = data.join("plain");
     std::fs::create_dir_all(&plain).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
@@ -1231,6 +1243,7 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-projects-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let one = git_repo(&data, "one");
     let two = git_repo(&data, "two");
@@ -1309,6 +1322,7 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-first-prompt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let repo = git_repo(&data, "repo");
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
@@ -1384,6 +1398,7 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-boundary-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let cwd = std::env::temp_dir();
     let opener = DaemonClient::connect_or_start(&data).unwrap();
@@ -1450,6 +1465,7 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-boundary-note-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     // `env` gives the agent a boundary endpoint, so it advertises the
@@ -1652,6 +1668,7 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-pub-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
@@ -1691,6 +1708,7 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-own-merged-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     std::fs::create_dir_all(&data).unwrap();
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let argv = vec!["sleep".to_string(), "30".to_string()];
@@ -1736,6 +1754,7 @@ fn new_session_starts_another_task_beside_the_running_one(cx: &mut TestAppContex
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-new-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let cwd = data.join("alpha");
@@ -1850,6 +1869,7 @@ fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut 
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-switch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let agent = |name: &str| {
@@ -1947,6 +1967,7 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-header-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let argv = vec![fake.display().to_string()];
@@ -2058,6 +2079,7 @@ fn a_task_without_a_title_gets_one_from_its_replayed_transcript(cx: &mut TestApp
     use deck_runtime::DaemonClient;
     cx.background_executor.allow_parking();
     let (data, argv, alpha, _beta) = two_fake_tasks("backfill");
+    let _holders = holders::Holders::new(&data);
     let (task, connection) = WindowTask::run(&data, argv.clone(), alpha.clone()).unwrap();
     let id = task.id().to_string();
     let (client, mut rx) = connection.unwrap();
@@ -2166,6 +2188,7 @@ fn launching_attaches_every_running_task_that_recorded_a_session(cx: &mut TestAp
     use deck_runtime::{DaemonClient, State};
     cx.background_executor.allow_parking();
     let (data, argv, alpha, beta) = two_fake_tasks("attach-live");
+    let _holders = holders::Holders::new(&data);
     let a = start_recorded(&data, &argv, alpha.clone());
     let b = start_recorded(&data, &argv, beta.clone());
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -2207,6 +2230,7 @@ fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppCont
     use deck_runtime::{DaemonClient, State};
     cx.background_executor.allow_parking();
     let (data, argv, alpha, beta) = two_fake_tasks("kept");
+    let _holders = holders::Holders::new(&data);
     let a = start_recorded(&data, &argv, alpha.clone());
     let b = start_recorded(&data, &argv, beta.clone());
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -2295,6 +2319,7 @@ fn the_project_view_lists_tasks_and_starts_another(cx: &mut TestAppContext) {
     use deck_runtime::DaemonClient;
     cx.background_executor.allow_parking();
     let (data, argv, alpha, beta) = two_fake_tasks("project-view");
+    let _holders = holders::Holders::new(&data);
     let a = start_recorded(&data, &argv, alpha.clone());
     let b = start_recorded(&data, &argv, beta);
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -2393,6 +2418,7 @@ fn the_needs_you_strip_opens_a_background_question_and_seen_clears_a_finished_tu
     use deck_runtime::DaemonClient;
     cx.background_executor.allow_parking();
     let (data, argv, alpha, beta) = two_fake_tasks("needs-you");
+    let _holders = holders::Holders::new(&data);
     let a = start_recorded(&data, &argv, alpha.clone());
     let b = start_recorded(&data, &argv, beta.clone());
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -2479,6 +2505,7 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-settled-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     let repo = git_repo(&data, "repo");
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
@@ -2766,6 +2793,7 @@ fn settings_fetch_a_providers_models_search_them_and_add_one(cx: &mut TestAppCon
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-models-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     std::fs::create_dir_all(&data).unwrap();
     let store = data.join("credentials.json");
     std::fs::write(&store, "{}").unwrap();
@@ -2907,6 +2935,7 @@ fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut Tes
     cx.background_executor.allow_parking();
     let data = std::env::temp_dir().join(format!("deck-view-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
     std::fs::create_dir_all(&data).unwrap();
     let store = data.join("credentials.json");
     std::fs::write(&store, "{}").unwrap();
