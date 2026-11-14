@@ -165,6 +165,11 @@ fn report(result: std::result::Result<Identity, String>) -> Result<()> {
 }
 
 fn request(mut socket: UnixStream, identity: &Identity) -> Result<Option<(UnixStream, Duration)>> {
+    // On macOS and the BSDs an accepted socket inherits the listener's
+    // O_NONBLOCK, which would make the read below fail at once whenever the
+    // request has not arrived yet, dropping deckd's Stop with no reply. The
+    // timeouts only bound a blocking socket.
+    socket.set_nonblocking(false)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     socket.set_write_timeout(Some(Duration::from_secs(1)))?;
     let result = (|| -> Result<Request> {

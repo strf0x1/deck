@@ -4,6 +4,9 @@
 
 #![cfg(unix)]
 
+#[path = "support/holders.rs"]
+mod holders;
+
 use deck_runtime::{DaemonClient, Failure, Spec, State, paths::Paths};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -24,6 +27,9 @@ struct Daemon {
     child: Child,
     /// The `DECK_CREDENTIALS` file this daemon reads, if any.
     credentials: Option<PathBuf>,
+    /// Kills this data root's holders, after `drop` has killed the daemon,
+    /// so a failed test leaves no detached process behind.
+    _holders: holders::Holders,
 }
 
 #[expect(clippy::unwrap_used, reason = "test fixture setup and process observation must succeed")]
@@ -49,7 +55,8 @@ impl Daemon {
         let data = Self::data(name);
         let paths = Paths::for_data(&data).unwrap();
         let child = Self::spawn(&data, credentials.as_deref());
-        let mut daemon = Self { data, paths, child, credentials };
+        let holders = holders::Holders::new(&data);
+        let mut daemon = Self { data, paths, child, credentials, _holders: holders };
         let client = daemon.connect();
         (daemon, client)
     }
@@ -858,6 +865,28 @@ fn task_grants_survive_a_daemon_restart_and_do_not_widen_other_tasks() {
     client.stop(&task.id).unwrap();
 }
 
+/// A control request that reaches the holder after it accepted the
+/// connection is still answered. On macOS an accepted socket inherits the
+/// listener's O_NONBLOCK, so the holder used to read such a request as an
+/// error and close the connection: under load, deckd's Stop failed with
+/// "holder closed control connection" and the holder kept running.
+#[test]
+fn a_holder_answers_a_control_request_that_arrives_after_the_accept() {
+    let (daemon, client) = Daemon::new("holder-slow-control");
+    let run = client.run(daemon.spec(&["cat"])).unwrap();
+    let holder = run.task.holder.clone().unwrap();
+    let mut control = UnixStream::connect(holder.socket.with_extension("holder")).unwrap();
+    control.set_read_timeout(Some(WAIT)).unwrap();
+    // The holder polls its listener every 20 ms: let it accept and read
+    // before the request exists.
+    std::thread::sleep(Duration::from_millis(200));
+    control.write_all(b"\"Identify\"\n").unwrap();
+    let mut reply = String::new();
+    BufReader::new(control).read_line(&mut reply).unwrap();
+    assert!(reply.contains("Identity"), "the holder answered a late request: {reply:?}");
+    client.stop(&run.task.id).unwrap();
+}
+
 #[test]
 fn revoking_a_task_grant_is_persisted_and_audited_before_the_reply() {
     use deck_runtime::approvals::{Decision, State};
@@ -1638,8 +1667,13 @@ fn a_daemon_reports_itself_stale_after_its_binary_is_rebuilt() {
     let exe = data.join("deckd");
     std::fs::copy(env!("CARGO_BIN_EXE_deckd"), &exe).unwrap();
     let paths = Paths::for_data(&data).unwrap();
-    let mut daemon =
-        Daemon { data: data.clone(), paths, child: Daemon::spawn_exe(&data, None, &exe), credentials: None };
+    let mut daemon = Daemon {
+        data: data.clone(),
+        paths,
+        child: Daemon::spawn_exe(&data, None, &exe),
+        credentials: None,
+        _holders: holders::Holders::new(&data),
+    };
     let client = daemon.connect();
     let hello = client.hello().unwrap();
     assert_eq!(hello.pid, daemon.child.id(), "the handshake names the process serving the socket");
