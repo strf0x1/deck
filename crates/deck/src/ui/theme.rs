@@ -209,6 +209,10 @@ impl Tokens {
     pub fn accent() -> Hsla {
         rgba(0xa38bffff).into()
     }
+    /// Selected text, in the composer and the transcript: the user's hue, faint.
+    pub fn selection() -> Hsla {
+        tint(Self::accent(), 0.28)
+    }
     /// Emphasis in agent prose (markdown bold): the accent, lighter.
     pub fn emphasis() -> Hsla {
         rgba(0xcbbdffff).into()

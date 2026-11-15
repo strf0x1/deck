@@ -124,6 +124,7 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
             MouseButton::Left,
             cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 window.focus(&this.focus, cx);
+                this.clear_selection(cx);
                 let at = this.composer.index_at(ev.position);
                 if ev.click_count >= 2 {
                     this.editor.select_word(at);

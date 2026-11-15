@@ -10,24 +10,29 @@
 
 use super::highlight;
 use super::markdown::{Block, Inline, Mark, parse};
+use super::selectable::{RowRuns, Text};
 use super::theme::{Tokens, radius, size, space, tint};
 use super::typography::{CodeFont, Typography};
 use gpui::{
     AnyElement, FontStyle, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    StrikethroughStyle, Styled as _, StyledText, TextRun, UnderlineStyle, div, font, px, relative,
+    StrikethroughStyle, Styled as _, TextRun, UnderlineStyle, div, font, px, relative,
 };
 
-pub fn prose(text: &str, typography: &Typography) -> AnyElement {
-    div().text_size(size::scaled(size::BODY)).child(blocks(&parse(text), 10., typography)).into_any_element()
+/// An agent message; each paragraph, heading and code block is the next of
+/// `runs`, in the order `runs::prose` lists them.
+pub fn prose(text: &str, typography: &Typography, runs: &RowRuns) -> AnyElement {
+    div().text_size(size::scaled(size::BODY)).child(blocks(&parse(text), 10., typography, runs)).into_any_element()
 }
 
-fn blocks(list: &[Block], gap: f32, typography: &Typography) -> AnyElement {
-    div().flex().flex_col().gap(px(gap)).children(list.iter().map(|b| block(b, typography))).into_any_element()
+fn blocks(list: &[Block], gap: f32, typography: &Typography, runs: &RowRuns) -> AnyElement {
+    div().flex().flex_col().gap(px(gap)).children(list.iter().map(|b| block(b, typography, runs))).into_any_element()
 }
 
-fn block(b: &Block, typography: &Typography) -> AnyElement {
+fn block(b: &Block, typography: &Typography, runs: &RowRuns) -> AnyElement {
     match b {
-        Block::Paragraph(i) => div().line_height(relative(1.55)).child(styled(i, typography)).into_any_element(),
+        Block::Paragraph(i) => {
+            div().line_height(relative(1.55)).child(runs.text(styled(i, typography))).into_any_element()
+        }
         Block::Heading(level, i) => div()
             .pt(px(space::DETAIL))
             .font_weight(FontWeight::SEMIBOLD)
@@ -36,15 +41,15 @@ fn block(b: &Block, typography: &Typography) -> AnyElement {
                 2 => size::TITLE,
                 _ => size::BODY,
             }))
-            .child(styled(i, typography))
+            .child(runs.text(styled(i, typography)))
             .into_any_element(),
-        Block::Code { lang, text } => code(lang, text, typography),
+        Block::Code { lang, text } => code(lang, text, typography, runs),
         Block::Quote(inner) => div()
             .pl(px(space::INSET))
             .border_l_2()
             .border_color(tint(Tokens::accent(), 0.45))
             .text_color(Tokens::text_dim())
-            .child(blocks(inner, 8., typography))
+            .child(blocks(inner, 8., typography, runs))
             .into_any_element(),
         Block::List { start, items } => div()
             .flex()
@@ -59,7 +64,7 @@ fn block(b: &Block, typography: &Typography) -> AnyElement {
                     .flex()
                     .gap(px(space::LINE))
                     .child(div().flex_none().min_w(px(16.)).text_color(tint(Tokens::accent(), 0.8)).child(marker))
-                    .child(div().flex_1().min_w_0().child(blocks(item, 6., typography)))
+                    .child(div().flex_1().min_w_0().child(blocks(item, 6., typography, runs)))
             }))
             .into_any_element(),
         Block::Rule => div().h(px(1.)).my(px(space::DETAIL)).bg(Tokens::edge()).into_any_element(),
@@ -67,7 +72,7 @@ fn block(b: &Block, typography: &Typography) -> AnyElement {
 }
 
 /// A fenced block: a faint language label, then the code, unwrapped lines kept.
-pub fn code(lang: &str, text: &str, typography: &Typography) -> AnyElement {
+fn code(lang: &str, text: &str, typography: &Typography, runs: &RowRuns) -> AnyElement {
     div()
         .debug_selector(|| "agent-code".into())
         .flex()
@@ -86,24 +91,24 @@ pub fn code(lang: &str, text: &str, typography: &Typography) -> AnyElement {
                 .text_color(tint(Tokens::cyan(), 0.7))
                 .child(lang.to_string())
         }))
-        .child(div().px(px(space::INSET)).py(px(9.)).line_height(relative(1.45)).child(code_text(
+        .child(div().px(px(space::INSET)).py(px(9.)).line_height(relative(1.45)).child(runs.text(code_text(
             text,
             &highlight::lines(lang, text),
             Tokens::text().into(),
             typography,
-        )))
+        ))))
         .into_any_element()
 }
 
 /// `text` in the mono face with each highlighted range in its class's
 /// colour and the rest in `base`. `lines` has one entry per `\n`-split line.
-pub fn code_text(text: &str, lines: &[highlight::Line], base: Hsla, typography: &Typography) -> StyledText {
+pub fn code_text(text: &str, lines: &[highlight::Line], base: Hsla, typography: &Typography) -> Text {
     let run =
         |len: usize, color: Hsla| TextRun { len, font: font(typography.code.family()), color, ..TextRun::default() };
     // GPUI breaks shaping at colour changes. Masked code needs one run so
     // its contextual substitutions can read a key across syntax boundaries.
     if typography.code == CodeFont::ObelMasked {
-        return StyledText::new(text.to_string()).with_runs(vec![run(text.len(), base)]);
+        return Text::Styled(text.to_string(), vec![run(text.len(), base)]);
     }
     let mut runs = vec![];
     let mut at = 0;
@@ -122,11 +127,11 @@ pub fn code_text(text: &str, lines: &[highlight::Line], base: Hsla, typography: 
     if at < text.len() || runs.is_empty() {
         runs.push(run(text.len() - at, base));
     }
-    StyledText::new(text.to_string()).with_runs(runs)
+    Text::Styled(text.to_string(), runs)
 }
 
 /// One run per styled range, and plain runs between them.
-fn styled(i: &Inline, typography: &Typography) -> StyledText {
+fn styled(i: &Inline, typography: &Typography) -> Text {
     let run = |len: usize, mark: Mark| {
         let mut f = font(if mark.code { typography.code.value_family() } else { typography.interface.family() });
         if mark.bold {
@@ -169,5 +174,5 @@ fn styled(i: &Inline, typography: &Typography) -> StyledText {
     if at < i.text.len() || runs.is_empty() {
         runs.push(run(i.text.len() - at, Mark::default()));
     }
-    StyledText::new(i.text.clone()).with_runs(runs)
+    Text::Styled(i.text.clone(), runs)
 }

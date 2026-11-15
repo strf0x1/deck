@@ -14,7 +14,7 @@
 //! Deck's key handler.
 
 use super::root::Deck;
-use super::theme::{Tokens, tint};
+use super::theme::Tokens;
 use gpui::{
     App, AvailableSpace, Bounds, ContentMask, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style, TextRun, UnderlineStyle, Window,
@@ -246,7 +246,7 @@ impl Element for Field {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             if !selection.is_empty() && !empty {
                 for quad in selection_rects(&layout, selection.clone(), text_len) {
-                    window.paint_quad(fill(quad + origin, tint(Tokens::accent(), 0.28)));
+                    window.paint_quad(fill(quad + origin, Tokens::selection()));
                 }
             }
             for row in &layout.rows {

@@ -13,6 +13,7 @@ use super::glyph::glyph;
 use super::panels::icon_mark;
 use super::prose;
 use super::root::Deck;
+use super::selectable::{RowRuns, Text};
 use super::session::{Entry, Tool};
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use super::transcript::{self, Row};
@@ -29,7 +30,8 @@ pub(super) const TAIL: usize = 5;
 /// Never draw more than this many lines of one body, even expanded.
 pub(super) const CAP: usize = 400;
 
-pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
+/// Row `row`, its text drawn as the runs `runs.rs` lists for it.
+pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> AnyElement {
     let entries = &deck.session().entries;
     let key = row.key(entries);
     let open = deck.expanded.contains(&key);
@@ -56,18 +58,18 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                         .border_color(tint(Tokens::accent(), 0.4))
                         .bg(Tokens::well())
                         .line_height(relative(1.5))
-                        .child(t.clone()),
+                        .child(runs.text(Text::Plain(t.clone()))),
                 )
                 .into_any_element(),
             Entry::Agent(t) => div()
                 .debug_selector(|| "agent-prose".into())
                 .flex()
                 .gap(px(space::TIGHT))
-                .child(div().flex_1().min_w_0().max_w(relative(0.9)).child(prose::prose(t, &deck.typography)))
+                .child(div().flex_1().min_w_0().max_w(relative(0.9)).child(prose::prose(t, &deck.typography, runs)))
                 .child(copy::button(deck, key, t.clone(), cx))
                 .into_any_element(),
-            Entry::Thought(t) => super::folds::thought(t, key, open, selected, cx),
-            Entry::Tool(tool) => card(deck, tool, key, open, cx),
+            Entry::Thought(t) => super::folds::thought(t, key, open, selected, runs, cx),
+            Entry::Tool(tool) => card(deck, tool, key, open, runs, cx),
             Entry::Note(t) => div()
                 .flex()
                 .gap(px(space::LINE))
@@ -79,7 +81,7 @@ pub fn row(deck: &Deck, row: &Row, cx: &mut Context<Deck>) -> AnyElement {
                 .bg(Tokens::well())
                 .text_color(Tokens::red())
                 .child(glyph(icon::WARN, 13.).mt(px(space::HAIR)))
-                .child(div().flex_1().min_w_0().child(t.clone()))
+                .child(div().flex_1().min_w_0().child(runs.text(Text::Plain(t.clone()))))
                 .into_any_element(),
         },
     }
@@ -89,7 +91,12 @@ pub(super) fn toggle(
     key: String,
     cx: &mut Context<Deck>,
 ) -> impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
-    cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle(&key, cx))
+    // A press on selectable text was the start of a selection, not a fold.
+    cx.listener(move |this, _: &ClickEvent, _, cx| {
+        if !this.text_select.on_text {
+            this.toggle(&key, cx)
+        }
+    })
 }
 
 pub(super) fn status(s: ToolStatus) -> (&'static str, Hsla) {
@@ -145,7 +152,7 @@ pub(super) fn more(n: usize, what: &str, open: bool) -> Div {
         .child(if open { "show less".to_string() } else { format!("{n} more {what} ⌄") })
 }
 
-fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck>) -> AnyElement {
+fn card(deck: &Deck, tool: &Tool, key: String, open: bool, runs: &RowRuns, cx: &mut Context<Deck>) -> AnyElement {
     let call = &tool.call;
     let (g, color) = status(call.status);
     let (kg, label, hue) = kind(call.kind);
@@ -212,11 +219,12 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
         .child(glyph(g, 13.).flex_none().text_color(color));
     let body = match call.kind {
         ToolKind::Execute => {
-            let output = super::card_body::output(&transcript::output(call), open, &deck.typography);
+            // The command is drawn first, as `runs.rs` lists it.
             let command = open
                 .then(|| transcript::command(call))
                 .flatten()
-                .map(|c| super::card_body::command(&c, format!("card-command-{header_key}"), &deck.typography));
+                .map(|c| super::card_body::command(&c, format!("card-command-{header_key}"), &deck.typography, runs));
+            let output = super::card_body::output(&transcript::output(call), open, &deck.typography, runs);
             match (command, output) {
                 (Some(command), Some(output)) => {
                     Some(div().flex().flex_col().child(command).child(output).into_any_element())
@@ -224,8 +232,8 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, cx: &mut Context<Deck
                 (command, output) => command.or(output),
             }
         }
-        _ if !changes.is_empty() => Some(super::card_body::diff(&changes, open, &deck.typography)),
-        _ if open => super::card_body::output(&transcript::output(call), true, &deck.typography),
+        _ if !changes.is_empty() => Some(super::card_body::diff(&changes, open, &deck.typography, runs)),
+        _ if open => super::card_body::output(&transcript::output(call), true, &deck.typography, runs),
         _ => None,
     };
     let fade = deck.motion.reveal(&header_key);

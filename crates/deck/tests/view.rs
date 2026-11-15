@@ -537,6 +537,177 @@ fn reviewing_external_access_does_not_answer_a_different_agent_permission(cx: &m
     );
 }
 
+/// A session with one of each selectable surface, every card opened, in a
+/// window tall enough that every row draws.
+fn selectable_session(deck: &gpui::Entity<Deck>, cx: &mut VisualTestContext) {
+    use deck_acp::{ToolCall, ToolContent, ToolKind, ToolStatus};
+    let run = ToolCall {
+        id: "x1".into(),
+        title: "shell ls".into(),
+        kind: ToolKind::Execute,
+        status: ToolStatus::Done,
+        input: Some(json!({ "command": "ls -la\nwc -l\n" })),
+        content: vec![ToolContent::Text("one\ntwo\nthree\n".into())],
+        ..ToolCall::default()
+    };
+    let edit = ToolCall {
+        id: "e1".into(),
+        title: "edit src/lib.rs".into(),
+        kind: ToolKind::Edit,
+        status: ToolStatus::Done,
+        content: vec![ToolContent::Diff {
+            path: "src/lib.rs".into(),
+            old: Some("fn a() {}\nfn b() {}\n".into()),
+            new: "fn a() {}\nfn c() {}\n".into(),
+        }],
+        ..ToolCall::default()
+    };
+    deck.update(cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx);
+        d.on_inbound(Inbound::UserMessage("rename the module".into()), cx);
+        d.on_inbound(Inbound::Thought("Check the callers first.".into()), cx);
+        d.on_inbound(
+            Inbound::Message(
+                "First paragraph.\n\n- one item\n- two\n\n> quoted\n\n```rust\nfn x() {}\n```\n\nLast **bold** line."
+                    .into(),
+            ),
+            cx,
+        );
+        d.on_inbound(Inbound::Tool(run), cx);
+        d.on_inbound(Inbound::Tool(edit), cx);
+    });
+    cx.simulate_resize(gpui::size(px(1180.), px(2400.)));
+    draw(cx);
+}
+
+fn run_bounds(deck: &gpui::Entity<Deck>, cx: &VisualTestContext, row: &str, run: usize) -> gpui::Bounds<gpui::Pixels> {
+    deck.read_with(cx, |d, _| d.run_bounds(row, run)).unwrap_or_else(|| panic!("run {row}/{run} was not drawn"))
+}
+
+/// Press at `from`, move there in steps with the button held, let go.
+fn drag(cx: &mut VisualTestContext, from: gpui::Point<gpui::Pixels>, to: gpui::Point<gpui::Pixels>) {
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+    for step in 1..=6 {
+        let at = from + (to - from) * (step as f32 / 6.);
+        cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::none());
+    }
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+fn clipboard(cx: &mut VisualTestContext) -> Option<String> {
+    cx.read_from_clipboard().and_then(|c| c.text())
+}
+
+#[gpui::test]
+fn every_drawn_run_is_one_runs_rs_lists(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    selectable_session(&deck, &mut cx);
+    for key in ["entry:1", "tool:x1", "tool:e1"] {
+        deck.update(&mut cx, |d, cx| {
+            if !d.is_expanded(key) {
+                d.toggle_row(key, cx);
+            }
+        });
+    }
+    draw(&mut cx);
+    deck.read_with(&cx, |d, _| {
+        let listed = d.listed_runs();
+        assert!(listed.iter().any(|(_, _, t)| t == "fn x() {}"), "a code block is a run: {listed:?}");
+        assert!(listed.iter().any(|(_, _, t)| t == "ls -la\nwc -l"), "an opened command is a run: {listed:?}");
+        assert!(listed.iter().any(|(_, _, t)| t == "Check the callers first."), "an opened thought is a run");
+        assert_eq!(d.drawn_runs(), listed, "the renderers draw exactly what runs.rs lists, in order");
+    });
+}
+
+#[gpui::test]
+fn dragging_across_rows_selects_text_and_copies_it_from_the_session(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    selectable_session(&deck, &mut cx);
+    let you = run_bounds(&deck, &cx, "entry:0", 0);
+    let first = run_bounds(&deck, &cx, "entry:2", 0);
+    // From the start of the user's message to past the end of the agent's
+    // first paragraph (the folded thought between draws no text).
+    drag(&mut cx, point(you.left() + px(0.5), you.center().y), point(first.right() + px(40.), first.center().y));
+    assert_eq!(
+        deck.read_with(&cx, |d, _| d.transcript_selection()).as_deref(),
+        Some("rename the module\n\nFirst paragraph.")
+    );
+    cx.simulate_keystrokes("cmd-c");
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("rename the module\n\nFirst paragraph."));
+
+    // Escape lets go; a plain click elsewhere also clears.
+    cx.simulate_keystrokes("escape");
+    assert_eq!(deck.read_with(&cx, |d, _| d.transcript_selection()), None);
+    drag(&mut cx, point(first.left() + px(0.5), first.center().y), point(first.right() + px(40.), first.center().y));
+    assert!(deck.read_with(&cx, |d, _| d.transcript_selection()).is_some());
+    cx.simulate_click(point(first.left() + px(0.5), first.center().y), Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.transcript_selection()), None, "a click is not a selection");
+}
+
+#[gpui::test]
+fn double_and_triple_clicks_select_a_word_and_a_line(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    selectable_session(&deck, &mut cx);
+    let you = run_bounds(&deck, &cx, "entry:0", 0);
+    let at = point(you.left() + px(0.5), you.center().y);
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: MouseButton::Left,
+        position: at,
+        modifiers: Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.transcript_selection()).as_deref(), Some("rename"));
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: MouseButton::Left,
+        position: at,
+        modifiers: Modifiers::none(),
+        click_count: 3,
+        first_mouse: false,
+    });
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    assert_eq!(deck.read_with(&cx, |d, _| d.transcript_selection()).as_deref(), Some("rename the module"));
+}
+
+#[gpui::test]
+fn a_header_click_still_opens_its_card_and_a_press_on_thought_text_does_not_fold_it(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    selectable_session(&deck, &mut cx);
+    click_control(&mut cx, "card-tool:x1");
+    assert!(deck.read_with(&cx, |d, _| d.is_expanded("tool:x1")), "a header is not text; its click opens the card");
+
+    deck.update(&mut cx, |d, cx| d.toggle_row("entry:1", cx));
+    draw(&mut cx);
+    let thought = run_bounds(&deck, &cx, "entry:1", 0);
+    cx.simulate_click(point(thought.left() + px(0.5), thought.center().y), Modifiers::none());
+    assert!(deck.read_with(&cx, |d, _| d.is_expanded("entry:1")), "clicking the opened text leaves it open");
+}
+
+#[gpui::test]
+fn copy_leaves_diff_gutters_out_and_the_composers_own_selection_wins(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    selectable_session(&deck, &mut cx);
+    let rows: Vec<_> = deck.read_with(&cx, |d, _| {
+        d.listed_runs().into_iter().filter(|(row, _, _)| row == "tool:e1").map(|(_, n, t)| (n, t)).collect()
+    });
+    let last = rows.len() - 1;
+    let top = run_bounds(&deck, &cx, "tool:e1", 0);
+    let bottom = run_bounds(&deck, &cx, "tool:e1", last);
+    drag(&mut cx, point(top.left() + px(0.5), top.center().y), point(bottom.right() + px(40.), bottom.center().y));
+    cx.simulate_keystrokes("cmd-c");
+    let expected: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
+    assert_eq!(clipboard(&mut cx), Some(expected.join("\n")), "diff lines only, no numbers or signs");
+    assert!(!expected.join("").contains(['+', '−']));
+
+    // Selecting in the composer lets go of the transcript and copies its own.
+    cx.simulate_keystrokes("h e l l o shift-left shift-left");
+    assert_eq!(deck.read_with(&cx, |d, _| d.transcript_selection()), None);
+    cx.simulate_keystrokes("cmd-c");
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("lo"));
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

@@ -59,6 +59,8 @@ pub struct Deck {
     pub(super) composer: composer::Layout,
     /// A mouse press in the composer is selecting text.
     pub(super) selecting: bool,
+    /// Text selected in the transcript (`selecting.rs`, ADR 0013).
+    pub(super) text_select: super::selecting::TextSelect,
     /// The window's task as `deckd` last listed it, for the status row.
     pub(super) workspace: Option<super::prompt::Workspace>,
     /// The transcript's virtualized list, the signature of each row it
@@ -150,6 +152,7 @@ impl Deck {
             editor: Editor::new(),
             composer: composer::Layout::default(),
             selecting: false,
+            text_select: Default::default(),
             workspace: None,
             transcript: super::transcript_list::following(),
             row_sigs: Vec::new(),
@@ -639,7 +642,14 @@ impl Deck {
         if self.can_restart() {
             return cx.stop_propagation();
         }
+        if self.selection_key(ev, cx) {
+            return cx.stop_propagation();
+        }
         if self.edit(ev, cx) {
+            // Selecting in the composer lets go of the transcript's selection.
+            if !self.editor.selection().is_empty() {
+                self.clear_selection(cx);
+            }
             cx.stop_propagation();
             cx.notify();
         }
@@ -686,6 +696,8 @@ impl Focusable for Deck {
 impl Render for Deck {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(px(self.typography.base_px()));
+        // This frame's runs record themselves as they are laid out.
+        self.text_select.hits.clear();
         self.sync_transcript();
         // Aim the pill before stepping, so it starts moving this frame.
         self.motion.pill_to(self.scrolled_back());
@@ -701,11 +713,13 @@ impl Render for Deck {
                     this.board.move_to(f32::from(ev.position.y));
                     cx.notify();
                 }
+                this.transcript_drag(ev, cx);
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.selecting = false;
+                    this.transcript_release();
                     // A press that never became a drag selects the card.
                     if let Some(lane) = this.board.release()
                         && lane != this.lanes.live()
