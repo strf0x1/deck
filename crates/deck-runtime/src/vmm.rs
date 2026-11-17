@@ -545,6 +545,9 @@ fn control_loop(config: &Config, listener: UnixListener, shutdown: i32) -> Resul
 }
 
 fn request(mut socket: UnixStream, config: &Config, shutdown: i32) -> Result<()> {
+    // The accepted socket inherits the listener's O_NONBLOCK on macOS; the
+    // timeouts below only bound a blocking read (see `holder::request`).
+    socket.set_nonblocking(false)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     socket.set_write_timeout(Some(Duration::from_secs(1)))?;
     let line = wire::read(&mut BufReader::new(socket.try_clone()?))?.context("empty VMM request")?;
