@@ -1584,7 +1584,7 @@ fn a_prompt_cut_off_by_a_killed_agent_is_resent_with_its_key_and_runs_once(cx: &
     assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.can_restart()));
     // Restart once deckd has recorded the stop. Restarting while it still tears
-    // down the dead holder can fail with ENOENT, a separate race.
+    // down the dead holder can fail with ENOENT (deck#191).
     wait_view(&mut vcx, |_| matches!(daemon.task(&id).unwrap().state, deck_runtime::State::Stopped { .. }));
 
     // The restart key is covered by `reopening_a_running_task_requires_the_restart_shortcut`.
