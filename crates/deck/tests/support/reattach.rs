@@ -11,6 +11,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[path = "../../../deck-runtime/tests/support/holders.rs"]
+mod holders;
+
 pub const WAIT: Duration = Duration::from_secs(15);
 
 pub struct Fixture {
@@ -21,6 +24,9 @@ pub struct Fixture {
     pub id: Option<String>,
     server: Option<Child>,
     daemon_child: Child,
+    /// Kills the data root's holders after `drop` destroyed the task, so a
+    /// failed test or an unconfirmed destroy leaves no detached process.
+    _holders: holders::Holders,
 }
 
 #[expect(clippy::unwrap_used, reason = "test fixture setup must succeed")]
@@ -46,7 +52,8 @@ impl Fixture {
             .unwrap();
         eventually(|| DaemonClient::connect(&root.join("data")).is_ok());
         let daemon = DaemonClient::connect(&root.join("data")).unwrap();
-        Self { root, cwd, argv: vec![], daemon, id: None, server: None, daemon_child }
+        let holders = holders::Holders::new(&root.join("data"));
+        Self { root, cwd, argv: vec![], daemon, id: None, server: None, daemon_child, _holders: holders }
     }
 
     pub fn fake(name: &str) -> Self {
