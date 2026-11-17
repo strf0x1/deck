@@ -58,7 +58,9 @@ impl PermissionOption {
     }
 }
 
-pub(crate) fn parse_turn(value: &Value) -> Option<(u64, TurnState)> {
+/// A turn snapshot (`turn`, `state`, `stopReason`) as Construct's turn
+/// notification and `session/load` metadata carry it.
+pub fn parse_turn(value: &Value) -> Option<(u64, TurnState)> {
     let number = value["turn"].as_u64()?;
     let state = match value["state"].as_str()? {
         "working" => TurnState::Working,

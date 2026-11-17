@@ -96,6 +96,35 @@ pub enum State {
     Destroyed,
 }
 
+/// Where a task's agent is in its conversation, as the holder last saw it
+/// (ADR 0011 §3). It is not folded from the event log: turns are too frequent
+/// for a durable line each, so the holder keeps the latest in `turn.json` and
+/// the store reads it with the record. It describes the last run's last turn;
+/// whether the agent is still running is the lifecycle [`State`]'s to say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Turn {
+    pub number: u64,
+    pub state: Phase,
+    /// Why the turn ended, when it is idle and the agent said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Working,
+    /// Waiting on a human: an ACP permission question is open.
+    Waiting,
+    Idle,
+}
+
+impl Turn {
+    pub fn idle(&self) -> bool {
+        self.state == Phase::Idle
+    }
+}
+
 /// A detached holder's identity and ACP endpoint. The task pid remains the
 /// agent process-group leader, so teardown can be confirmed after holder death.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +235,10 @@ pub struct Task {
     /// When the task was destroyed; the settled fold ages from here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destroyed_ms: Option<u64>,
+    /// The holder's latest turn (ADR 0011 §3), read from `turn.json` rather
+    /// than folded from the log; `None` until a holder has seen one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<Turn>,
 }
 
 impl Task {
@@ -228,6 +261,7 @@ impl Task {
             seen: 0,
             done_ms: None,
             destroyed_ms: None,
+            turn: None,
         })
     }
 

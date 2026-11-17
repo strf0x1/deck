@@ -198,7 +198,7 @@ impl Drop for Proxy {
     }
 }
 
-fn exchange(holder: &Holder, request: &Request, timeout: Duration) -> Result<Reply> {
+pub(crate) fn exchange(holder: &Holder, request: &Request, timeout: Duration) -> Result<Reply> {
     let mut socket = UnixStream::connect(holder::control(&holder.socket))?;
     socket.set_read_timeout(Some(timeout))?;
     socket.set_write_timeout(Some(timeout))?;

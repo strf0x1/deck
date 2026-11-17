@@ -197,6 +197,13 @@ impl<W: Write> Agent<W> {
         match msg["method"].as_str() {
             Some("initialize") => {
                 self.attachment += 1;
+                if let Some(path) = std::env::var_os("DECK_FAKE_INIT_LOG") {
+                    use std::io::Write as _;
+                    let log = std::fs::OpenOptions::new().create(true).append(true).open(path);
+                    if let Ok(mut log) = log {
+                        let _ = writeln!(log, "{}", msg["params"]["clientInfo"]["name"].as_str().unwrap_or("?"));
+                    }
+                }
                 if let Some(turn) = &mut self.turn {
                     turn.question = None;
                 }

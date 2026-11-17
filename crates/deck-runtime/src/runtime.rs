@@ -40,11 +40,19 @@ fn bounded_title(title: &str) -> Result<String> {
     Ok(cut)
 }
 
-/// A task changed state; the record already says so.
+/// A task changed state or turn, or its holder sent a prompt; the record
+/// already says so.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Notice {
     pub task: String,
     pub state: State,
+    /// The holder's latest turn (ADR 0011 §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<crate::Turn>,
+    /// Set when this notice announces a prompt `deckd` sent through the
+    /// holder (deck#150 R8): who sent it and what it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<crate::record::Prompt>,
 }
 
 /// Cheap to clone; clones share one runtime.
@@ -139,6 +147,36 @@ impl Runtime {
 
     pub fn tasks(&self) -> Result<Vec<Task>> {
         self.lock().store.list()
+    }
+
+    /// The task's holder wrote a new turn; announce it.
+    pub fn turn_changed(&self, id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let task = inner.store.load(id)?;
+        inner.notify(&task);
+        Ok(())
+    }
+
+    /// Record a prompt the holder started (deck#150 R8) and announce it.
+    pub fn prompted(&self, id: &str, turn: u64, from: Option<&str>, text: &str) -> Result<crate::record::Prompt> {
+        let mut inner = self.lock();
+        let prompt = inner.store.append_prompt(id, turn, from, text)?;
+        let task = inner.store.load(id)?;
+        let notice = Notice {
+            task: task.id.clone(),
+            state: task.state.clone(),
+            turn: task.turn.clone(),
+            prompt: Some(prompt.clone()),
+        };
+        inner.subscribers.retain(|tx| tx.unbounded_send(notice.clone()).is_ok());
+        Ok(prompt)
+    }
+
+    /// The prompts the task's holder sent, oldest first.
+    pub fn prompts(&self, id: &str) -> Result<Vec<crate::record::Prompt>> {
+        let inner = self.lock();
+        inner.store.load(id)?;
+        inner.store.prompts(id)
     }
 
     /// Remember the agent's session once ACP has identified it. Repeating
@@ -399,7 +437,7 @@ impl Inner {
     }
 
     fn notify(&mut self, task: &Task) {
-        let notice = Notice { task: task.id.clone(), state: task.state.clone() };
+        let notice = Notice { task: task.id.clone(), state: task.state.clone(), turn: task.turn.clone(), prompt: None };
         self.subscribers.retain(|tx| tx.unbounded_send(notice.clone()).is_ok());
     }
 }

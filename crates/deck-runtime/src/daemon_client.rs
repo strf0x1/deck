@@ -174,6 +174,23 @@ impl DaemonClient {
         self.request(Request::Session { id: id.into(), session_id: session_id.into() })
     }
 
+    /// Prompt a task through its holder (ADR 0011 §3). `from` is the
+    /// prompting task, recorded with the prompt; `Busy` sent nothing.
+    pub fn prompt(&self, id: &str, text: &str, from: Option<&str>) -> Result<crate::wire::PromptReply> {
+        self.request(Request::Prompt { task: id.into(), text: text.into(), from: from.map(str::to_owned) })
+    }
+
+    /// Wait for a task's turn or state to change, at most `wait_ms` (capped
+    /// at five minutes). With `after_turn`, for a later turn to stop working.
+    pub fn wait(&self, id: &str, after_turn: Option<u64>, wait_ms: u64) -> Result<crate::wire::Waited> {
+        self.request(Request::Wait { task: id.into(), after_turn, wait_ms })
+    }
+
+    /// The prompts a task's holder sent, oldest first, for labelling them.
+    pub fn prompts(&self, id: &str) -> Result<Vec<crate::record::Prompt>> {
+        self.request(Request::Prompts { task: id.into() })
+    }
+
     /// Record the turn number last shown to the user; it only moves forward.
     pub fn seen(&self, id: &str, turn: u64) -> Result<()> {
         self.request(Request::Seen { id: id.into(), turn })
@@ -459,6 +476,15 @@ impl DaemonClient {
         request.validate()?;
         let mut socket = self.socket.lock().unwrap_or_else(|e| e.into_inner());
         let mut retried = false;
+        // A prompt or a wait legitimately holds the reply longer than any
+        // backend start; everything else keeps the usual bound.
+        let within = match &request {
+            Request::Prompt { .. } => crate::holder_acp::START + Duration::from_secs(10),
+            Request::Wait { wait_ms, .. } => {
+                Duration::from_millis((*wait_ms).min(wire::WAIT_LIMIT_MS)) + Duration::from_secs(10)
+            }
+            _ => REPLY,
+        };
         loop {
             if socket.is_none() {
                 *socket = Some(self.connect_control()?);
@@ -466,7 +492,12 @@ impl DaemonClient {
             let outcome = match socket.as_mut() {
                 // `true` means the request reached the socket; a failed write
                 // sent nothing, so even a mutation may safely be retried.
-                Some(stream) => match wire::write(stream.get_mut(), &request) {
+                Some(stream) => match stream
+                    .get_mut()
+                    .set_read_timeout(Some(within.max(REPLY)))
+                    .map_err(anyhow::Error::from)
+                    .and_then(|()| wire::write(stream.get_mut(), &request))
+                {
                     Ok(()) => wire::read(&mut *stream).map_err(|e| (true, e)),
                     Err(e) => Err((false, e)),
                 },

@@ -807,6 +807,7 @@ mod tests {
             seen: 0,
             done_ms: None,
             destroyed_ms: None,
+            turn: None,
         };
         let policy = policy_for(&task, None).unwrap().expect("the origin names a repository");
         assert_eq!(policy.repository, "owner/name");
