@@ -34,8 +34,13 @@ pub struct Project {
     pub name: String,
     /// Every checkout seen for this project.
     pub checkouts: Vec<PathBuf>,
-    /// The default agent command.
+    /// The default agent command, which workers run.
     pub argv: Vec<String>,
+    /// The coordinator's command (ADR 0011 §2, amended 2026-11-17); `None`
+    /// is `construct acp`. A coordinator records it at create, so a change
+    /// applies to the next coordinator, not a running one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_argv: Option<Vec<String>>,
     /// When the project was last opened, in Unix milliseconds.
     pub opened_ms: u64,
     /// A forgotten project stays in the file but drops out of `list`.
@@ -86,6 +91,7 @@ impl Projects {
                         name: name_of(&identity.root),
                         checkouts: vec![],
                         argv,
+                        coordinator_argv: None,
                         opened_ms: now_ms(),
                         hidden: false,
                     });
@@ -101,6 +107,29 @@ impl Projects {
         let project = project.clone();
         self.save()?;
         Ok(project)
+    }
+
+    /// One project by id, hidden or not.
+    pub fn get(&self, id: &str) -> Option<&Project> {
+        self.projects.iter().find(|project| project.id == id)
+    }
+
+    /// The command a new coordinator for project `id` runs: its recorded
+    /// coordinator command, or `construct acp` (also for a project the index
+    /// does not know).
+    pub fn coordinator_argv(&self, id: &str) -> Vec<String> {
+        self.get(id)
+            .and_then(|project| project.coordinator_argv.clone())
+            .unwrap_or_else(crate::coordinator::default_argv)
+    }
+
+    /// Replace a project's coordinator command; `None` restores the default.
+    pub fn set_coordinator_argv(&mut self, id: &str, argv: Option<Vec<String>>) -> Result<()> {
+        crate::coordinator::validate_argv(&argv)?;
+        let project =
+            self.projects.iter_mut().find(|project| project.id == id).with_context(|| format!("no project {id}"))?;
+        project.coordinator_argv = argv;
+        self.save()
     }
 
     /// Hide a project; its tasks stay.
@@ -192,6 +221,7 @@ fn backfill(data: &Path) -> Result<Vec<Project>> {
                 name: name_of(&identity.root),
                 checkouts: vec![],
                 argv: task.spec.argv.clone(),
+                coordinator_argv: None,
                 opened_ms: at,
                 hidden: false,
             }
@@ -324,6 +354,7 @@ mod tests {
             github: None,
             project: None,
             model: None,
+            ..Default::default()
         }
     }
 
@@ -374,6 +405,22 @@ mod tests {
         drop(projects);
         let reopened = Projects::open(&data).unwrap();
         assert_eq!(reopened.list(), vec![project]);
+    }
+
+    #[test]
+    fn a_coordinator_command_defaults_to_construct_and_is_kept_beside_the_agent_command() {
+        let data = scratch("index-coordinator");
+        let repo = repo("index-coordinator-repo");
+        let mut projects = Projects::open(&data).unwrap();
+        let project = projects.open_project(&repo, vec!["deck-fake-agent".into()]).unwrap();
+        assert_eq!(project.coordinator_argv, None);
+        assert_eq!(projects.coordinator_argv(&project.id), vec!["construct".to_string(), "acp".to_string()]);
+        assert!(projects.set_coordinator_argv(&project.id, Some(vec![])).is_err());
+        projects.set_coordinator_argv(&project.id, Some(vec!["my-coordinator".into()])).unwrap();
+        let reopened = Projects::open(&data).unwrap();
+        assert_eq!(reopened.coordinator_argv(&project.id), vec!["my-coordinator".to_string()]);
+        assert_eq!(reopened.get(&project.id).unwrap().argv, vec!["deck-fake-agent".to_string()]);
+        assert_eq!(reopened.coordinator_argv("git:unknown"), crate::coordinator::default_argv());
     }
 
     #[test]

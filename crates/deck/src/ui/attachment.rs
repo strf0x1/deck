@@ -135,6 +135,7 @@ impl Deck {
             github: None,
             // New session's pick (ADR 0012 §4); none means deckd's default.
             model: self.settings.session_selector().map(deck_runtime::settings::Pick::Selector),
+            ..Default::default()
         })
     }
 

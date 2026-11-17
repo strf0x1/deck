@@ -28,7 +28,14 @@ fn inits(f: &Fixture) -> Vec<String> {
 /// Start the task through `deckd` alone, as a coordinator's `create` will.
 #[expect(clippy::unwrap_used, reason = "test fixture actions must succeed")]
 fn start(f: &mut Fixture) -> String {
-    let spec = Spec { argv: f.argv.clone(), cwd: f.cwd.clone(), project: None, github: None, model: None };
+    let spec = Spec {
+        argv: f.argv.clone(),
+        cwd: f.cwd.clone(),
+        project: None,
+        github: None,
+        model: None,
+        ..Default::default()
+    };
     let id = f.daemon.run(spec).unwrap().task.id;
     f.id = Some(id.clone());
     id

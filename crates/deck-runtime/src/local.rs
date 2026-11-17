@@ -43,6 +43,7 @@ impl Local {
         let (prog, args) = spec.argv.split_first().context("no agent command")?;
         let mut cmd = Command::new(prog);
         cmd.args(args).current_dir(&spec.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        cmd.envs(spec.agent_env());
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let mut child = cmd.spawn().with_context(|| format!("launching {prog}"))?;

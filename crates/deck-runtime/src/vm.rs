@@ -214,7 +214,11 @@ impl Vm {
 /// The policy a run uses: the one recorded with the task, or — for a record
 /// written before policy was recorded — one resolved now, so an upgrade does
 /// not silently remove a gateway the daemon's environment would have provided.
+/// A coordinator has none, whatever its project's origin (ADR 0011 §2).
 fn policy_for<'a>(task: &'a Task, over: Option<&github::Override>) -> Result<Option<Cow<'a, github::Policy>>> {
+    if task.spec.kind == crate::TaskKind::Coordinator {
+        return Ok(None);
+    }
     match &task.spec.github {
         Some(policy) => Ok(Some(Cow::Borrowed(policy))),
         None => Ok(github::resolve(&task.spec.cwd, over)?.map(Cow::Owned)),
@@ -227,7 +231,7 @@ impl Backend for Vm {
     }
 
     fn prepare(&mut self, spec: &mut crate::lifecycle::Spec) -> Result<()> {
-        if spec.github.is_none() {
+        if spec.github.is_none() && spec.kind == crate::TaskKind::Task {
             spec.github = github::resolve(&spec.cwd, self.github.as_ref())?;
         }
         spec.model = Some(Pick::Choice(Box::new(self.choice(spec.model.as_ref())?)));
@@ -266,7 +270,7 @@ impl Backend for Vm {
         let credentials = Self::credentials(&choice, github);
         let (prog, args) = task.spec.argv.split_first().context("no agent command")?;
         let guest = if prog.contains('/') { prog.clone() } else { format!("/usr/local/bin/{prog}") };
-        let env = guest_environment(&guest, args, &choice.model, self.web_profiles.is_some(), github.is_some());
+        let env = task_environment(task, &guest, args, &choice.model, self.web_profiles.is_some(), github.is_some());
         let file = lock.transfer().context("missing task lock")?;
         let fd = file.as_raw_fd();
         let config = vmm::Config {
@@ -695,6 +699,14 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// writable config: the VM is the sandbox, the gateway owns the provider key,
 /// and `DECK_MANAGED` tells Construct every credential is host-owned. The
 /// local backend does not set any of this.
+/// The guest environment plus what the task's recorded kind adds
+/// (`Spec::agent_env`), so a resumed coordinator gets `optchat` again.
+fn task_environment(task: &Task, guest: &str, args: &[String], model: &str, web: bool, github: bool) -> Vec<String> {
+    let mut env = guest_environment(guest, args, model, web, github);
+    env.extend(task.spec.agent_env().into_iter().map(|(name, value)| format!("{name}={value}")));
+    env
+}
+
 fn guest_environment(guest: &str, args: &[String], model: &str, web: bool, github: bool) -> Vec<String> {
     // The guest gets the relay's address and a non-empty placeholder, so
     // Construct's environment-first secretspec never reaches for a keyring
@@ -796,6 +808,7 @@ mod tests {
                 project: None,
                 github: None,
                 model: None,
+                ..Default::default()
             },
             title: None,
             state: State::Created,
@@ -824,6 +837,23 @@ mod tests {
             identity: Default::default(),
         });
         assert_eq!(policy_for(&recorded, None).unwrap().unwrap().repository, "recorded/one");
+
+        // A coordinator has no repository policy, legacy or recorded, so its
+        // gateway set has no GitHub port (ADR 0011 §2).
+        let mut coordinator = task.clone();
+        coordinator.spec.kind = crate::TaskKind::Coordinator;
+        assert!(policy_for(&coordinator, None).unwrap().is_none());
+        coordinator.spec.github = recorded.spec.github.clone();
+        assert!(policy_for(&coordinator, None).unwrap().is_none());
+
+        // Its guest environment carries optchat from the recorded kind; an
+        // ordinary task's does not.
+        let strategy = "CONSTRUCT_CONTEXT_STRATEGY=optchat".to_string();
+        let args = ["acp".to_string()];
+        assert!(
+            task_environment(&coordinator, "/usr/local/bin/construct", &args, "m", false, false).contains(&strategy)
+        );
+        assert!(!task_environment(&task, "/usr/local/bin/construct", &args, "m", false, false).contains(&strategy));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

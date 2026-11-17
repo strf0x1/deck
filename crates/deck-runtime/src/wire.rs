@@ -9,13 +9,15 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 pub(crate) const LIMIT: usize = 1024 * 1024;
+/// The longest reason a [`Request::SessionRefused`] may record.
+const REFUSAL_LIMIT: usize = 4096;
 /// The longest a [`Request::Wait`] holds its connection (ADR 0011 §4).
 pub const WAIT_LIMIT_MS: u64 = 300_000;
 
 /// The control grammar's protocol. Bump it whenever a [`Request`] variant or
 /// its meaning changes: a window then refuses a daemon from another build with
 /// an instruction instead of failing in the middle of a conversation.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 /// What a daemon answers to [`Request::Hello`]. A daemon predating the
 /// handshake answers `unknown variant`, which the client reports as
@@ -114,6 +116,23 @@ pub(crate) enum Request {
     /// it. Any process may send it: it only makes `deckd` read the file.
     TurnChanged {
         id: String,
+    },
+    /// Read a coordinator's policy and its project's coordinator command, or
+    /// replace both (ADR 0011 §4, deck#151 R7). A window operation only: the
+    /// control surface a coordinator reaches never serves it, so a
+    /// coordinator cannot raise its own caps.
+    CoordinatorPolicy {
+        task: String,
+        #[serde(default)]
+        set: Option<crate::coordinator::Settings>,
+    },
+    /// The agent refused to set up its session (an `initialize`,
+    /// `session/new` or `session/load` error, such as Construct's `optchat`
+    /// window floor). `deckd` stops the task and records a failed start
+    /// (deck#151 R6). A window sends it when its own setup was refused.
+    SessionRefused {
+        id: String,
+        error: String,
     },
     /// Prompt a task through its holder (ADR 0011 §3). `from` names the
     /// prompting task, a coordinator; it is recorded with the prompt.
@@ -299,6 +318,7 @@ impl Request {
                 | Self::ListCredentials
                 | Self::ListModels { .. }
                 | Self::Settings
+                | Self::CoordinatorPolicy { set: None, .. }
         )
     }
 
@@ -319,6 +339,8 @@ impl Request {
             | Self::Publication { task: id, .. }
             | Self::Seen { id, .. }
             | Self::TurnChanged { id }
+            | Self::CoordinatorPolicy { task: id, .. }
+            | Self::SessionRefused { id, .. }
             | Self::Prompt { task: id, .. }
             | Self::Wait { task: id, .. }
             | Self::Prompts { task: id }
@@ -376,6 +398,11 @@ impl Request {
             && text.trim().is_empty()
         {
             bail!("a prompt cannot be empty");
+        }
+        if let Self::SessionRefused { error, .. } = self
+            && (error.trim().is_empty() || error.len() > REFUSAL_LIMIT)
+        {
+            bail!("a session refusal needs a reason of at most {REFUSAL_LIMIT} bytes");
         }
         if let Self::ForgetProject { id } = self
             && id.is_empty()

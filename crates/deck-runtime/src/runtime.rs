@@ -18,6 +18,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
+mod coordinator;
+pub use coordinator::BY_USER;
+
 /// How long a stop waits after asking before it forces.
 pub const GRACE: Duration = Duration::from_secs(3);
 
@@ -274,15 +277,32 @@ impl Runtime {
         inner.store.set_budget(id, requests, tokens)
     }
 
-    /// Record a new task for `spec`. Nothing runs yet.
+    /// The backend this runtime drives, as task records name it.
+    pub fn backend(&self) -> &'static str {
+        self.lock().backend.name()
+    }
+
+    /// Record a new task for `spec`. Nothing runs yet. A coordinator gets its
+    /// default policy in `coordinator.json` and no GitHub policy, and is
+    /// refused when its scope already has one; a worker's `created_by` must
+    /// name a coordinator.
     pub fn create(&self, mut spec: Spec) -> Result<String> {
         if spec.project.is_none() {
             spec.project = Some(crate::project::identify(&spec.cwd)?.id);
         }
         let mut inner = self.lock();
+        let policy = inner.admit(&mut spec)?;
         inner.backend.prepare(&mut spec)?;
+        if policy.is_some() {
+            // A coordinator publishes nothing, even from a repository
+            // (ADR 0011 §2): no GitHub policy, so no gateway and no branch.
+            spec.github = None;
+        }
         let name = inner.backend.name();
         let task = inner.store.create(name, spec)?;
+        if let Some(policy) = policy {
+            crate::coordinator::write(inner.store.data(), &task.id, policy)?;
+        }
         inner.notify(&task);
         Ok(task.id)
     }
@@ -374,9 +394,19 @@ impl Runtime {
     }
 
     /// Run `spec` and attach to it: reuse a task of this spec that is at
-    /// rest and not held by anyone, or create one.
-    pub fn run(&self, spec: Spec) -> Result<(String, Stream)> {
-        let id = self.idle(&spec)?;
+    /// rest and not held by anyone, or create one. A coordinator reuses its
+    /// scope's coordinator instead, whatever its command.
+    pub fn run(&self, mut spec: Spec) -> Result<(String, Stream)> {
+        let id = match spec.kind {
+            crate::TaskKind::Coordinator => {
+                if spec.project.is_none() {
+                    spec.project = Some(crate::project::identify(&spec.cwd)?.id);
+                }
+                let scope: Vec<String> = spec.project.iter().cloned().collect();
+                self.coordinator(&scope)?.filter(|task| task.resumable()).map(|task| task.id)
+            }
+            crate::TaskKind::Task => self.idle(&spec)?,
+        };
         match id {
             Some(id) => {
                 self.resume(&id)?;
@@ -478,6 +508,7 @@ mod tests {
             project: Some("git:test".into()),
             github: None,
             model: None,
+            ..Default::default()
         }
     }
 
