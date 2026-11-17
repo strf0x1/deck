@@ -32,6 +32,9 @@ pub enum Inbound {
     Permission { request: Value, title: String, options: Vec<PermissionOption> },
     /// The prompt's turn finished, with ACP's stop reason.
     TurnEnded(String),
+    /// The agent answered the prompt sent with this idempotency key (contract
+    /// 1.3.0 §12): it took it, or refused it. Either way it needs no resend.
+    PromptSettled(String),
     /// Something failed; the text is for the user.
     Failed(String),
 }

@@ -120,10 +120,16 @@ impl Client {
     }
 
     /// Send a prompt. Fails before the handshake is done or once closed.
-    pub fn prompt(&self, text: &str) -> Result<()> {
+    pub fn prompt(&self, text: &str, key: Option<&str>) -> Result<()> {
         #[expect(clippy::unwrap_used, reason = "poisoned lock: the reader panicked")]
-        let line = self.conn.lock().unwrap().prompt(text).ok_or_else(|| anyhow!("the agent is not ready"))?;
+        let line = self.conn.lock().unwrap().prompt(text, key).ok_or_else(|| anyhow!("the agent is not ready"))?;
         write(&self.out, &line)
+    }
+
+    /// Whether the agent dedupes prompts by key, so a resend is safe.
+    pub fn idempotent(&self) -> bool {
+        #[expect(clippy::unwrap_used, reason = "poisoned lock: the reader panicked")]
+        self.conn.lock().unwrap().idempotent()
     }
 
     /// Ask the agent to stop the running turn.

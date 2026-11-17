@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/idempotency-conflict.schema.json",
+  "title": "error.data of the -32602 refusing a reused idempotency key with a different prompt (since 1.3.0)",
+  "type": "object",
+  "properties": {
+    "reason": {
+      "const": "idempotency_key_conflict"
+    }
+  },
+  "required": [
+    "reason"
+  ],
+  "additionalProperties": true
+}

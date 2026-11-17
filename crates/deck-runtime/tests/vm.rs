@@ -197,7 +197,7 @@ fn vm_prompt_and_permission_round_trip() {
     }
     let prompted = Instant::now();
     let turn_deadline = prompted + Duration::from_secs(20);
-    client.prompt("read /etc/hostname").unwrap();
+    client.prompt("read /etc/hostname", None).unwrap();
     loop {
         let Some(event) = next(&mut events, turn_deadline) else { panic!("turn did not finish") };
         match event {

@@ -10,6 +10,8 @@ pub struct Turn {
     pub words: VecDeque<String>,
     pub waiting: bool,
     pub question: Option<Value>,
+    /// Resends of this turn's prompt, with the attachment each came on.
+    pub waiters: Vec<(Value, u64)>,
 }
 
 impl Turn {
@@ -21,6 +23,7 @@ impl Turn {
             words: said.split_inclusive(' ').map(str::to_owned).collect(),
             waiting: false,
             question: None,
+            waiters: vec![],
         }
     }
 }

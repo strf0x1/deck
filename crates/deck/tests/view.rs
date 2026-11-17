@@ -1549,6 +1549,68 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
 }
 
 #[cfg(unix)]
+#[gpui::test]
+fn a_prompt_cut_off_by_a_killed_agent_is_resent_with_its_key_and_runs_once(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-resend-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let journal = data.join("journal");
+    let state = format!("DECK_FAKE_STATE={}", journal.display());
+    let prompts = data.join("prompts.jsonl");
+    let prompt_log = format!("DECK_FAKE_PROMPT_LOG={}", prompts.display());
+    let argv =
+        ["env", "DECK_FAKE_DELAY_MS=1", &state, &prompt_log, &fake.display().to_string()].map(str::to_string).to_vec();
+    DaemonClient::connect_or_start(&data).unwrap().open_project(&repo, argv.clone()).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    vcx.simulate_input("ship it");
+    vcx.simulate_keystrokes("enter");
+    // The turn waits on a permission; kill the agent there, so the prompt's
+    // answer never comes (a crash or a dead VM, not a stop, which answers it).
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    let id = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let pid = daemon.task(&id).unwrap().pid.unwrap();
+    assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.can_restart()));
+    // Restart once deckd has recorded the stop. Restarting while it still tears
+    // down the dead holder can fail with ENOENT (deck#191).
+    wait_view(&mut vcx, |_| matches!(daemon.task(&id).unwrap().state, deck_runtime::State::Stopped { .. }));
+
+    // The restart key is covered by `reopening_a_running_task_requires_the_restart_shortcut`.
+    deck.update(&mut vcx, |d, cx| d.restart(cx));
+    ready_on(&deck, &mut vcx, Some(&id));
+    vcx.run_until_parked();
+    // The fake took the prompt before the kill, so the resend is answered from
+    // its record: the prompt shows once, no new turn asks again.
+    assert_eq!(said(&deck, &vcx), vec!["ship it".to_string()]);
+    deck.read_with(&vcx, |d, _| assert!(d.session().ask.is_none(), "the resend started no turn"));
+    let log: String =
+        std::fs::read_dir(&journal).unwrap().map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()).collect();
+    assert_eq!(log.matches(r#""event":"begin""#).count(), 1, "one turn in the agent's own record: {log}");
+    assert_eq!(log.matches(r#""key":""#).count(), 1, "the first send carried the key: {log}");
+    // The window did resend, with the key it first sent.
+    let sent: Vec<serde_json::Value> =
+        std::fs::read_to_string(&prompts).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[0]["key"].is_string() && sent[0] == sent[1], "the same prompt and key both times: {sent:?}");
+    cx.quit();
+    daemon.stop(&id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
 fn cleanup_daemon(data: &std::path::Path) {
     let paths = deck_runtime::paths::Paths::for_data(data).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -2268,7 +2330,7 @@ fn a_task_without_a_title_gets_one_from_its_replayed_transcript(cx: &mut TestApp
             }
         }
     }
-    client.prompt("ship the spike").unwrap();
+    client.prompt("ship the spike", None).unwrap();
     // Let the turn finish, answering its question, so the agent is idle and
     // its transcript is complete when the window attaches.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

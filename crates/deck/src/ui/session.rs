@@ -105,6 +105,14 @@ impl Session {
         matches!(self.status, Status::Ready | Status::Down(_))
     }
 
+    /// The newest prompt the transcript shows, sent here or replayed.
+    pub fn last_prompt(&self) -> Option<&str> {
+        self.entries.iter().rev().find_map(|e| match e {
+            Entry::You(text) => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
     /// Record a prompt the user sent.
     pub fn sent(&mut self, text: &str) {
         self.entries.push(Entry::You(text.to_string()));
@@ -136,6 +144,8 @@ impl Session {
             }
             // The window keeps the capability; the transcript has nothing to show.
             Inbound::Publishes => {}
+            // The window's attachment drops its resend; the turn shows the rest.
+            Inbound::PromptSettled(_) => {}
             Inbound::Detached => {
                 self.ask = None;
                 self.questions.clear();

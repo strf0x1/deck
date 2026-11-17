@@ -7,6 +7,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::PathBuf;
 
+/// A loaded session: history, turns, last stop reason, and its keys.
+pub type Loaded = (Vec<Value>, u32, Option<String>, Vec<(String, String, Option<String>)>);
+
 pub struct Journal {
     root: Option<PathBuf>,
 }
@@ -29,8 +32,8 @@ impl Journal {
         let _ = OpenOptions::new().create_new(true).write(true).open(path);
     }
 
-    pub fn begin(&self, sid: &str, text: &str) {
-        self.append(sid, json!({ "event": "begin" }));
+    pub fn begin(&self, sid: &str, text: &str, key: Option<&str>) {
+        self.append(sid, json!({ "event": "begin", "key": key, "text": text }));
         self.update(
             sid,
             &json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": text } }),
@@ -45,8 +48,9 @@ impl Journal {
         self.append(sid, json!({ "event": "end", "stopReason": reason }));
     }
 
-    /// Recover once, then return the full history and the number of turns.
-    pub fn load(&self, sid: &str) -> io::Result<(Vec<Value>, u32, Option<String>)> {
+    /// Recover once, then return the full history, the number of turns, the
+    /// last stop reason, and each idempotency key with its prompt and stop reason.
+    pub fn load(&self, sid: &str) -> io::Result<Loaded> {
         let path = self.path(sid).ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let bytes = fs::read(&path)?;
         let complete = bytes.iter().rposition(|&byte| byte == b'\n').map_or(0, |i| i + 1);
@@ -57,16 +61,27 @@ impl Journal {
         let mut updates = Vec::new();
         let (mut pending, mut turns) = (false, 0);
         let mut stop = None;
+        let mut keys: Vec<(String, String, Option<String>)> = vec![];
+        let mut keyed = false;
         for line in text.lines() {
             let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
             match entry["event"].as_str() {
                 Some("begin") => {
                     pending = true;
                     turns += 1;
+                    keyed = false;
+                    if let Some(k) = entry["key"].as_str() {
+                        keys.push((k.into(), entry["text"].as_str().unwrap_or_default().into(), None));
+                        keyed = true;
+                    }
                 }
                 Some("end") => {
                     pending = false;
                     stop = Some(entry["stopReason"].as_str().unwrap_or("end_turn").to_string());
+                    if keyed && let Some(last) = keys.last_mut() {
+                        last.2 = stop.clone();
+                    }
+                    keyed = false;
                 }
                 Some("update") => updates.push(entry["update"].clone()),
                 _ => {}
@@ -98,9 +113,12 @@ impl Journal {
             self.update(sid, &interrupted);
             self.end(sid, "cancelled");
             stop = Some("cancelled".into());
+            if keyed && let Some(last) = keys.last_mut() {
+                last.2 = stop.clone();
+            }
             updates.push(interrupted);
         }
-        Ok((updates, turns, stop))
+        Ok((updates, turns, stop, keys))
     }
 
     fn path(&self, sid: &str) -> Option<PathBuf> {

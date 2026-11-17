@@ -39,6 +39,8 @@ mod agent;
 mod github;
 #[path = "fake/journal.rs"]
 mod journal;
+#[path = "fake/keys.rs"]
+mod keys;
 #[path = "fake/turn.rs"]
 mod turn;
 use agent::Agent;
