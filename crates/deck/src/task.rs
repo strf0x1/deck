@@ -167,8 +167,14 @@ impl WindowTask {
     /// Stop and start the agent, then rebuild its conversation by loading
     /// the recorded session. It never asks an existing process to reattach.
     pub fn restart(&self) -> Result<Connection> {
-        if self.daemon.task(&self.id)?.state == State::Running {
-            self.daemon.stop(&self.id)?;
+        if self.daemon.task(&self.id)?.state == State::Running
+            && let Err(error) = self.daemon.stop(&self.id)
+        {
+            // deckd may record the holder's own exit between the check and
+            // the stop (#191); a task that ended up stopped can resume.
+            if !matches!(self.daemon.task(&self.id)?.state, State::Stopped { .. }) {
+                return Err(error);
+            }
         }
         let task = self.daemon.resume(&self.id)?;
         self.connect(task.session_id)

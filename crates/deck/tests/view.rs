@@ -1228,6 +1228,32 @@ fn reopening_a_running_task_requires_the_restart_shortcut(cx: &mut TestAppContex
     assert_eq!(retried.state, State::Running);
     assert_ne!(retried.pid, restarted.pid, "retry resumes a task that already stopped");
 
+    // A restart pressed the moment the agent dies, before deckd has settled
+    // its holder's exit, waits for that exit instead of failing (#191). The
+    // holder is frozen in that gap: its sockets gone, its process alive until
+    // a kill shortly after the restart is pressed.
+    let kill = |args: &[&str]| assert!(std::process::Command::new("kill").args(args).status().unwrap().success());
+    let holder = retried.holder.clone().unwrap();
+    let holder_pid = holder.pid.to_string();
+    kill(&["-STOP", &holder_pid]);
+    std::fs::remove_file(holder.socket.with_extension("holder")).unwrap();
+    std::fs::remove_file(&holder.socket).unwrap();
+    // The recorded pid leads the agent's process group; kill the whole group,
+    // as a crashed agent and its helper both go.
+    kill(&["-9", "--", &format!("-{}", retried.pid.unwrap())]);
+    let reaper = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = std::process::Command::new("kill").args(["-9", &holder_pid]).status();
+    });
+    deck.update(&mut vcx, |d, cx| d.on_inbound(Inbound::Failed("the connection closed".into()), cx));
+    assert!(deck.read_with(&vcx, |d, _| d.can_restart()));
+    vcx.simulate_keystrokes(deck::app::RESTART_KEY);
+    vcx.run_until_parked();
+    reaper.join().unwrap();
+    let revived = daemon.task(&original.id).unwrap();
+    assert_eq!(revived.state, State::Running, "{:?}", deck.read_with(&vcx, |d, _| d.session().status.clone()));
+    assert_ne!(revived.pid, retried.pid, "the killed agent was replaced");
+
     cx.quit();
     daemon.stop(&original.id).unwrap();
     drop(daemon);

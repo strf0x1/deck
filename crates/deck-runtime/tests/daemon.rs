@@ -422,6 +422,35 @@ fn killing_a_holder_ends_its_agent_and_tools_and_reconciles_without_restart() {
     assert!(daemon.wait_exit().success());
 }
 
+/// A holder whose agent died removes its sockets and then exits. A stop that
+/// arrives in between used to fail with a bare ENOENT, so a Restart pressed
+/// the moment the window went Down left the task failed (#191). The holder is
+/// frozen in that gap here: sockets gone, process still alive until killed.
+#[test]
+fn a_stop_while_the_holder_is_exiting_waits_for_it_instead_of_failing() {
+    let (daemon, client) = Daemon::new("holder-exiting-stop");
+    let run = client.run(daemon.spec(&["cat"])).unwrap();
+    let holder = run.task.holder.clone().unwrap();
+    // SAFETY: this fixture owns this task's still-running holder.
+    assert_eq!(unsafe { libc::kill(holder.pid as i32, libc::SIGSTOP) }, 0);
+    std::fs::remove_file(holder.socket.with_extension("holder")).unwrap();
+    std::fs::remove_file(&holder.socket).unwrap();
+    let pid = holder.pid;
+    let killer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        // SAFETY: as above; SIGKILL also ends a stopped process.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    });
+    client.stop(&run.task.id).unwrap();
+    killer.join().unwrap();
+    assert!(matches!(client.task(&run.task.id).unwrap().state, State::Stopped { .. }));
+    assert!(!running(holder.pid));
+    assert!(!running(run.task.pid.unwrap()));
+    let resumed = client.resume(&run.task.id).unwrap();
+    assert_eq!(resumed.state, State::Running, "the task restarts at once");
+    client.stop(&run.task.id).unwrap();
+}
+
 #[test]
 fn adoption_does_not_attach_or_interrupt_an_existing_acp_stream() {
     let (mut daemon, client) = Daemon::new("live-stream");
