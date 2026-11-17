@@ -9,11 +9,13 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 pub(crate) const LIMIT: usize = 1024 * 1024;
+/// The longest a [`Request::Wait`] holds its connection (ADR 0011 §4).
+pub const WAIT_LIMIT_MS: u64 = 300_000;
 
 /// The control grammar's protocol. Bump it whenever a [`Request`] variant or
 /// its meaning changes: a window then refuses a daemon from another build with
 /// an instruction instead of failing in the middle of a conversation.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 /// What a daemon answers to [`Request::Hello`]. A daemon predating the
 /// handshake answers `unknown variant`, which the client reports as
@@ -107,6 +109,30 @@ pub(crate) enum Request {
     Publication {
         task: String,
         publication: crate::lifecycle::Publication,
+    },
+    /// The task's holder wrote a new turn (ADR 0011 §3); re-read and announce
+    /// it. Any process may send it: it only makes `deckd` read the file.
+    TurnChanged {
+        id: String,
+    },
+    /// Prompt a task through its holder (ADR 0011 §3). `from` names the
+    /// prompting task, a coordinator; it is recorded with the prompt.
+    Prompt {
+        task: String,
+        text: String,
+        #[serde(default)]
+        from: Option<String>,
+    },
+    /// Long-poll a task's turn and state, at most [`WAIT_LIMIT_MS`].
+    Wait {
+        task: String,
+        #[serde(default)]
+        after_turn: Option<u64>,
+        wait_ms: u64,
+    },
+    /// The prompts a task's holder sent, for a window to label them.
+    Prompts {
+        task: String,
     },
     /// The turn number last shown to the user for a task (ADR 0010 §6).
     Seen {
@@ -258,6 +284,8 @@ impl Request {
             Self::Hello
                 | Self::Tasks
                 | Self::Task { .. }
+                | Self::Wait { .. }
+                | Self::Prompts { .. }
                 | Self::Projects
                 | Self::Approvals { .. }
                 | Self::ApprovalStatus { .. }
@@ -290,6 +318,10 @@ impl Request {
             | Self::ModelUsage { task: id, .. }
             | Self::Publication { task: id, .. }
             | Self::Seen { id, .. }
+            | Self::TurnChanged { id }
+            | Self::Prompt { task: id, .. }
+            | Self::Wait { task: id, .. }
+            | Self::Prompts { task: id }
             | Self::Mark { id, .. }
             | Self::Title { id, .. }
             | Self::PullState { task: id, .. }
@@ -335,6 +367,16 @@ impl Request {
         {
             bail!("invalid credential name");
         }
+        if let Self::Prompt { from: Some(from), .. } = self
+            && !valid(from)
+        {
+            bail!("invalid prompting task id");
+        }
+        if let Self::Prompt { text, .. } = self
+            && text.trim().is_empty()
+        {
+            bail!("a prompt cannot be empty");
+        }
         if let Self::ForgetProject { id } = self
             && id.is_empty()
         {
@@ -351,6 +393,24 @@ impl Request {
 
 fn valid(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// What [`Request::Prompt`] answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptReply {
+    /// The prompt started this turn.
+    Started { turn: u64 },
+    /// The task's turn is not idle; nothing was sent.
+    Busy,
+}
+
+/// What [`Request::Wait`] answers: the task as it is now, and whether the
+/// wait ended by timing out rather than by a change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Waited {
+    pub task: Task,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

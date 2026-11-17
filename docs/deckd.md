@@ -106,7 +106,41 @@ arrives. Complete output while detached is discarded. The relay permits one
 client, caps each line at 1 MiB, and queues at most eight output lines. It gives a
 writer 200 ms to catch up before disconnecting it. Oversized lines are drained
 and dropped, and any attached peer is disconnected. No fragment crosses into
-the next attachment, and no holder parses ACP JSON.
+the next attachment.
+
+## The holder's ACP client
+
+ADR 0011 §3 makes the holder the session's permanent client. The relay hands
+every complete line, in both directions, to `observer.rs` through a tap; the
+relay itself still knows only bytes. The observer reads from the agent's
+start, so a window's `initialize` and `session/load` set the session up for
+the holder too. It forwards every agent line to the window except responses
+to its own requests, whose ids start `holder-<pid>-`; a window's start
+`deck-`. It never answers an agent request: permission questions stay for a
+window, and with none attached the turn waits.
+
+`deckd` prompts a task with `{"op":"prompt", task, text, from?}`. It sends the
+holder `Prompt` over the `<id>.holder` control socket (the local holder and
+the VMM both serve it, each on its own thread so a stop is never queued
+behind a prompt). If no window has set a session up, the holder sends
+`initialize` and then `session/load` for the recorded session or
+`session/new`, then the prompt; when a window initialized first it never
+initializes again. The reply is the turn the agent started, read from the
+turn notification (or, for an agent without one, the next number at once),
+never from the prompt's response, which a later attachment may retire. A turn
+that is not idle answers `{"busy"}` and sends nothing. `deckd` records a
+session the holder created, appends `{turn, from, text, at_ms}` to
+`tasks/<id>/prompts.jsonl` (text capped at 32 KiB), and announces it as a
+notice with `prompt` set, since ACP does not echo a live prompt to a window.
+
+On every turn change the holder replaces `tasks/<id>/turn.json` (number,
+`working`/`waiting`/`idle`, stop reason) and pings `{"op":"turn_changed"}`;
+`deckd` re-reads the file and announces the task with its `turn`. The file is
+the truth, so a missing `deckd` loses nothing and the next one reads it.
+`{"op":"wait", task, after_turn?, wait_ms}` long-polls (capped at 300 s): with
+`after_turn` until a later turn stops working (idle, or waiting on a human)
+or the task stops running; without it, until the turn or state changes.
+`{"op":"prompts", task}` lists the prompt log for a window to label.
 
 ## Model budgets
 

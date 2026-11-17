@@ -3,8 +3,10 @@
 //! The agent runs through the child lifeline, so a hard holder crash still
 //! kills its agent and tools. Only deckd writes lifecycle records.
 
+use crate::holder_acp::HolderAcp;
 use crate::lifecycle::Holder;
 use crate::local_guard::GuardedLocal;
+use crate::observer::Setup;
 use crate::record::{RecordLock, Store};
 use crate::{State, relay::Relay, wire};
 use anyhow::{Context as _, Result, bail};
@@ -14,7 +16,7 @@ use std::io::{BufReader, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 pub(crate) const WAIT: Duration = Duration::from_secs(5);
@@ -34,13 +36,23 @@ pub(crate) struct Identity {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
     Identify,
-    Stop { grace_ms: u64 },
+    Stop {
+        grace_ms: u64,
+    },
+    /// Prompt the agent through the holder's own ACP client (ADR 0011 §3).
+    /// `cwd` and `session` are how to set the session up if no window has.
+    Prompt {
+        text: String,
+        cwd: String,
+        session: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Reply {
     Identity(Identity),
     Stopped(String),
+    Prompted(crate::holder_acp::Prompted),
 }
 
 pub(crate) fn control(socket: &Path) -> PathBuf {
@@ -95,7 +107,9 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
     let listener = UnixListener::bind(&endpoint)?;
     let _control = SocketPath(endpoint);
     listener.set_nonblocking(true)?;
-    let relay = Relay::serve(socket, instance.attach()?)?;
+    let (acp, lines) = HolderAcp::new(data.to_owned(), id.to_owned());
+    let relay = Relay::tapped(socket, instance.attach()?, Some(acp.clone()))?;
+    HolderAcp::connect(lines, relay.writer());
     let identity =
         Identity { holder: Holder { pid: std::process::id(), socket: socket.into() }, agent: instance.pid() };
     report(Ok(identity.clone()))?;
@@ -119,7 +133,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
         }
         match listener.accept() {
             Ok((socket, _)) => {
-                if let Some(grace) = request(socket, &identity)? {
+                if let Some(grace) = request(socket, &identity, &acp)? {
                     let (mut socket, grace) = grace;
                     // Reserve ACP through termination. Closing a session is best
                     // effort; an unresponsive agent must still be stopped.
@@ -164,7 +178,11 @@ fn report(result: std::result::Result<Identity, String>) -> Result<()> {
     Ok(())
 }
 
-fn request(mut socket: UnixStream, identity: &Identity) -> Result<Option<(UnixStream, Duration)>> {
+fn request(
+    mut socket: UnixStream,
+    identity: &Identity,
+    acp: &Arc<HolderAcp>,
+) -> Result<Option<(UnixStream, Duration)>> {
     // On macOS and the BSDs an accepted socket inherits the listener's
     // O_NONBLOCK, which would make the read below fail at once whenever the
     // request has not arrived yet, dropping deckd's Stop with no reply. The
@@ -183,9 +201,21 @@ fn request(mut socket: UnixStream, identity: &Identity) -> Result<Option<(UnixSt
             let _ = wire::write(&mut socket, &reply);
         }
         Ok(Request::Stop { grace_ms }) => return Ok(Some((socket, Duration::from_millis(grace_ms.min(30_000))))),
+        Ok(Request::Prompt { text, cwd, session }) => prompt(socket, acp.clone(), text, Setup { cwd, session }),
         Err(_) => {}
     }
     Ok(None)
+}
+
+/// Answer a prompt on its own thread: starting a turn can take seconds, and
+/// the control loop must stay free for a stop meanwhile.
+pub(crate) fn prompt(mut socket: UnixStream, acp: Arc<HolderAcp>, text: String, setup: Setup) {
+    let _ = std::thread::Builder::new().name("holder-prompt".into()).spawn(move || {
+        let _ = socket.set_write_timeout(Some(Duration::from_secs(1)));
+        let reply: std::result::Result<Reply, String> =
+            acp.prompt(&text, setup, crate::holder_acp::START).map(Reply::Prompted).map_err(|e| format!("{e:#}"));
+        let _ = wire::write(&mut socket, &reply);
+    });
 }
 
 struct SocketPath(PathBuf);

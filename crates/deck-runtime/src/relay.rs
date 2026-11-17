@@ -2,6 +2,10 @@
 //! fragment; stdout is always drained and complete lines go only to the peer
 //! attached when they finish. A slow peer is disconnected, never backpressuring
 //! the agent's stdout. This module can move unchanged to B2's holder.
+//!
+//! An optional [`Tap`] sees every complete line in both directions (the
+//! holder's ACP observer, ADR 0011 §3). It may keep an agent line from the
+//! peer, which is how responses to the holder's own requests stay its own.
 
 use crate::Stream;
 use anyhow::Result;
@@ -24,6 +28,17 @@ const QUEUE: usize = 8;
 const POLL: Duration = Duration::from_millis(10);
 
 type Current = Arc<Mutex<Option<Arc<Peer>>>>;
+type Shared = Arc<Mutex<Box<dyn deck_acp::Writer>>>;
+
+/// Sees the stream's complete lines. Both calls run on relay threads and
+/// must not block: the agent's stdout drains through `agent`.
+pub trait Tap: Send + Sync {
+    /// A line a peer wrote, just before it reaches the agent.
+    fn client(&self, line: &[u8]);
+    /// A line the agent wrote; `false` keeps it from the peer.
+    fn agent(&self, line: &[u8]) -> bool;
+}
+
 struct Peer {
     socket: UnixStream,
     output: mpsc::SyncSender<Option<Vec<u8>>>,
@@ -33,18 +48,30 @@ pub struct Relay {
     path: PathBuf,
     done: Arc<AtomicBool>,
     current: Current,
-    writer: Arc<Mutex<Box<dyn deck_acp::Writer>>>,
+    writer: Shared,
+    tap: Option<Arc<dyn Tap>>,
 }
 
 impl Relay {
     pub fn serve(path: &Path, stream: Stream) -> Result<Self> {
+        Self::tapped(path, stream, None)
+    }
+
+    /// [`Relay::serve`], with `tap` seeing every line.
+    pub fn tapped(path: &Path, stream: Stream, tap: Option<Arc<dyn Tap>>) -> Result<Self> {
         let listener = UnixListener::bind(path)?;
         listener.set_nonblocking(true)?;
         let done = Arc::new(AtomicBool::new(false));
         let current: Current = Arc::new(Mutex::new(None));
         let output_peer = current.clone();
+        let output_tap = tap.clone();
         std::thread::Builder::new().name("holder-output".into()).spawn(move || {
             let _ = lines(stream.reader, |line| {
+                if let (Some(tap), Some(line)) = (&output_tap, &line)
+                    && !tap.agent(line)
+                {
+                    return;
+                }
                 let peer = output_peer.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(peer) = peer {
                     let sent = line.is_some_and(|line| enqueue(&peer, Some(line)));
@@ -64,6 +91,7 @@ impl Relay {
         let quit = done.clone();
         let writer = Arc::new(Mutex::new(stream.writer));
         let accept_writer = writer.clone();
+        let accept_tap = tap.clone();
         std::thread::Builder::new().name("holder-accept".into()).spawn(move || {
             while !quit.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -76,7 +104,7 @@ impl Relay {
                             let _ = socket.shutdown(Shutdown::Both);
                             continue;
                         }
-                        let _ = serve_peer(socket, slot, &input_peer, &accept_writer);
+                        let _ = serve_peer(socket, slot, &input_peer, &accept_writer, accept_tap.clone());
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // Wake on the peer's connection, not on a poll tick:
@@ -94,7 +122,13 @@ impl Relay {
                 }
             }
         })?;
-        Ok(Self { path: path.to_owned(), done, current, writer })
+        Ok(Self { path: path.to_owned(), done, current, writer, tap })
+    }
+
+    /// The agent's input, for a writer that is not a peer (the holder's own
+    /// requests). Take the lock per whole line, as peers do.
+    pub(crate) fn writer(&self) -> Shared {
+        self.writer.clone()
     }
     /// Reserve the transport for runtime shutdown, evicting the window. No
     /// listener peer can enter until this private stream is dropped.
@@ -106,7 +140,7 @@ impl Relay {
         if let Some(peer) = slot.as_ref() {
             let _ = peer.socket.shutdown(Shutdown::Both);
         }
-        serve_peer(held, slot, &self.current, &self.writer)?;
+        serve_peer(held, slot, &self.current, &self.writer, self.tap.clone())?;
         Ok(client)
     }
 }
@@ -115,7 +149,8 @@ fn serve_peer(
     socket: UnixStream,
     mut slot: std::sync::MutexGuard<'_, Option<Arc<Peer>>>,
     current: &Current,
-    writer: &Arc<Mutex<Box<dyn deck_acp::Writer>>>,
+    writer: &Shared,
+    tap: Option<Arc<dyn Tap>>,
 ) -> Result<()> {
     let read = socket.try_clone()?;
     let mut write = socket.try_clone()?;
@@ -171,6 +206,9 @@ fn serve_peer(
             if !active {
                 failed = true;
                 return;
+            }
+            if let Some(tap) = &tap {
+                tap.client(&line);
             }
             if out.write_all(&line).and_then(|_| out.flush()).is_err() {
                 detach(&input_current, &peer);

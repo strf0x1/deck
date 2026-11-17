@@ -14,6 +14,7 @@
 
 use crate::backend::Stream;
 use crate::holder::{Identity, Reply, Request};
+use crate::holder_acp::HolderAcp;
 use crate::krun::{Krun, SYNC_FULL, SYNC_RELAXED};
 use crate::lifecycle::{Holder, Usage};
 use crate::relay::Relay;
@@ -252,11 +253,13 @@ pub fn run(config: &Path) -> Result<()> {
     eprintln!("vmm: configured at {} ms", started.elapsed().as_millis());
 
     let config = Arc::new(config);
+    let (acp, lines) = HolderAcp::new(config.data.clone(), config.task.clone());
     let (eof_tx, eof_rx) = mpsc::channel();
     std::thread::Builder::new().name("vmm-relay".into()).spawn({
         let config = config.clone();
+        let acp = acp.clone();
         move || {
-            if let Err(error) = serve(&config, forward, eof_tx, started) {
+            if let Err(error) = serve(&config, forward, eof_tx, started, acp, lines) {
                 // The runtime waits for one startup line; an error is better
                 // than the 30 s silence a dead serve thread would leave.
                 let _ = report(Err(format!("{error:#}")));
@@ -265,7 +268,7 @@ pub fn run(config: &Path) -> Result<()> {
     })?;
     std::thread::Builder::new().name("vmm-control".into()).spawn({
         let config = config.clone();
-        move || control_loop(&config, listener, shutdown)
+        move || control_loop(&config, listener, shutdown, &acp)
     })?;
     std::thread::Builder::new().name("vmm-signal".into()).spawn(move || {
         // A signal asks the guest to power off; the guest may have no power-key
@@ -332,14 +335,23 @@ fn inherited_lock(fd: i32) -> Result<crate::record::RecordLock> {
 /// prepared; the transport becomes the agent immediately after, and the ACP
 /// handshake proves the agent. The accept itself is the readiness event;
 /// nothing sleeps.
-fn serve(config: &Config, forward: UnixListener, eof: mpsc::Sender<()>, started: Instant) -> Result<()> {
+fn serve(
+    config: &Config,
+    forward: UnixListener,
+    eof: mpsc::Sender<()>,
+    started: Instant,
+    acp: Arc<HolderAcp>,
+    lines: mpsc::Receiver<String>,
+) -> Result<()> {
     let stream = accept_within(&forward, START)?;
     eprintln!("vmm: guest connected at {} ms", started.elapsed().as_millis());
     let reader = BufReader::new(stream.try_clone()?);
-    let relay = Relay::serve(
+    let relay = Relay::tapped(
         &config.socket,
         Stream { reader: Box::new(EofReader { inner: reader, eof }), writer: Box::new(stream) },
+        Some(acp),
     )?;
+    HolderAcp::connect(lines, relay.writer());
     let identity = Identity { holder: Holder { pid: std::process::id(), socket: config.socket.clone() }, agent: None };
     READY.store(true, Ordering::Release);
     report(Ok(identity))?;
@@ -519,11 +531,11 @@ fn accept_within(listener: &UnixListener, within: Duration) -> Result<UnixStream
     }
 }
 
-fn control_loop(config: &Config, listener: UnixListener, shutdown: i32) -> Result<()> {
+fn control_loop(config: &Config, listener: UnixListener, shutdown: i32, acp: &Arc<HolderAcp>) -> Result<()> {
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
-                if request(socket, config, shutdown).is_err() {
+                if request(socket, config, shutdown, acp).is_err() {
                     break;
                 }
                 if EXITED.load(Ordering::Acquire) {
@@ -544,7 +556,7 @@ fn control_loop(config: &Config, listener: UnixListener, shutdown: i32) -> Resul
     Ok(())
 }
 
-fn request(mut socket: UnixStream, config: &Config, shutdown: i32) -> Result<()> {
+fn request(mut socket: UnixStream, config: &Config, shutdown: i32, acp: &Arc<HolderAcp>) -> Result<()> {
     // The accepted socket inherits the listener's O_NONBLOCK on macOS; the
     // timeouts below only bound a blocking read (see `holder::request`).
     socket.set_nonblocking(false)?;
@@ -567,6 +579,9 @@ fn request(mut socket: UnixStream, config: &Config, shutdown: i32) -> Result<()>
             // The guest cannot confirm its own death; the VMM's exit is the
             // confirmation the runtime waits for.
             std::process::exit(0);
+        }
+        Request::Prompt { text, cwd, session } => {
+            crate::holder::prompt(socket, acp.clone(), text, crate::observer::Setup { cwd, session });
         }
     }
     Ok(())

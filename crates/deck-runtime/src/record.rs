@@ -13,6 +13,10 @@
 //! dies, so a running record with a free lock has a dead holder. Normal
 //! release explicitly unlocks before close: an unrelated concurrent fork
 //! can retain the descriptor until exec and must not extend its lifetime.
+//!
+//! Two files sit beside the log and are not lifecycle: `turn.json`, the
+//! holder's latest turn, replaced whole on each change; and `prompts.jsonl`,
+//! the prompts `deckd` sent through the holder, appended (ADR 0011 §3).
 
 use crate::lifecycle::{Event, Spec, Task};
 use anyhow::{Context as _, Result, bail};
@@ -26,6 +30,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG: &str = "events.jsonl";
 const SNAPSHOT: &str = "task.json";
+const TURN: &str = "turn.json";
+const PROMPTS: &str = "prompts.jsonl";
+/// The most of a prompt's text the record keeps (deck#150 R8).
+pub const PROMPT_TEXT_LIMIT: usize = 32 * 1024;
+
+/// A prompt `deckd` sent through a task's holder rather than a window: which
+/// turn it started, who sent it, and its text (capped). ACP does not echo a
+/// live prompt to other readers, so this is how a window labels the user
+/// message of that turn. A prompt a window sent itself is never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prompt {
+    pub turn: u64,
+    /// The prompting task (a coordinator), or `None` for the host itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    pub text: String,
+    pub at_ms: u64,
+}
 
 #[derive(Serialize, Deserialize)]
 struct Line {
@@ -130,6 +152,7 @@ impl Store {
             let line = line?;
             task.apply(line.at_ms, &line.event)?;
         }
+        task.turn = self.turn(id);
         Ok(task)
     }
 
@@ -178,6 +201,55 @@ impl Store {
             let _ = directory.sync_all();
         }
         Ok(())
+    }
+
+    /// The holder's latest turn for `id` (ADR 0011 §3). A missing or
+    /// unreadable file is no turn: the holder rewrites it whole on the next
+    /// change, and a turn is never a reason to refuse a record.
+    pub fn turn(&self, id: &str) -> Option<crate::Turn> {
+        let bytes = fs::read(self.tasks.join(id).join(TURN)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Replace `id`'s turn file atomically. Only the task's holder calls this.
+    pub(crate) fn write_turn(&self, id: &str, turn: &crate::Turn) -> Result<()> {
+        let dir = self.tasks.join(id);
+        let tmp = dir.join(format!("{TURN}.tmp"));
+        fs::write(&tmp, serde_json::to_vec(turn)?)?;
+        fs::rename(&tmp, dir.join(TURN))?;
+        Ok(())
+    }
+
+    /// Append a holder prompt to `id`'s prompt log, its text cut to
+    /// [`PROMPT_TEXT_LIMIT`] on a character boundary.
+    pub fn append_prompt(&self, id: &str, turn: u64, from: Option<&str>, text: &str) -> Result<Prompt> {
+        let mut end = text.len().min(PROMPT_TEXT_LIMIT);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let prompt = Prompt {
+            turn,
+            from: from.map(str::to_owned),
+            text: text.get(..end).unwrap_or_default().to_owned(),
+            at_ms: now_ms(),
+        };
+        let mut line = serde_json::to_vec(&prompt)?;
+        line.push(b'\n');
+        let mut log = OpenOptions::new().create(true).append(true).open(self.tasks.join(id).join(PROMPTS))?;
+        log.write_all(&line)?;
+        log.sync_data()?;
+        Ok(prompt)
+    }
+
+    /// Every holder prompt recorded for `id`, oldest first. A torn last line
+    /// is skipped: the prompt it would have recorded still reached the agent.
+    pub fn prompts(&self, id: &str) -> Result<Vec<Prompt>> {
+        let bytes = match fs::read(self.tasks.join(id).join(PROMPTS)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error).context("reading the prompt log"),
+        };
+        Ok(bytes.split(|&b| b == b'\n').filter_map(|line| serde_json::from_slice(line).ok()).collect())
     }
 
     /// Take `id`'s liveness lock, or `None` if a live holder has it.

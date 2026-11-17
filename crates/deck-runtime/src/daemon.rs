@@ -220,6 +220,21 @@ fn connection(
                 wire::write(&mut socket, &Reply { ok: Some(json!({ "revoked": snapshot })), error: None })?;
                 return credential_watch(socket, rx);
             }
+            // A prompt waits for the turn to start and a wait for a change:
+            // neither may hold the service lock meanwhile.
+            Ok(request @ (Request::Prompt { .. } | Request::Wait { .. })) => {
+                let runtime = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.clone();
+                let result = request.validate().and_then(|()| match request {
+                    Request::Prompt { task, text, from } => {
+                        Ok(serde_json::to_value(crate::daemon_turns::prompt(&runtime, &task, &text, from.as_deref())?)?)
+                    }
+                    Request::Wait { task, after_turn, wait_ms } => {
+                        Ok(serde_json::to_value(crate::daemon_turns::wait(&runtime, &task, after_turn, wait_ms)?)?)
+                    }
+                    _ => unreachable!("matched a turn request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request @ Request::PullState { .. }) => {
                 let result = request.validate().and_then(|()| match request {
                     Request::PullState { task, refresh } => pull_request(&service, &reader, &task, refresh),
@@ -638,6 +653,12 @@ impl Service {
                 self.runtime.publication(&task, publication)?;
                 Ok(json!(null))
             }
+            Request::TurnChanged { id } => {
+                self.runtime.turn_changed(&id)?;
+                Ok(json!(null))
+            }
+            Request::Prompts { task } => Ok(serde_json::to_value(self.runtime.prompts(&task)?)?),
+            Request::Prompt { .. } | Request::Wait { .. } => unreachable!("handled before service dispatch"),
             Request::Seen { id, turn } => {
                 self.runtime.seen(&id, turn)?;
                 Ok(json!(null))
