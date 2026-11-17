@@ -21,3 +21,10 @@ pub const LEGACY_BOUNDARY_METHOD: &str = "_deck/boundary";
 /// serves.
 pub const GITHUB_OPERATIONS: &str = "github_operations";
 pub const GITHUB_OPERATIONS_VERSION: u64 = 1;
+
+/// Idempotent prompts (contract 1.3.0 §12), under [`CONSTRUCT_META`] only:
+/// the agent capability, the key's field in `session/prompt` `_meta` (ACP v2's
+/// name), and `error.data.reason` when a key already names another prompt.
+pub const IDEMPOTENT_PROMPTS: &str = "idempotentPrompts";
+pub const IDEMPOTENCY_KEY: &str = "idempotencyKey";
+pub const IDEMPOTENCY_CONFLICT: &str = "idempotency_key_conflict";

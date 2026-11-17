@@ -435,6 +435,9 @@ impl Deck {
                 turn_changed = attached.turn.as_ref() != Some(&next);
                 attached.turn = Some(next);
             }
+            if let Inbound::PromptSettled(key) = &ev {
+                attached.settled(key);
+            }
             // `Publishes` comes before `Ready` when the agent advertised it.
             match &ev {
                 Inbound::Publishes => attached.agent_publishes = Some(true),
@@ -444,6 +447,19 @@ impl Deck {
                 _ => {}
             }
             attached.session.apply(ev);
+            // A rebuilt connection resends the prompt whose answer never came,
+            // after the replay: shown again only if the agent never took it.
+            if ready
+                && let Some(client) = attached.client.clone()
+                && let Some(pending) = attached.resend(client.idempotent())
+            {
+                if attached.session.last_prompt() != Some(pending.text.as_str()) {
+                    attached.session.sent(&pending.text);
+                }
+                if let Err(e) = client.prompt(&pending.text, Some(&pending.key)) {
+                    attached.session.apply(Inbound::Failed(format!("resending the prompt: {e:#}")));
+                }
+            }
         }
         // `Ready` follows the replay: a task from before titles takes its
         // name from the first prompt the transcript holds (ADR 0010 §9).
@@ -469,9 +485,14 @@ impl Deck {
     /// Send the first prompt now that its new task is connected.
     pub(super) fn send_pending(&mut self, cx: &mut Context<Self>) {
         let Some(text) = self.pending_prompt.take() else { return };
-        let prompt = self.current().client.as_ref().map(|client| client.prompt(&text));
+        let key = deck_acp::key::new_key();
+        let prompt =
+            self.current().client.as_ref().map(|client| (client.prompt(&text, Some(&key)), client.idempotent()));
         match prompt {
-            Some(Ok(())) => {
+            Some((Ok(()), idempotent)) => {
+                if idempotent {
+                    self.current_mut().keyed(key, &text);
+                }
                 self.current_mut().session.sent(&text);
                 if let Some(id) = self.selected.clone() {
                     self.note_title(&id, &text, cx);
@@ -479,7 +500,7 @@ impl Deck {
                 // Sending is a request to see the answer: follow the tail again.
                 self.transcript.set_follow_mode(FollowMode::Tail);
             }
-            Some(Err(e)) => {
+            Some((Err(e), _)) => {
                 self.current_mut().session.apply(Inbound::Failed(format!("sending the first prompt: {e:#}")));
                 if self.editor.is_empty() {
                     self.editor.insert(&text);
@@ -536,11 +557,16 @@ impl Deck {
         if self.pending_prompt.is_some() || !self.current().session.can_prompt() {
             return;
         }
-        if let Some(client) = self.current().client.clone()
-            && let Err(e) = client.prompt(&text)
-        {
-            self.current_mut().session.apply(Inbound::Failed(format!("{e:#}")));
-            return cx.notify();
+        if let Some(client) = self.current().client.clone() {
+            // One key per submission, kept until answered (contract 1.3.0 §12.3).
+            let key = deck_acp::key::new_key();
+            if let Err(e) = client.prompt(&text, Some(&key)) {
+                self.current_mut().session.apply(Inbound::Failed(format!("{e:#}")));
+                return cx.notify();
+            }
+            if client.idempotent() {
+                self.current_mut().keyed(key, &text);
+            }
         }
         self.editor.take();
         self.current_mut().session.sent(&text);

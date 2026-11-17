@@ -81,6 +81,21 @@ fn the_github_capability_is_the_contracts() {
     assert_eq!(capability["legacy_key"], json!(false), "Deck reads it under the current key only (conn.rs)");
 }
 
+#[test]
+fn idempotent_prompts_are_the_contracts() {
+    let m = matrix();
+    let idem = &m["idempotent_prompts"];
+    assert_eq!(idem["capability_key"], CONSTRUCT_META, "read under the current key only (conn.rs)");
+    assert_eq!(idem["meta_key"], CONSTRUCT_META);
+    assert_eq!(idem["capability"], IDEMPOTENT_PROMPTS);
+    assert_eq!(idem["field"], IDEMPOTENCY_KEY);
+    assert_eq!(idem["conflict_error"]["reason"], IDEMPOTENCY_CONFLICT);
+    // Keys Deck mints fit the contract's bounds.
+    let key = deck_acp::key::new_key();
+    let max = idem["max_length"].as_u64().unwrap() as usize;
+    assert!((idem["min_length"].as_u64().unwrap() as usize..=max).contains(&key.chars().count()), "{key}");
+}
+
 fn validators() -> HashMap<String, jsonschema::Validator> {
     let schemas: Vec<_> = std::fs::read_dir(vendored().join("schema"))
         .unwrap()

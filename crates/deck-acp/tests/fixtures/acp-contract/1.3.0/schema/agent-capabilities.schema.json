@@ -8,7 +8,11 @@
       "type": "object",
       "properties": {
         "events": { "type": "boolean" },
-        "liveAttach": { "type": "boolean", "description": "User mode only; never a delegated child." }
+        "liveAttach": { "type": "boolean", "description": "User mode only; never a delegated child." },
+        "idempotentPrompts": {
+          "type": "boolean",
+          "description": "Since 1.3.0, current key only: session/prompt honours _meta[\"com.sprawlcommons/construct\"].idempotencyKey (SPEC.md §12)."
+        }
       },
       "additionalProperties": true
     },

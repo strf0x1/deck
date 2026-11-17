@@ -9,8 +9,9 @@
 use super::VERSION;
 use super::inbound::{Inbound, TurnState, parse_turn, permission, update};
 use super::names::{
-    BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, GITHUB_OPERATIONS, GITHUB_OPERATIONS_VERSION, LEGACY_BOUNDARY_METHOD,
-    LEGACY_CONSTRUCT_META, LEGACY_DECK_META, LEGACY_TURN_METHOD, TURN_METHOD,
+    BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, GITHUB_OPERATIONS, GITHUB_OPERATIONS_VERSION, IDEMPOTENCY_KEY,
+    IDEMPOTENT_PROMPTS, LEGACY_BOUNDARY_METHOD, LEGACY_CONSTRUCT_META, LEGACY_DECK_META, LEGACY_TURN_METHOD,
+    TURN_METHOD,
 };
 use super::rpc::{self, Incoming};
 use serde_json::{Value, json};
@@ -37,7 +38,8 @@ enum Pending {
     Initialize,
     NewSession,
     LoadSession(String),
-    Prompt,
+    /// A prompt, and the idempotency key it was sent with, if any.
+    Prompt(Option<String>),
 }
 
 /// Lines to write and events to surface after one step.
@@ -58,6 +60,8 @@ pub struct Conn {
     boundary: Option<&'static str>,
     /// The GitHub operation API version the agent's tools speak; 0 is none.
     github_operations: u64,
+    /// Whether the agent honours an idempotency key on `session/prompt`.
+    idempotent: bool,
     questions: HashSet<Value>,
     turn: Option<(u64, TurnState)>,
     agent: String,
@@ -94,6 +98,7 @@ impl Conn {
             live: false,
             boundary: None,
             github_operations: 0,
+            idempotent: false,
             questions: HashSet::new(),
             turn: None,
         };
@@ -131,14 +136,26 @@ impl Conn {
         rpc::request(id, method, params)
     }
 
-    /// The `session/prompt` line for `text`, or `None` before the session exists.
-    pub fn prompt(&mut self, text: &str) -> Option<String> {
+    /// The `session/prompt` line for `text`, or `None` before the session
+    /// exists. `key` goes out only to an agent that advertised idempotent
+    /// prompts (contract 1.3.0 §12.1); the same key on a resend is what keeps
+    /// a prompt the agent already took from running twice.
+    pub fn prompt(&mut self, text: &str, key: Option<&str>) -> Option<String> {
         let sid = self.session.clone()?;
         if self.turn.as_ref().is_some_and(|(_, state)| !matches!(state, TurnState::Idle { .. })) {
             return None;
         }
-        let params = json!({ "sessionId": sid, "prompt": [{ "type": "text", "text": text }] });
-        Some(self.request(Pending::Prompt, "session/prompt", params))
+        let mut params = json!({ "sessionId": sid, "prompt": [{ "type": "text", "text": text }] });
+        let key = key.filter(|_| self.idempotent).map(str::to_owned);
+        if let Some(k) = &key {
+            params["_meta"] = json!({ CONSTRUCT_META: { IDEMPOTENCY_KEY: k } });
+        }
+        Some(self.request(Pending::Prompt(key), "session/prompt", params))
+    }
+
+    /// Whether a prompt can be resent safely: the agent dedupes by key.
+    pub fn idempotent(&self) -> bool {
+        self.idempotent
     }
 
     /// The `session/cancel` notification, or `None` before the session exists.
@@ -212,7 +229,14 @@ impl Conn {
         let Some(kind) = self.pending.remove(id) else { return Step::default() };
         let value = match result {
             Ok(v) => v,
-            Err(e) => return Step { lines: vec![], events: vec![Inbound::Failed(format!("{}: {e}", name(&kind)))] },
+            Err(e) => {
+                let mut events = vec![Inbound::Failed(format!("{}: {e}", name(&kind)))];
+                // A refused keyed prompt is settled too: resending it would be refused again.
+                if let Pending::Prompt(Some(key)) = kind {
+                    events.push(Inbound::PromptSettled(key));
+                }
+                return Step { lines: vec![], events };
+            }
         };
         match kind {
             Pending::Initialize => {
@@ -229,6 +253,7 @@ impl Conn {
                 };
                 // Current key only: the capability is newer than the bare names.
                 self.github_operations = meta[DECK_META][GITHUB_OPERATIONS].as_u64().unwrap_or(0);
+                self.idempotent = meta[CONSTRUCT_META][IDEMPOTENT_PROMPTS] == true;
                 if matches!(self.target, Target::Attach(_)) && !self.live {
                     return Step { lines: vec![], events: vec![Inbound::Detached] };
                 }
@@ -284,12 +309,13 @@ impl Conn {
                     events: vec![Inbound::Ready { agent: self.agent.clone(), session_id: sid, turn }],
                 }
             }
-            Pending::Prompt => {
-                if self.live {
-                    return Step::default();
+            Pending::Prompt(key) => {
+                let mut events: Vec<Inbound> = key.map(Inbound::PromptSettled).into_iter().collect();
+                if !self.live {
+                    let stop = value["stopReason"].as_str().unwrap_or("end_turn").to_string();
+                    events.insert(0, Inbound::TurnEnded(stop));
                 }
-                let stop = value["stopReason"].as_str().unwrap_or("end_turn").to_string();
-                Step { lines: vec![], events: vec![Inbound::TurnEnded(stop)] }
+                Step { lines: vec![], events }
             }
         }
     }
@@ -321,7 +347,7 @@ fn name(kind: &Pending) -> &'static str {
         Pending::Initialize => "initialize",
         Pending::NewSession => "session/new",
         Pending::LoadSession(_) => "session/load",
-        Pending::Prompt => "session/prompt",
+        Pending::Prompt(_) => "session/prompt",
     }
 }
 
@@ -360,7 +386,7 @@ mod tests {
                 }),
             })
         );
-        assert_eq!(c.prompt("too soon"), None);
+        assert_eq!(c.prompt("too soon", None), None);
         let step =
             c.read(r#"{"id":1,"result":{"agentInfo":{"name":"fake"},"agentCapabilities":{"loadSession":true}}}"#);
         assert_eq!(step.events, vec![]);
@@ -374,12 +400,12 @@ mod tests {
         );
         let replay = r#"{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"go"}}}}"#;
         assert_eq!(c.read(replay).events, vec![Inbound::UserMessage("go".into())]);
-        assert_eq!(c.prompt("still too soon"), None);
+        assert_eq!(c.prompt("still too soon", None), None);
         assert_eq!(
             c.read(r#"{"id":2,"result":{}}"#).events,
             vec![Inbound::Ready { agent: "fake".into(), session_id: "saved".into(), turn: None }]
         );
-        let prompt = c.prompt("continue").unwrap();
+        let prompt = c.prompt("continue", None).unwrap();
         assert_eq!(
             rpc::parse(&prompt),
             Some(Incoming::Request {
@@ -396,13 +422,13 @@ mod tests {
         let step = unsupported.read(r#"{"id":1,"result":{"agentCapabilities":{"loadSession":false}}}"#);
         assert_eq!(step.lines, Vec::<String>::new());
         assert_eq!(step.events, vec![Inbound::Failed("the agent does not support session/load".into())]);
-        assert_eq!(unsupported.prompt("no"), None);
+        assert_eq!(unsupported.prompt("no", None), None);
 
         let (mut missing, _) = Conn::load(PathBuf::from("/w"), "missing".into());
         missing.read(r#"{"id":1,"result":{"agentCapabilities":{"loadSession":true}}}"#);
         let step = missing.read(r#"{"id":2,"error":{"code":-32002,"message":"no session missing"}}"#);
         assert_eq!(step.events, vec![Inbound::Failed("session/load: no session missing (-32002)".into())]);
-        assert_eq!(missing.prompt("no"), None);
+        assert_eq!(missing.prompt("no", None), None);
     }
 
     fn live_init(c: &mut Conn) -> Step {
@@ -442,7 +468,7 @@ mod tests {
         let (mut c, _) = Conn::attach("/w".into(), "saved".into());
         let step = c.read(&rpc::ok(&json!(1), json!({ "agentCapabilities": { "loadSession": true } })));
         assert_eq!(step, Step { lines: vec![], events: vec![Inbound::Detached] });
-        assert_eq!(c.prompt("no"), None);
+        assert_eq!(c.prompt("no", None), None);
     }
 
     #[test]
@@ -461,7 +487,7 @@ mod tests {
             assert_eq!(live_init(&mut c).lines.len(), 1);
             assert_eq!(c.read(&turn_line("saved", 1, "idle")), Step::default(), "initialize notices precede replay");
             assert_eq!(c.read(&update).events, vec![Inbound::Message("partial".into())]);
-            assert_eq!(c.prompt("too soon"), None);
+            assert_eq!(c.prompt("too soon", None), None);
             let phase = match state {
                 TurnState::Working => "working",
                 TurnState::Waiting => "waiting",
@@ -484,7 +510,7 @@ mod tests {
                 Step::default(),
                 "an older turn cannot change status"
             );
-            assert_eq!(c.prompt("next").is_some(), matches!(state, TurnState::Idle { .. }));
+            assert_eq!(c.prompt("next", None).is_some(), matches!(state, TurnState::Idle { .. }));
         }
     }
 
@@ -495,7 +521,7 @@ mod tests {
             live_init(&mut c);
             let result = c.read(&rpc::ok(&json!(2), json!({ "_meta": { "construct": { "turn": snapshot } } })));
             assert!(matches!(result.events.as_slice(), [Inbound::Failed(_)]));
-            assert_eq!(c.prompt("no"), None);
+            assert_eq!(c.prompt("no", None), None);
         }
     }
 
@@ -529,26 +555,26 @@ mod tests {
         let (mut c, _) = Conn::start("/w".into());
         live_init(&mut c);
         c.read(&rpc::ok(&json!(2), json!({ "sessionId": "s1" })));
-        c.prompt("go");
+        c.prompt("go", None);
         assert_eq!(
             c.read(&turn_line("s1", 1, "idle")).events,
             vec![Inbound::Turn { number: 1, state: TurnState::Idle { stop_reason: Some("cancelled".into()) } }]
         );
-        assert!(c.prompt("next before the old response").is_some());
+        assert!(c.prompt("next before the old response", None).is_some());
         assert_eq!(c.read(&rpc::ok(&json!(3), json!({ "stopReason": "cancelled" }))), Step::default());
     }
 
     #[test]
     fn no_prompt_before_the_session_exists() {
         let (mut c, _) = Conn::start(PathBuf::from("/w"));
-        assert_eq!(c.prompt("hi"), None);
+        assert_eq!(c.prompt("hi", None), None);
         assert_eq!(c.cancel(), None);
     }
 
     #[test]
     fn a_turn_streams_then_ends() {
         let mut c = handshake();
-        let p = c.prompt("hi").unwrap_or_default();
+        let p = c.prompt("hi", None).unwrap_or_default();
         assert!(p.contains(r#""sessionId":"s1""#) && p.contains(r#""text":"hi""#));
         let chunk = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"yo"}}}}"#;
         assert_eq!(c.read(chunk).events, vec![Inbound::Message("yo".into())]);
@@ -686,6 +712,59 @@ mod tests {
         assert!(!publishes(r#"{"com.sprawlcommons/deck":{"github_operations":true}}"#));
         assert!(!publishes(r#"{"com.sprawlcommons/deck":{"github_operations":0}}"#));
         assert!(!publishes(r#"{"com.sprawlcommons/deck":{"boundary":true}}"#));
+    }
+
+    /// A connected session whose agent advertised `meta` under `agentCapabilities._meta`.
+    fn ready_with(meta: &str) -> Conn {
+        let (mut c, _) = Conn::start("/w".into());
+        c.read(&format!(
+            r#"{{"id":1,"result":{{"agentInfo":{{"name":"construct"}},"agentCapabilities":{{"_meta":{meta}}}}}}}"#
+        ));
+        c.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+        c
+    }
+
+    #[test]
+    fn a_key_is_sent_only_to_an_agent_that_advertised_idempotent_prompts() {
+        let key = |c: &mut Conn| -> Value {
+            let line = c.prompt("go", Some("k-1")).unwrap();
+            let Some(Incoming::Request { params, .. }) = rpc::parse(&line) else { panic!("{line}") };
+            params["_meta"]["com.sprawlcommons/construct"]["idempotencyKey"].clone()
+        };
+        let mut yes = ready_with(r#"{"com.sprawlcommons/construct":{"idempotentPrompts":true}}"#);
+        assert!(yes.idempotent());
+        assert_eq!(key(&mut yes), json!("k-1"));
+        for meta in [
+            r#"{}"#,
+            r#"{"construct":{"idempotentPrompts":true}}"#,
+            r#"{"com.sprawlcommons/construct":{"idempotentPrompts":"true"}}"#,
+        ] {
+            let mut no = ready_with(meta);
+            assert!(!no.idempotent(), "{meta}");
+            assert_eq!(key(&mut no), Value::Null, "{meta}: a 1.2 agent would ignore it and run a resend again");
+        }
+    }
+
+    #[test]
+    fn a_keyed_prompt_is_settled_by_its_answer_or_its_refusal() {
+        let mut c = ready_with(r#"{"com.sprawlcommons/construct":{"idempotentPrompts":true}}"#);
+        c.prompt("go", Some("k-1")).unwrap();
+        assert_eq!(
+            c.read(r#"{"id":3,"result":{"stopReason":"cancelled"}}"#).events,
+            vec![Inbound::TurnEnded("cancelled".into()), Inbound::PromptSettled("k-1".into())]
+        );
+        c.prompt("other", Some("k-1")).unwrap();
+        let refused = c.read(r#"{"id":4,"error":{"code":-32602,"message":"idempotencyKey already names a different prompt","data":{"reason":"idempotency_key_conflict"}}}"#);
+        assert!(
+            matches!(refused.events.as_slice(), [Inbound::Failed(_), Inbound::PromptSettled(k)] if k == "k-1"),
+            "{refused:?}"
+        );
+        // An unkeyed prompt settles nothing.
+        c.prompt("plain", None).unwrap();
+        assert_eq!(
+            c.read(r#"{"id":5,"result":{"stopReason":"end_turn"}}"#).events,
+            vec![Inbound::TurnEnded("end_turn".into())]
+        );
     }
 
     #[test]

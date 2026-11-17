@@ -39,7 +39,7 @@ fn next_before(rx: &mut UnboundedReceiver<Inbound>, what: &str) -> Inbound {
 #[expect(clippy::unwrap_used, reason = "a test helper: a rejected write is the failure")]
 fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
     assert_eq!(next(rx), Inbound::Ready { agent: "fake agent".into(), session_id: "fake-1".into(), turn: None });
-    client.prompt("ship it").unwrap();
+    client.prompt("ship it", None).unwrap();
 
     let mut text = String::new();
     let mut tool_seen = false;
@@ -319,7 +319,7 @@ fn client_load_restores_a_cut_off_first_turn_without_repeating_it() {
     let (mut first, input, output) = spawn(&state);
     let (client, mut rx) = Client::over(cwd.clone(), input, output).unwrap();
     let Inbound::Ready { session_id, .. } = next(&mut rx) else { panic!("expected Ready") };
-    client.prompt("first unfinished turn").unwrap();
+    client.prompt("first unfinished turn", None).unwrap();
     loop {
         match next(&mut rx) {
             Inbound::Permission { .. } => break,
@@ -453,7 +453,7 @@ fn an_agent_without_the_capability_is_never_sent_a_boundary_notice() {
     let Inbound::Ready { .. } = next(&mut rx) else { panic!("expected Ready") };
     // The client drops it instead of writing a method the agent never offered.
     client.boundary_notice(&serde_json::json!({ "approval_id": "a1" })).unwrap();
-    client.prompt("ship it").unwrap();
+    client.prompt("ship it", None).unwrap();
     let mut text = String::new();
     loop {
         match next(&mut rx) {
@@ -500,7 +500,7 @@ fn one_namespace(names: &str) {
     let (client, mut rx) = Client::over(std::env::temp_dir(), input, output).unwrap();
     let Inbound::Ready { session_id, .. } = next(&mut rx) else { panic!("{names}: expected Ready") };
 
-    client.prompt("ship it").unwrap();
+    client.prompt("ship it", None).unwrap();
     loop {
         match next_before(&mut rx, &format!("{names} turn completion")) {
             Inbound::Permission { request, .. } => client.answer(&request, Some("allow")).unwrap(),
@@ -607,4 +607,78 @@ fn the_github_capability_needs_a_gateway_and_has_no_legacy_form() {
     let with = meta(&[("DECK_GITHUB_URL", "http://127.0.0.1:9")]);
     assert_eq!(with["com.sprawlcommons/deck"]["github_operations"], json!(1), "{with}");
     assert!(with["deck"]["github_operations"].is_null(), "the capability has no legacy form: {with}");
+}
+
+#[test]
+fn a_prompt_resent_with_its_key_after_a_kill_starts_no_second_turn() {
+    use std::io::BufReader;
+    use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+    fn spawn(state: &std::path::Path) -> (Child, BufReader<ChildStdout>, ChildStdin) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deck-fake-agent"))
+            .env("DECK_FAKE_DELAY_MS", "0")
+            .env("DECK_FAKE_STATE", state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = BufReader::new(child.stdout.take().unwrap());
+        let output = child.stdin.take().unwrap();
+        (child, input, output)
+    }
+
+    fn until_ready(rx: &mut UnboundedReceiver<Inbound>) -> Vec<Inbound> {
+        let mut events = Vec::new();
+        loop {
+            match next(rx) {
+                Inbound::Ready { .. } => return events,
+                Inbound::Failed(error) => panic!("{error}"),
+                event => events.push(event),
+            }
+        }
+    }
+
+    hang_guard();
+    let state = std::env::temp_dir().join(format!("deck-fake-keys-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let cwd = std::env::temp_dir();
+    let key = deck_acp::key::new_key();
+
+    let (mut first, input, output) = spawn(&state);
+    let (client, mut rx) = Client::over(cwd.clone(), input, output).unwrap();
+    let Inbound::Ready { session_id, .. } = next(&mut rx) else { panic!("expected Ready") };
+    assert!(client.idempotent(), "the fake advertises idempotent prompts like Construct 1.3");
+    client.prompt("ship it", Some(&key)).unwrap();
+    while !matches!(next(&mut rx), Inbound::Permission { .. }) {}
+    first.kill().unwrap();
+    first.wait().unwrap();
+    drop(client);
+
+    // The response never came; the window resends with the same key.
+    let (mut second, input, output) = spawn(&state);
+    let (client, mut rx) = Client::load(cwd.clone(), input, output, session_id.clone()).unwrap();
+    until_ready(&mut rx);
+    client.prompt("ship it", Some(&key)).unwrap();
+    assert_eq!(next_before(&mut rx, "the resend's answer"), Inbound::PromptSettled(key.clone()));
+    // The same key with other text is refused and stays the first prompt's.
+    client.prompt("ship something else", Some(&key)).unwrap();
+    assert!(
+        matches!(next_before(&mut rx, "the refusal"), Inbound::Failed(e) if e.contains("already names a different prompt"))
+    );
+    assert_eq!(next_before(&mut rx, "the settled refusal"), Inbound::PromptSettled(key.clone()));
+    drop(client);
+    assert!(second.wait().unwrap().success());
+
+    // The history holds the prompt once: the resend started no turn.
+    let (mut third, input, output) = spawn(&state);
+    let (client, mut rx) = Client::load(cwd, input, output, session_id).unwrap();
+    let prompts = until_ready(&mut rx).into_iter().filter(|e| matches!(e, Inbound::UserMessage(_))).count();
+    assert_eq!(prompts, 1);
+    // A new key is a new prompt, and runs.
+    client.prompt("ship it again", Some(&deck_acp::key::new_key())).unwrap();
+    while !matches!(next(&mut rx), Inbound::Permission { .. }) {}
+    drop(client);
+    third.kill().unwrap();
+    third.wait().unwrap();
+    std::fs::remove_dir_all(state).unwrap();
 }

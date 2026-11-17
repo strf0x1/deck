@@ -229,7 +229,7 @@ impl Attached {
     }
 
     pub fn prompt(&mut self, text: &str) {
-        self.client.as_ref().unwrap().prompt(text).unwrap();
+        self.client.as_ref().unwrap().prompt(text, None).unwrap();
         self.session.sent(text);
     }
 

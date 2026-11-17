@@ -2,6 +2,7 @@
 //! initialize retires question IDs and suppresses old prompt responses.
 
 use super::journal::Journal;
+use super::keys::{self, Keys, Seen};
 use super::turn::{self, Turn};
 use deck_acp::names::{
     BOUNDARY_METHOD, CONSTRUCT_META, DECK_META, LEGACY_BOUNDARY_METHOD, LEGACY_CONSTRUCT_META, LEGACY_DECK_META,
@@ -40,6 +41,8 @@ pub struct Agent<W> {
     /// transition.
     legacy_names: bool,
     reverse_names: bool,
+    /// Idempotency keys, advertised with the reverse-DNS names (contract 1.3.0).
+    keys: Keys,
 }
 
 impl<W: Write> Agent<W> {
@@ -61,6 +64,7 @@ impl<W: Write> Agent<W> {
             turn_method: LEGACY_TURN_METHOD,
             legacy_names: names != "reverse",
             reverse_names: names != "legacy",
+            keys: Keys::default(),
         }
     }
 
@@ -194,6 +198,14 @@ impl<W: Write> Agent<W> {
     fn receive(&mut self, msg: Value) {
         let id = msg["id"].clone();
         let sid = msg["params"]["sessionId"].as_str().unwrap_or_default();
+        // Every prompt as it arrived, with its key, so a test can see a resend.
+        if msg["method"] == "session/prompt"
+            && let Some(path) = std::env::var_os("DECK_FAKE_PROMPT_LOG")
+            && let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+        {
+            let key = &msg["params"]["_meta"][CONSTRUCT_META][deck_acp::names::IDEMPOTENCY_KEY];
+            let _ = writeln!(log, "{}", json!({ "text": msg["params"]["prompt"][0]["text"], "key": key }));
+        }
         match msg["method"].as_str() {
             Some("initialize") => {
                 self.attachment += 1;
@@ -221,7 +233,8 @@ impl<W: Write> Agent<W> {
                     meta[LEGACY_CONSTRUCT_META] = json!({ "liveAttach": true });
                 }
                 if self.reverse_names {
-                    meta[CONSTRUCT_META] = json!({ "liveAttach": true });
+                    // Like Construct, idempotent prompts exist under the current key only.
+                    meta[CONSTRUCT_META] = json!({ "liveAttach": true, "idempotentPrompts": true });
                 }
                 let mut deck = serde_json::Map::new();
                 if self.boundary && self.reverse_names {
@@ -257,6 +270,7 @@ impl<W: Write> Agent<W> {
                     if self.journal.persistent() { format!("fake-{:x}", super::now_nanos()) } else { "fake-1".into() };
                 self.journal.create(&self.session);
                 self.history.clear();
+                self.keys = Keys::default();
                 self.number = 0;
                 self.stop = None;
                 self.attached = self.attachment;
@@ -282,9 +296,12 @@ impl<W: Write> Agent<W> {
                 // has no model, so it puts the same note in the transcript.
                 self.chunk("agent_message_chunk", &format!("\n{}", boundary_note(&msg["params"])));
             }
+            Some("session/prompt") if sid == self.session && !sid.is_empty() && self.answered(&id, &msg["params"]) => {}
             Some("session/prompt") if sid == self.session && !sid.is_empty() && self.turn.is_none() => {
                 let asked = msg["params"]["prompt"][0]["text"].as_str().unwrap_or_default();
-                self.journal.begin(&self.session, asked);
+                let key = if self.reverse_names { keys::parse(&msg["params"]).ok().flatten() } else { None };
+                self.journal.begin(&self.session, asked, key.as_deref());
+                self.keys.begin(key, asked);
                 self.history.push(
                     json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": asked } }),
                 );
@@ -326,7 +343,9 @@ impl<W: Write> Agent<W> {
             return Err((-32602, format!("session {sid} is already loaded on this connection")));
         }
         if self.session != sid {
-            let (updates, turns, stop) = self.journal.load(sid).map_err(|_| (-32002, format!("no session {sid}")))?;
+            let (updates, turns, stop, keys) =
+                self.journal.load(sid).map_err(|_| (-32002, format!("no session {sid}")))?;
+            self.keys = Keys::from_journal(keys);
             self.session = sid.into();
             self.history = updates;
             self.number = turns;
@@ -380,11 +399,44 @@ impl<W: Write> Agent<W> {
             self.update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": format!("t{}", self.number), "status": "failed" }));
         }
         self.journal.end(&self.session, reason);
+        self.keys.end(reason);
         self.stop = Some(reason.into());
         self.notice();
-        if turn.attachment == self.attachment {
-            self.reply(turn.prompt, Ok(json!({ "stopReason": reason })));
+        for (id, attachment) in std::iter::once((turn.prompt, turn.attachment)).chain(turn.waiters) {
+            if attachment == self.attachment {
+                self.reply(id, Ok(json!({ "stopReason": reason })));
+            }
         }
+    }
+
+    /// A prompt whose key needs no new turn: refused, answered from the
+    /// record, or waiting on the running turn. `false` means run it.
+    fn answered(&mut self, id: &Value, params: &Value) -> bool {
+        if !self.reverse_names {
+            return false;
+        }
+        let key = match keys::parse(params) {
+            Ok(Some(key)) => key,
+            Ok(None) => return false,
+            Err(error) => {
+                self.send(json!({ "jsonrpc": "2.0", "id": id, "error": error }));
+                return true;
+            }
+        };
+        let asked = params["prompt"][0]["text"].as_str().unwrap_or_default();
+        match self.keys.seen(&key, asked) {
+            Seen::New => return false,
+            Seen::Waits => {
+                let attachment = self.attachment;
+                if let Some(turn) = &mut self.turn {
+                    turn.waiters.push((id.clone(), attachment));
+                }
+            }
+            Seen::Answer(reason) => self.reply(id.clone(), Ok(json!({ "stopReason": reason }))),
+            Seen::Stop(reason) => self.reply(id.clone(), Ok(json!({ "stopReason": reason }))),
+            Seen::Refuse(error) => self.send(json!({ "jsonrpc": "2.0", "id": id, "error": error })),
+        }
+        true
     }
 }
 

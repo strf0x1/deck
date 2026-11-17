@@ -1,5 +1,5 @@
 {
-  "contract": "1.2.0",
+  "contract": "1.3.0",
   "acp": "1",
   "names": {
     "construct_meta": "com.sprawlcommons/construct",
@@ -394,6 +394,64 @@
           "status": 400,
           "code": "deck_bad_request"
         }
+      }
+    ]
+  },
+  "idempotent_prompts": {
+    "capability_key": "com.sprawlcommons/construct",
+    "capability": "idempotentPrompts",
+    "meta_key": "com.sprawlcommons/construct",
+    "field": "idempotencyKey",
+    "min_length": 1,
+    "max_length": 255,
+    "invalid_error": -32602,
+    "conflict_error": {
+      "code": -32602,
+      "reason": "idempotency_key_conflict"
+    },
+    "acp_v2_field": "PromptRequest.idempotencyKey",
+    "cases": [
+      {
+        "case": "new-key",
+        "recorded": "nothing",
+        "starts_turn": true,
+        "answer": "the turn's stop reason, when it ends"
+      },
+      {
+        "case": "queued",
+        "recorded": "queued",
+        "starts_turn": false,
+        "answer": "the first request's outcome"
+      },
+      {
+        "case": "running",
+        "recorded": "running",
+        "starts_turn": false,
+        "answer": "the turn's stop reason, when it ends"
+      },
+      {
+        "case": "ended",
+        "recorded": "ended",
+        "starts_turn": false,
+        "answer": "the recorded stop reason, at once"
+      },
+      {
+        "case": "cut-off",
+        "recorded": "no_stop_reason",
+        "starts_turn": false,
+        "answer": "cancelled, at once"
+      },
+      {
+        "case": "conflict",
+        "recorded": "different_prompt",
+        "starts_turn": false,
+        "answer": "-32602 idempotency_key_conflict, or as a retry"
+      },
+      {
+        "case": "invalid-key",
+        "recorded": "any",
+        "starts_turn": false,
+        "answer": "-32602"
       }
     ]
   }
