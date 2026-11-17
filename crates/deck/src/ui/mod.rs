@@ -3,9 +3,10 @@
 //! `turn_footer`, `prose`, `prompt`, `access_panel`, `settings_panel`, `settings_form` and `model_menu` render it, `composer` is the text field's
 //! element and `input` its keys and IME; `glyph` is the icon element; `attached` is one task's connection
 //! state, `board`, `rail`, `session`, `transcript`, `markdown`, `diff`,
-//! `highlight`, `motion`, `editor`, `access`, `settings`, `settings_rows`, `new_session`, `projects`,
+//! `highlight`, `motion`, `editor`, `selection`, `runs`, `access`, `settings`, `settings_rows`, `new_session`, `projects`,
 //! `sidebar` and `spring` are pure state with their own tests; `header_title`
 //! is the header's text, `titles` records a task's title with the daemon;
+//! `selectable` draws a transcript run and `selecting` is its mouse and keys;
 //! `theme` is the visual vocabulary.
 
 pub mod access;
@@ -49,8 +50,12 @@ mod publication_panel;
 mod publishing;
 pub mod rail;
 pub mod root;
+mod runs;
 pub mod scrollbar;
 mod scrollbar_element;
+mod selectable;
+mod selecting;
+pub mod selection;
 pub mod session;
 pub mod settings;
 mod settings_fields;

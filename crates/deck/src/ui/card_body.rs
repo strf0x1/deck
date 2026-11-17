@@ -5,10 +5,12 @@
 //! the code itself keeps its syntax colours (each side highlighted whole,
 //! so multi-line strings and comments stay right), dimmed where unchanged.
 
-use super::cards::{CAP, PREVIEW, TAIL, mono, more};
+use super::cards::{CAP, PREVIEW, mono, more};
 use super::diff::{self, Row as DiffRow};
 use super::highlight;
 use super::prose;
+use super::runs;
+use super::selectable::{RowRuns, Text};
 use super::theme::{Tokens, size, space, tint};
 use super::transcript;
 use super::typography::Typography;
@@ -17,7 +19,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 
-pub fn diff(changes: &[transcript::Change], open: bool, typography: &Typography) -> AnyElement {
+pub fn diff(changes: &[transcript::Change], open: bool, typography: &Typography, runs: &RowRuns) -> AnyElement {
     let mut cut_total = 0;
     let mut out =
         div().flex().flex_col().border_t_1().border_color(Tokens::edge()).bg(Tokens::sunken()).py(px(space::DETAIL));
@@ -38,7 +40,7 @@ pub fn diff(changes: &[transcript::Change], open: bool, typography: &Typography)
         // or comment keeps its context; diff line numbers index these.
         let lang = highlight::language_of(&change.path);
         let (old, new) = (highlight::lines(lang, &change.old), highlight::lines(lang, &change.new));
-        out = out.children(rows.into_iter().map(|r| diff_line(r, change.numbered, &old, &new, typography)));
+        out = out.children(rows.into_iter().map(|r| diff_line(r, change.numbered, &old, &new, typography, runs)));
     }
     let toggle = (cut_total > 0 || open).then(|| more(cut_total, "lines", open));
     div().flex().flex_col().child(out).children(toggle).into_any_element()
@@ -50,6 +52,7 @@ fn diff_line(
     old: &[highlight::Line],
     new: &[highlight::Line],
     typography: &Typography,
+    runs: &RowRuns,
 ) -> Div {
     let line = match row {
         DiffRow::Gap(n) => {
@@ -88,12 +91,12 @@ fn diff_line(
         // A diff built from an edit's arguments has no file line numbers to show.
         .when(numbered, |d| d.child(div().flex_none().w(px(34.)).text_color(Tokens::text_faint()).child(number)))
         .child(div().flex_none().w(px(14.)).text_color(fg).child(sign))
-        .child(div().flex_1().min_w_0().when(line.kind == diff::Kind::Same, |d| d.opacity(0.7)).child(text))
+        .child(div().flex_1().min_w_0().when(line.kind == diff::Kind::Same, |d| d.opacity(0.7)).child(runs.text(text)))
 }
 
 /// An execute card's full command, above its output: the header shows a
 /// multiline command as one line, so an opened card is where it is read.
-pub fn command(text: &str, selector: String, typography: &Typography) -> AnyElement {
+pub fn command(text: &str, selector: String, typography: &Typography, runs: &RowRuns) -> AnyElement {
     mono()
         .font_family(typography.code.family())
         .flex()
@@ -106,15 +109,12 @@ pub fn command(text: &str, selector: String, typography: &Typography) -> AnyElem
         .line_height(size::scaled(17.))
         .text_color(Tokens::text())
         .debug_selector(move || selector)
-        .children(text.trim_end_matches('\n').lines().map(|l| div().child(l.to_string())))
+        .child(runs.text(Text::Plain(runs::command_text(text).to_string())))
         .into_any_element()
 }
 
-pub fn output(text: &str, open: bool, typography: &Typography) -> Option<AnyElement> {
-    if text.trim().is_empty() {
-        return None;
-    }
-    let (lines, hidden) = transcript::tail(text, if open { CAP } else { TAIL });
+pub fn output(text: &str, open: bool, typography: &Typography, runs: &RowRuns) -> Option<AnyElement> {
+    let (tail, hidden) = runs::output_tail(text, open)?;
     let body = mono()
         .debug_selector(|| "tool-output".into())
         .font_family(typography.code.family())
@@ -127,7 +127,7 @@ pub fn output(text: &str, open: bool, typography: &Typography) -> Option<AnyElem
         .bg(Tokens::sunken())
         .line_height(size::scaled(17.))
         .text_color(Tokens::text_dim())
-        .children(lines.into_iter().map(|l| div().child(l.to_string())));
+        .child(runs.text(Text::Plain(tail)));
     let toggle = (hidden > 0 || open).then(|| more(hidden, "earlier lines", open));
     Some(div().flex().flex_col().child(body).children(toggle).into_any_element())
 }

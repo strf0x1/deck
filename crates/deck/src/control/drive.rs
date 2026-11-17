@@ -287,6 +287,7 @@ pub fn state(d: &Deck) -> Value {
             "waiting": item.waiters > 0,
         })),
         "draft": d.draft(),
+        "selection": d.selection_extent().map(|(from, to, bytes)| json!({ "from": from, "to": to, "bytes": bytes })),
         "typography": {
             "open": d.appearance_open(),
             "percent": d.typography().percent(),

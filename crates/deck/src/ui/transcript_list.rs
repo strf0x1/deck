@@ -10,11 +10,12 @@
 
 use super::glyph::glyph;
 use super::root::Deck;
+use super::selectable::RowRuns;
 use super::session::Status;
 use super::theme::{Tokens, glow, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, FollowMode, FontWeight, InteractiveElement as _, IntoElement, ListAlignment, ListState,
-    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, list, px,
+    MouseButton, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, list, px,
 };
 
 /// A transcript list that sticks to new output until the user scrolls up.
@@ -95,7 +96,14 @@ impl Deck {
                 self.transcript.remeasure_items(first..first);
             }
         }
+        let keys: Vec<String> = rows.iter().map(|r| r.key(entries)).collect();
         self.row_sigs = sigs;
+        self.resolve_selection(&keys);
+    }
+
+    /// Expand or fold the row under `key`, as a click on it would.
+    pub fn toggle_row(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.toggle(key, cx);
     }
 
     /// Whether the transcript row under `key` (`transcript::Row::key`) is expanded.
@@ -152,11 +160,13 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         cx.processor(|this, ix: usize, _, cx| {
             let rows = super::transcript::rows(&this.session().entries, this.session().idle());
             let Some(row) = rows.get(ix) else { return div().into_any_element() };
+            let key = row.key(&this.session().entries);
+            let runs = RowRuns::new(key, ix, this.text_select.span, this.text_select.hits.clone());
             div()
                 .group(super::copy::ROW)
                 .px(px(space::MARGIN))
                 .pt(px(if ix == 0 { 18. } else { space::ROW }))
-                .child(super::cards::row(this, row, cx))
+                .child(super::cards::row(this, row, &runs, cx))
                 .into_any_element()
         }),
     )
@@ -196,6 +206,7 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .relative()
         .flex_1()
         .min_h_0()
+        .on_mouse_down(MouseButton::Left, cx.listener(|this, ev, _, cx| this.transcript_press(ev, cx)))
         .child(rows)
         .child(super::scrollbar_element::scrollbar(&deck.transcript))
         .children(jump)

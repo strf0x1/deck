@@ -9,6 +9,7 @@ use super::cards::{frame, mono, status, toggle};
 use super::glyph::glyph;
 use super::panels::icon_mark;
 use super::root::Deck;
+use super::selectable::{RowRuns, Text};
 use super::session::{Entry, Tool};
 use super::theme::{Tokens, icon, radius, size, space, tint};
 use super::transcript;
@@ -18,8 +19,16 @@ use gpui::{
     Styled as _, div, prelude::FluentBuilder as _, px, relative,
 };
 
-/// A reasoning trace: one faint line until opened.
-pub fn thought(text: &str, key: String, open: bool, selected: bool, cx: &mut Context<Deck>) -> AnyElement {
+/// A reasoning trace: one faint line until opened. Opened, its text is a
+/// run, and a click on the text selects rather than folds.
+pub fn thought(
+    text: &str,
+    key: String,
+    open: bool,
+    selected: bool,
+    runs: &RowRuns,
+    cx: &mut Context<Deck>,
+) -> AnyElement {
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().to_string();
     div()
         .id(key.clone())
@@ -36,7 +45,7 @@ pub fn thought(text: &str, key: String, open: bool, selected: bool, cx: &mut Con
         .on_click(toggle(key, cx))
         .child(glyph(icon::BULB, 12.).mt(px(space::DETAIL)).text_color(tint(Tokens::amber(), 0.7)))
         .child(if open {
-            div().flex_1().min_w_0().line_height(relative(1.5)).child(text.to_string())
+            div().flex_1().min_w_0().line_height(relative(1.5)).child(runs.text(Text::Plain(text.to_string())))
         } else {
             div().flex_1().min_w_0().truncate().child(first)
         })
