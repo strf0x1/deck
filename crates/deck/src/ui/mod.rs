@@ -7,7 +7,10 @@
 //! `sidebar` and `spring` are pure state with their own tests; `header_title`
 //! is the header's text, `titles` records a task's title with the daemon;
 //! `selectable` draws a transcript run and `selecting` is its mouse and keys;
-//! `theme` is the visual vocabulary.
+//! `coordinator`, `deck_tool`, `surfaced` and `limits` are a project
+//! coordinator's pure state, drawn by `coordinator_header`, `deck_calls`,
+//! `surfaced_view` and `limits_panel` and driven by `coordinator_ops`,
+//! `limits_ops` and `notices`; `theme` is the visual vocabulary.
 
 pub mod access;
 mod access_grants;
