@@ -18,7 +18,7 @@ use super::session::Session;
 use super::theme::{Tokens, size, tint};
 use super::typography::Typography;
 use super::{chrome, conversation, sidebar_view};
-use deck_acp::{Client, Inbound};
+use deck_acp::{Client, Inbound, TurnState};
 use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
@@ -34,7 +34,7 @@ use std::time::Instant;
 pub const LIVE: usize = 0;
 
 /// Space around and between the window's regions.
-const GUTTER: f32 = 12.;
+pub(super) const GUTTER: f32 = 12.;
 
 pub struct Deck {
     pub(super) typography: Typography,
@@ -120,6 +120,23 @@ pub struct Deck {
     pub(super) hovered_task: Option<usize>,
     /// The New session buttons: idle, creating, or the last failure.
     pub(super) new_session: super::new_session::NewSession,
+    /// Why a coordinator's agent refused its session, by task id, until it
+    /// starts (deck#151 R6).
+    pub(super) refusals: HashMap<String, String>,
+    /// The coordinator's Destroy was clicked once and waits for the second.
+    pub(super) coordinator_destroy: bool,
+    /// The prompts each task's holder sent, for "from coordinator" labels,
+    /// and the notice stream that brings them (`notices.rs`).
+    pub(super) prompts: HashMap<String, Vec<deck_runtime::record::Prompt>>,
+    pub(super) notices: Option<super::notices::Notices>,
+    /// The coordinator's Limits panel, and the cap its `create` last met
+    /// (ADR 0011 §4, deck#152 R4).
+    pub(super) limits: super::limits::Limits,
+    pub(super) limit: Option<deck_runtime::control::CapNotice>,
+    /// Tasks a background attach is connecting now (`attachment.rs`).
+    pub(super) attaching: HashSet<String>,
+    /// How often a background round failed to attach each task.
+    pub(super) attach_tried: HashMap<String, u32>,
     last_frame: Option<Instant>,
 }
 
@@ -184,6 +201,14 @@ impl Deck {
             mark_error: None,
             hovered_task: None,
             new_session: super::new_session::NewSession::Idle,
+            refusals: HashMap::new(),
+            coordinator_destroy: false,
+            prompts: HashMap::new(),
+            notices: None,
+            limits: super::limits::Limits::default(),
+            limit: None,
+            attaching: HashSet::new(),
+            attach_tried: HashMap::new(),
             last_frame: None,
         }
     }
@@ -288,8 +313,8 @@ impl Deck {
         self.daemon.is_some()
     }
 
-    /// A project is open but has no task yet: the composer will create one
-    /// with its first prompt (ADR 0010 §5).
+    /// A project is open but shows no task: its composer will start the
+    /// project's coordinator with its first prompt (ADR 0010 §5).
     pub fn awaiting_task(&self) -> bool {
         self.task_id().is_none() && self.projects.selected().is_some()
     }
@@ -415,6 +440,17 @@ impl Deck {
                 | Inbound::Detached
         );
         let mut turn_changed = false;
+        if let (Some(id), Inbound::Failed(failure)) = (id, &ev)
+            && super::coordinator::refused_session(failure)
+            && self.tasks.iter().any(|t| t.id == id && super::coordinator::is_coordinator(t))
+        {
+            self.coordinator_refused(id, failure, cx);
+        }
+        if let (Some(id), true) = (id, ready) {
+            self.refusals.remove(id);
+            // The replay holds the holder's prompts; `deckd` says who sent them.
+            self.load_prompts(id, cx);
+        }
         if let Inbound::Ready { session_id, .. } = &ev
             && let Some(task) = self.attachment(id).and_then(|a| a.task.clone())
             && let Err(e) = task.record_session(session_id)
@@ -429,11 +465,23 @@ impl Deck {
                 attached.client = None;
             }
         }
+        let recorded_turn =
+            id.and_then(|id| self.tasks.iter().find(|t| t.id == id)).and_then(|t| t.turn.as_ref()).map(|t| t.number);
         if let Some(attached) = self.attachment_mut(id) {
             if let Inbound::Turn { number, state } = &ev {
                 let next = (*number, state.clone());
                 turn_changed = attached.turn.as_ref() != Some(&next);
                 attached.turn = Some(next);
+            }
+            // A task already waiting when the window attaches sends no turn
+            // notification, only the snapshot `Ready` carries; its question
+            // still needs the user (ADR 0010 §6).
+            if let Inbound::Ready { turn: Some(TurnState::Waiting), .. } = &ev
+                && !matches!(attached.turn, Some((_, TurnState::Waiting)))
+            {
+                let number = attached.turn.as_ref().map(|(n, _)| *n).or(recorded_turn).unwrap_or(0);
+                attached.turn = Some((number, TurnState::Waiting));
+                turn_changed = true;
             }
             if let Inbound::PromptSettled(key) = &ev {
                 attached.settled(key);
@@ -539,19 +587,19 @@ impl Deck {
         }
     }
 
-    /// A project with no task yet turns the first prompt into its task
-    /// (ADR 0010 §5); `attachment.rs` creates it, then [`Deck::send_pending`]
-    /// sends the text once the connection is ready.
+    /// A project with no coordinator turns the first prompt into its brief
+    /// (ADR 0010 §5); `coordinator_ops.rs` creates it, then
+    /// [`Deck::send_pending`] sends the text once the connection is ready.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.editor.text().trim().to_string();
         if text.is_empty() {
             return;
         }
         if self.task_id().is_none() {
-            // A selected project with no task creates one (ADR 0010 §5); a
-            // headless deck's idle attachment still takes the prompt.
+            // A selected project with no coordinator starts one (ADR 0010
+            // §5); a headless deck's idle attachment still takes the prompt.
             if self.projects.selected().is_some() && self.current().client.is_none() {
-                return self.first_prompt(text, cx);
+                return self.start_coordinator(text, cx);
             }
         }
         if self.pending_prompt.is_some() || !self.current().session.can_prompt() {
@@ -613,6 +661,14 @@ impl Deck {
         if self.settings.picking() && k.key == "escape" {
             cx.stop_propagation();
             return self.toggle_model_picker(cx);
+        }
+        // Limits take the keyboard like Settings; a declined key is text for
+        // the focused field.
+        if self.limits.is_open() {
+            if self.limits_key(ev, cx) || self.limits.focused().is_none() {
+                cx.stop_propagation();
+            }
+            return;
         }
         // Settings take the keyboard like Access. A key the panel declines is
         // text for its focused field, which the input handler delivers.
@@ -774,7 +830,7 @@ impl Render for Deck {
                     .flex_col()
                     .gap(px(GUTTER))
                     .child(chrome::header(self, window, cx))
-                    .child(conversation::main(self, cx)),
+                    .child(conversation::main(self, window, cx)),
             )
             // Last, so the open sidebar floats over the transcript.
             .child(sidebar_view::sidebar_view(self, GUTTER, cx))

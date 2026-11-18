@@ -53,6 +53,13 @@ pub fn prose(text: &str) -> Vec<Run> {
 }
 
 fn tool_runs(call: &ToolCall, open: bool) -> Vec<Run> {
+    // A `deck` line shows its reply only when a folding read is open.
+    if let Some(deck) = super::deck_tool::parse(call, &[]) {
+        if !(open && deck.op.folds()) {
+            return vec![];
+        }
+        return output_text(&transcript::output(call), true).map(|t| run(&t, LINE)).into_iter().collect();
+    }
     let changes = transcript::changes(call);
     match call.kind {
         ToolKind::Execute => {

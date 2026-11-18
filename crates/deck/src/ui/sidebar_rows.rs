@@ -36,7 +36,7 @@ pub(super) fn rows_view(deck: &mut Deck, rows: &[Row], cx: &mut Context<Deck>) -
             Row::ProjectsHeader => projects_header(),
             Row::Project { selected, .. } => {
                 // The row marks the place shown: its project view, not a task.
-                let shown = *selected && deck.task_id().is_none();
+                let shown = *selected && deck.showing_project();
                 project_row(row, shown, cx)
             }
             Row::Tasks => tasks_view(deck, cx),

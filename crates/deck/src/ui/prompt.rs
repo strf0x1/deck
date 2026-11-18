@@ -96,10 +96,14 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     // Keys go to an open card first, so the hint says where they go.
     let hint = if deck.session().ask.is_some() || deck.boundary().pending().is_some() {
         "Answer the question above first".to_string()
+    } else if deck.new_session_state().is_creating() && starting {
+        "Starting the coordinator…".to_string()
     } else if deck.new_session_state().is_creating() {
         "Starting the task…".to_string()
     } else if starting {
-        format!("Start a session in {}…", deck.project_name().unwrap_or("this project"))
+        format!("Brief a coordinator for {}…", deck.project_name().unwrap_or("this project"))
+    } else if ready && deck.coordinator_selected() {
+        "Ask the coordinator…".to_string()
     } else if ready {
         "Tell the agent what to do…".to_string()
     } else if deck.project().is_none() {
@@ -198,8 +202,19 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         }
     };
     let w = deck.workspace.as_ref();
-    let agent =
-        if deck.session().agent.is_empty() { agent_label(&deck.agent_cmd) } else { deck.session().agent.clone() };
+    // The project view's composer talks to its coordinator, or starts one on
+    // the backend `deckd` will use; a local one's limits are its sandbox's
+    // (ADR 0011 §2).
+    let coordinator = deck.awaiting_task() || deck.coordinator_selected();
+    let agent = if coordinator {
+        "coordinator".to_string()
+    } else if deck.session().agent.is_empty() {
+        agent_label(&deck.agent_cmd)
+    } else {
+        deck.session().agent.clone()
+    };
+    let next_backend = deck.awaiting_task().then(|| deck.coordinator_backend());
+    let sandbox_note = w.map(|w| w.backend.as_str()).or(next_backend.as_deref()) == Some("local") && coordinator;
     let project_dir = deck.project_checkout();
     let enter = if deck.editor.text().contains('\n') { "enter send · shift-enter newline" } else { "enter send" };
     div()
@@ -214,8 +229,18 @@ fn status_row(deck: &Deck) -> impl IntoElement {
         .font_family(MONO)
         .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(item(icon::AGENTS, Tokens::cyan(), agent, false))
+        .child(item(icon::AGENTS, Tokens::cyan(), agent, false).debug_selector(|| "composer-agent".into()))
         .children(w.map(backend))
+        .children(next_backend.map(|name| {
+            backend(&Workspace { cwd: PathBuf::new(), backend: name, branch: None, tokens: 0, model: None })
+        }))
+        .children(sandbox_note.then(|| {
+            div()
+                .debug_selector(|| "composer-sandbox-note".into())
+                .flex_none()
+                .text_color(Tokens::text_faint())
+                .child("limits rest on its sandbox")
+        }))
         .children(w.map(|w| match &w.model {
             Some(model) => item(icon::BOLT, Tokens::cyan(), model.clone(), true),
             None if w.backend == "local" => {

@@ -21,7 +21,8 @@ impl Deck {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for record in &self.tasks {
             let settled = attention::settled(record, self.published.get(&record.id)).is_some();
-            if record.state == State::Destroyed || settled {
+            // A coordinator is its project's view, not one of its tasks.
+            if record.state == State::Destroyed || settled || super::coordinator::is_coordinator(record) {
                 continue;
             }
             if let Some(id) = self.projects.task_project(record) {

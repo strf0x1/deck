@@ -176,7 +176,9 @@ impl WindowTask {
                 return Err(error);
             }
         }
-        let task = self.daemon.resume(&self.id)?;
+        // A coordinator the user never ran has nothing to resume yet.
+        let record = self.daemon.task(&self.id)?;
+        let task = if record.startable() { self.daemon.start(&self.id)? } else { self.daemon.resume(&self.id)? };
         self.connect(task.session_id)
     }
 

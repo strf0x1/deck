@@ -25,6 +25,9 @@ use std::sync::Arc;
 
 /// How many other running tasks launch attaches at once.
 const LAUNCH_ATTACH: usize = 4;
+/// How long a failed background attach waits, and how often it is tried.
+const ATTACH_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+const ATTACH_TRIES: u32 = 5;
 
 impl Deck {
     /// Launch with records under the default data root.
@@ -59,6 +62,7 @@ impl Deck {
         deck.load_settings(cx);
         deck.launch_project(&daemon, &argv, cwd, cx);
         deck.follow_tasks(cx);
+        deck.follow_notices(cx);
         deck._quit = Some(cx.on_app_quit(|deck, _| {
             // Dropping every attachment detaches; it never stops an agent
             // (ADR 0002). Drop the watches before the entity can outlive the
@@ -68,9 +72,12 @@ impl Deck {
             deck.daemon = None;
             deck.access_refresh = None;
             deck.task_refresh = None;
+            deck.stop_notices();
             deck.attach_task = None;
             async {}
         }));
+        // New tasks wait for this first round, which covers them too.
+        deck.attaching.insert(String::new());
         deck.attach_live(cx);
         deck.sync_live_lane();
         deck
@@ -116,7 +123,7 @@ impl Deck {
         let same = inside_fresh_checkout.then_some((argv, cwd.as_path()));
         let selection = self.projects.newest_task(&tasks, same);
         let Some(record) = selection.and_then(|id| tasks.iter().find(|task| task.id == id).cloned()) else {
-            self.clear_task(cx);
+            self.show_project(cx);
             return;
         };
         let task = WindowTask::of(daemon.clone(), &record);
@@ -171,6 +178,7 @@ impl Deck {
                         }
                     }
                 }
+                deck.reload_tasks(cx);
                 deck.sync_live_lane();
                 cx.notify();
             });
@@ -214,6 +222,7 @@ impl Deck {
                         }
                     }
                 }
+                deck.reload_tasks(cx);
                 deck.sync_live_lane();
                 cx.notify();
             });
@@ -278,55 +287,6 @@ impl Deck {
         .detach();
     }
 
-    /// The first prompt in a project with no task: create the task, select it,
-    /// and send the text once its connection is ready (ADR 0010 §5).
-    pub(super) fn first_prompt(&mut self, text: String, cx: &mut Context<Self>) {
-        if self.new_session.is_creating() {
-            return;
-        }
-        let Some(daemon) = self.daemon.clone() else { return };
-        let Some(spec) = self.project_spec() else { return };
-        let project = self.projects.selected_id().map(str::to_owned);
-        self.new_session = NewSession::Creating;
-        self.pending_prompt = Some(text.clone());
-        self.editor.take();
-        cx.notify();
-        let creating = daemon.clone();
-        let created = cx.background_executor().spawn(async move { creating.create(spec) });
-        cx.spawn(async move |this, cx| {
-            let created = created.await;
-            let _ = this.update(cx, |deck, cx| match created {
-                // The user switched project while it was created: the task
-                // stays a card in its own project, and the text is not lost.
-                Ok(record) if deck.projects.selected_id() != project.as_deref() => {
-                    deck.tasks.push(record);
-                    deck.pending_prompt = None;
-                    deck.new_session = NewSession::Idle;
-                    if deck.editor.is_empty() {
-                        deck.editor.insert(&text);
-                    }
-                    cx.notify();
-                }
-                Ok(record) => {
-                    deck.new_session = NewSession::Idle;
-                    deck.tasks.push(record.clone());
-                    let task = WindowTask::of(daemon, &record);
-                    deck.select_task(&task, record, cx);
-                    cx.notify();
-                }
-                Err(e) => {
-                    deck.pending_prompt = None;
-                    deck.new_session = NewSession::Failed(format!("{e:#}"));
-                    if deck.editor.is_empty() {
-                        deck.editor.insert(&text);
-                    }
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
     /// Apply a project list and selection already in hand: the rail's pure
     /// state, for tests and replies that need no daemon call.
     pub fn on_projects(&mut self, list: Vec<Project>, select: Option<String>, cx: &mut Context<Self>) {
@@ -343,7 +303,7 @@ impl Deck {
         }
         self.projects.clear_error();
         self.rail.select(Some(index));
-        self.clear_task(cx);
+        self.show_project(cx);
     }
 
     /// Point the column and transcript at the selected project's newest task,
@@ -362,7 +322,7 @@ impl Deck {
                 return;
             }
         }
-        self.clear_task(cx);
+        self.show_project(cx);
     }
 
     /// Keep the project open with no task: the main area shows its project
@@ -453,6 +413,15 @@ impl Deck {
         // launch always did: an approval submitted while no window watches
         // returns to the agent instead of waiting for this one.
         self.follow_boundary(&id, next.watch(), cx);
+        // Showing a project never runs its coordinator again: a stopped or
+        // failed one waits for Restart (ADR 0011 §9). A new one starts.
+        if super::coordinator::is_coordinator(&record) && !matches!(record.state, State::Running | State::Created) {
+            if let Some(attached) = self.attached.get_mut(&id) {
+                attached.session.status = Status::Down(super::coordinator::down(&record));
+            }
+            self.sync_live_lane();
+            return;
+        }
         let opened = cx.background_executor().spawn(async move { next.open() });
         cx.spawn(async move |this, cx| {
             let connection = opened.await;
@@ -515,21 +484,65 @@ impl Deck {
             anyhow::Ok(out)
         });
         self.attach_task = Some(cx.spawn(async move |this, cx| {
-            let Ok(opened) = opened.await else { return };
+            let opened = opened.await;
             let _ = this.update(cx, |deck, cx| {
+                deck.attaching.clear();
+                let Ok(opened) = opened else { return };
+                let mut failed = false;
                 for (id, task, watch, connection) in opened {
                     if deck.attached.contains_key(&id) {
                         continue;
                     }
-                    let Ok(Some(connection)) = connection else { continue };
+                    // An attach can lose a race with the task's holder setting
+                    // up its session; it is tried again shortly, a few times.
+                    let Ok(Some(connection)) = connection else {
+                        *deck.attach_tried.entry(id).or_default() += 1;
+                        failed = true;
+                        continue;
+                    };
                     let generation = deck.stamp();
                     deck.attached.insert(id.clone(), Attached { generation, ..Attached::new(task) });
                     deck.follow_boundary(&id, watch, cx);
                     deck.connect(&id, connection, cx);
                 }
+                // Tasks that gained a session during this round wait for none.
+                deck.attach_new(cx);
+                if failed {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(ATTACH_RETRY).await;
+                        let _ = this.update(cx, |deck, cx| deck.attach_new(cx));
+                    })
+                    .detach();
+                }
                 cx.notify();
             });
         }));
+    }
+
+    /// Attach running tasks that appeared since launch, such as a
+    /// coordinator's new workers, so their questions reach Needs you (ADR
+    /// 0010 §8). One round at a time, the launch's first; a later list
+    /// starts the next. Selecting a task still in a round's flight can race
+    /// it for the task's one attachment, as at launch.
+    pub(super) fn attach_new(&mut self, cx: &mut Context<Self>) {
+        if !self.attaching.is_empty() || self.daemon.is_none() {
+            return;
+        }
+        let new: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|t| t.state == State::Running && t.session_id.is_some() && !self.attached.contains_key(&t.id))
+            // The selection opens its own connection; two would race.
+            .filter(|t| self.selected.as_deref() != Some(t.id.as_str()))
+            // A task rounds could not attach waits for its selection.
+            .filter(|t| self.attach_tried.get(&t.id).is_none_or(|tries| *tries < ATTACH_TRIES))
+            .map(|t| t.id.clone())
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        self.attaching.extend(new);
+        self.attach_live(cx);
     }
 
     /// Drop `id`'s connection and invalidate replies asked before now. The

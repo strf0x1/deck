@@ -7,7 +7,10 @@
 //! `sidebar` and `spring` are pure state with their own tests; `header_title`
 //! is the header's text, `titles` records a task's title with the daemon;
 //! `selectable` draws a transcript run and `selecting` is its mouse and keys;
-//! `theme` is the visual vocabulary.
+//! `coordinator`, `deck_tool`, `surfaced` and `limits` are a project
+//! coordinator's pure state, drawn by `coordinator_header`, `deck_calls`,
+//! `surfaced_view` and `limits_panel` and driven by `coordinator_ops`,
+//! `limits_ops` and `notices`; `theme` is the visual vocabulary.
 
 pub mod access;
 mod access_grants;
@@ -25,8 +28,13 @@ mod cards;
 mod chrome;
 mod composer;
 mod conversation;
+pub mod coordinator;
+mod coordinator_header;
+mod coordinator_ops;
 mod copy;
 mod credentials;
+mod deck_calls;
+pub mod deck_tool;
 pub mod diff;
 pub mod editor;
 mod folds;
@@ -35,11 +43,15 @@ mod glyph;
 mod header_title;
 pub mod highlight;
 mod input;
+pub mod limits;
+mod limits_ops;
+mod limits_panel;
 pub mod markdown;
 mod model_menu;
 mod model_search;
 pub mod motion;
 pub mod new_session;
+mod notices;
 mod panels;
 mod project_view;
 mod projects;
@@ -71,6 +83,8 @@ mod sidebar_tasks;
 pub mod sidebar_view;
 mod specimens;
 pub mod spring;
+pub mod surfaced;
+mod surfaced_view;
 pub mod tasks;
 pub mod theme;
 mod titles;

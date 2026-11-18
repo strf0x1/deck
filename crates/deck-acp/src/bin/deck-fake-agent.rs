@@ -10,6 +10,11 @@
 //! step's tool result. The capability `github_operations` is advertised under
 //! the current Deck key whenever the URL is set.
 //!
+//! A prompt `deck {"operation": …}` is a coordinator's `deck` call in
+//! construct#222's shape, sent to `DECK_CONTROL_URL` with
+//! `DECK_CONTROL_TOKEN` (contract 1.4.0 §13); the turn is that one call and
+//! ends without asking anything.
+//!
 //! It speaks over stdio by default. `deck-fake-agent --listen <socket>` binds
 //! a Unix socket and serves the first connection instead, so a test or a
 //! runtime can reach an agent deck did not launch. Either way the loop ends
@@ -35,6 +40,8 @@ use std::time::Duration;
 
 #[path = "fake/agent.rs"]
 mod agent;
+#[path = "fake/control.rs"]
+mod control;
 #[path = "fake/github.rs"]
 mod github;
 #[path = "fake/journal.rs"]

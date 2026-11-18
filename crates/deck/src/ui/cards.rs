@@ -39,6 +39,7 @@ pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> An
     match row {
         Row::Reads(range) => super::folds::reads(&entries[range.clone()], key, open, selected, cx),
         Row::Summary(turn) => super::turn_footer::footer(deck, turn.clone(), cx),
+        Row::Waits(range) => super::deck_calls::waits(deck, &entries[range.clone()], key, cx),
         Row::One(i) => match &entries[*i] {
             Entry::You(t) => div()
                 .text_size(size::scaled(size::BODY))
@@ -46,6 +47,20 @@ pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> An
                 .justify_end()
                 .items_center()
                 .gap(px(space::TIGHT))
+                // A prompt the coordinator sent is the user's colour, but says
+                // who sent it (ADR 0011 §9); the user's own carry no label.
+                .children(deck.from_coordinator().contains(i).then(|| {
+                    div()
+                        .debug_selector(move || format!("from-coordinator-{key_index}", key_index = *i))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::DETAIL))
+                        .text_size(size::scaled(size::MICRO))
+                        .text_color(Tokens::text_faint())
+                        .child(glyph(icon::AGENTS, 11.).text_color(tint(Tokens::cyan(), 0.7)))
+                        .child("from coordinator")
+                }))
                 .child(copy::button(deck, key, t.clone(), cx))
                 .child(
                     div()
@@ -69,7 +84,10 @@ pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> An
                 .child(copy::button(deck, key, t.clone(), cx))
                 .into_any_element(),
             Entry::Thought(t) => super::folds::thought(t, key, open, selected, runs, cx),
-            Entry::Tool(tool) => card(deck, tool, key, open, runs, cx),
+            Entry::Tool(tool) => match super::deck_tool::parse(&tool.call, &super::deck_calls::known(deck)) {
+                Some(call) => super::deck_calls::line(deck, tool, &call, key, runs, cx),
+                None => card(deck, tool, key, open, runs, cx),
+            },
             Entry::Note(t) => div()
                 .flex()
                 .gap(px(space::LINE))

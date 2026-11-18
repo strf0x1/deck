@@ -165,6 +165,20 @@ impl<W: Write> Agent<W> {
             "content": [{ "type": "content", "content": { "type": "text", "text": text } }] }));
     }
 
+    /// A coordinator's `deck` call: the call with its arguments, then its
+    /// reply or refusal as the call's text.
+    fn deck_step(&mut self, call: super::control::Scripted) {
+        let id = format!("d{}", self.number);
+        self.update(json!({ "sessionUpdate": "tool_call", "toolCallId": id, "title": call.title,
+            "kind": "execute", "status": "in_progress", "rawInput": call.input }));
+        let (status, text) = match call.result {
+            Ok(text) => ("completed", text),
+            Err(error) => ("failed", error),
+        };
+        self.update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": id, "status": status,
+            "content": [{ "type": "content", "content": { "type": "text", "text": text } }] }));
+    }
+
     /// A read and an edit before the streamed reply (see [`super::turn::look_and_edit`]).
     fn look_and_edit(&mut self) {
         for update in super::turn::look_and_edit(self.number) {
@@ -312,7 +326,10 @@ impl<W: Write> Agent<W> {
                 self.stop = None;
                 self.turn = Some(Turn::new(id, self.attachment, asked));
                 self.notice();
-                if let Some(url) = self.github.clone() {
+                if let Some(call) = super::control::script(asked) {
+                    self.deck_step(call);
+                    self.finish("end_turn");
+                } else if let Some(url) = self.github.clone() {
                     self.chunk("agent_thought_chunk", "publishing the task branch");
                     self.publish(&url, asked);
                     self.finish("end_turn");

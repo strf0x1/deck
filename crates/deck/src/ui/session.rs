@@ -119,6 +119,12 @@ impl Session {
         self.status = Status::Working;
     }
 
+    /// Record a prompt someone else sent through the task's holder. The
+    /// turn's own notifications say whether it works, so the status stays.
+    pub fn prompted(&mut self, text: &str) {
+        self.entries.push(Entry::You(text.to_string()));
+    }
+
     /// Take the pending question once the user has answered it.
     pub fn answered(&mut self) -> Option<Ask> {
         let ask = self.ask.take()?;

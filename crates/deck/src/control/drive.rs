@@ -200,10 +200,13 @@ pub fn state(d: &Deck) -> Value {
         Status::Down(e) => json!({ "down": e }),
     };
     let header = d.header_title();
+    let from_coordinator = d.from_coordinator();
     let entries: Vec<Value> = s
         .entries
         .iter()
-        .map(|e| match e {
+        .enumerate()
+        .map(|(i, e)| match e {
+            Entry::You(t) if from_coordinator.contains(&i) => json!({ "you": t, "from": "coordinator" }),
             Entry::You(t) => json!({ "you": t }),
             Entry::Agent(t) => json!({ "agent": t }),
             Entry::Thought(t) => json!({ "thought": t }),
@@ -235,17 +238,36 @@ pub fn state(d: &Deck) -> Value {
             })).collect::<Vec<_>>(),
             "dragging": board.dragging(),
         },
-        "main": if d.task_id().is_some() {
-            "task"
-        } else if d.project().is_some() {
+        "main": if d.showing_project() {
             "project"
+        } else if d.task_id().is_some() {
+            "task"
         } else {
             "none"
+        },
+        "coordinator": d.coordinator().map(|task| json!({
+            "id": task.id,
+            "selected": d.coordinator_selected(),
+            "status": d.coordinator_status().map(|(_, text)| text),
+        })),
+        "surfaced": d.surfaced().iter().map(|row| json!({
+            "task": row.task,
+            "title": row.title,
+            "asks": row.asks,
+            "subject": row.subject,
+        })).collect::<Vec<_>>(),
+        "limit": d.limit().map(crate::ui::surfaced::limit_text),
+        "limits": {
+            "open": d.limits_open(),
+            "focused": d.limits().focused().map(|field| field.name()),
+            "error": d.limits().error(),
+            "notice": d.limits().notice(),
         },
         "header": {
             "title": header.title,
             "project": header.project,
             "detail": header.detail,
+            "provenance": header.provenance,
         },
         "needs_you": d.needs_you().iter().map(|item| json!({
             "task": item.task,

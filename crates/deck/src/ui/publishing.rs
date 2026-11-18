@@ -65,6 +65,7 @@ impl Deck {
                         .update(cx, |deck, cx| {
                             deck.on_tasks(tasks, published, cx);
                             deck.on_approvals(approvals, cx);
+                            deck.attach_new(cx);
                         })
                         .is_err()
                 {
@@ -92,8 +93,14 @@ impl Deck {
             }
         }
         self.published = published;
+        // A coordinator has no row or card: its project's view is its place
+        // (ADR 0011 §9). Selected, it is the project view, not a live card.
+        let own = own.filter(|id| !self.tasks.iter().any(|t| &t.id == id && super::coordinator::is_coordinator(t)));
         let mut visible = Vec::new();
         for record in &self.tasks {
+            if super::coordinator::is_coordinator(record) {
+                continue;
+            }
             if own.as_deref() == Some(record.id.as_str()) || self.projects.holds(record) {
                 visible.push(record.clone());
             }
@@ -124,6 +131,8 @@ impl Deck {
         // Most recent activity first; the record id begins with its time.
         shown.sort_by(|a, b| b.id.cmp(&a.id));
         self.refresh_attention();
+        // A session ending lets a coordinator create again (deck#153 R4).
+        self.settle_limit(None);
         let mut lanes: Vec<Lane> = Vec::new();
         let live_lane = self.lanes.live();
         let had_live = self.board.cards().iter().any(|c| c.lane.id == live_lane);
@@ -144,7 +153,8 @@ impl Deck {
             self.board.to_front(live_lane);
         }
         // One small file read for the branch, every refresh, not every frame.
-        self.workspace = self.tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);
+        let selected = self.task_id().map(str::to_owned);
+        self.workspace = self.tasks.iter().find(|t| Some(&t.id) == selected.as_ref()).map(super::prompt::Workspace::of);
         self.sync_live_lane();
         self.note_seen(cx);
         cx.notify();
@@ -162,9 +172,15 @@ impl Deck {
         Some((task, self.published.get(task).and_then(|p| publication::view(p, now_ms()))))
     }
 
-    /// The project name of task `id`, for the panel's heading.
+    /// Task `id`'s title, for the panel's heading and Needs you. A
+    /// coordinator is named for what it is, so its Needs-you row reads
+    /// `deck › coordinator` (ADR 0011 §9).
     pub fn task_title(&self, id: &str) -> String {
-        self.tasks.iter().find(|t| t.id == id).map_or_else(|| id.to_string(), super::tasks::title)
+        match self.tasks.iter().find(|t| t.id == id) {
+            Some(task) if super::coordinator::is_coordinator(task) => "coordinator".into(),
+            Some(task) => super::tasks::title(task),
+            None => id.to_string(),
+        }
     }
 
     /// The capability warning for the window's own task (ADR 0008 §1).

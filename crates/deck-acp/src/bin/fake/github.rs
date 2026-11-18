@@ -250,14 +250,16 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// The operation API's one carrier: one POST, one JSON reply, one connection.
-struct Gateway {
+/// The coordinator's control surface (`control.rs`) is the same carrier with
+/// a bearer token.
+pub struct Gateway {
     addr: String,
     host: String,
 }
 
 impl Gateway {
     /// `base` is `http://host:port`, the guest's `DECK_GITHUB_URL`.
-    fn new(base: &str) -> Self {
+    pub fn new(base: &str) -> Self {
         let rest = base.trim_end_matches('/').strip_prefix("http://").unwrap_or(base);
         let (host, port) = match rest.rsplit_once(':') {
             Some((host, port)) => (host, port),
@@ -272,10 +274,16 @@ impl Gateway {
     }
 
     fn exchange(&self, path: &str, body: &[u8]) -> Result<Value, String> {
+        self.exchange_as(path, body, None)
+    }
+
+    /// One POST of `body`, with `Authorization: Bearer <token>` when given.
+    pub fn exchange_as(&self, path: &str, body: &[u8], token: Option<&str>) -> Result<Value, String> {
         let mut stream =
             TcpStream::connect(&self.addr).map_err(|error| format!("connecting to {}: {error}", self.addr))?;
+        let auth = token.map(|t| format!("authorization: Bearer {t}\r\n")).unwrap_or_default();
         let head = format!(
-            "POST {path} HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            "POST {path} HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{auth}connection: close\r\n\r\n",
             self.host,
             body.len()
         );
