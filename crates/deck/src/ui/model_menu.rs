@@ -2,6 +2,9 @@
 //! settings offer, the one New session will start on checked, `deckd`'s
 //! default tagged. No state of its own.
 //!
+//! Picks reach VM sessions only: a local Construct runs on its own config,
+//! so on the local backend the chip says that and the menu says why.
+//!
 //! The design choice: it paints as an overlay on the root, under the
 //! header's chip, so it floats over the transcript instead of growing the
 //! header; a pick only changes what the next create sends.
@@ -15,6 +18,10 @@ use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
     Styled as _, div, px,
 };
+
+/// What the chip says when the next session runs locally, matching the
+/// composer's status row.
+pub const LOCAL: &str = "construct config";
 
 /// New session's model menu, under the header's model chip: every
 /// `<provider>/<model>`, the one it will start on checked.
@@ -64,6 +71,15 @@ pub fn model_menu(deck: &Deck, top: f32, right: f32, cx: &mut Context<Deck>) -> 
             spread_radius: px(0.),
         }])
         .child(div().px(px(space::INSET)).py(px(space::TIGHT)).child(eyebrow("New session starts on")))
+        .children((deck.next_backend() == "local").then(|| {
+            div()
+                .debug_selector(|| "hdr-model-local-note".into())
+                .px(px(space::INSET))
+                .pb(px(space::TIGHT))
+                .text_size(size::scaled(size::SMALL))
+                .text_color(Tokens::text_faint())
+                .child("Local sessions run on Construct's own config; a pick here applies to VM sessions.")
+        }))
         .children(rows)
         .child(
             div()

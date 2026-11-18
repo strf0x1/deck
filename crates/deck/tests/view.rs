@@ -3479,6 +3479,26 @@ fn the_model_menu_picks_what_new_session_starts_on(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_model_chip_says_construct_config_when_new_sessions_run_locally(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    seed_project(&deck, &mut cx);
+    // deckd ran the newest task on the VM backend, so the next one is too.
+    let vm = task("a", json!({ "state": "running" }), None);
+    deck.update(&mut cx, |d, cx| d.on_tasks(vec![vm.clone()], Default::default(), cx));
+    draw(&mut cx);
+    assert!(cx.debug_bounds("hdr-model").is_some());
+    assert!(cx.debug_bounds("hdr-model-local").is_none(), "a VM session runs on the picked model");
+    // A local one runs on Construct's own config whatever is picked.
+    let local = deck_runtime::Task { backend: "local".into(), ..vm };
+    deck.update(&mut cx, |d, cx| d.on_tasks(vec![local], Default::default(), cx));
+    draw(&mut cx);
+    assert!(cx.debug_bounds("hdr-model-local").is_some(), "the chip says construct config");
+    click_control(&mut cx, "hdr-model");
+    assert!(cx.debug_bounds("hdr-model-local-note").is_some(), "the menu says picks reach VM sessions");
+}
+
+#[gpui::test]
 fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt as _;
     cx.background_executor.allow_parking();
