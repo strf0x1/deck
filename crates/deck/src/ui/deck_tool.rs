@@ -95,6 +95,21 @@ pub fn parse(call: &ToolCall, known: &[&str]) -> Option<Call> {
     Some(Call { op, ids, title })
 }
 
+/// Whether the call at `at` follows a create the running cap refused in the
+/// same turn: a `stop` there freed a slot, which the user should see (#202).
+pub fn made_room(entries: &[Entry], at: usize) -> bool {
+    entries[..at.min(entries.len())].iter().rev().take_while(|entry| !matches!(entry, Entry::You(_))).any(|entry| {
+        match entry {
+            Entry::Tool(t) => {
+                t.call.status == ToolStatus::Failed
+                    && t.call.input.as_ref().and_then(|i| i.get("operation")).and_then(|o| o.as_str()) == Some("create")
+                    && super::transcript::output(&t.call).contains("deck_control_cap")
+            }
+            _ => false,
+        }
+    })
+}
+
 /// Whether `entry` is a `deck wait`: consecutive waits fold into one line.
 pub fn is_wait(entry: &Entry) -> bool {
     matches!(entry, Entry::Tool(t) if parse(&t.call, &[]).is_some_and(|c| c.op == Op::Wait))
@@ -179,6 +194,25 @@ mod tests {
         assert!(parse(&unknown, &[]).is_none(), "outside the closed set");
         let raw = ToolCall { input: None, ..call("deck wait t1", json!({}), ToolStatus::Done, "") };
         assert!(parse(&raw, &[]).is_none(), "no arguments to read");
+    }
+
+    #[test]
+    fn a_stop_after_a_refused_create_in_the_same_turn_made_room() {
+        use super::super::session::{Timing, Tool};
+        let tool = |c: ToolCall| Entry::Tool(Tool { call: c, timing: Timing::Unknown });
+        let refused = tool(call(
+            "deck create git:a",
+            json!({ "operation": "create", "project": "git:a" }),
+            ToolStatus::Failed,
+            "deck_control_cap: limit of 1 running sessions",
+        ));
+        let stop =
+            tool(call("deck stop t1", json!({ "operation": "stop", "id": "t1" }), ToolStatus::Done, "Stopped t1."));
+        let entries = vec![Entry::You("go".into()), refused.clone(), stop.clone()];
+        assert!(made_room(&entries, 2));
+        let later = vec![refused, Entry::You("again".into()), stop.clone()];
+        assert!(!made_room(&later, 2), "a refusal in an earlier turn");
+        assert!(!made_room(&[Entry::You("go".into()), stop], 1), "a plain stop");
     }
 
     #[test]

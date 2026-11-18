@@ -85,7 +85,10 @@ pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> An
                 .into_any_element(),
             Entry::Thought(t) => super::folds::thought(t, key, open, selected, runs, cx),
             Entry::Tool(tool) => match super::deck_tool::parse(&tool.call, &super::deck_calls::known(deck)) {
-                Some(call) => super::deck_calls::line(deck, tool, &call, key, runs, cx),
+                Some(call) => {
+                    let made_room = call.op == super::deck_tool::Op::Stop && super::deck_tool::made_room(entries, *i);
+                    super::deck_calls::line(deck, tool, &call, made_room, key, runs, cx)
+                }
                 None => card(deck, tool, key, open, runs, cx),
             },
             Entry::Note(t) => div()

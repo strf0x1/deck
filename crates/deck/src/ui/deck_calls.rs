@@ -1,6 +1,8 @@
-//! A coordinator's `deck` calls drawn by operation (ADR 0011 §9): `create`,
-//! `prompt` and `stop` as one quiet line naming the task, `tasks` and `task`
-//! folded like a read, and `wait` as a faint line while it polls.
+//! A coordinator's `deck` calls drawn by operation (ADR 0011 §9): `create`
+//! and `prompt` as one quiet line naming the task, `stop` as one that stands
+//! out (it ended a session the user may have been relying on; after a cap
+//! refusal it says it made room, #202), `tasks` and `task` folded like a
+//! read, and `wait` as a faint line while it polls.
 //!
 //! The design choice: a `deck` call is the coordinator acting on other tasks,
 //! so what matters is which task, not the call; every task it names is a
@@ -27,10 +29,12 @@ pub(super) fn known(deck: &Deck) -> Vec<&str> {
 }
 
 /// One `deck` call as its line; a folding read opens to its reply.
+/// `made_room` marks a `stop` that freed a slot after a cap refusal.
 pub(super) fn line(
     deck: &Deck,
     tool: &Tool,
     call: &Call,
+    made_room: bool,
     key: String,
     runs: &RowRuns,
     cx: &mut Context<Deck>,
@@ -45,11 +49,16 @@ pub(super) fn line(
         .id(key.clone())
         .debug_selector(move || selector)
         .when(call.op.folds(), |d| d.cursor_pointer().hover(|s| s.bg(Tokens::raised())).on_click(toggle(key, cx)))
-        .child(glyph(icon::AGENTS, 12.).text_color(tint(Tokens::cyan(), if quiet { 0.5 } else { 0.85 })))
+        .child(match call.op {
+            // The header's own Stop mark: a session ended.
+            Op::Stop => glyph(icon::STOP, 11.).text_color(Tokens::red()),
+            _ => glyph(icon::AGENTS, 12.).text_color(tint(Tokens::cyan(), if quiet { 0.5 } else { 0.85 })),
+        })
         .children(match call.op {
             // A poll says what it waits for, not that a tool runs.
             Op::Wait if running => vec![words("waiting on", true)],
             Op::Wait => vec![words("waited on", true)],
+            Op::Stop => vec![words("coordinator", true), stopped(if running { "stopping" } else { "stopped" })],
             op => vec![words("deck", true), verb(op.name())],
         })
         .when(chips.is_empty() && call.op == Op::Create, |d| d.child(words("a new session…", true)))
@@ -57,6 +66,9 @@ pub(super) fn line(
         .children(match call.op {
             Op::Wait if !running => Some(words(&format!("· {}", deck_tool::woke(&tool.call)), true)),
             Op::Tasks if !running => Some(words(&listed(&tool.call), true)),
+            Op::Stop if made_room => Some(
+                div().debug_selector(|| "deck-made-room".into()).child(words("to make room", false)).into_any_element(),
+            ),
             _ => None,
         })
         .when(running && !quiet, |d| d.child(glyph(icon::SPIN, 11.).text_color(tint(Tokens::cyan(), 0.6))))
@@ -169,6 +181,18 @@ fn words(text: &str, faint: bool) -> AnyElement {
 /// The operation, in the agent's colour.
 fn verb(name: &'static str) -> AnyElement {
     div().flex_none().font_weight(gpui::FontWeight::SEMIBOLD).text_color(Tokens::cyan()).child(name).into_any_element()
+}
+
+/// A `stop`'s verb: in plain text, not the agent's teal, so it reads as a
+/// session ending rather than routine work.
+fn stopped(word: &'static str) -> AnyElement {
+    div()
+        .flex_none()
+        .debug_selector(|| "deck-stopped".into())
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(Tokens::text())
+        .child(word)
+        .into_any_element()
 }
 
 /// How many tasks a listing returned, from its reply's first line.

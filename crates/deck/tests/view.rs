@@ -3748,6 +3748,8 @@ fn deck_calls_read_by_operation_and_polls_fold_into_one_line(cx: &mut TestAppCon
         d.on_inbound(Inbound::Tool(deck_call("t4", tasks, ToolStatus::Done, listing)), cx);
         let refused = json!({ "operation": "create", "project": "git:test", "brief": "more" });
         d.on_inbound(Inbound::Tool(deck_call("t5", refused, ToolStatus::Failed, "deck_control_cap: limit of 4")), cx);
+        let stop = json!({ "operation": "stop", "id": "w1" });
+        d.on_inbound(Inbound::Tool(deck_call("t6", stop, ToolStatus::Done, "Stopped w1.")), cx);
     });
     draw(&mut cx);
     assert!(cx.debug_bounds("deck-call-tool:t1").is_some(), "a create is one deck line");
@@ -3756,6 +3758,9 @@ fn deck_calls_read_by_operation_and_polls_fold_into_one_line(cx: &mut TestAppCon
     assert!(cx.debug_bounds("deck-call-waits:2").is_some(), "two polls fold into one quiet line");
     assert!(cx.debug_bounds("card-tool:t3").is_none(), "a running wait is no stuck tool card");
     assert!(cx.debug_bounds("card-tool:t5").is_some(), "a refused call is a card, read in full");
+    assert!(cx.debug_bounds("deck-call-tool:t6").is_some(), "a stop is a deck line");
+    assert!(cx.debug_bounds("deck-stopped").is_some(), "that says the session stopped");
+    assert!(cx.debug_bounds("deck-made-room").is_some(), "to make room after the cap refused a create");
 
     // A listing folds like a read and opens to its reply.
     let selector: &'static str = "deck-call-tool:t4";
