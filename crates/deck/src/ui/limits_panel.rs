@@ -5,7 +5,8 @@
 //!
 //! The design choice: caps wait on a human when met, so the panel's mark is
 //! amber, like the cap row that opens it; the focused field is the composer's
-//! own element, so typing, IME and moves work as in the prompt.
+//! own element, so typing, IME and moves work as in the prompt. The fields
+//! scroll and Save does not: it stays under them at any window height.
 
 use super::access_panel::{button, error};
 use super::composer;
@@ -22,9 +23,8 @@ use gpui::{
 pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let limits = deck.limits();
     let row = |field: Field, cx: &mut Context<Deck>| field_row(deck, field, cx);
-    div()
+    let fields = div()
         .id("limits")
-        .debug_selector(|| "limits-panel".into())
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
@@ -69,7 +69,17 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .text_size(size::scaled(size::SMALL))
                 .text_color(Tokens::text_faint())
                 .child("A command change applies to the next coordinator; this one keeps the command it started with."),
-        )
+        );
+    let footer = div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(px(space::STACK))
+        .px(px(space::PAD))
+        .pt(px(space::STACK))
+        .pb(px(space::PAD))
+        .border_t_1()
+        .border_color(Tokens::edge())
         .children(limits.error().map(error))
         .children(limits.notice().map(|notice| {
             div()
@@ -87,7 +97,15 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                     .debug_selector(|| "limits-save".into())
                     .on_click(cx.listener(|this, _, _, cx| this.save_limits(cx))),
             ),
-        )
+        );
+    div()
+        .debug_selector(|| "limits-panel".into())
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(fields)
+        .child(footer)
         .into_any_element()
 }
 

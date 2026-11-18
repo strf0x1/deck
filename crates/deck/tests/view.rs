@@ -3989,6 +3989,16 @@ fn a_workers_question_is_surfaced_and_a_cap_row_raises_the_limit(cx: &mut TestAp
     // Lower the cap to one running session from the Limits panel.
     click_control(&mut vcx, "hdr-limits");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused().is_some()));
+    // In a short window the fields scroll and Save stays in sight.
+    vcx.simulate_resize(gpui::size(px(1180.), px(560.)));
+    draw(&mut vcx);
+    let panel = vcx.debug_bounds("limits-panel").unwrap();
+    let save = vcx.debug_bounds("limits-save").unwrap();
+    assert!(
+        save.bottom() <= panel.bottom() && panel.bottom() <= px(560.),
+        "Save is not clipped: {save:?} in {panel:?}"
+    );
+    vcx.simulate_resize(gpui::size(px(1180.), px(760.)));
     draw(&mut vcx);
     vcx.simulate_keystrokes("cmd-a");
     vcx.simulate_input("1");
