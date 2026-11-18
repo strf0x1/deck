@@ -23,6 +23,9 @@ pub enum Row {
     Reads(Range<usize>),
     /// The footer of a finished turn that changed files: the turn's entries.
     Summary(Range<usize>),
+    /// Two or more consecutive `deck wait` calls: a coordinator polling,
+    /// drawn as one quiet line (ADR 0011 §9).
+    Waits(Range<usize>),
 }
 
 impl Row {
@@ -35,6 +38,7 @@ impl Row {
             },
             Row::Reads(r) => format!("reads:{}", r.start),
             Row::Summary(r) => format!("turn:{}", r.start),
+            Row::Waits(r) => format!("waits:{}", r.start),
         }
     }
 
@@ -42,7 +46,7 @@ impl Row {
     pub fn range(&self) -> Range<usize> {
         match self {
             Row::One(i) => *i..*i + 1,
-            Row::Reads(r) | Row::Summary(r) => r.clone(),
+            Row::Reads(r) | Row::Summary(r) | Row::Waits(r) => r.clone(),
         }
     }
 }
@@ -69,9 +73,13 @@ pub fn rows(entries: &[Entry], idle: bool) -> Vec<Row> {
             turn = i;
         }
         let run = entries[i..].iter().take_while(|e| lookup(e)).count();
+        let waits = entries[i..].iter().take_while(|e| super::deck_tool::is_wait(e)).count();
         if run >= 2 {
             rows.push(Row::Reads(i..i + run));
             i += run;
+        } else if waits >= 2 {
+            rows.push(Row::Waits(i..i + waits));
+            i += waits;
         } else {
             rows.push(Row::One(i));
             i += 1;
@@ -124,7 +132,7 @@ pub fn expandable(entries: &[Entry], rows: &[Row]) -> Vec<usize> {
         .filter(|(_, r)| match r {
             Row::Reads(_) => true,
             Row::One(i) => matches!(entries[*i], Entry::Tool(_) | Entry::Thought(_)),
-            Row::Summary(_) => false,
+            Row::Summary(_) | Row::Waits(_) => false,
         })
         .map(|(i, _)| i)
         .collect()

@@ -30,6 +30,8 @@ mod coordinator_header;
 mod coordinator_ops;
 mod copy;
 mod credentials;
+mod deck_calls;
+pub mod deck_tool;
 pub mod diff;
 pub mod editor;
 mod folds;

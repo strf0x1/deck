@@ -3586,3 +3586,105 @@ fn appearance_controls_live_inside_settings_and_resize_real_markdown(cx: &mut Te
         assert_eq!(d.draft(), "keep this draft");
     });
 }
+
+/// A coordinator's `deck` call as Construct sends it (construct#222): its
+/// title, `rawInput` and the reply text.
+fn deck_call(id: &str, input: serde_json::Value, status: deck_acp::ToolStatus, reply: &str) -> deck_acp::ToolCall {
+    let op = input["operation"].as_str().unwrap_or_default().to_string();
+    let target = input["id"].as_str().or(input["project"].as_str()).unwrap_or_default().to_string();
+    deck_acp::ToolCall {
+        id: id.into(),
+        title: format!("deck {op} {target}").trim_end().to_string(),
+        kind: deck_acp::ToolKind::Execute,
+        status,
+        input: Some(input),
+        content: if reply.is_empty() { vec![] } else { vec![deck_acp::ToolContent::Text(reply.into())] },
+        locations: vec![],
+    }
+}
+
+#[gpui::test]
+fn deck_calls_read_by_operation_and_polls_fold_into_one_line(cx: &mut TestAppContext) {
+    use deck_acp::ToolStatus;
+    let (deck, mut cx) = open(cx);
+    let worker: deck_runtime::Task = serde_json::from_value(json!({
+        "id": "w1", "backend": "local", "title": "fix rail drag",
+        "spec": { "argv": ["x"], "cwd": "/src/w1", "project": "git:test", "created_by": "c1" },
+        "state": { "state": "running" }, "pid": null,
+    }))
+    .unwrap();
+    deck.update(&mut cx, |d, cx| {
+        d.on_tasks(vec![worker], Default::default(), cx);
+        d.on_inbound(Inbound::UserMessage("split the work".into()), cx);
+        let create = json!({ "operation": "create", "project": "git:test", "brief": "fix it", "title": "fix rail drag" });
+        let created = "Created task w1 in git:test; its brief is its first prompt. Call deck wait with id w1 to see that turn end.";
+        d.on_inbound(Inbound::Tool(deck_call("t1", create, ToolStatus::Done, created)), cx);
+        let wait = json!({ "operation": "wait", "id": "w1", "wait_ms": 120000 });
+        let still = "Still going after 120000 ms; wait again or do something else.\nw1 [git:test] running";
+        d.on_inbound(Inbound::Tool(deck_call("t2", wait.clone(), ToolStatus::Done, still)), cx);
+        d.on_inbound(Inbound::Tool(deck_call("t3", wait, ToolStatus::Running, "")), cx);
+        let tasks = json!({ "operation": "tasks" });
+        let listing = "1 task:\nw1 [git:test] running, turn 1 working \"fix rail drag\"";
+        d.on_inbound(Inbound::Tool(deck_call("t4", tasks, ToolStatus::Done, listing)), cx);
+        let refused = json!({ "operation": "create", "project": "git:test", "brief": "more" });
+        d.on_inbound(Inbound::Tool(deck_call("t5", refused, ToolStatus::Failed, "deck_control_cap: limit of 4")), cx);
+    });
+    draw(&mut cx);
+    assert!(cx.debug_bounds("deck-call-tool:t1").is_some(), "a create is one deck line");
+    assert!(cx.debug_bounds("deck-chip-w1").is_some(), "naming its task as a chip");
+    assert!(cx.debug_bounds("card-tool:t1").is_none(), "not a tool card");
+    assert!(cx.debug_bounds("deck-call-waits:2").is_some(), "two polls fold into one quiet line");
+    assert!(cx.debug_bounds("card-tool:t3").is_none(), "a running wait is no stuck tool card");
+    assert!(cx.debug_bounds("card-tool:t5").is_some(), "a refused call is a card, read in full");
+
+    // A listing folds like a read and opens to its reply.
+    let selector: &'static str = "deck-call-tool:t4";
+    assert!(cx.debug_bounds(selector).is_some());
+    click_control(&mut cx, selector);
+    assert!(deck.read_with(&cx, |d, _| d.is_expanded("tool:t4")), "the listing opened");
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_deck_calls_task_chip_selects_that_task_across_projects(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-deck-chip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let argv = vec![fake.display().to_string()];
+    let (one, two) = (git_repo(&data, "one"), git_repo(&data, "two"));
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let other = daemon.open_project(&two, argv.clone()).unwrap();
+    let here = start_recorded(&data, &argv, one.clone());
+    let there = start_recorded(&data, &argv, two);
+    daemon.title(&there, "fix rail drag").unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, one, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&here));
+    assert_ne!(deck.read_with(&vcx, |d, _| d.project().map(str::to_owned)), Some(other.id.clone()));
+
+    // The selected transcript holds a deck call naming the other project's task.
+    let input = json!({ "operation": "prompt", "id": there, "text": "and the docs" });
+    let reply = format!("Task {there} began turn 2.");
+    let call = deck_call("d1", input, deck_acp::ToolStatus::Done, &reply);
+    deck.update(&mut vcx, |d, cx| d.on_inbound(Inbound::Tool(call), cx));
+    draw(&mut vcx);
+    let chip: &'static str = Box::leak(format!("deck-chip-{there}").into_boxed_str());
+    click_control(&mut vcx, chip);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(there.as_str())));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.project().map(str::to_owned)), Some(other.id.clone()), "its project too");
+    ready_on(&deck, &mut vcx, Some(&there));
+
+    cx.quit();
+    for id in [&here, &there] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
