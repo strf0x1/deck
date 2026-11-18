@@ -173,22 +173,41 @@ impl Instance for Proxy {
             return Ok("detached holder already exited".into());
         }
         let request = Request::Stop { grace_ms: grace.as_millis().min(30_000) as u64 };
-        let reason = match exchange(&self.identity.holder, &request, grace + WAIT)? {
-            Reply::Stopped(reason) => reason,
-            _ => bail!("holder did not confirm agent stop"),
+        let reason = match exchange(&self.identity.holder, &request, grace + WAIT) {
+            Ok(Reply::Stopped(reason)) => reason,
+            Ok(_) => bail!("holder did not confirm agent stop"),
+            // A holder whose agent died removes its control socket before its
+            // process is gone, so a stop in that gap cannot connect. Its
+            // exit, not its answer, settles the stop then (#191).
+            Err(error) => {
+                return match self.settled()? {
+                    true => Ok("detached holder exited".into()),
+                    false => Err(error),
+                };
+            }
         };
+        match self.settled()? {
+            true => Ok(reason),
+            false => bail!("holder shutdown was not confirmed"),
+        }
+    }
+}
+
+impl Proxy {
+    /// Wait up to `WAIT` for the holder and its agent to be gone and the task
+    /// lock free, then remove what the holder left. False if they never were.
+    fn settled(&self) -> Result<bool> {
         let deadline = Instant::now() + WAIT;
         loop {
             if let Some(_lock) = stopped(&self.data, &self.id, &self.identity)? {
                 cleanup(&self.data, &self.id, &self.identity);
-                break;
+                return Ok(true);
             }
             if Instant::now() >= deadline {
-                bail!("holder shutdown was not confirmed");
+                return Ok(false);
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        Ok(reason)
     }
 }
 
