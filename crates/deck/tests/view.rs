@@ -3998,3 +3998,45 @@ fn the_coordinator_needs_you_as_project_coordinator_and_opens_the_project_view(c
     drop(daemon);
     cleanup_daemon(&data);
 }
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_question_asked_before_the_window_attached_still_needs_you(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Phase, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-early-question-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let argv = vec!["env".to_string(), "DECK_FAKE_DELAY_MS=1".into(), fake.display().to_string()];
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    daemon.open_project(&repo, argv.clone()).unwrap();
+    // The task's holder prompts it with no window; its turn waits on a question.
+    let id = daemon.run(Spec { argv: argv.clone(), cwd: repo.clone(), ..Default::default() }).unwrap().task.id;
+    daemon.prompt(&id, "ship it", None).unwrap();
+    let waited = daemon.wait(&id, Some(0), 15_000).unwrap();
+    assert_eq!(waited.task.turn.map(|t| t.state), Some(Phase::Waiting));
+
+    // A window that attaches now hears no turn notification, only the
+    // snapshot; the question still needs the user.
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !deck.read_with(&vcx, |d, _| d.needs_you().iter().any(|item| item.task == id)) {
+        vcx.run_until_parked();
+        let state = deck.read_with(&vcx, |d, _| format!("{:?} {:?}", d.attached_ids(), d.needs_you()));
+        assert!(std::time::Instant::now() < deadline, "the early question never needed the user: {state}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    cx.quit();
+    daemon.stop(&id).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}

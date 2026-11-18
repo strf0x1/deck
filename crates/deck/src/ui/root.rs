@@ -18,7 +18,7 @@ use super::session::Session;
 use super::theme::{Tokens, size, tint};
 use super::typography::Typography;
 use super::{chrome, conversation, sidebar_view};
-use deck_acp::{Client, Inbound};
+use deck_acp::{Client, Inbound, TurnState};
 use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
@@ -465,11 +465,23 @@ impl Deck {
                 attached.client = None;
             }
         }
+        let recorded_turn =
+            id.and_then(|id| self.tasks.iter().find(|t| t.id == id)).and_then(|t| t.turn.as_ref()).map(|t| t.number);
         if let Some(attached) = self.attachment_mut(id) {
             if let Inbound::Turn { number, state } = &ev {
                 let next = (*number, state.clone());
                 turn_changed = attached.turn.as_ref() != Some(&next);
                 attached.turn = Some(next);
+            }
+            // A task already waiting when the window attaches sends no turn
+            // notification, only the snapshot `Ready` carries; its question
+            // still needs the user (ADR 0010 §6).
+            if let Inbound::Ready { turn: Some(TurnState::Waiting), .. } = &ev
+                && !matches!(attached.turn, Some((_, TurnState::Waiting)))
+            {
+                let number = attached.turn.as_ref().map(|(n, _)| *n).or(recorded_turn).unwrap_or(0);
+                attached.turn = Some((number, TurnState::Waiting));
+                turn_changed = true;
             }
             if let Inbound::PromptSettled(key) = &ev {
                 attached.settled(key);
