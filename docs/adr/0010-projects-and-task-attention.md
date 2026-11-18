@@ -5,7 +5,8 @@ sidebar in place of the rail, the strip and the sessions column); §1, §5
 and §9 amended again 2026-11-09 (a project view, task titles, and a
 hierarchy that tells projects from tasks); §9 amended again 2026-11-11
 (selecting a task moves the highlight to its row, and rows keep their
-sessions; issue #172). Answers #124. Builds on 0001 (tasks and
+sessions; issue #172); §1 and §5 amended 2026-11-17 (the project view's
+composer talks to the project's coordinator; issue #153). Answers #124. Builds on 0001 (tasks and
 records), 0002 (live attach), 0004 §5 (the approval queue) and 0008 §3–4
 (the repository is part of the task).
 
@@ -55,6 +56,15 @@ The main area shows one of two kinds of place (amended again 2026-11-09):
   the project's rules. Selecting a project never jumps to one of its tasks.
 - **Clicking a task**, or a Needs-you item, shows that task.
 - The task header's project name is a link back to the project view.
+
+**With a coordinator** (amended 2026-11-17, issue #153; ADR 0011 §9). The
+project view is the coordinator's home: its centre is the coordinator's
+conversation, its unsettled tasks are cards beside it (stacked below it at
+narrow widths), and its composer talks to the coordinator. The header
+carries the coordinator's status, Stop or Restart and its Limits, never a
+publication chip, branch or pull request. A project with no coordinator
+shows an empty conversation whose composer starts one. **New session** in
+the header still starts a plain task in the project.
 
 The sidebar highlights whichever place is shown, so a project row and a
 task row are never highlighted at once.
@@ -146,9 +156,19 @@ other checkouts and worktrees.
 ### 5. Opening a project starts no task
 
 A project's view always has the composer (amended again 2026-11-09: it was
-the empty state of a project with no tasks). The first prompt creates the
-task with the project's `argv` and the selected checkout, then sends the
-prompt. No VM boots until there is work for it.
+the empty state of a project with no tasks). No VM boots until there is
+work for it.
+
+The composer talks to the project's coordinator (amended 2026-11-17, issue
+#153). With none, the first prompt is a brief: `deckd` creates the
+project's coordinator with its coordinator command (ADR 0011 §2) and the
+selected checkout, and the prompt is its first. The composer's status row
+says a coordinator will start and on which backend. A coordinator that
+exists is selected rather than started again: a running one takes the
+prompt, a stopped one offers Restart, and a destroyed one leaves the
+composer ready to start the next. A plain task starts from **New session**,
+with the project's `argv` and the selected checkout. Before this amendment
+the first prompt created a plain task.
 
 The empty state says what a task will see: tracked and untracked files,
 without ignored ones (ADR 0008 §4).
@@ -281,6 +301,9 @@ space then sits in the project's **Inbox**, which is this same list.
     and doesn't exist for a local repository;
   - identifying a project by directory: one project would become several
     with worktrees.
+- **The coordinator's home** (amendment, 2026-11-17): the project view
+  shows a coordinator's conversation, and its composer briefs or prompts
+  it; New session keeps starting plain tasks. Slice: #153.
 - **Revisit** if attaching to every live task is too slow to open (§8), or if
   forks sharing web rules (§4) surprises users.
 

@@ -1,7 +1,9 @@
 # 0011 — Cooperation is one coordinator over tasks
 
 Status: proposed, 2026-11-08; §2 and §4 amended 2026-11-17 (deck#151: a
-coordinator's own command; the local backend may host one). Answers PLAN.md question 5 and #126. Builds on
+coordinator's own command; the local backend may host one); §9 amended
+2026-11-17 (deck#153: the project view is the coordinator's home, and
+workers' decisions are surfaced there as links). Answers PLAN.md question 5 and #126. Builds on
 0001 (tasks and records), 0002 (live attach), 0004 §3 and §5 (gateways and
 approvals), 0008 (one branch per task) and 0010 (projects and attention).
 Relies on construct ADR 0042 and 0043 (optchat), which are proposed and being
@@ -261,15 +263,45 @@ and its UI are deferred (§10).
 
 ### 9. What the window shows
 
-- A coordinator sits in the sessions column like any task, with a distinct
-  label and no publication chip. Its transcript is its brief, its `deck` tool
-  calls and the user's prompts. **Start coordinator** is the project's action
-  that creates or selects it.
-- A worker is an ordinary card in its project's column, with the provenance
-  from §6. The **Needs you** strip and attention reasons cover coordinator
-  and workers unchanged.
-- A `deck` tool call that names a task id offers that task: selecting it
-  switches the window to the worker's card, across projects if needed.
+Amended 2026-11-17 (deck#153). This section first put the coordinator in the
+sessions column as a task with a distinct label; the window has since become
+one sidebar and a project view (ADR 0010 §1, §9), and the coordinator lives
+in the project view instead.
+
+- **The project view is the coordinator's home.** Selecting a project shows
+  its coordinator's conversation (its brief, its `deck` tool calls and the
+  user's prompts), with the project's unsettled tasks as cards beside it.
+  The project view's composer starts the coordinator when there is none and
+  prompts it when there is one (ADR 0010 §5). The coordinator has no
+  sidebar task row, no card, no Mark done and no publication chip; its
+  project's header row is where it lives, and it is stopped, restarted or
+  destroyed from the project view's header, which also opens its Limits:
+  the caps, budgets and coordinator command, written through
+  `coordinator_policy` and never reachable by the coordinator itself.
+- **A worker is an ordinary task**: a sidebar row under its project and a
+  card in the project view, with the host-recorded provenance from §6
+  ("started by coordinator", and whether that coordinator is stopped or
+  destroyed). Workers are not nested under the coordinator. A prompt the
+  coordinator sent shows in the worker's transcript as a user message
+  labelled "from coordinator"; the user's own prompts are unlabelled.
+- **Decisions are surfaced, not answered.** When a worker in the project has
+  a pending boundary approval or permission question, the coordinator's
+  conversation shows it as a row (`fix rail drag · wants network:
+  registry.npmjs.org`) that opens the worker, where the user answers as
+  for any task. The rows come from the window's own attention items (ADR
+  0010 §7), not from the coordinator's text, so they show even when the
+  coordinator never mentions them, and they go once answered. A `create`
+  refused at a cap is a row too, whose Raise opens the Limits at that cap.
+  The coordinator may advise in prose; it never answers (§1, §6).
+- **Attention covers the coordinator and its workers.** A worker's items
+  are unchanged. The coordinator's own unseen finished turn or failure is a
+  Needs-you item named `<project> › coordinator` that opens the project
+  view.
+- **A `deck` tool call reads as what it did**: `create` and `prompt` as one
+  line naming the task, `tasks` and `task` folded like a read, and `wait`
+  as a quiet line while it polls. Every task id in a call is a chip that
+  selects that task, across projects if needed; a call the window does not
+  recognize is an ordinary tool card.
 - In-task `delegate` calls remain folded into their task's transcript (§7).
 
 ### 10. First slice, and what is deferred
