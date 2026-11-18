@@ -18,6 +18,8 @@ use gpui::{
 /// The title block's widest run, so a long task title leaves room for the
 /// header's right-hand controls.
 const TITLE_MAX: f32 = 420.;
+/// The project view's checkout line under its name, at most.
+const PLACE_MAX: f32 = 280.;
 
 pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl IntoElement {
     let live_lane = deck.live_lane();
@@ -270,8 +272,12 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                     .child(project),
             )
             .children(place.map(|place| {
+                // Measured like the title, so it is not cut to the name's
+                // width, and capped, so a deep path leaves the controls room.
                 div()
                     .debug_selector(|| "hdr-checkout".into())
+                    .w(title_width(&place, MONO, window).min(px(PLACE_MAX)))
+                    .flex_shrink()
                     .min_w_0()
                     .truncate()
                     .line_height(size::scaled(14.))

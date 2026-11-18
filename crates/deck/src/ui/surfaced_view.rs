@@ -101,9 +101,13 @@ fn frame() -> Div {
 
 fn decision_row(index: usize, decision: &Decision, cx: &mut Context<Deck>) -> AnyElement {
     let task = decision.task.clone();
+    // The subject takes the row's room: a truncating text in a flex row
+    // otherwise measures as its ellipsis alone.
     let subject = div()
+        .flex_1()
         .min_w_0()
-        .truncate()
+        .overflow_hidden()
+        .whitespace_nowrap()
         .font_family(MONO)
         .text_size(size::scaled(size::SMALL))
         .text_color(if decision.network { Tokens::orange() } else { Tokens::text().into() })
@@ -119,7 +123,6 @@ fn decision_row(index: usize, decision: &Decision, cx: &mut Context<Deck>) -> An
         .child(div().flex_none().text_color(Tokens::text_faint()).child("·"))
         .child(div().flex_none().text_color(Tokens::text_dim()).child(decision.asks.clone()))
         .child(subject)
-        .child(div().flex_1())
         .child(
             div()
                 .flex_none()
