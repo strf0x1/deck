@@ -3688,3 +3688,134 @@ fn a_deck_calls_task_chip_selects_that_task_across_projects(cx: &mut TestAppCont
     drop(daemon);
     cleanup_daemon(&data);
 }
+
+/// Wait, up to 15 s, for `ready` on a daemon read rather than the window.
+#[cfg(unix)]
+fn eventually(mut ready: impl FnMut() -> bool, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompts(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, State};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-worker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let gateway = deck_runtime::daemon_client::sibling_binary("deck-gateway").unwrap();
+    assert!(gateway.is_file(), "build deck-gateway beside deckd: {}", gateway.display());
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    coordinator_command(&daemon, &repo, &project.id, &argv);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+
+    // The brief makes the fake coordinator call deck create through the real
+    // control gateway; deckd creates the worker and prompts it with the brief.
+    let create =
+        json!({ "operation": "create", "project": project.id, "brief": "fix the rail", "title": "fix rail drag" });
+    vcx.simulate_input(&format!("deck {create}"));
+    vcx.simulate_keystrokes("enter");
+    let mut worker = None;
+    eventually(
+        || {
+            vcx.run_until_parked();
+            worker = daemon.tasks().unwrap().into_iter().find(|t| t.spec.created_by.is_some());
+            worker.is_some()
+        },
+        "the coordinator's create never made a worker",
+    );
+    let worker = worker.unwrap();
+    let coordinator = worker.spec.created_by.clone().unwrap();
+    assert_eq!(daemon.task(&coordinator).unwrap().spec.kind, deck_runtime::TaskKind::Coordinator);
+    eventually(|| daemon.prompts(&worker.id).unwrap().len() == 1, "deckd never prompted the worker");
+    let chip: &'static str = Box::leak(format!("deck-chip-{}", worker.id).into_boxed_str());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        draw(&mut vcx);
+        if vcx.debug_bounds(chip).is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the deck call never named the worker");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    // Its card says a coordinator started it.
+    let lane = lane_named(&deck, &vcx, "fix rail drag");
+    draw(&mut vcx);
+    let provenance: &'static str = Box::leak(format!("project-view-provenance-{lane}").into_boxed_str());
+    assert!(vcx.debug_bounds(provenance).is_some(), "the card says who started it");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.lane_provenance(lane)).as_deref(), Some("started by coordinator"));
+
+    // After a later attach the replayed brief is labelled from prompts.jsonl.
+    click_control(&mut vcx, chip);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(worker.id.as_str())));
+    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["fix the rail".to_string()]);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.from_coordinator() == vec![0]));
+    assert!(deck.read_with(&vcx, |d, _| d.header_title().provenance.as_deref() == Some("started by coordinator")));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&worker.id));
+
+    // Live: a prompt the coordinator sends while the window watches.
+    daemon.prompt(&worker.id, "and the docs", Some(&coordinator)).unwrap();
+    wait_view(&mut vcx, |cx| said(&deck, cx).len() == 2);
+    assert_eq!(deck.read_with(&vcx, |d, _| d.from_coordinator()), {
+        let entries = deck.read_with(&vcx, |d, _| d.session().entries.clone());
+        let index = entries.iter().rposition(|e| matches!(e, Entry::You(t) if t == "and the docs")).unwrap();
+        vec![0, index]
+    });
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("from-coordinator-0").is_some(), "the label is drawn");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&worker.id));
+    // The user's own prompt stays unlabelled.
+    prompt_fake(&deck, &mut vcx, "thanks");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.from_coordinator().len()), 2);
+
+    // A stopped coordinator is shown as such on its worker.
+    daemon.stop(&coordinator).unwrap();
+    deck.update(&mut vcx, |d, cx| {
+        let tasks = daemon.tasks().unwrap();
+        d.on_tasks(tasks, Default::default(), cx)
+    });
+    let header = deck.read_with(&vcx, |d, _| d.header_title());
+    assert_eq!(header.provenance.as_deref(), Some("started by coordinator · stopped"));
+
+    // After reattaching, the labels come back from the record alone.
+    click_control(&mut vcx, "hdr-stop");
+    wait_view(&mut vcx, |_| matches!(daemon.task(&worker.id).unwrap().state, State::Stopped { .. }));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.can_restart()));
+    deck.update(&mut vcx, |d, cx| d.restart(cx));
+    ready_on(&deck, &mut vcx, Some(&worker.id));
+    wait_view(&mut vcx, |cx| said(&deck, cx).len() == 3);
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.from_coordinator().len() == 2));
+    let labelled: Vec<String> = deck.read_with(&vcx, |d, _| {
+        d.from_coordinator()
+            .into_iter()
+            .filter_map(|i| if let Entry::You(t) = &d.session().entries[i] { Some(t.clone()) } else { None })
+            .collect()
+    });
+    assert_eq!(labelled, vec!["fix the rail".to_string(), "and the docs".to_string()]);
+
+    cx.quit();
+    let _ = daemon.stop(&worker.id);
+    drop(daemon);
+    cleanup_daemon(&data);
+}

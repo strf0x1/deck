@@ -89,6 +89,27 @@ pub fn backend(tasks: &[Task], vm_configured: bool) -> String {
     }
 }
 
+/// The transcript entries that are prompts a coordinator sent (ADR 0011
+/// §9): each recorded prompt, in order, claims the next user message with the
+/// same text. A prompt `deckd` sent for no one (`from` unset) claims its
+/// message too, unlabelled, so the user's own prompts never take a label.
+pub fn from_coordinator(entries: &[super::session::Entry], prompts: &[deck_runtime::record::Prompt]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    for prompt in prompts {
+        let found = entries.iter().enumerate().skip(cursor).find_map(|(i, entry)| match entry {
+            super::session::Entry::You(text) if text.trim() == prompt.text.trim() => Some(i),
+            _ => None,
+        });
+        let Some(index) = found else { continue };
+        cursor = index + 1;
+        if prompt.from.is_some() {
+            out.push(index);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +177,28 @@ mod tests {
         assert!(refused_session("session/new: optchat needs a 65536-token window (-32603)"));
         assert!(refused_session("session/load: no session (-32002)"));
         assert!(!refused_session("the agent closed the connection"));
+    }
+
+    #[test]
+    fn a_coordinators_prompt_is_labelled_and_the_users_own_are_not() {
+        use super::super::session::Entry;
+        let prompt = |text: &str, from: Option<&str>| deck_runtime::record::Prompt {
+            turn: 1,
+            from: from.map(str::to_owned),
+            text: text.into(),
+            at_ms: 0,
+        };
+        let entries = vec![
+            Entry::You("fix the rail".into()),
+            Entry::Agent("done".into()),
+            Entry::You("and the docs".into()),
+            Entry::You("fix the rail".into()),
+            Entry::You("status?".into()),
+        ];
+        let prompts = vec![prompt("fix the rail", Some("c1")), prompt("status?", None), prompt("gone", Some("c1"))];
+        assert_eq!(from_coordinator(&entries, &prompts), vec![0], "the same words from the user stay unlabelled");
+        let later = vec![prompt("fix the rail", None), prompt("fix the rail", Some("c1"))];
+        assert_eq!(from_coordinator(&entries, &later), vec![3], "each prompt claims its own message, in order");
     }
 
     #[test]

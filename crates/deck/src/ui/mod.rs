@@ -45,6 +45,7 @@ mod model_menu;
 mod model_search;
 pub mod motion;
 pub mod new_session;
+mod notices;
 mod panels;
 mod project_view;
 mod projects;

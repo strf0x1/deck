@@ -59,6 +59,7 @@ impl Deck {
         deck.load_settings(cx);
         deck.launch_project(&daemon, &argv, cwd, cx);
         deck.follow_tasks(cx);
+        deck.follow_notices(cx);
         deck._quit = Some(cx.on_app_quit(|deck, _| {
             // Dropping every attachment detaches; it never stops an agent
             // (ADR 0002). Drop the watches before the entity can outlive the
@@ -68,6 +69,7 @@ impl Deck {
             deck.daemon = None;
             deck.access_refresh = None;
             deck.task_refresh = None;
+            deck.stop_notices();
             deck.attach_task = None;
             async {}
         }));

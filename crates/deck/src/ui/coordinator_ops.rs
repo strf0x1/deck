@@ -180,8 +180,11 @@ impl Deck {
     /// Read the task list now rather than at the next refresh: after a stop
     /// or restart the header's record-driven controls follow at once.
     pub(super) fn reload_tasks(&mut self, cx: &mut Context<Self>) {
-        let Some(daemon) = self.daemon.clone() else { return };
-        let read = cx.background_executor().spawn(async move { daemon.tasks() });
+        // Only the data root crosses into the read, never the window's
+        // connection: a read still queued at quit must not hold it open
+        // (as `follow_tasks` says).
+        let Some(data) = self.data.clone() else { return };
+        let read = cx.background_executor().spawn(async move { deck_runtime::DaemonClient::connect(&data)?.tasks() });
         cx.spawn(async move |this, cx| {
             let Ok(tasks) = read.await else { return };
             let _ = this.update(cx, |deck, cx| {

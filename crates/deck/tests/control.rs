@@ -164,7 +164,10 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(10));
     }
     let s = send(&mut vcx, &tx, json!({ "cmd": "state" }));
-    assert_eq!(s["header"], json!({ "title": "name the row", "project": "one", "detail": "ready" }));
+    assert_eq!(
+        s["header"],
+        json!({ "title": "name the row", "project": "one", "detail": "ready", "provenance": null })
+    );
     assert_eq!(s["main"], json!("task"), "a selected task is what the main area shows");
 
     let own = deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned));

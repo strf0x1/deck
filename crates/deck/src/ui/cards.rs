@@ -47,6 +47,20 @@ pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> An
                 .justify_end()
                 .items_center()
                 .gap(px(space::TIGHT))
+                // A prompt the coordinator sent is the user's colour, but says
+                // who sent it (ADR 0011 §9); the user's own carry no label.
+                .children(deck.from_coordinator().contains(i).then(|| {
+                    div()
+                        .debug_selector(move || format!("from-coordinator-{key_index}", key_index = *i))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::DETAIL))
+                        .text_size(size::scaled(size::MICRO))
+                        .text_color(Tokens::text_faint())
+                        .child(glyph(icon::AGENTS, 11.).text_color(tint(Tokens::cyan(), 0.7)))
+                        .child("from coordinator")
+                }))
                 .child(copy::button(deck, key, t.clone(), cx))
                 .child(
                     div()

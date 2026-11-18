@@ -125,6 +125,10 @@ pub struct Deck {
     pub(super) refusals: HashMap<String, String>,
     /// The coordinator's Destroy was clicked once and waits for the second.
     pub(super) coordinator_destroy: bool,
+    /// The prompts each task's holder sent, for "from coordinator" labels,
+    /// and the notice stream that brings them (`notices.rs`).
+    pub(super) prompts: HashMap<String, Vec<deck_runtime::record::Prompt>>,
+    pub(super) notices: Option<super::notices::Notices>,
     last_frame: Option<Instant>,
 }
 
@@ -191,6 +195,8 @@ impl Deck {
             new_session: super::new_session::NewSession::Idle,
             refusals: HashMap::new(),
             coordinator_destroy: false,
+            prompts: HashMap::new(),
+            notices: None,
             last_frame: None,
         }
     }
@@ -430,6 +436,8 @@ impl Deck {
         }
         if let (Some(id), true) = (id, ready) {
             self.refusals.remove(id);
+            // The replay holds the holder's prompts; `deckd` says who sent them.
+            self.load_prompts(id, cx);
         }
         if let Inbound::Ready { session_id, .. } = &ev
             && let Some(task) = self.attachment(id).and_then(|a| a.task.clone())

@@ -200,10 +200,13 @@ pub fn state(d: &Deck) -> Value {
         Status::Down(e) => json!({ "down": e }),
     };
     let header = d.header_title();
+    let from_coordinator = d.from_coordinator();
     let entries: Vec<Value> = s
         .entries
         .iter()
-        .map(|e| match e {
+        .enumerate()
+        .map(|(i, e)| match e {
+            Entry::You(t) if from_coordinator.contains(&i) => json!({ "you": t, "from": "coordinator" }),
             Entry::You(t) => json!({ "you": t }),
             Entry::Agent(t) => json!({ "agent": t }),
             Entry::Thought(t) => json!({ "thought": t }),
@@ -251,6 +254,7 @@ pub fn state(d: &Deck) -> Value {
             "title": header.title,
             "project": header.project,
             "detail": header.detail,
+            "provenance": header.provenance,
         },
         "needs_you": d.needs_you().iter().map(|item| json!({
             "task": item.task,
