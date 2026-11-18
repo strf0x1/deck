@@ -174,3 +174,27 @@ fn a_success_is_the_daemons_body() {
     assert_eq!((status, got), (200, reply));
     assert!(headers.iter().any(|(n, v)| n == "content-type" && v == "application/json"));
 }
+
+/// Over real TCP: a token-less request with a body gets its 401 even when
+/// the client reads only after the gateway has closed (deck#152's Linux CI
+/// saw a reset here instead).
+#[test]
+fn a_tcp_client_reads_its_refusal_after_the_close() {
+    let daemon = Arc::new(Scripted { answer: Mutex::new(None), heard: Mutex::new(vec![]) });
+    let surface = surface(Some(&"a".repeat(32)), daemon);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        surface.handle(stream).unwrap();
+    });
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    let body = format!(r#"{{"operation":"tasks","pad":"{}"}}"#, "x".repeat(16 * 1024));
+    client.write_all(&request("POST", "/control", &[], body.as_bytes())).unwrap();
+    server.join().unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let mut reply = String::new();
+    client.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
+}
