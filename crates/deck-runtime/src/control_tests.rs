@@ -44,11 +44,28 @@ fn a_stopped_task_is_not_promptable() {
 }
 
 #[test]
-fn a_project_outside_the_set_is_scope_and_named_shortly() {
+fn a_project_outside_the_set_is_scope_and_the_refusal_names_the_set() {
     assert!(project_in_scope(&policy(), "git:a").is_ok());
     let refusal = project_in_scope(&policy(), "git:0000000000000000000000000000000000000000").unwrap_err();
     assert_eq!(refusal.code, Code::Scope);
-    assert_eq!(refusal.message, "project git:0000…0000 is not in this coordinator's project set");
+    assert_eq!(
+        refusal.message,
+        "project git:0000…0000 is not in this coordinator's project set; its projects are git:a"
+    );
+}
+
+#[test]
+fn create_defaults_to_the_only_project_and_asks_when_there_are_several() {
+    assert_eq!(create_project(&policy(), None).unwrap(), "git:a");
+    assert_eq!(create_project(&policy(), Some("git:a")).unwrap(), "git:a");
+    assert_eq!(create_project(&policy(), Some("textkit")).unwrap_err().code, Code::Scope);
+    let two = Policy::new(vec!["git:a".into(), "git:b".into()]).unwrap();
+    let refusal = create_project(&two, None).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.message.as_str()),
+        (Code::BadRequest, "name a project; its projects are git:a, git:b")
+    );
+    assert_eq!(create_project(&two, Some("git:b")).unwrap(), "git:b");
 }
 
 #[test]
@@ -96,6 +113,7 @@ fn operations_are_closed_and_bounded_again() {
     let wait = parse(json!({ "operation": "wait", "id": "t", "wait_ms": 300001 })).unwrap();
     assert_eq!(wait.validate().unwrap_err().code, Code::BadRequest);
     let create = parse(json!({ "operation": "create", "project": "p", "brief": "b", "budget": {} })).unwrap();
+    assert!(parse(json!({ "operation": "create", "brief": "b" })).is_ok(), "project is optional since 1.5.0");
     assert_eq!(create.validate().unwrap_err().code, Code::BadRequest);
     let prompt = parse(json!({ "operation": "prompt", "id": "t", "text": "go" })).unwrap();
     assert_eq!((prompt.name(), prompt.target()), ("prompt", Some("t")));

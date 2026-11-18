@@ -160,6 +160,8 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
         listed["tasks"].as_array().unwrap().iter().map(|task| task["id"].as_str().unwrap().to_owned()).collect()
     };
     assert_eq!(ids(&listed), std::slice::from_ref(&first.id), "the destroyed coordinator, never the caller");
+    // Its project set, named, before it has created anything (contract 1.5.0).
+    assert_eq!(listed["projects"], json!([{ "id": project.id, "name": project.name }]));
 
     // A user's own task in the project is readable but not drivable.
     let mine = client
@@ -179,7 +181,10 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     assert_eq!(code(&post(&url, t, &wait_self)), (403, "deck_control_refused"));
     let elsewhere =
         json!({ "operation": "create", "project": "git:0000000000000000000000000000000000000000", "brief": "x" });
-    assert_eq!(code(&post(&url, t, &elsewhere)), (403, "deck_control_scope"));
+    let refused = post(&url, t, &elsewhere);
+    assert_eq!(code(&refused), (403, "deck_control_scope"));
+    let message = refused.1["error"]["message"].as_str().unwrap();
+    assert!(message.ends_with(&format!("its projects are {}", project.id)), "{message}");
     let missing = json!({ "operation": "task", "id": "nosuchtask" });
     assert_eq!(code(&post(&url, t, &missing)), (404, "deck_control_unknown"));
     let long = json!({ "operation": "wait", "id": mine.id, "wait_ms": 300001 });
@@ -219,7 +224,8 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     let mut settings = client.coordinator_policy(&coordinator, None).unwrap();
     settings.policy.max_concurrent = 1;
     client.coordinator_policy(&coordinator, Some(settings.clone())).unwrap();
-    let second = json!({ "operation": "create", "project": project.id, "brief": "Second" });
+    // No project named: the coordinator's only one (contract 1.5.0).
+    let second = json!({ "operation": "create", "brief": "Second" });
     let refused = post(&url, t, &second);
     assert_eq!(code(&refused), (403, "deck_control_cap"));
     assert_eq!(refused.1["retryable"], true);
@@ -237,6 +243,8 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     client.coordinator_policy(&coordinator, Some(settings)).unwrap();
     let (status, again) = post(&url, t, &second);
     assert_eq!(status, 200, "{again}");
+    let defaulted = client.task(again["id"].as_str().unwrap()).unwrap();
+    assert_eq!(defaulted.spec.project.as_deref(), Some(project.id.as_str()));
     // The rolling-hour rate: two created, cap 2.
     let third = json!({ "operation": "create", "project": project.id, "brief": "Third" });
     assert_eq!(code(&post(&url, t, &third)), (403, "deck_control_cap"));

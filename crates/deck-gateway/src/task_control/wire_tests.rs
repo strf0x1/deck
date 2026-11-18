@@ -49,7 +49,7 @@ fn every_operation_parses_with_its_fields() {
     assert_eq!(
         ok(json!({ "operation": "create", "project": "git:p", "brief": "Do it", "budget": { "tokens": 5 } })),
         Operation::Create {
-            project: "git:p".into(),
+            project: Some("git:p".into()),
             brief: "Do it".into(),
             title: None,
             budget: Some(Budget { requests: None, tokens: Some(5) })
@@ -64,6 +64,11 @@ fn every_operation_parses_with_its_fields() {
         Operation::Wait { id: "t1".into(), after_turn: None, wait_ms: 300_000 }
     );
     assert_eq!(ok(json!({ "operation": "stop", "id": "t1" })), Operation::Stop { id: "t1".into() });
+    assert_eq!(
+        ok(json!({ "operation": "create", "brief": "Do it" })),
+        Operation::Create { project: None, brief: "Do it".into(), title: None, budget: None },
+        "project is optional since contract 1.5.0"
+    );
 }
 
 #[test]

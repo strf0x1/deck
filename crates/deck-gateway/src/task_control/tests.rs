@@ -198,3 +198,23 @@ fn a_tcp_client_reads_its_refusal_after_the_close() {
     client.read_to_string(&mut reply).unwrap();
     assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
 }
+
+#[test]
+fn the_contracts_request_payloads_parse_exactly_as_it_says() {
+    let payloads: Value =
+        serde_json::from_str(&std::fs::read_to_string(vendored().join("payloads.json")).unwrap()).unwrap();
+    let mut seen = 0;
+    for case in payloads["cases"].as_array().unwrap() {
+        let schema = case["schema"].as_str().unwrap();
+        if !(schema.starts_with("control-") && schema.ends_with("-request.schema.json")) {
+            continue;
+        }
+        seen += 1;
+        // A schema is one operation's; another operation is invalid for it.
+        let operation = schema.trim_start_matches("control-").trim_end_matches("-request.schema.json");
+        let parsed = wire::parse(case["payload"].to_string().as_bytes());
+        let accepted = parsed.as_ref().is_ok_and(|parsed| parsed.name() == operation);
+        assert_eq!(accepted, case["valid"] == true, "{}: {parsed:?}", case["case"]);
+    }
+    assert!(seen > 20, "the contract has control request fixtures");
+}

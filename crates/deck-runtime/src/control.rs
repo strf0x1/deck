@@ -47,7 +47,9 @@ pub enum Operation {
         id: String,
     },
     Create {
-        project: String,
+        /// Optional since contract 1.5.0: the coordinator's only project.
+        #[serde(default)]
+        project: Option<String>,
         brief: String,
         #[serde(default)]
         title: Option<String>,
@@ -88,8 +90,7 @@ impl Operation {
             | Operation::Prompt { id, .. }
             | Operation::Wait { id, .. }
             | Operation::Stop { id } => Some(id),
-            Operation::Tasks { project } => project.as_deref(),
-            Operation::Create { project, .. } => Some(project),
+            Operation::Tasks { project } | Operation::Create { project, .. } => project.as_deref(),
         }
     }
 
@@ -238,12 +239,33 @@ pub fn promptable(task: &Task) -> Result<(), Refusal> {
     }
 }
 
-/// A project as `create` sees it: in scope, and with its agent command.
+/// A project the caller named, in its scope. The refusal names the set in
+/// full, so the model can correct itself (contract 1.5.0 §13.3).
 pub fn project_in_scope(policy: &Policy, project: &str) -> Result<(), Refusal> {
     if policy.projects.iter().any(|p| p == project) {
         return Ok(());
     }
-    Err(Refusal::new(Code::Scope, format!("project {} is not in this coordinator's project set", short(project))))
+    Err(Refusal::new(
+        Code::Scope,
+        format!("project {} is not in this coordinator's project set; {}", short(project), named(policy)),
+    ))
+}
+
+/// The project a `create` records its worker in: the one named, or the
+/// coordinator's only project when none is (contract 1.5.0 §13.3).
+pub fn create_project(policy: &Policy, project: Option<&str>) -> Result<String, Refusal> {
+    match (project, policy.projects.as_slice()) {
+        (Some(project), _) => project_in_scope(policy, project).map(|()| project.to_owned()),
+        (None, [only]) => Ok(only.clone()),
+        (None, _) => Err(Refusal::new(Code::BadRequest, format!("name a project; {}", named(policy)))),
+    }
+}
+
+fn named(policy: &Policy) -> String {
+    match policy.projects.as_slice() {
+        [] => "this coordinator has no projects".into(),
+        projects => format!("its projects are {}", projects.join(", ")),
+    }
 }
 
 /// Everything a `create` checks after the scope, in order: the project's

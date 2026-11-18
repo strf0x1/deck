@@ -1,5 +1,5 @@
 {
-  "contract": "1.4.0",
+  "contract": "1.5.0",
   "acp": "1",
   "names": {
     "construct_meta": "com.sprawlcommons/construct",
@@ -654,7 +654,13 @@
                 "last_message": null
               }
             ],
-            "truncated": false
+            "truncated": false,
+            "projects": [
+              {
+                "id": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "name": "app"
+              }
+            ]
           }
         }
       },
@@ -714,7 +720,13 @@
                 "last_message": null
               }
             ],
-            "truncated": false
+            "truncated": false,
+            "projects": [
+              {
+                "id": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "name": "app"
+              }
+            ]
           }
         }
       },
@@ -810,6 +822,24 @@
         }
       },
       {
+        "case": "create-default-project-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "create",
+          "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
+          "budget": {
+            "tokens": 200000
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000001"
+          }
+        }
+      },
+      {
         "case": "create-local",
         "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
         "headers": {
@@ -818,6 +848,26 @@
         "body": {
           "operation": "create",
           "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
+          "budget": {
+            "tokens": 200000
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000001"
+          }
+        }
+      },
+      {
+        "case": "create-default-project-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "create",
           "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
           "budget": {
             "tokens": 200000
@@ -1082,7 +1132,7 @@
           "code": "deck_control_scope",
           "body": {
             "error": {
-              "message": "project git:0000…0000 is not in this coordinator's project set",
+              "message": "project git:0000\u20260000 is not in this coordinator's project set; its projects are git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
               "type": "deck_control_scope",
               "code": "deck_control_scope"
             },
@@ -1106,7 +1156,7 @@
           "code": "deck_control_scope",
           "body": {
             "error": {
-              "message": "project git:0000…0000 is not in this coordinator's project set",
+              "message": "project git:0000\u20260000 is not in this coordinator's project set; its projects are git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
               "type": "deck_control_scope",
               "code": "deck_control_scope"
             },
@@ -1805,6 +1855,7 @@
           }
         }
       }
-    ]
+    ],
+    "project_default_since": "1.5.0"
   }
 }
