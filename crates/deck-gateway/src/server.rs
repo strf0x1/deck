@@ -25,6 +25,8 @@ use crate::http;
 use crate::model::{Model, Settings};
 use crate::policy::{Budget, Models, Usage};
 use crate::status::Status;
+use crate::task_control::Surface;
+use crate::task_control::daemon::Deckd;
 use crate::web::connect::Connector;
 use crate::web::policy::Profiles;
 use crate::web::resolve::Resolver;
@@ -41,7 +43,7 @@ use std::time::{Duration, Instant};
 
 /// The most concurrent guest connections one kind accepts. Excess connections
 /// wait in the listener's backlog, which bounds the gateway's threads.
-const CONNECTIONS: usize = 64;
+pub(crate) const CONNECTIONS: usize = 64;
 /// The extension port's kind header is a 4-byte big-endian length plus its
 /// UTF-8 name. Four KiB is far more than any kind needs.
 const MAX_KIND: usize = 4 * 1024;
@@ -52,6 +54,8 @@ pub const BOUNDARY_KIND: &str = "boundary";
 pub const WEB_KIND: &str = crate::web::KIND;
 /// The GitHub operation kind, served on its own port and on the extension port.
 pub const GITHUB_KIND: &str = crate::github::KIND;
+/// A coordinator's task-control kind, served only on the extension port.
+pub const CONTROL_KIND: &str = crate::task_control::KIND;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -82,6 +86,10 @@ pub struct Config {
     /// The GitHub operation gateway. `None` serves no publication: the task's
     /// project names no repository, and the guest gets no route.
     pub github: Option<GitHubSettings>,
+    /// The task is a coordinator: the extension port answers the `control`
+    /// kind for it, forwarding to `control`'s `deckd` (ADR 0011 §4). No
+    /// token: only the guest reaches the extension port.
+    pub coordinator: bool,
 }
 
 /// The GitHub gateway's policy: the repository, the refs and the project rule
@@ -141,6 +149,8 @@ pub struct Ready {
 /// fails. The announcement comes from this function so a caller cannot map a
 /// socket that is not listening yet.
 pub fn serve(config: Config) -> Result<()> {
+    let control_socket = config.control.as_ref().map(|control| control.socket().clone());
+    let control = coordinator_surface(config.coordinator, control_socket, config.task.clone())?;
     let model_listener = bind(&config.model_socket)?;
     let extension_listener = bind(&config.extension_socket)?;
     let web_listener = match &config.web {
@@ -202,7 +212,7 @@ pub fn serve(config: Config) -> Result<()> {
         let web = web.clone();
         let github = github.clone();
         move || {
-            let kinds = Kinds { status, web, events, github };
+            let kinds = Kinds { status, web, events, github, control };
             let reason = accept(extension_listener, limits, move |stream| kinds.extension(stream))
                 .err()
                 .map(|error| format!("{error:#}"));
@@ -350,6 +360,20 @@ struct Kinds {
     web: Option<Arc<Connector>>,
     events: Arc<WebEvents>,
     github: Option<Arc<GitHub>>,
+    control: Option<Arc<Surface>>,
+}
+
+/// A coordinator's control surface, which needs the daemon it forwards to
+/// and the task it speaks for; any other task has none.
+fn coordinator_surface(coordinator: bool, socket: Option<PathBuf>, task: String) -> Result<Option<Arc<Surface>>> {
+    if !coordinator {
+        return Ok(None);
+    }
+    let socket = socket.context("a coordinator's gateway needs --control")?;
+    if task.is_empty() {
+        bail!("a coordinator's gateway needs --task");
+    }
+    Ok(Some(Arc::new(Surface::new(task, None, Arc::new(Deckd::new(socket))))))
 }
 
 impl Kinds {
@@ -375,6 +399,10 @@ impl Kinds {
             (WEB_KIND, None, _) => answer(&mut stream, 1, "this task has no web gateway"),
             (GITHUB_KIND, _, Some(github)) => github.handle(stream),
             (GITHUB_KIND, _, None) => answer(&mut stream, 1, "this task's project names no GitHub repository"),
+            (CONTROL_KIND, ..) => match &self.control {
+                Some(control) => control.handle(stream),
+                None => answer(&mut stream, 1, "this task is not a coordinator"),
+            },
             _ => answer(&mut stream, 1, &format!("unsupported kind {kind:?}")),
         }
     }
@@ -457,18 +485,18 @@ fn answer(stream: &mut UnixStream, error: u8, message: &str) -> io::Result<()> {
 
 /// Counts connections without a thread per waiter beyond the fixed set of
 /// handler threads the acceptor spawns.
-struct Limit {
+pub(crate) struct Limit {
     capacity: usize,
     active: Mutex<usize>,
     free: Condvar,
 }
 
 impl Limit {
-    fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self { capacity, active: Mutex::new(0), free: Condvar::new() }
     }
 
-    fn acquire(self: &Arc<Self>) -> Slot {
+    pub(crate) fn acquire(self: &Arc<Self>) -> Slot {
         let mut active = self.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while *active >= self.capacity {
             active = self.free.wait(active).unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -478,7 +506,7 @@ impl Limit {
     }
 }
 
-struct Slot {
+pub(crate) struct Slot {
     limit: Arc<Limit>,
 }
 
@@ -515,7 +543,13 @@ mod tests {
             left.read_exact(&mut body).unwrap();
             String::from_utf8(body).unwrap()
         });
-        let kinds = Kinds { status: Status::new(None), web: None, events: Arc::new(WebEvents::new()), github: None };
+        let kinds = Kinds {
+            status: Status::new(None),
+            web: None,
+            events: Arc::new(WebEvents::new()),
+            github: None,
+            control: None,
+        };
         kinds.extension(right).unwrap();
         let body = writer.join().unwrap();
         assert!(body.contains("unsupported kind"), "{body}");
