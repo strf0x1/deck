@@ -118,9 +118,15 @@ impl Projects {
 
     /// The selected project's most recent unsettled task: newest by record.
     /// A task for `same` command and directory wins, so an explicit launch
-    /// finds the session it started there (issue #141).
+    /// finds the session it started there (issue #141). A project with a
+    /// coordinator opens on it instead (`None`, the project view): its
+    /// workers share its command and directory, and a relaunch must not hand
+    /// the user's next prompt to whichever worker started last (#202).
     pub fn newest_task(&mut self, tasks: &[Task], same: Option<(&[String], &Path)>) -> Option<String> {
         let selected = self.selected.clone()?;
+        if super::coordinator::of_project(tasks, &selected).is_some() {
+            return None;
+        }
         let unsettled: Vec<&Task> = tasks
             .iter()
             .filter(|task| {
@@ -226,6 +232,22 @@ mod tests {
         let argv = ["construct".to_string(), "acp".to_string()];
         assert_eq!(p.newest_task(&tasks, Some((&argv, Path::new("/src/a")))).as_deref(), Some("0002-new"));
         assert_eq!(p.newest_task(&tasks, Some((&argv, Path::new("/nowhere")))).as_deref(), Some("0002-new"));
+    }
+
+    #[test]
+    fn a_project_with_a_coordinator_opens_on_its_project_view_not_its_newest_worker() {
+        let mut p = Projects::default();
+        p.set(vec![project("path:/a", "a", 1)], Some("path:/a".into()));
+        let mut coordinator = task("0001-coord", "/src/a", Some("path:/a"), json!({ "state": "running" }));
+        coordinator.spec.kind = deck_runtime::TaskKind::Coordinator;
+        let mut worker = task("0002-worker", "/src/a", Some("path:/a"), json!({ "state": "running" }));
+        worker.spec.created_by = Some("0001-coord".into());
+        let mut tasks = vec![coordinator, worker];
+        let argv = ["construct".to_string(), "acp".to_string()];
+        assert_eq!(p.newest_task(&tasks, None), None);
+        assert_eq!(p.newest_task(&tasks, Some((&argv, Path::new("/src/a")))), None, "even for the same command");
+        tasks[0].state = State::Destroyed;
+        assert_eq!(p.newest_task(&tasks, None).as_deref(), Some("0002-worker"), "a destroyed one does not count");
     }
 
     #[test]

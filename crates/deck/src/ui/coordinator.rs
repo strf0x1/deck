@@ -79,7 +79,7 @@ pub fn refused_session(failure: &str) -> bool {
     failure.starts_with("session/new:") || failure.starts_with("session/load:")
 }
 
-/// The backend a new coordinator will run on: the one `deckd` ran the newest
+/// The backend a new task will run on: the one `deckd` ran the newest
 /// task on, or the window's own guess from its environment before any task.
 pub fn backend(tasks: &[Task], vm_configured: bool) -> String {
     match tasks.iter().max_by(|a, b| a.id.cmp(&b.id)) {

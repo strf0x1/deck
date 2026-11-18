@@ -213,7 +213,7 @@ fn status_row(deck: &Deck) -> impl IntoElement {
     } else {
         deck.session().agent.clone()
     };
-    let next_backend = deck.awaiting_task().then(|| deck.coordinator_backend());
+    let next_backend = deck.awaiting_task().then(|| deck.next_backend());
     let sandbox_note = w.map(|w| w.backend.as_str()).or(next_backend.as_deref()) == Some("local") && coordinator;
     let project_dir = deck.project_checkout();
     let enter = if deck.editor.text().contains('\n') { "enter send · shift-enter newline" } else { "enter send" };

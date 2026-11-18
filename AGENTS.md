@@ -203,6 +203,16 @@ b=$(c '{"cmd":"geometry"}' | jq -r '.bounds | "\(.x),\(.y),\(.w),\(.h)"')
 screencapture -x -o -R"$b" deck.png
 ```
 
+On macOS, `click` and `move` coordinates are window-content points, below
+the title bar (about 32pt), while `geometry` and the screenshot cover the
+whole frame including it: subtract the title bar's height when aiming at
+something you found in a screenshot.
+
+For a live run against real Construct, start the window from a user
+terminal. A newly built `construct` needs "Always Allow" on its Keychain
+item once, and processes started from an agent's shell (the Claude app)
+cannot read the Keychain at all.
+
 Both platforms need a real window to draw into: a headless shell has no
 display, and macOS captures nothing while the session is locked. On macOS,
 `screencapture` also fails ("could not create image from rect") until the

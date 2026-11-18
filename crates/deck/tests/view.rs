@@ -1413,6 +1413,46 @@ fn launching_inside_a_checkout_opens_its_project(cx: &mut TestAppContext) {
 
 #[cfg(unix)]
 #[gpui::test]
+fn launching_into_a_project_with_a_coordinator_opens_its_project_view(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, TaskKind};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-launch-coordinator-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    let spec = |kind| Spec {
+        argv: argv.clone(),
+        cwd: repo.clone(),
+        project: Some(project.id.clone()),
+        kind,
+        ..Default::default()
+    };
+    let coordinator = daemon.create(spec(TaskKind::Coordinator)).unwrap();
+    // Newer, and for the launch's own command and directory, as a worker is.
+    let newer = daemon.create(spec(TaskKind::Task)).unwrap();
+    assert!(newer.id > coordinator.id);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(project.id.as_str()));
+        assert!(d.showing_project() && d.coordinator_selected(), "the coordinator's project view, not the newest task");
+        assert_eq!(d.task_id(), Some(coordinator.id.as_str()), "the composer prompts the coordinator");
+    });
+    drop(daemon);
+    cx.quit();
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn launching_outside_a_checkout_selects_the_project_opened_last(cx: &mut TestAppContext) {
     use deck_runtime::DaemonClient;
     cx.background_executor.allow_parking();
@@ -3439,6 +3479,26 @@ fn the_model_menu_picks_what_new_session_starts_on(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_model_chip_says_construct_config_when_new_sessions_run_locally(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(settings_snapshot()), cx));
+    seed_project(&deck, &mut cx);
+    // deckd ran the newest task on the VM backend, so the next one is too.
+    let vm = task("a", json!({ "state": "running" }), None);
+    deck.update(&mut cx, |d, cx| d.on_tasks(vec![vm.clone()], Default::default(), cx));
+    draw(&mut cx);
+    assert!(cx.debug_bounds("hdr-model").is_some());
+    assert!(cx.debug_bounds("hdr-model-local").is_none(), "a VM session runs on the picked model");
+    // A local one runs on Construct's own config whatever is picked.
+    let local = deck_runtime::Task { backend: "local".into(), ..vm };
+    deck.update(&mut cx, |d, cx| d.on_tasks(vec![local], Default::default(), cx));
+    draw(&mut cx);
+    assert!(cx.debug_bounds("hdr-model-local").is_some(), "the chip says construct config");
+    click_control(&mut cx, "hdr-model");
+    assert!(cx.debug_bounds("hdr-model-local-note").is_some(), "the menu says picks reach VM sessions");
+}
+
+#[gpui::test]
 fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt as _;
     cx.background_executor.allow_parking();
@@ -3688,6 +3748,8 @@ fn deck_calls_read_by_operation_and_polls_fold_into_one_line(cx: &mut TestAppCon
         d.on_inbound(Inbound::Tool(deck_call("t4", tasks, ToolStatus::Done, listing)), cx);
         let refused = json!({ "operation": "create", "project": "git:test", "brief": "more" });
         d.on_inbound(Inbound::Tool(deck_call("t5", refused, ToolStatus::Failed, "deck_control_cap: limit of 4")), cx);
+        let stop = json!({ "operation": "stop", "id": "w1" });
+        d.on_inbound(Inbound::Tool(deck_call("t6", stop, ToolStatus::Done, "Stopped w1.")), cx);
     });
     draw(&mut cx);
     assert!(cx.debug_bounds("deck-call-tool:t1").is_some(), "a create is one deck line");
@@ -3696,6 +3758,9 @@ fn deck_calls_read_by_operation_and_polls_fold_into_one_line(cx: &mut TestAppCon
     assert!(cx.debug_bounds("deck-call-waits:2").is_some(), "two polls fold into one quiet line");
     assert!(cx.debug_bounds("card-tool:t3").is_none(), "a running wait is no stuck tool card");
     assert!(cx.debug_bounds("card-tool:t5").is_some(), "a refused call is a card, read in full");
+    assert!(cx.debug_bounds("deck-call-tool:t6").is_some(), "a stop is a deck line");
+    assert!(cx.debug_bounds("deck-stopped").is_some(), "that says the session stopped");
+    assert!(cx.debug_bounds("deck-made-room").is_some(), "to make room after the cap refused a create");
 
     // A listing folds like a read and opens to its reply.
     let selector: &'static str = "deck-call-tool:t4";
@@ -3949,6 +4014,16 @@ fn a_workers_question_is_surfaced_and_a_cap_row_raises_the_limit(cx: &mut TestAp
     // Lower the cap to one running session from the Limits panel.
     click_control(&mut vcx, "hdr-limits");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused().is_some()));
+    // In a short window the fields scroll and Save stays in sight.
+    vcx.simulate_resize(gpui::size(px(1180.), px(560.)));
+    draw(&mut vcx);
+    let panel = vcx.debug_bounds("limits-panel").unwrap();
+    let save = vcx.debug_bounds("limits-save").unwrap();
+    assert!(
+        save.bottom() <= panel.bottom() && panel.bottom() <= px(560.),
+        "Save is not clipped: {save:?} in {panel:?}"
+    );
+    vcx.simulate_resize(gpui::size(px(1180.), px(760.)));
     draw(&mut vcx);
     vcx.simulate_keystrokes("cmd-a");
     vcx.simulate_input("1");

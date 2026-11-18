@@ -34,8 +34,9 @@ impl Deck {
         self.projects.selected().is_some() && (self.task_id().is_none() || self.coordinator_selected())
     }
 
-    /// The backend a new coordinator would run on, for the composer.
-    pub fn coordinator_backend(&self) -> String {
+    /// The backend a new coordinator or session would run on, for the
+    /// composer and the header's model chip.
+    pub fn next_backend(&self) -> String {
         coordinator::backend(&self.tasks, std::env::var_os("DECK_VM_IMAGE").is_some())
     }
 

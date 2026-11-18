@@ -36,9 +36,11 @@ impl Reason {
         match self {
             Reason::Approval { what } => format!("wants {what}"),
             Reason::Question { what } => format!("asks to run {what}"),
+            // The count is the edits the window saw; a file a shell command
+            // wrote is not among them, so zero is never claimed (#202).
+            Reason::Finished { files: None | Some(0), .. } => "finished".into(),
             Reason::Finished { files: Some(1), .. } => "finished: 1 file changed".into(),
             Reason::Finished { files: Some(n), .. } => format!("finished: {n} files changed"),
-            Reason::Finished { files: None, .. } => "finished".into(),
             Reason::Failed { .. } => "stopped unexpectedly".into(),
         }
     }
@@ -234,6 +236,7 @@ mod tests {
         let finished = items(std::slice::from_ref(&running), &attached, &HashMap::new(), &mut since, now);
         assert_eq!(finished[0].reason, Reason::Finished { turn: 2, files: Some(2) });
         assert_eq!(finished[0].reason.text(), "finished: 2 files changed");
+        assert_eq!(Reason::Finished { turn: 2, files: Some(0) }.text(), "finished", "no edit seen is not no change");
         let mut unknown = attached["0001"];
         unknown.files = None;
         let attached = HashMap::from([("0001".into(), unknown)]);
