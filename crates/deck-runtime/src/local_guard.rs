@@ -18,6 +18,9 @@ const HEADER_LIMIT: u64 = 8192;
 
 pub struct GuardedLocal {
     pub executable: PathBuf,
+    /// Variables the agent gets beyond its kind's (a local coordinator's
+    /// control URL and token), through the helper's environment.
+    pub env: Vec<(String, String)>,
 }
 
 impl GuardedLocal {
@@ -35,6 +38,7 @@ impl GuardedLocal {
             // The kind carries the agent's environment (`Spec::agent_env`)
             // through the helper, which the agent inherits.
             &Spec { argv, cwd: spec.cwd.clone(), kind: spec.kind, ..Default::default() },
+            &self.env,
             exited,
             None,
         )?;

@@ -32,6 +32,7 @@ const LOG: &str = "events.jsonl";
 const SNAPSHOT: &str = "task.json";
 const TURN: &str = "turn.json";
 const PROMPTS: &str = "prompts.jsonl";
+const MESSAGE: &str = "message.json";
 /// The most of a prompt's text the record keeps (deck#150 R8).
 pub const PROMPT_TEXT_LIMIT: usize = 32 * 1024;
 
@@ -223,6 +224,22 @@ impl Store {
         let tmp = dir.join(format!("{TURN}.tmp"));
         fs::write(&tmp, serde_json::to_vec(turn)?)?;
         fs::rename(&tmp, dir.join(TURN))?;
+        Ok(())
+    }
+
+    /// The last assistant message `id`'s holder saw end a turn, if any. Like
+    /// the turn, a missing or unreadable file is none.
+    pub fn message(&self, id: &str) -> Option<crate::message::LastMessage> {
+        let bytes = fs::read(self.tasks.join(id).join(MESSAGE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Replace `id`'s last message atomically. Only the task's holder calls this.
+    pub(crate) fn write_message(&self, id: &str, message: &crate::message::LastMessage) -> Result<()> {
+        let dir = self.tasks.join(id);
+        let tmp = dir.join(format!("{MESSAGE}.tmp"));
+        fs::write(&tmp, serde_json::to_vec(message)?)?;
+        fs::rename(&tmp, dir.join(MESSAGE))?;
         Ok(())
     }
 

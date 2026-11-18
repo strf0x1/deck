@@ -554,4 +554,29 @@ mod tests {
         let body = writer.join().unwrap();
         assert!(body.contains("unsupported kind"), "{body}");
     }
+
+    #[test]
+    fn a_task_that_is_not_a_coordinator_has_no_control_surface() {
+        assert!(coordinator_surface(false, Some(PathBuf::from("/d.sock")), "t".into()).unwrap().is_none());
+        assert!(coordinator_surface(true, None, "t".into()).is_err(), "a coordinator's surface needs deckd");
+        let (mut left, right) = UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || {
+            left.write_all(&7u32.to_be_bytes()).unwrap();
+            left.write_all(b"control").unwrap();
+            let mut length = [0u8; 4];
+            left.read_exact(&mut length).unwrap();
+            let mut body = vec![0; u32::from_be_bytes(length) as usize];
+            left.read_exact(&mut body).unwrap();
+            String::from_utf8(body).unwrap()
+        });
+        let kinds = Kinds {
+            status: Status::new(None),
+            web: None,
+            events: Arc::new(WebEvents::new()),
+            github: None,
+            control: None,
+        };
+        kinds.extension(right).unwrap();
+        assert!(writer.join().unwrap().contains("not a coordinator"));
+    }
 }

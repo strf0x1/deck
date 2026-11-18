@@ -8,6 +8,7 @@
 //! a slow agent stdin or a busy `deckd` can never stop the agent's stdout
 //! from draining.
 
+use crate::message::LastMessage;
 use crate::observer::{Event, Observer, Refused, Setup};
 use crate::record::Store;
 use crate::relay::Tap;
@@ -38,7 +39,7 @@ pub(crate) struct HolderAcp {
     state: Mutex<State>,
     changed: Condvar,
     out: mpsc::Sender<String>,
-    turns: mpsc::Sender<Turn>,
+    turns: mpsc::Sender<(Turn, Option<LastMessage>)>,
 }
 
 struct State {
@@ -52,7 +53,7 @@ impl HolderAcp {
     /// [`HolderAcp::connect`] gives it the relay's writer.
     pub(crate) fn new(data: PathBuf, id: String) -> (Arc<Self>, mpsc::Receiver<String>) {
         let (out, lines) = mpsc::channel();
-        let (turns, recorded) = mpsc::channel::<Turn>();
+        let (turns, recorded) = mpsc::channel::<(Turn, Option<LastMessage>)>();
         std::thread::Builder::new().name("holder-turns".into()).spawn(move || record_turns(&data, &id, recorded)).ok();
         let tag = std::process::id().to_string();
         let state = State { observer: Observer::new(&tag), outcome: None, session: None };
@@ -109,7 +110,9 @@ impl HolderAcp {
         for event in events {
             match event {
                 Event::Turn(turn) => {
-                    let _ = self.turns.send(turn);
+                    // A turn that ended carries the message it ended with.
+                    let message = if turn.idle() { state.observer.message().cloned() } else { None };
+                    let _ = self.turns.send((turn, message));
                 }
                 Event::Session(session) => state.session = Some(session),
                 Event::Prompted(turn) => {
@@ -143,12 +146,18 @@ impl Tap for HolderAcp {
     }
 }
 
-/// Write each turn to the record, then tell `deckd` to read it. A missing
-/// `deckd` is fine: the file is the truth and the next daemon reads it.
-fn record_turns(data: &std::path::Path, id: &str, turns: mpsc::Receiver<Turn>) {
+/// Write each turn (and an ended turn's last message, first) to the record,
+/// then tell `deckd` to read it. A missing `deckd` is fine: the files are the
+/// truth and the next daemon reads them.
+fn record_turns(data: &std::path::Path, id: &str, turns: mpsc::Receiver<(Turn, Option<LastMessage>)>) {
     let Ok(store) = Store::open(data) else { return };
     let control = crate::paths::Paths::for_data(data).ok().map(|paths| paths.control());
-    for turn in turns {
+    for (turn, message) in turns {
+        if let Some(message) = message
+            && let Err(error) = store.write_message(id, &message)
+        {
+            eprintln!("recording task {id}'s last message: {error:#}");
+        }
         if let Err(error) = store.write_turn(id, &turn) {
             eprintln!("recording task {id}'s turn: {error:#}");
             continue;

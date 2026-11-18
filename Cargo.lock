@@ -1296,6 +1296,7 @@ dependencies = [
  "anyhow",
  "deck-acp",
  "futures",
+ "jsonschema",
  "libc",
  "libloading",
  "security-framework",
