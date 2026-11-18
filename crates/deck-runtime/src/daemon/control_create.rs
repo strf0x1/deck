@@ -33,7 +33,6 @@ pub(super) fn create(
     title: Option<&str>,
     requested: Option<Requested>,
 ) -> Decided {
-    control::project_in_scope(policy, project)?;
     let id = {
         let service = cx.service.lock().unwrap_or_else(|e| e.into_inner());
         let recorded = service.projects.get(project).cloned();

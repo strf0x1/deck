@@ -195,7 +195,9 @@ pub enum Operation {
         id: String,
     },
     Create {
-        project: String,
+        /// Optional since contract 1.5.0; `deckd` resolves it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
         brief: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
@@ -257,7 +259,9 @@ impl Operation {
                 Ok(())
             }
             Operation::Create { project, brief, title, budget } => {
-                bounded("project", project, 1024)?;
+                if let Some(project) = project {
+                    bounded("project", project, 1024)?;
+                }
                 bounded("brief", brief, MAX_BODY)?;
                 if let Some(title) = title
                     && (title.is_empty() || title.chars().count() > 80)

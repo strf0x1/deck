@@ -80,7 +80,8 @@ fn decide(cx: &Context, coordinator: &str, operation: &Operation) -> Decided {
         Operation::Tasks { project } => tasks(cx, coordinator, &policy, project.as_deref()),
         Operation::Task { id } => Ok(json!({ "task": summarize(cx, &visible(cx, coordinator, &policy, id)?) })),
         Operation::Create { project, brief, title, budget } => {
-            super::control_create::create(cx, coordinator, &policy, project, brief, title.as_deref(), *budget)
+            let project = control::create_project(&policy, project.as_deref())?;
+            super::control_create::create(cx, coordinator, &policy, &project, brief, title.as_deref(), *budget)
         }
         Operation::Prompt { id, text } => prompt(cx, coordinator, &policy, id, text),
         Operation::Wait { id, after_turn, wait_ms } => {
@@ -159,7 +160,15 @@ fn tasks(cx: &Context, coordinator: &str, policy: &Policy, project: Option<&str>
     listed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
     let truncated = listed.len() > control::TASKS_LIMIT;
     let tasks: Vec<Value> = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task)).collect();
-    Ok(json!({ "tasks": tasks, "truncated": truncated }))
+    Ok(json!({ "tasks": tasks, "truncated": truncated, "projects": projects(cx, policy) }))
+}
+
+/// The coordinator's project set with the names the user sees (contract
+/// 1.5.0 §13.3), so its first `tasks` already says what `create` takes.
+fn projects(cx: &Context, policy: &Policy) -> Vec<Value> {
+    let service = cx.service.lock().unwrap_or_else(|e| e.into_inner());
+    let name = |id: &str| service.projects.get(id).map_or_else(|| id.to_owned(), |project| project.name.clone());
+    policy.projects.iter().map(|id| json!({ "id": id, "name": name(id) })).collect()
 }
 
 fn prompt(cx: &Context, coordinator: &str, policy: &Policy, id: &str, text: &str) -> Decided {
