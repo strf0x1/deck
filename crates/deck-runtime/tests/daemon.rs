@@ -62,11 +62,17 @@ impl Daemon {
     }
 
     fn spawn(data: &std::path::Path, credentials: Option<&std::path::Path>) -> Child {
-        Self::spawn_exe(data, credentials, std::path::Path::new(env!("CARGO_BIN_EXE_deckd")))
+        Self::spawn_exe(data, credentials, std::path::Path::new(env!("CARGO_BIN_EXE_deckd")), &[])
     }
 
-    fn spawn_exe(data: &std::path::Path, credentials: Option<&std::path::Path>, exe: &std::path::Path) -> Child {
+    fn spawn_exe(
+        data: &std::path::Path,
+        credentials: Option<&std::path::Path>,
+        exe: &std::path::Path,
+        env: &[(&str, &str)],
+    ) -> Child {
         let mut command = Command::new(exe);
+        command.envs(env.iter().copied());
         command
             .arg("--data")
             .arg(data)
@@ -283,6 +289,38 @@ fn control_and_acp_disconnect_leave_the_task_running() {
     client.stop(&run.task.id).unwrap();
     drop(client);
     assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn an_agent_does_not_inherit_decks_own_environment() {
+    let data = Daemon::data("agent-env");
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_deckd"));
+    let inherited = [
+        ("DECK_CONTROL", "/tmp/window.sock"),
+        ("DECK_DATA", "/somewhere/else"),
+        ("DECK_VM_RAM_MIB", "512"),
+        ("DECK_CONTROL_TOKEN", "not-this-tasks"),
+        ("DECK_FAKE_STATE", "kept"),
+    ];
+    let mut daemon = Daemon {
+        data: data.clone(),
+        paths: Paths::for_data(&data).unwrap(),
+        child: Daemon::spawn_exe(&data, None, exe, &inherited),
+        credentials: None,
+        _holders: holders::Holders::new(&data),
+    };
+    let client = daemon.connect();
+    let out = data.join("agent-env");
+    let script = format!("env > '{}'; exec cat", out.display());
+    let run = client.run(daemon.spec(&["sh", "-c", &script])).unwrap();
+    eventually(|| std::fs::read_to_string(&out).is_ok_and(|env| env.contains("PATH=")));
+    let env = std::fs::read_to_string(&out).unwrap();
+    let names: Vec<&str> = env.lines().filter_map(|line| line.split_once('=').map(|(name, _)| name)).collect();
+    for internal in ["DECK_CONTROL", "DECK_DATA", "DECK_CREDENTIALS", "DECK_VM_RAM_MIB", "DECK_CONTROL_TOKEN"] {
+        assert!(!names.contains(&internal), "the agent saw {internal}");
+    }
+    assert!(names.contains(&"DECK_FAKE_STATE"), "the rest of the environment still reaches it");
+    client.stop(&run.task.id).unwrap();
 }
 
 #[test]
@@ -1701,7 +1739,7 @@ fn a_daemon_reports_itself_stale_after_its_binary_is_rebuilt() {
     let mut daemon = Daemon {
         data: data.clone(),
         paths,
-        child: Daemon::spawn_exe(&data, None, &exe),
+        child: Daemon::spawn_exe(&data, None, &exe, &[]),
         credentials: None,
         _holders: holders::Holders::new(&data),
     };

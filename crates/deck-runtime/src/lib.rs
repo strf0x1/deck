@@ -10,6 +10,7 @@
 //! speaks over, and closing it stops nothing. This crate has no UI
 //! dependency, and must never gain one.
 
+pub mod agent_env;
 pub mod approvals;
 pub mod backend;
 pub mod boundary;

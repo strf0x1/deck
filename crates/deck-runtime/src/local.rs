@@ -50,6 +50,9 @@ impl Local {
         let (prog, args) = spec.argv.split_first().context("no agent command")?;
         let mut cmd = Command::new(prog);
         cmd.args(args).current_dir(&spec.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        // Deck's own configuration stays out; what it means the agent to
+        // have is added after.
+        crate::agent_env::scrub(&mut cmd);
         cmd.envs(spec.agent_env());
         cmd.envs(env.iter().map(|(name, value)| (name, value)));
         #[cfg(unix)]
