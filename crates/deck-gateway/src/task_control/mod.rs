@@ -12,6 +12,11 @@
 //! loopback, where other host processes could too, so there the per-task
 //! token is required and the listener refuses to start without one. The
 //! token is held as a digest and never written anywhere.
+//!
+//! A refusal sent before the body is read still reads the body (up to the
+//! limit) before the stream closes: closing a TCP socket with unread bytes
+//! sends a reset, and on Linux the reset can reach the client before it has
+//! read the refusal.
 
 pub mod daemon;
 pub mod wire;
@@ -52,7 +57,8 @@ impl Surface {
     /// port, or a loopback TCP connection.
     pub fn handle<S: Read + Write>(&self, stream: S) -> io::Result<()> {
         let mut reader = BufReader::new(stream);
-        let refusal = match self.answer(&mut reader) {
+        let mut unread = 0;
+        let refusal = match self.answer(&mut reader, &mut unread) {
             Ok(None) => return Ok(()),
             Ok(Some(Ok(body))) => {
                 let body = body.to_string();
@@ -68,15 +74,20 @@ impl Surface {
         if refusal.code == Code::Unauthorized {
             headers.push(("www-authenticate", CHALLENGE.into()));
         }
-        http::write(reader.get_mut(), refusal.status, &headers, refusal.body().to_string().as_bytes())
+        http::write(reader.get_mut(), refusal.status, &headers, refusal.body().to_string().as_bytes())?;
+        drain(&mut reader, unread);
+        Ok(())
     }
 
-    /// `Ok(None)` is a peer that closed before a request.
+    /// `Ok(None)` is a peer that closed before a request. `unread` is left
+    /// at the body bytes the head declared and this did not read.
     fn answer<S: Read>(
         &self,
         reader: &mut BufReader<S>,
+        unread: &mut usize,
     ) -> Result<Option<Result<serde_json::Value, Refusal>>, ReadError> {
         let Some((request, length)) = http::read_head_only(reader, Shape::Origin)? else { return Ok(None) };
+        *unread = length.unwrap_or(0);
         if !wire::authorized(&request.headers, self.token.as_ref()) {
             return Ok(Some(Err(Refusal::new(Code::Unauthorized, "missing or wrong bearer token"))));
         }
@@ -85,6 +96,7 @@ impl Surface {
             Err(refusal) => return Ok(Some(Err(refusal))),
         };
         let body = http::read_body(reader, length)?;
+        *unread = 0;
         let operation = match wire::parse(&body) {
             Ok(operation) => operation,
             Err(refusal) => return Ok(Some(Err(refusal))),
@@ -94,6 +106,14 @@ impl Surface {
             Outcome::Refused(refusal) => Err(refusal),
         }))
     }
+}
+
+/// Read and drop up to `unread` body bytes, at most [`wire::MAX_BODY`], so
+/// the close that follows is a clean one. A peer that never sends them is
+/// bounded by the stream's read timeout; an error only means it is gone.
+fn drain<S: Read>(reader: &mut BufReader<S>, unread: usize) {
+    let limit = u64::try_from(unread.min(wire::MAX_BODY)).unwrap_or(0);
+    let _ = io::copy(&mut reader.take(limit), &mut io::sink());
 }
 
 fn json_type() -> Vec<(&'static str, String)> {
