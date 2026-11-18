@@ -204,7 +204,10 @@ impl<W: Write> Agent<W> {
             && let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(path)
         {
             let key = &msg["params"]["_meta"][CONSTRUCT_META][deck_acp::names::IDEMPOTENCY_KEY];
-            let _ = writeln!(log, "{}", json!({ "text": msg["params"]["prompt"][0]["text"], "key": key }));
+            // One `write` per line: `writeln!` on a `File` may split it across
+            // several, and a test reading meanwhile would see a torn line.
+            let line = format!("{}\n", json!({ "text": msg["params"]["prompt"][0]["text"], "key": key }));
+            let _ = log.write_all(line.as_bytes());
         }
         match msg["method"].as_str() {
             Some("initialize") => {

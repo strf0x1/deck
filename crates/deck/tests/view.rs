@@ -1676,7 +1676,12 @@ fn a_prompt_cut_off_by_a_killed_agent_is_resent_with_its_key_and_runs_once(cx: &
         std::fs::read_dir(&journal).unwrap().map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()).collect();
     assert_eq!(log.matches(r#""event":"begin""#).count(), 1, "one turn in the agent's own record: {log}");
     assert_eq!(log.matches(r#""key":""#).count(), 1, "the first send carried the key: {log}");
-    // The window did resend, with the key it first sent.
+    // The window did resend, with the key it first sent. The resend's reply
+    // may still be in flight, and nothing above waits for it, so wait for its
+    // line in the fake's log.
+    wait_view(&mut vcx, |_| {
+        std::fs::read_to_string(&prompts).is_ok_and(|s| s.ends_with('\n') && s.lines().count() >= 2)
+    });
     let sent: Vec<serde_json::Value> =
         std::fs::read_to_string(&prompts).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(sent.len(), 2, "{sent:?}");
