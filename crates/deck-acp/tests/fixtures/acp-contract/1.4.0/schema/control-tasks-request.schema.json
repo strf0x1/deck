@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-tasks-request.schema.json",
+  "title": "Coordinator control `tasks` request (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "tasks"
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    }
+  },
+  "required": [
+    "operation"
+  ],
+  "additionalProperties": false
+}

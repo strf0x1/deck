@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-stop-request.schema.json",
+  "title": "Coordinator control `stop` request (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "stop"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "operation",
+    "id"
+  ],
+  "additionalProperties": false
+}

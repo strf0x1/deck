@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-create-request.schema.json",
+  "title": "Coordinator control `create` request (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "create"
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "brief": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "operation",
+    "project",
+    "brief"
+  ],
+  "additionalProperties": false
+}

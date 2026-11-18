@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-task-summary.schema.json",
+  "title": "Coordinator control task summary (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 80
+    },
+    "state": {
+      "enum": [
+        "created",
+        "running",
+        "stopped",
+        "failed",
+        "destroyed"
+      ]
+    },
+    "turn": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "state": {
+              "enum": [
+                "idle",
+                "working",
+                "waiting"
+              ]
+            },
+            "stopReason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "number",
+            "state"
+          ],
+          "additionalProperties": true,
+          "if": {
+            "required": [
+              "stopReason"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "idle"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "attention": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Known values: approval, question, finished, failed. Readers treat others as needing a person."
+    },
+    "pending_approvals": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "publication": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "branch"
+            },
+            "branch": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          },
+          "required": [
+            "kind",
+            "branch",
+            "commit"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "pull_request"
+            },
+            "number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "draft": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "number",
+            "url",
+            "title",
+            "draft"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "pull_request": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "state": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft": {
+              "type": "boolean"
+            },
+            "merged": {
+              "type": "boolean"
+            },
+            "html_url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          "required": [
+            "number",
+            "state",
+            "draft",
+            "merged",
+            "html_url"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "created_by": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      ]
+    },
+    "last_message": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2048
+    },
+    "last_message_truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "project",
+    "title",
+    "state",
+    "turn",
+    "attention",
+    "pending_approvals",
+    "publication",
+    "pull_request",
+    "created_by",
+    "last_message"
+  ],
+  "additionalProperties": true
+}

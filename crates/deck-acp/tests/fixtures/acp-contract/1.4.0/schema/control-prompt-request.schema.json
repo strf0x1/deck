@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-prompt-request.schema.json",
+  "title": "Coordinator control `prompt` request (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "prompt"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    }
+  },
+  "required": [
+    "operation",
+    "id",
+    "text"
+  ],
+  "additionalProperties": false
+}
