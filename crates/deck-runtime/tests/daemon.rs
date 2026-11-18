@@ -324,6 +324,34 @@ fn an_agent_does_not_inherit_decks_own_environment() {
 }
 
 #[test]
+fn a_followed_notice_stream_comes_back_after_deckd_restarts() {
+    use deck_runtime::daemon_client::Followed;
+    let (mut daemon, client) = Daemon::new("follow");
+    let mut followed = client.follow().unwrap();
+    let first = client.create(daemon.spec(&["cat"])).unwrap();
+    let mut next = |what: &str| -> Followed {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Ok(item) = followed.try_recv() {
+                return item;
+            }
+            assert!(Instant::now() < deadline, "no {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    assert!(matches!(next("notice"), Followed::Notice(n) if n.task == first.id));
+
+    // deckd dies; the stream says it is back once a new daemon answers.
+    daemon.child.kill().unwrap();
+    daemon.child.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let client = daemon.restart();
+    assert!(matches!(next("resubscribe"), Followed::Resubscribed));
+    let second = client.create(daemon.spec(&["cat"])).unwrap();
+    assert!(matches!(next("notice after the restart"), Followed::Notice(n) if n.task == second.id));
+}
+
+#[test]
 fn task_operations_and_state_notices_cross_the_control_socket() {
     let (mut daemon, client) = Daemon::new("operations");
     let mut notices = client.subscribe().unwrap();

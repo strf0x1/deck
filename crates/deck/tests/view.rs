@@ -2295,6 +2295,66 @@ fn said(deck: &gpui::Entity<Deck>, cx: &VisualTestContext) -> Vec<String> {
 
 #[cfg(unix)]
 #[gpui::test]
+fn a_holder_prompt_after_deckd_restarts_still_reaches_the_window(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-renotice-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let repo = git_repo(&data, "repo");
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    let spec = Spec { argv: argv.clone(), cwd: repo.clone(), project: Some(project.id), ..Default::default() };
+    let task = daemon.create(spec).unwrap().id;
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    assert_eq!(ready_on(&deck, &mut vcx, None), task);
+    prompt_fake(&deck, &mut vcx, "first");
+
+    // deckd goes away and comes back; the holder and the window's session stay.
+    // The window's own connection may start the next deckd first.
+    let before = daemon.hello().unwrap().pid;
+    daemon.shutdown().unwrap();
+    drop(daemon);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    eventually(
+        || {
+            vcx.run_until_parked();
+            daemon.hello().is_ok_and(|hello| hello.pid != before)
+        },
+        "no new deckd answered",
+    );
+
+    // A prompt only the notice stream announces still shows, labelled.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        vcx.run_until_parked();
+        match daemon.prompt(&task, "and the docs", Some("coordinator")) {
+            Ok(deck_runtime::PromptReply::Started { .. }) => break,
+            _ => assert!(std::time::Instant::now() < deadline, "the holder never took the prompt"),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["first".to_string(), "and the docs".to_string()]);
+    let entries = deck.read_with(&vcx, |d, _| d.session().entries.clone());
+    let index = entries.iter().rposition(|e| matches!(e, Entry::You(t) if t == "and the docs")).unwrap();
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.from_coordinator() == vec![index]));
+
+    daemon.shutdown().unwrap();
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn clicking_another_tasks_card_switches_the_window_to_its_live_session(cx: &mut TestAppContext) {
     use deck_runtime::{DaemonClient, Spec, State};
     cx.background_executor.allow_parking();

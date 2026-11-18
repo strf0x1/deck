@@ -11,7 +11,7 @@
 use crate::approvals::{Approval, Ask, Decision, Grant};
 use crate::paths::Paths;
 use crate::wire::{self, Hello, Reply, Request};
-use crate::{Notice, Spec, Stream, Task};
+use crate::{Spec, Stream, Task};
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::channel::mpsc;
 use serde::de::DeserializeOwned;
@@ -450,44 +450,6 @@ impl DaemonClient {
 
     /// Notices use a separate connection, leaving ordinary control requests
     /// available. Dropping the receiver closes the idle subscription promptly.
-    pub fn subscribe(&self) -> Result<mpsc::UnboundedReceiver<Notice>> {
-        let socket = UnixStream::connect(self.paths.control())?;
-        socket.set_read_timeout(Some(Duration::from_secs(15)))?;
-        let mut input = BufReader::new(socket);
-        wire::write(input.get_mut(), &Request::Subscribe)?;
-        let reply = wire::read(&mut input)?.context("deckd closed subscription")?;
-        decode::<()>(&reply)?;
-        input.get_mut().set_read_timeout(Some(Duration::from_millis(100)))?;
-        let (tx, rx) = mpsc::unbounded();
-        std::thread::spawn(move || {
-            // BufRead framing retains a partial notice across timed-out reads.
-            let mut pending = Vec::new();
-            use std::io::Read as _;
-            while !tx.is_closed() {
-                let mut bytes = [0; 4096];
-                match input.read(&mut bytes) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        pending.extend_from_slice(&bytes[..n]);
-                        while let Some(end) = pending.iter().position(|&b| b == b'\n') {
-                            let line: Vec<_> = pending.drain(..=end).collect();
-                            let Ok(notice) = serde_json::from_slice(&line) else { return };
-                            if tx.unbounded_send(notice).is_err() {
-                                return;
-                            }
-                        }
-                        if pending.len() > wire::LIMIT {
-                            return;
-                        }
-                    }
-                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-                    Err(_) => break,
-                }
-            }
-        });
-        Ok(rx)
-    }
-
     fn request<T: DeserializeOwned>(&self, request: Request) -> Result<T> {
         request.validate()?;
         let mut socket = self.socket.lock().unwrap_or_else(|e| e.into_inner());
@@ -691,6 +653,9 @@ pub fn sibling_binary(name: &str) -> Result<PathBuf> {
         .find(|p| p.is_file())
         .ok_or_else(|| anyhow!("{} is missing; build {name} alongside deck", dir.join(&file).display()))
 }
+
+mod follow;
+pub use follow::Followed;
 
 #[cfg(test)]
 mod tests;
