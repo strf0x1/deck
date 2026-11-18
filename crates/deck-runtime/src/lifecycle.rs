@@ -55,6 +55,11 @@ pub struct Spec {
     /// provenance (ADR 0011 §6). It stays when that coordinator is destroyed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// The backend a caller asks for (ADR 0016), or `None` for the daemon's
+    /// default. Only a request carries it: create clears it once the record's
+    /// own `backend` says where the task runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
 }
 
 impl Spec {

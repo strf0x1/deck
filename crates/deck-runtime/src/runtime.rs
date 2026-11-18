@@ -1,6 +1,6 @@
 //! The runtime contract: create, start, attach, stop, resume and destroy
 //! tasks, and a stream of the state changes. It keeps every task's record and
-//! drives one backend.
+//! drives its backends, one per task (ADR 0016).
 //!
 //! The design choice: every change of state is recorded before anyone hears
 //! of it, and the record, not memory, is what [`Runtime::open`] trusts. A
@@ -18,7 +18,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
+mod backends;
 mod coordinator;
+use backends::Backends;
 pub use coordinator::BY_USER;
 
 /// How long a stop waits after asking before it forces.
@@ -70,7 +72,7 @@ pub struct Runtime {
 
 struct Inner {
     store: Store,
-    backend: Box<dyn Backend>,
+    backends: Backends,
     live: HashMap<String, Live>,
     subscribers: Vec<mpsc::UnboundedSender<Notice>>,
     grace: Duration,
@@ -85,11 +87,17 @@ impl Runtime {
     /// Open the records under `data` and reconcile them: a task recorded as
     /// running with no live holder is stopped, uncleanly.
     pub fn open(data: &Path, backend: impl Backend + 'static) -> Result<Runtime> {
+        Runtime::open_with(data, vec![Box::new(backend)])
+    }
+
+    /// [`Runtime::open`] with several backends, the first the default for a
+    /// task that names none (ADR 0016).
+    pub fn open_with(data: &Path, backends: Vec<Box<dyn Backend>>) -> Result<Runtime> {
         let store = Store::open(data)?;
         let runtime = Runtime {
             inner: Arc::new(Mutex::new(Inner {
                 store,
-                backend: Box::new(backend),
+                backends: Backends::new(backends)?,
                 live: HashMap::new(),
                 subscribers: vec![],
                 grace: GRACE,
@@ -98,10 +106,9 @@ impl Runtime {
         {
             let mut inner = runtime.lock();
             for mut task in inner.store.list()? {
-                // One runtime serves one backend. A record from another
-                // backend is not ours to reconcile, adopt or stop; switching
-                // backends leaves it alone.
-                if task.backend != inner.backend.name() {
+                // A record from a backend this runtime lacks is not ours to
+                // reconcile, adopt or stop; dropping a backend leaves it alone.
+                if !inner.backends.has(&task.backend) {
                     continue;
                 }
                 let running = task.state == State::Running;
@@ -110,16 +117,16 @@ impl Runtime {
                     continue;
                 }
                 if let Some(lock) = inner.store.lock(&task.id)? {
-                    inner.backend.reconcile(&task)?;
+                    inner.backends.of(&task)?.reconcile(&task)?;
                     if running {
                         let reason = "it was not running when the runtime opened".to_string();
                         inner.record(&mut task, Event::Stopped { clean: false, reason })?;
                     }
                     drop(lock);
-                } else if task.backend == inner.backend.name() {
+                } else {
                     let generation = Arc::new(());
                     let exited = exit_notice(task.id.clone(), Arc::downgrade(&runtime.inner), generation.clone());
-                    if let Some(instance) = inner.backend.adopt(&task, exited)? {
+                    if let Some(instance) = inner.backends.of(&task)?.adopt(&task, exited)? {
                         if running {
                             inner.record(&mut task, Event::Adopted)?;
                         }
@@ -316,12 +323,19 @@ impl Runtime {
         inner.store.set_budget(id, requests, tokens)
     }
 
-    /// The backend this runtime drives, as task records name it.
+    /// The backend a task that names none runs on, as task records name it.
     pub fn backend(&self) -> &'static str {
-        self.lock().backend.name()
+        self.lock().backends.default_name()
     }
 
-    /// Record a new task for `spec`. Nothing runs yet. A coordinator gets its
+    /// Every backend this runtime drives, the default first.
+    pub fn backends(&self) -> Vec<&'static str> {
+        self.lock().backends.names()
+    }
+
+    /// Record a new task for `spec` on the backend it asks for, or the
+    /// default; `spec.backend` is cleared, since the record's own `backend`
+    /// says where it runs. Nothing runs yet. A coordinator gets its
     /// default policy in `coordinator.json` and no GitHub policy, and is
     /// refused when its scope already has one; a worker's `created_by` must
     /// name a coordinator.
@@ -331,13 +345,14 @@ impl Runtime {
         }
         let mut inner = self.lock();
         let policy = inner.admit(&mut spec)?;
-        inner.backend.prepare(&mut spec)?;
+        let backend = inner.backends.chosen(spec.backend.take().as_deref())?;
+        backend.prepare(&mut spec)?;
+        let name = backend.name();
         if policy.is_some() {
             // A coordinator publishes nothing, even from a repository
             // (ADR 0011 §2): no GitHub policy, so no gateway and no branch.
             spec.github = None;
         }
-        let name = inner.backend.name();
         let task = inner.store.create(name, spec)?;
         if let Some(policy) = policy {
             crate::coordinator::write(inner.store.data(), &task.id, policy)?;
@@ -418,17 +433,16 @@ impl Runtime {
         }
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
-        if task.backend != inner.backend.name() {
-            bail!("task {id} belongs to the {} backend, not {}", task.backend, inner.backend.name());
-        }
+        inner.backends.of(&task)?;
         match &task.state {
             State::Destroyed => return Ok(()),
             State::Running => bail!("task {id} is running in another process"),
             _ => {}
         }
         let Some(_lock) = inner.store.lock(id)? else { bail!("task {id} is held by another process") };
-        inner.backend.reconcile(&task)?;
-        inner.backend.destroy(&task)?;
+        let backend = inner.backends.of(&task)?;
+        backend.reconcile(&task)?;
+        backend.destroy(&task)?;
         inner.record(&mut task, Event::Destroyed)
     }
 
@@ -459,11 +473,12 @@ impl Runtime {
         }
     }
 
-    /// A task of `spec`, from this backend, that may run again here.
+    /// A task of `spec`, on the backend it asks for, that may run again here.
     fn idle(&self, spec: &Spec) -> Result<Option<String>> {
         let inner = self.lock();
+        let backend = spec.backend.as_deref().unwrap_or(inner.backends.default_name());
         for task in inner.store.list()? {
-            let fits = task.backend == inner.backend.name() && task.spec.same_command(spec) && task.resumable();
+            let fits = task.backend == backend && task.spec.same_command(spec) && task.resumable();
             if fits && !inner.live.contains_key(&task.id) && inner.store.lock(&task.id)?.is_some() {
                 return Ok(Some(task.id));
             }
@@ -479,14 +494,12 @@ impl Runtime {
 
 impl Inner {
     fn launch(&mut self, mut task: Task, me: Weak<Mutex<Inner>>) -> Result<()> {
-        if task.backend != self.backend.name() {
-            bail!("task {} belongs to the {} backend, not {}", task.id, task.backend, self.backend.name());
-        }
+        self.backends.of(&task)?;
         let lock =
             self.store.lock(&task.id)?.with_context(|| format!("task {} is held by another process", task.id))?;
         let generation = Arc::new(());
         let exited = exit_notice(task.id.clone(), me, generation.clone());
-        match self.backend.start(&task, lock, exited) {
+        match self.backends.of(&task)?.start(&task, lock, exited) {
             Ok(instance) => {
                 self.record(&mut task, Event::Started { pid: instance.pid(), holder: instance.holder() })?;
                 self.live.insert(task.id.clone(), Live { instance, generation });

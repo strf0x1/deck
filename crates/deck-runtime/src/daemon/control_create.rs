@@ -49,7 +49,9 @@ pub(super) fn create(
             .collect();
         let argv = recorded.as_ref().map(|project| project.argv.as_slice());
         let checkout = recorded.as_ref().and_then(|p| p.checkouts.first());
-        let in_place = (service.runtime.backend() == "local").then(|| in_checkout(&service.runtime, checkout));
+        // A worker runs where its coordinator runs (ADR 0016).
+        let backend = service.runtime.task(coordinator).map_err(internal)?.backend;
+        let in_place = (backend == "local").then(|| in_checkout(&service.runtime, checkout));
         let budget = control::admit_create(policy, argv, requested, &workers, in_place, now_ms())?;
         let (Some(recorded), Some(cwd)) = (&recorded, checkout) else {
             return Err(control::Refusal::new(control::Code::Refused, "the project has no checkout Deck knows"));
@@ -59,6 +61,7 @@ pub(super) fn create(
             cwd: cwd.clone(),
             project: Some(project.to_owned()),
             created_by: Some(coordinator.to_owned()),
+            backend: Some(backend),
             ..Default::default()
         };
         let id = service.runtime.create(spec).map_err(internal)?;

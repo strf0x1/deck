@@ -242,6 +242,11 @@ impl Deck {
         cx.notify();
     }
 
+    pub fn pick_session_backend(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.settings.pick_backend(name);
+        cx.notify();
+    }
+
     /// Keys while the panel is open. Typed text reaches the focused field
     /// through the input handler after this declines the key; nothing here
     /// reaches the composer or a card behind the panel.

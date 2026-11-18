@@ -37,7 +37,7 @@ impl Deck {
     /// The backend a new coordinator or session would run on, for the
     /// composer and the header's model chip.
     pub fn next_backend(&self) -> String {
-        coordinator::backend(&self.tasks, std::env::var_os("DECK_VM_IMAGE").is_some())
+        coordinator::backend(self.settings.session_backend(), &self.tasks, std::env::var_os("DECK_VM_IMAGE").is_some())
     }
 
     /// Why the project's coordinator refused its session, while it stands.

@@ -95,10 +95,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
             .child(kbd(crate::app::STOP_HINT))
     }))
     .children(project_view.then(|| super::coordinator_header::actions(deck, cx)).into_iter().flatten())
-    .children(deck.settings().session_model().filter(|_| !deck.settings().choices().is_empty()).map(|model| {
-        // Deck's models reach only VM tasks, through their gateway; a local
-        // Construct runs on its own config whatever is picked here (#202).
-        let local = deck.next_backend() == "local";
+    .children(new_session_label(deck).map(|(label, local)| {
         div()
             .id("hdr-model")
             .debug_selector(|| "hdr-model".into())
@@ -119,11 +116,13 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
             .hover(|s| s.text_color(Tokens::text()).bg(Tokens::raised()))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_model_picker(cx)))
             .child(glyph(icon::BOLT, 12.).text_color(if local { Tokens::text_faint().into() } else { Tokens::cyan() }))
-            .child(if local {
-                div().debug_selector(|| "hdr-model-local".into()).whitespace_nowrap().child(super::model_menu::LOCAL)
-            } else {
-                div().overflow_hidden().whitespace_nowrap().child(model)
-            })
+            .child(
+                div()
+                    .when(local, |d| d.debug_selector(|| "hdr-model-local".into()))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(label),
+            )
             .child(glyph(icon::CHEVRON_DOWN, 10.))
     }))
     .child(
@@ -139,6 +138,21 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
 }
 
 /// The selected task's agent command in a pill wearing the task's state.
+/// The New session chip's words and whether the session runs locally, or
+/// no chip: the backend while `deckd` offers a choice (ADR 0016), then the
+/// model while the settings offer any. Deck's models reach only VM tasks,
+/// through their gateway; a local Construct runs on its own config whatever
+/// is picked here (#202).
+fn new_session_label(deck: &Deck) -> Option<(String, bool)> {
+    let settings = deck.settings();
+    let local = deck.next_backend() == "local";
+    let model = settings
+        .session_model()
+        .filter(|_| !settings.choices().is_empty())
+        .map(|model| if local { super::model_menu::LOCAL.to_owned() } else { model });
+    super::session_backend::chip_label(settings.backends(), settings.session_backend(), model).map(|l| (l, local))
+}
+
 fn agent_pill(deck: &Deck, dot: Hsla) -> Div {
     div()
         .min_h(px(30.))

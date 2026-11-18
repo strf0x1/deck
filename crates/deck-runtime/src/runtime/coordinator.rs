@@ -41,13 +41,15 @@ impl Inner {
         Ok(Some(policy))
     }
 
-    /// The coordinator of exactly this scope on this backend, unless it was
-    /// destroyed.
+    /// The coordinator of exactly this scope, on any backend, unless it was
+    /// destroyed: one per scope (ADR 0011 §2), wherever it runs (ADR 0016).
     pub(super) fn coordinator(&self, projects: &[String]) -> Result<Option<Task>> {
         for task in self.store.list()? {
+            // One on a backend this deckd lacks cannot run here; dropping a
+            // backend leaves it alone, as `Runtime::open` does.
             if task.spec.kind != TaskKind::Coordinator
-                || task.backend != self.backend.name()
                 || task.state == State::Destroyed
+                || !self.backends.has(&task.backend)
             {
                 continue;
             }
