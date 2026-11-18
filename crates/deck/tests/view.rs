@@ -3775,13 +3775,13 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
     // Live: a prompt the coordinator sends while the window watches.
     daemon.prompt(&worker.id, "and the docs", Some(&coordinator)).unwrap();
     wait_view(&mut vcx, |cx| said(&deck, cx).len() == 2);
-    assert_eq!(deck.read_with(&vcx, |d, _| d.from_coordinator()), {
-        let entries = deck.read_with(&vcx, |d, _| d.session().entries.clone());
-        let index = entries.iter().rposition(|e| matches!(e, Entry::You(t) if t == "and the docs")).unwrap();
-        vec![0, index]
-    });
+    let entries = deck.read_with(&vcx, |d, _| d.session().entries.clone());
+    let index = entries.iter().rposition(|e| matches!(e, Entry::You(t) if t == "and the docs")).unwrap();
+    assert_eq!(deck.read_with(&vcx, |d, _| d.from_coordinator()), vec![0, index]);
+    // The transcript follows its tail, so the live prompt's row is drawn.
     draw(&mut vcx);
-    assert!(vcx.debug_bounds("from-coordinator-0").is_some(), "the label is drawn");
+    let label: &'static str = Box::leak(format!("from-coordinator-{index}").into_boxed_str());
+    assert!(vcx.debug_bounds(label).is_some(), "the label is drawn");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
     vcx.simulate_keystrokes("1");
     ready_on(&deck, &mut vcx, Some(&worker.id));

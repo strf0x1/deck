@@ -486,6 +486,7 @@ impl Deck {
                 deck.attaching.clear();
                 let Ok(opened) = opened else { return };
                 for (id, task, watch, connection) in opened {
+                    deck.attach_tried.insert(id.clone());
                     if deck.attached.contains_key(&id) {
                         continue;
                     }
@@ -495,6 +496,8 @@ impl Deck {
                     deck.follow_boundary(&id, watch, cx);
                     deck.connect(&id, connection, cx);
                 }
+                // Tasks that gained a session during this round wait for none.
+                deck.attach_new(cx);
                 cx.notify();
             });
         }));
@@ -515,6 +518,8 @@ impl Deck {
             .filter(|t| t.state == State::Running && t.session_id.is_some() && !self.attached.contains_key(&t.id))
             // The selection opens its own connection; two would race.
             .filter(|t| self.selected.as_deref() != Some(t.id.as_str()))
+            // A task a round could not attach waits for its selection.
+            .filter(|t| !self.attach_tried.contains(&t.id))
             .map(|t| t.id.clone())
             .collect();
         if new.is_empty() {
