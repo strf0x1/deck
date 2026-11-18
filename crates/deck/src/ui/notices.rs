@@ -51,16 +51,25 @@ impl Deck {
         }
     }
 
-    /// Apply one notice: a prompt a holder sent. A task the window has not
-    /// listed, or one whose lifecycle moved, reads the list now rather than
-    /// at the next refresh, so a coordinator's new worker shows at once.
+    /// Apply one notice: a prompt a holder sent, or a cap a coordinator's
+    /// `create` met. A task the window has not listed, one whose lifecycle
+    /// moved, or one still waiting for its session reads the list now rather
+    /// than at the next refresh, so a coordinator's new worker shows, and is
+    /// attached, at once.
     pub fn on_notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
-        let moved = self.tasks.iter().find(|task| task.id == notice.task).is_none_or(|task| task.state != notice.state);
-        if moved {
+        // A running task with no session recorded yet cannot be attached;
+        // the list is read again until its session shows (ADR 0010 §8).
+        let stale = self.tasks.iter().find(|task| task.id == notice.task).is_none_or(|task| {
+            task.state != notice.state || (task.state == deck_runtime::State::Running && task.session_id.is_none())
+        });
+        if stale {
             self.reload_tasks(cx);
         }
         if let Some(prompt) = notice.prompt {
             self.on_prompt(&notice.task, prompt, cx);
+        }
+        if let Some(cap) = notice.cap {
+            self.on_cap(cap, cx);
         }
     }
 

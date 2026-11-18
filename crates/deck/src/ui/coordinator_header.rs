@@ -12,7 +12,7 @@ use super::root::Deck;
 use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _, px,
 };
 
 impl Deck {
@@ -48,8 +48,8 @@ pub fn status_chip(deck: &Deck) -> Option<Div> {
     )
 }
 
-/// Restart and Destroy for a stopped or failed coordinator; Destroy asks
-/// for a second click.
+/// Restart and Destroy for a stopped or failed coordinator (Destroy asks
+/// for a second click), and Limits for any.
 pub fn actions(deck: &Deck, cx: &mut Context<Deck>) -> Vec<AnyElement> {
     let mut out = Vec::new();
     if deck.coordinator_selected() && deck.can_restart() {
@@ -65,6 +65,15 @@ pub fn actions(deck: &Deck, cx: &mut Context<Deck>) -> Vec<AnyElement> {
         out.push(
             button("hdr-destroy", icon::TRASH, label, Tokens::red())
                 .on_click(cx.listener(|this, _, _, cx| this.destroy_coordinator(cx)))
+                .into_any_element(),
+        );
+    }
+    if deck.coordinator().is_some() {
+        let open = deck.limits_open();
+        out.push(
+            button("hdr-limits", icon::GAUGE, "Limits", Tokens::amber())
+                .when(open, |d| d.bg(Tokens::raised_hover()).text_color(Tokens::text()))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_limits(None, cx)))
                 .into_any_element(),
         );
     }

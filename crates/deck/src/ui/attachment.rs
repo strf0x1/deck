@@ -73,6 +73,8 @@ impl Deck {
             deck.attach_task = None;
             async {}
         }));
+        // New tasks wait for this first round, which covers them too.
+        deck.attaching.insert(String::new());
         deck.attach_live(cx);
         deck.sync_live_lane();
         deck
@@ -479,8 +481,10 @@ impl Deck {
             anyhow::Ok(out)
         });
         self.attach_task = Some(cx.spawn(async move |this, cx| {
-            let Ok(opened) = opened.await else { return };
+            let opened = opened.await;
             let _ = this.update(cx, |deck, cx| {
+                deck.attaching.clear();
+                let Ok(opened) = opened else { return };
                 for (id, task, watch, connection) in opened {
                     if deck.attached.contains_key(&id) {
                         continue;
@@ -494,6 +498,30 @@ impl Deck {
                 cx.notify();
             });
         }));
+    }
+
+    /// Attach running tasks that appeared since launch, such as a
+    /// coordinator's new workers, so their questions reach Needs you (ADR
+    /// 0010 §8). One round at a time, the launch's first; a later list
+    /// starts the next. Selecting a task still in a round's flight can race
+    /// it for the task's one attachment, as at launch.
+    pub(super) fn attach_new(&mut self, cx: &mut Context<Self>) {
+        if !self.attaching.is_empty() || self.daemon.is_none() {
+            return;
+        }
+        let new: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|t| t.state == State::Running && t.session_id.is_some() && !self.attached.contains_key(&t.id))
+            // The selection opens its own connection; two would race.
+            .filter(|t| self.selected.as_deref() != Some(t.id.as_str()))
+            .map(|t| t.id.clone())
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        self.attaching.extend(new);
+        self.attach_live(cx);
     }
 
     /// Drop `id`'s connection and invalidate replies asked before now. The

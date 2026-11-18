@@ -190,6 +190,7 @@ impl Deck {
             let _ = this.update(cx, |deck, cx| {
                 let published = std::mem::take(&mut deck.published);
                 deck.on_tasks(tasks, published, cx);
+                deck.attach_new(cx);
             });
         })
         .detach();

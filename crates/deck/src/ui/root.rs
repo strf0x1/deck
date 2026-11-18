@@ -129,6 +129,12 @@ pub struct Deck {
     /// and the notice stream that brings them (`notices.rs`).
     pub(super) prompts: HashMap<String, Vec<deck_runtime::record::Prompt>>,
     pub(super) notices: Option<super::notices::Notices>,
+    /// The coordinator's Limits panel, and the cap its `create` last met
+    /// (ADR 0011 §4, deck#152 R4).
+    pub(super) limits: super::limits::Limits,
+    pub(super) limit: Option<deck_runtime::control::CapNotice>,
+    /// Tasks a background attach is connecting now (`attachment.rs`).
+    pub(super) attaching: HashSet<String>,
     last_frame: Option<Instant>,
 }
 
@@ -197,6 +203,9 @@ impl Deck {
             coordinator_destroy: false,
             prompts: HashMap::new(),
             notices: None,
+            limits: super::limits::Limits::default(),
+            limit: None,
+            attaching: HashSet::new(),
             last_frame: None,
         }
     }
@@ -637,6 +646,14 @@ impl Deck {
         if self.settings.picking() && k.key == "escape" {
             cx.stop_propagation();
             return self.toggle_model_picker(cx);
+        }
+        // Limits take the keyboard like Settings; a declined key is text for
+        // the focused field.
+        if self.limits.is_open() {
+            if self.limits_key(ev, cx) || self.limits.focused().is_none() {
+                cx.stop_propagation();
+            }
+            return;
         }
         // Settings take the keyboard like Access. A key the panel declines is
         // text for its focused field, which the input handler delivers.

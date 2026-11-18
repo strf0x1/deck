@@ -18,6 +18,9 @@ impl Deck {
     /// The editor typed text goes to: the settings form's focused field while
     /// the panel has one open, else the composer.
     pub(super) fn input_editor(&self) -> &Editor {
+        if let Some(editor) = self.limits.is_open().then(|| self.limits.editor()).flatten() {
+            return editor;
+        }
         match self.settings.is_open().then(|| self.settings.editor()).flatten() {
             Some(editor) => editor,
             None => &self.editor,
@@ -25,6 +28,12 @@ impl Deck {
     }
 
     fn input_editor_mut(&mut self) -> &mut Editor {
+        if self.limits.is_open()
+            && self.limits.editor().is_some()
+            && let Some(editor) = self.limits.editor_mut()
+        {
+            return editor;
+        }
         if self.settings.is_open()
             && self.settings.editor().is_some()
             && let Some(editor) = self.settings.editor_mut()

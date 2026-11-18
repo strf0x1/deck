@@ -65,6 +65,7 @@ impl Deck {
                         .update(cx, |deck, cx| {
                             deck.on_tasks(tasks, published, cx);
                             deck.on_approvals(approvals, cx);
+                            deck.attach_new(cx);
                         })
                         .is_err()
                 {
@@ -130,6 +131,8 @@ impl Deck {
         // Most recent activity first; the record id begins with its time.
         shown.sort_by(|a, b| b.id.cmp(&a.id));
         self.refresh_attention();
+        // A session ending lets a coordinator create again (deck#153 R4).
+        self.settle_limit(None);
         let mut lanes: Vec<Lane> = Vec::new();
         let live_lane = self.lanes.live();
         let had_live = self.board.cards().iter().any(|c| c.lane.id == live_lane);

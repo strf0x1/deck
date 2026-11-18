@@ -250,6 +250,19 @@ pub fn state(d: &Deck) -> Value {
             "selected": d.coordinator_selected(),
             "status": d.coordinator_status().map(|(_, text)| text),
         })),
+        "surfaced": d.surfaced().iter().map(|row| json!({
+            "task": row.task,
+            "title": row.title,
+            "asks": row.asks,
+            "subject": row.subject,
+        })).collect::<Vec<_>>(),
+        "limit": d.limit().map(crate::ui::surfaced::limit_text),
+        "limits": {
+            "open": d.limits_open(),
+            "focused": d.limits().focused().map(|field| field.name()),
+            "error": d.limits().error(),
+            "notice": d.limits().notice(),
+        },
         "header": {
             "title": header.title,
             "project": header.project,

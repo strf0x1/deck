@@ -3819,3 +3819,108 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
     drop(daemon);
     cleanup_daemon(&data);
 }
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_workers_question_is_surfaced_and_a_cap_row_raises_the_limit(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-surfaced-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    coordinator_command(&daemon, &repo, &project.id, &argv);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+
+    // The coordinator starts a worker, whose turn asks a permission question.
+    let create = |title: &str| json!({ "operation": "create", "project": project.id, "brief": title, "title": title });
+    vcx.simulate_input(&format!("deck {}", create("npm audit fix")));
+    vcx.simulate_keystrokes("enter");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while deck.read_with(&vcx, |d, _| d.surfaced().is_empty()) {
+        vcx.run_until_parked();
+        assert!(std::time::Instant::now() < deadline, "the worker's question was never surfaced");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let row = deck.read_with(&vcx, |d, _| d.surfaced()[0].clone());
+    assert_eq!((row.title.as_str(), row.asks.as_str()), ("npm audit fix", "asks to run"));
+    assert!(
+        deck.read_with(&vcx, |d, _| d.needs_you().iter().any(|item| item.task == row.task)),
+        "the same item is in Needs you"
+    );
+    deck.read_with(&vcx, |d, _| assert!(d.coordinator_selected(), "the rows are the coordinator's conversation"));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("surfaced").is_some());
+
+    // The row opens the worker, where the user answers as for any task.
+    click_control(&mut vcx, "surfaced-0");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(row.task.as_str())));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&row.task));
+    deck.update(&mut vcx, |d, cx| d.show_project(cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.coordinator_selected() && d.surfaced().is_empty()));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().can_prompt()));
+
+    // Lower the cap to one running session from the Limits panel.
+    click_control(&mut vcx, "hdr-limits");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused().is_some()));
+    draw(&mut vcx);
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input("1");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().notice().is_some()));
+    let coordinator = deck.read_with(&vcx, |d, _| d.coordinator().unwrap().id.clone());
+    assert_eq!(daemon.coordinator_policy(&coordinator, None).unwrap().policy.max_concurrent, 1);
+    vcx.simulate_keystrokes("escape");
+    assert!(!deck.read_with(&vcx, |d, _| d.limits_open()));
+
+    // A second create is refused at the cap, and the limit row appears.
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().can_prompt()));
+    vcx.simulate_input(&format!("deck {}", create("scrollbar polish")));
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limit().is_some()));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("surfaced-limit").is_some());
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| d.limit().map(deck::ui::surfaced::limit_text)).as_deref(),
+        Some("Coordinator reached its limit of 1 running sessions")
+    );
+
+    // Raise opens the panel at that cap; an invalid value is refused inline.
+    click_control(&mut vcx, "surfaced-raise");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused() == Some(deck::ui::limits::Field::Running)));
+    draw(&mut vcx);
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input("0");
+    vcx.simulate_keystrokes("enter");
+    let refused = deck.read_with(&vcx, |d, _| d.limits().error().map(str::to_owned));
+    assert!(refused.is_some_and(|why| why.contains("max_concurrent")), "refused before it is sent");
+    assert_eq!(daemon.coordinator_policy(&coordinator, None).unwrap().policy.max_concurrent, 1);
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input("3");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().notice().is_some() && d.limit().is_none()));
+    assert_eq!(daemon.coordinator_policy(&coordinator, None).unwrap().policy.max_concurrent, 3);
+
+    cx.quit();
+    for task in daemon.tasks().unwrap() {
+        if task.state == deck_runtime::State::Running {
+            let _ = daemon.stop(&task.id);
+        }
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}

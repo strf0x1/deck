@@ -43,7 +43,8 @@ pub fn project_view(deck: &Deck, width: f32, cx: &mut Context<Deck>) -> AnyEleme
         .flex()
         .flex_col()
         .children(deck.coordinator_refusal().map(refusal))
-        .child(centre);
+        .child(centre)
+        .children(super::surfaced_view::rows(deck, cx));
     let wide = width >= WIDE;
     let side = sessions(deck, &project.argv.join(" "), wide, cx);
     let view = div().debug_selector(|| "project-view".into()).flex_1().min_h_0().flex().overflow_hidden();

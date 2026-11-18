@@ -99,7 +99,9 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 .child(div().flex_1())
                 .children(has_task.then(|| pill(color, status))),
         )
-        .child(if deck.settings.is_open() {
+        .child(if deck.limits_open() {
+            super::limits_panel::panel(deck, cx)
+        } else if deck.settings.is_open() {
             super::settings_panel::panel(deck, cx)
         } else if deck.access.is_open() {
             super::access_panel::panel(deck, cx).into_any_element()
@@ -122,7 +124,7 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
                 .children(s.ask.as_ref().map(|_| ask(deck, cx)))
                 // Access takes the keyboard, so the field it would block is not shown.
-                .children((!deck.access.is_open() && !deck.settings.is_open()).then(|| {
+                .children((!deck.access.is_open() && !deck.settings.is_open() && !deck.limits_open()).then(|| {
                     if deck.can_restart() {
                         restart(deck, cx)
                     } else {
