@@ -74,35 +74,46 @@ fn create_checks_the_command_the_budget_then_the_caps() {
     let mut policy = policy();
     policy.worker_budget = Budget { requests: None, tokens: Some(1000) };
     let now = 10 * HOUR_MS;
-    let ok = admit_create(&policy, Some(&argv), None, &[], now).unwrap();
+    let ok = admit_create(&policy, Some(&argv), None, &[], None, now).unwrap();
     assert_eq!(ok, policy.worker_budget, "the policy's budget by default");
     let lower = Requested { requests: Some(5), tokens: Some(10) };
     assert_eq!(
-        admit_create(&policy, Some(&argv), Some(lower), &[], now).unwrap(),
+        admit_create(&policy, Some(&argv), Some(lower), &[], None, now).unwrap(),
         Budget { requests: Some(5), tokens: Some(10) }
     );
     let higher = Requested { requests: None, tokens: Some(1001) };
-    assert_eq!(admit_create(&policy, Some(&argv), Some(higher), &[], now).unwrap_err().code, Code::Refused);
-    assert_eq!(admit_create(&policy, None, None, &[], now).unwrap_err().code, Code::Refused, "no command");
-    assert_eq!(admit_create(&policy, Some(&[]), None, &[], now).unwrap_err().code, Code::Refused);
+    assert_eq!(admit_create(&policy, Some(&argv), Some(higher), &[], None, now).unwrap_err().code, Code::Refused);
+    assert_eq!(admit_create(&policy, None, None, &[], None, now).unwrap_err().code, Code::Refused, "no command");
+    assert_eq!(admit_create(&policy, Some(&[]), None, &[], None, now).unwrap_err().code, Code::Refused);
 
     // The fifth live worker at cap 4; stopped workers do not count.
     let live: Vec<_> = (0..4).map(|_| (State::Running, 0)).collect();
-    let refusal = admit_create(&policy, Some(&argv), None, &live, now).unwrap_err();
+    let refusal = admit_create(&policy, Some(&argv), None, &live, None, now).unwrap_err();
     assert_eq!((refusal.code, refusal.cap), (Code::Cap, Some((Cap::Concurrent, 4))));
     assert_eq!(refusal.message, "this coordinator already has 4 live workers (cap 4)");
     let mut ended = live.clone();
     ended[0].0 = State::Stopped { clean: true, reason: "stop".into() };
-    assert!(admit_create(&policy, Some(&argv), None, &ended, now).is_ok());
+    assert!(admit_create(&policy, Some(&argv), None, &ended, None, now).is_ok());
 
     // The rate counts every worker created in the rolling hour.
     policy.max_concurrent = 100;
     policy.creates_per_hour = 2;
     let recent = vec![(State::Destroyed, now - 1000), (State::Destroyed, now - HOUR_MS + 1)];
-    let refusal = admit_create(&policy, Some(&argv), None, &recent, now).unwrap_err();
+    let refusal = admit_create(&policy, Some(&argv), None, &recent, None, now).unwrap_err();
     assert_eq!((refusal.code, refusal.cap), (Code::Cap, Some((Cap::Rate, 2))));
     let old = vec![(State::Destroyed, now - 1000), (State::Destroyed, now - HOUR_MS)];
-    assert!(admit_create(&policy, Some(&argv), None, &old, now).is_ok(), "an hour ago has rolled off");
+    assert!(admit_create(&policy, Some(&argv), None, &old, None, now).is_ok(), "an hour ago has rolled off");
+}
+
+#[test]
+fn a_local_checkout_takes_one_worker_at_a_time() {
+    let argv = vec!["agent".to_string()];
+    let policy = policy();
+    assert!(admit_create(&policy, Some(&argv), None, &[], Some(0), 0).is_ok(), "an empty checkout");
+    let refusal = admit_create(&policy, Some(&argv), None, &[], Some(1), 0).unwrap_err();
+    assert_eq!((refusal.code, refusal.cap), (Code::Cap, None), "a wait-and-retry refusal no Limit raises");
+    assert!(refusal.message.contains("one runs at a time"), "{}", refusal.message);
+    assert!(admit_create(&policy, Some(&argv), None, &[], None, 0).is_ok(), "a VM worker has its own copy");
 }
 
 #[test]

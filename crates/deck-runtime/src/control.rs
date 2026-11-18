@@ -270,12 +270,16 @@ fn named(policy: &Policy) -> String {
 
 /// Everything a `create` checks after the scope, in order: the project's
 /// agent command, the budget ceiling, then the caps. `workers` is each task
-/// the caller created, with its creation time. Returns the worker's budget.
+/// the caller created, with its creation time. `in_place` is `Some` when the
+/// backend runs a worker in the project's checkout itself (local), with the
+/// live workers already there; a backend that copies the project (VM) passes
+/// `None`. Returns the worker's budget.
 pub fn admit_create(
     policy: &Policy,
     argv: Option<&[String]>,
     requested: Option<Requested>,
     workers: &[(State, u64)],
+    in_place: Option<usize>,
     now_ms: u64,
 ) -> Result<Budget, Refusal> {
     if argv.is_none_or(|argv| argv.first().is_none_or(|program| program.trim().is_empty())) {
@@ -310,6 +314,16 @@ pub fn admit_create(
             Refusal::new(Code::Cap, format!("this coordinator created {recent} workers in the last hour (cap {cap})"));
         refusal.cap = Some((Cap::Rate, cap));
         return Err(refusal);
+    }
+    // Workers that run in the project's own checkout would edit, test and
+    // commit over each other (deck#200). No Limits field raises this, so the
+    // refusal carries no cap for the window's notice.
+    if in_place.is_some_and(|live| live > 0) {
+        return Err(Refusal::new(
+            Code::Cap,
+            "a worker is already running in this project's checkout; local workers share it, \
+             so one runs at a time (a VM backend gives each its own copy)",
+        ));
     }
     Ok(budget)
 }
