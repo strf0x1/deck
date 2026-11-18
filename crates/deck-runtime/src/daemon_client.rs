@@ -648,6 +648,8 @@ fn launch(data: &Path) -> Result<()> {
     let executable = executable()?;
     let mut command = Command::new(&executable);
     command.arg("--data").arg(data).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit());
+    // The window's control socket is the window's alone.
+    command.env_remove(crate::agent_env::WINDOW_CONTROL);
     // SAFETY: setsid takes no pointers and is async-signal-safe between fork and exec.
     unsafe {
         command.pre_exec(|| {
