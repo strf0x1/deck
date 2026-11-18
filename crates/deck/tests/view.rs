@@ -1413,6 +1413,46 @@ fn launching_inside_a_checkout_opens_its_project(cx: &mut TestAppContext) {
 
 #[cfg(unix)]
 #[gpui::test]
+fn launching_into_a_project_with_a_coordinator_opens_its_project_view(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, Spec, TaskKind};
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-launch-coordinator-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let argv = vec!["sleep".to_string(), "30".to_string()];
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    let spec = |kind| Spec {
+        argv: argv.clone(),
+        cwd: repo.clone(),
+        project: Some(project.id.clone()),
+        kind,
+        ..Default::default()
+    };
+    let coordinator = daemon.create(spec(TaskKind::Coordinator)).unwrap();
+    // Newer, and for the launch's own command and directory, as a worker is.
+    let newer = daemon.create(spec(TaskKind::Task)).unwrap();
+    assert!(newer.id > coordinator.id);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.run_until_parked();
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.project(), Some(project.id.as_str()));
+        assert!(d.showing_project() && d.coordinator_selected(), "the coordinator's project view, not the newest task");
+        assert_eq!(d.task_id(), Some(coordinator.id.as_str()), "the composer prompts the coordinator");
+    });
+    drop(daemon);
+    cx.quit();
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn launching_outside_a_checkout_selects_the_project_opened_last(cx: &mut TestAppContext) {
     use deck_runtime::DaemonClient;
     cx.background_executor.allow_parking();
