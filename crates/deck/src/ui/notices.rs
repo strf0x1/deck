@@ -7,16 +7,21 @@
 //! attached transcript itself. After a later attach the agent's replay holds
 //! the message and `prompts.jsonl` (read through `deckd`) says who sent it,
 //! so both paths end in the same per-task list the label reads.
+//!
+//! The stream is followed across `deckd` restarts (deck#199): after a gap it
+//! reconnects, and the window reads the task list and each attached task's
+//! prompt log again, since notices sent while `deckd` was gone are lost.
 
 use super::root::Deck;
 use deck_runtime::Notice;
+use deck_runtime::daemon_client::Followed;
 use deck_runtime::record::Prompt;
 use futures::StreamExt as _;
 
 use gpui::Context;
 
 /// The notice stream's receiver, shared so quit can drop it synchronously.
-pub(super) type Notices = std::rc::Rc<std::cell::RefCell<Option<futures::channel::mpsc::UnboundedReceiver<Notice>>>>;
+pub(super) type Notices = std::rc::Rc<std::cell::RefCell<Option<futures::channel::mpsc::UnboundedReceiver<Followed>>>>;
 
 impl Deck {
     /// Follow `deckd`'s notices while the window lives, on a connection of
@@ -25,7 +30,7 @@ impl Deck {
     /// executor next runs, and after quit it may never run again.
     pub(super) fn follow_notices(&mut self, cx: &mut Context<Self>) {
         let Some(daemon) = self.daemon.clone() else { return };
-        let Ok(rx) = daemon.subscribe() else { return };
+        let Ok(rx) = daemon.follow() else { return };
         let shared = std::rc::Rc::new(std::cell::RefCell::new(Some(rx)));
         self.notices = Some(shared.clone());
         cx.spawn(async move |this, cx| {
@@ -35,8 +40,12 @@ impl Deck {
                     None => std::task::Poll::Ready(None),
                 })
                 .await;
-                let Some(notice) = next else { break };
-                if this.update(cx, |deck, cx| deck.on_notice(notice, cx)).is_err() {
+                let Some(next) = next else { break };
+                let applied = this.update(cx, |deck, cx| match next {
+                    Followed::Notice(notice) => deck.on_notice(*notice, cx),
+                    Followed::Resubscribed => deck.on_resubscribed(cx),
+                });
+                if applied.is_err() {
                     break;
                 }
             }
@@ -71,6 +80,30 @@ impl Deck {
         if let Some(cap) = notice.cap {
             self.on_cap(cap, cx);
         }
+    }
+
+    /// The notice stream is back after `deckd` was gone: read what the
+    /// missed notices would have said from the records. A holder prompt sent
+    /// in the gap goes into its attached transcript as a live one would.
+    fn on_resubscribed(&mut self, cx: &mut Context<Self>) {
+        self.reload_tasks(cx);
+        let Some(data) = self.data.clone() else { return };
+        let ids: Vec<String> = self.attached.keys().cloned().collect();
+        let read = cx.background_executor().spawn(async move {
+            let daemon = deck_runtime::DaemonClient::connect(&data)?;
+            anyhow::Ok(ids.into_iter().filter_map(|id| Some((daemon.prompts(&id).ok()?, id))).collect::<Vec<_>>())
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(logs) = read.await else { return };
+            let _ = this.update(cx, |deck, cx| {
+                for (prompts, id) in logs {
+                    for prompt in prompts {
+                        deck.on_prompt(&id, prompt, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// A prompt task `task`'s holder sent: kept for its label, and shown in
