@@ -25,6 +25,9 @@ use std::sync::Arc;
 
 /// How many other running tasks launch attaches at once.
 const LAUNCH_ATTACH: usize = 4;
+/// How long a failed background attach waits, and how often it is tried.
+const ATTACH_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+const ATTACH_TRIES: u32 = 5;
 
 impl Deck {
     /// Launch with records under the default data root.
@@ -485,12 +488,18 @@ impl Deck {
             let _ = this.update(cx, |deck, cx| {
                 deck.attaching.clear();
                 let Ok(opened) = opened else { return };
+                let mut failed = false;
                 for (id, task, watch, connection) in opened {
-                    deck.attach_tried.insert(id.clone());
                     if deck.attached.contains_key(&id) {
                         continue;
                     }
-                    let Ok(Some(connection)) = connection else { continue };
+                    // An attach can lose a race with the task's holder setting
+                    // up its session; it is tried again shortly, a few times.
+                    let Ok(Some(connection)) = connection else {
+                        *deck.attach_tried.entry(id).or_default() += 1;
+                        failed = true;
+                        continue;
+                    };
                     let generation = deck.stamp();
                     deck.attached.insert(id.clone(), Attached { generation, ..Attached::new(task) });
                     deck.follow_boundary(&id, watch, cx);
@@ -498,6 +507,13 @@ impl Deck {
                 }
                 // Tasks that gained a session during this round wait for none.
                 deck.attach_new(cx);
+                if failed {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(ATTACH_RETRY).await;
+                        let _ = this.update(cx, |deck, cx| deck.attach_new(cx));
+                    })
+                    .detach();
+                }
                 cx.notify();
             });
         }));
@@ -518,8 +534,8 @@ impl Deck {
             .filter(|t| t.state == State::Running && t.session_id.is_some() && !self.attached.contains_key(&t.id))
             // The selection opens its own connection; two would race.
             .filter(|t| self.selected.as_deref() != Some(t.id.as_str()))
-            // A task a round could not attach waits for its selection.
-            .filter(|t| !self.attach_tried.contains(&t.id))
+            // A task rounds could not attach waits for its selection.
+            .filter(|t| self.attach_tried.get(&t.id).is_none_or(|tries| *tries < ATTACH_TRIES))
             .map(|t| t.id.clone())
             .collect();
         if new.is_empty() {

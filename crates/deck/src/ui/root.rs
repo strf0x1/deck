@@ -135,8 +135,8 @@ pub struct Deck {
     pub(super) limit: Option<deck_runtime::control::CapNotice>,
     /// Tasks a background attach is connecting now (`attachment.rs`).
     pub(super) attaching: HashSet<String>,
-    /// Tasks a background round already tried, so a later round skips them.
-    pub(super) attach_tried: HashSet<String>,
+    /// How often a background round failed to attach each task.
+    pub(super) attach_tried: HashMap<String, u32>,
     last_frame: Option<Instant>,
 }
 
@@ -208,7 +208,7 @@ impl Deck {
             limits: super::limits::Limits::default(),
             limit: None,
             attaching: HashSet::new(),
-            attach_tried: HashSet::new(),
+            attach_tried: HashMap::new(),
             last_frame: None,
         }
     }

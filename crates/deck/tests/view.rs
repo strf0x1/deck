@@ -3848,10 +3848,22 @@ fn a_workers_question_is_surfaced_and_a_cap_row_raises_the_limit(cx: &mut TestAp
     let create = |title: &str| json!({ "operation": "create", "project": project.id, "brief": title, "title": title });
     vcx.simulate_input(&format!("deck {}", create("npm audit fix")));
     vcx.simulate_keystrokes("enter");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // A coordinator, a gateway, a worker and its holder start first: slow on CI.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while deck.read_with(&vcx, |d, _| d.surfaced().is_empty()) {
         vcx.run_until_parked();
-        assert!(std::time::Instant::now() < deadline, "the worker's question was never surfaced");
+        if std::time::Instant::now() >= deadline {
+            let records: Vec<String> = daemon
+                .tasks()
+                .unwrap()
+                .iter()
+                .map(|t| format!("{} {:?} session={:?} turn={:?}", t.id, t.state, t.session_id, t.turn))
+                .collect();
+            let window = deck.read_with(&vcx, |d, _| {
+                format!("attached {:?}, needs {:?}, listed {}", d.attached_ids(), d.needs_you(), d.tasks().len())
+            });
+            panic!("the worker's question was never surfaced: {window}; deckd {records:?}");
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let row = deck.read_with(&vcx, |d, _| d.surfaced()[0].clone());
