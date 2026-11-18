@@ -142,6 +142,60 @@ the truth, so a missing `deckd` loses nothing and the next one reads it.
 or the task stops running; without it, until the turn or state changes.
 `{"op":"prompts", task}` lists the prompt log for a window to label.
 
+## Coordinators
+
+ADR 0011 §2 and §4. A task's `spec` records `kind` (`task`, the default and
+omitted, or `coordinator`) and `created_by` (the coordinator that created it,
+omitted otherwise); both are additive in `task.json` and appear in `task` and
+`tasks` replies. A project in `projects/index.json` records
+`coordinator_argv` beside its agent `argv`; absent means `construct acp`.
+
+A window creates a coordinator with `create` or `run` and a spec whose `kind`
+is `coordinator`. `deckd` ignores the window's argv: the coordinator runs its
+project's coordinator command, recorded in its spec at create, so a later
+change applies to the next coordinator, not a running one. Workers run the
+project's agent command. The runtime then:
+
+- refuses a coordinator whose scope (its project set, the selected project in
+  the first slice) already has one that is not destroyed; `run` selects that
+  one instead, running as it is or started again when stopped or failed. A
+  destroyed coordinator does not count, so the next `run` creates a new one;
+- records no GitHub policy, even from a repository with a GitHub origin, so it
+  has no GitHub gateway, branch or publication chip;
+- writes `tasks/<id>/coordinator.json`: `{ projects, max_concurrent: 4,
+  creates_per_hour: 20, worker_budget, model_budget }`, budgets as
+  `{ requests, tokens }` with `null` unlimited. `worker_budget` is each
+  worker's budget and the most a create may ask for; `model_budget` is the
+  coordinator's own, written to its `budget.json` when it changes;
+- sets `CONSTRUCT_CONTEXT_STRATEGY=optchat` in the agent's environment from
+  the recorded kind, locally (through the child helper) and in the VM's guest
+  environment, so a resume uses it again.
+
+A worker's `created_by` must name a coordinator, and a coordinator cannot have
+one (depth one). Destroying a coordinator does not touch its workers; they
+keep running and keep `created_by`.
+
+`{"op":"coordinator_policy", task, set?}` reads `{ policy, coordinator_argv }`
+or replaces both: caps between 1 and 1000, budgets at least 1 or `null`, the
+project set unchanged, a coordinator command that names a program. Everything
+is checked before anything is written; the policy file is replaced
+atomically and the coordinator's record gains `policy_changed {by: "user"}`.
+It is a window operation only: the control surface a coordinator reaches
+(deck#152) never serves it, so a coordinator cannot raise its own caps.
+
+On the local backend the agent runs on the host as the user and could reach
+`deckd`'s socket or edit `coordinator.json`, so a local coordinator's limits
+are only as strong as its agent's sandbox; the VM backend is where they are
+enforced (ADR 0011 §2, amended 2026-11-17).
+
+An agent that refuses its session, as Construct refuses a model under
+`optchat`'s 65536-token window floor, is a failed start, not a silent
+fallback: when the holder's own `initialize`, `session/new` or `session/load`
+fails during a `prompt`, and when a window sends `{"op":"session_refused", id,
+error}` for its own setup, `deckd` stops the task and records
+`failed {start_failed: "the agent refused its session: …"}`. A resume runs it
+again with the same strategy.
+
 ## Model budgets
 
 A VM task's model gateway enforces one request limit and one token limit. The

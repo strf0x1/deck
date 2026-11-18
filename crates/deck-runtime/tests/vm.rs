@@ -69,6 +69,7 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
         project: None,
         github: None,
         model: None,
+        ..Default::default()
     };
 
     let runtime = open(&data, &paths);
@@ -141,6 +142,7 @@ fn vm_prompt_and_permission_round_trip() {
         project: None,
         github: None,
         model: None,
+        ..Default::default()
     };
 
     let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())
@@ -284,6 +286,7 @@ fn vm_launch_to_ready_is_event_driven_twenty_times() {
         project: None,
         github: None,
         model: None,
+        ..Default::default()
     };
     let runtime = Runtime::open(&data, Vm::from_env(&data, paths.clone()).expect("VM backend configuration"))
         .expect("runtime")
@@ -354,6 +357,7 @@ fn vm_tasks_record_their_projects_github_policy() {
             project: None,
             github: None,
             model: None,
+            ..Default::default()
         });
     }
 
@@ -451,6 +455,7 @@ fn vm_guest_checkout_is_ready_to_publish() {
         project: None,
         github: Some(policy),
         model: None,
+        ..Default::default()
     };
 
     let child = std::process::Command::new(std::env::var_os(deck_runtime::vm::EXECUTABLE_ENV).unwrap())

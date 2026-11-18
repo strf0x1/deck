@@ -1,6 +1,7 @@
 # 0011 — Cooperation is one coordinator over tasks
 
-Status: proposed, 2026-11-08. Answers PLAN.md question 5 and #126. Builds on
+Status: proposed, 2026-11-08; §2 and §4 amended 2026-11-17 (deck#151: a
+coordinator's own command; the local backend may host one). Answers PLAN.md question 5 and #126. Builds on
 0001 (tasks and records), 0002 (live attach), 0004 §3 and §5 (gateways and
 approvals), 0008 (one branch per task) and 0010 (projects and attention).
 Relies on construct ADR 0042 and 0043 (optchat), which are proposed and being
@@ -64,10 +65,26 @@ Facts that bound the design:
 
 A coordinator is a task with `kind = coordinator`, created by the user from a
 project (later, from a space, which will supply the project set and the
-brief). It runs the project's agent command, which is `construct acp` in the
-first slice; the contract below is what lets another agent be a coordinator
-later. It is a VM task (ADR 0003): its authority is a host gateway, and the
-local backend, which runs the agent on the host, cannot host one.
+brief).
+
+- **It has its own command** (amended 2026-11-17). A coordinator must be an
+  agent that can coordinate (Construct with `optchat` and the `deck` tool),
+  while a project's agent command can be anything. So a project records a
+  coordinator command beside its agent command, defaulting to
+  `construct acp`; workers still run the project's agent command. A
+  coordinator records the command at create, so a change applies to the next
+  coordinator, not a running one. The contract below is what lets another
+  agent be a coordinator later.
+- **It runs on either backend** (amended 2026-11-17; this section first made
+  it VM-only). Its limits (scope, caps, no other authority) hold only if the
+  agent cannot go around the control surface. In a VM (ADR 0003) that is
+  enforced: its authority is a host gateway and the guest cannot reach
+  `deckd` or its policy file. On the local backend the agent runs on the host
+  as the user and could reach `deckd`'s socket or edit `coordinator.json`
+  directly, so there the limits are only as strong as the agent's own
+  sandbox. That is the trade every local task already makes, and it is
+  stated rather than hidden: a local coordinator is allowed, and the VM
+  remains the backend where its limits are enforced.
 
 - **One per scope.** Its scope is a recorded set of project ids. Starting a
   coordinator for the same scope selects the existing one; there is one long
@@ -125,9 +142,12 @@ session's permanent client and speaks a fixed subset of it.
 
 ### 4. The coordinator's authority crosses one closed control surface
 
-The coordinator's agent needs to act on the host. It reaches a new kind on
-the extension port, mapped from its vsock port like the others (ADR 0004 §1),
-exposed by `deck-egress` as `DECK_CONTROL_URL`. The wire joins the shared
+The coordinator's agent needs to act on the host. In a VM it reaches a new
+kind on the extension port, mapped from its vsock port like the others (ADR
+0004 §1), exposed by `deck-egress` as `DECK_CONTROL_URL`. A local
+coordinator (§2, amended 2026-11-17) reaches the same surface on host
+loopback; the surface is the same, but it bounds the coordinator only as far
+as the agent's sandbox keeps it from `deckd`'s socket and the policy file. The wire joins the shared
 contract (ADR 0006) as an additive minor release, with schemas and fixtures,
 before either implementation lands.
 
@@ -159,8 +179,9 @@ long poll capped at 300 s, like the approval wait in ADR 0004 §5, and it
 wakes on a turn change or a new pending approval.
 
 The gateway carries; `deckd` decides. It reads the coordinator's policy from
-`tasks/<id>/coordinator.json`, written by the user at creation and never
-editable by the guest: the project set, a concurrency cap (default 4), a
+`tasks/<id>/coordinator.json`, written by `deckd` at creation, replaced only
+through the window's `coordinator_policy` operation, and never editable by a
+VM guest (a local agent's reach is its sandbox's, §2): the project set, a concurrency cap (default 4), a
 creation rate (default 20 per rolling hour), and the per-worker budgets.
 
 Refusals are codes, not cards: `deck_control_scope` (outside the project

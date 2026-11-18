@@ -150,6 +150,7 @@ mod tests {
             name: name.into(),
             checkouts: vec![PathBuf::from(format!("/src/{name}"))],
             argv: vec!["construct".into(), "acp".into()],
+            coordinator_argv: None,
             opened_ms,
             hidden: false,
         }

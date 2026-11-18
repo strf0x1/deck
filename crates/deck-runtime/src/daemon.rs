@@ -22,6 +22,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod coordinator;
+
 pub const IDLE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
 
@@ -609,7 +611,8 @@ impl Service {
             // writes the project's rule file, which the gateways re-read.
             Request::WebProfile { .. } => unreachable!("a profile decision is routed to deckd's boundary"),
             Request::GitHubProfile { .. } => unreachable!("a GitHub profile decision is routed to deckd's boundary"),
-            Request::Create { spec } => {
+            Request::Create { mut spec } => {
+                self.coordinate(&mut spec)?;
                 let id = self.runtime.create(spec)?;
                 Ok(serde_json::to_value(self.runtime.task(&id)?)?)
             }
@@ -639,7 +642,16 @@ impl Service {
                 self.projects.forget(&id)?;
                 Ok(json!(null))
             }
+            Request::Run { spec } if spec.kind == crate::TaskKind::Coordinator => {
+                Ok(serde_json::to_value(self.run_coordinator(spec)?)?)
+            }
             Request::Run { spec } => Ok(serde_json::to_value(self.run(spec)?)?),
+            Request::CoordinatorPolicy { task, set } => Ok(serde_json::to_value(self.coordinator_policy(&task, set)?)?),
+            Request::SessionRefused { id, error } => {
+                self.runtime.session_refused(&id, &error)?;
+                self.boundary.clear_task(&id)?;
+                Ok(serde_json::to_value(self.runtime.task(&id)?)?)
+            }
             Request::Session { id, session_id } => {
                 self.runtime.session(&id, &session_id)?;
                 Ok(json!(null))

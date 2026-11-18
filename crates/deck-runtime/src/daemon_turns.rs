@@ -28,7 +28,19 @@ pub(crate) fn prompt(runtime: &Runtime, id: &str, text: &str, from: Option<&str>
     // The agent's directory as the window would name it (`deck/src/task.rs`).
     let cwd = if task.backend == "vm" { "/workspace".into() } else { task.spec.cwd.display().to_string() };
     let request = Request::Prompt { text: text.into(), cwd, session: task.session_id.clone() };
-    match crate::detached::exchange(holder, &request, START + Duration::from_secs(5))? {
+    let reply = match crate::detached::exchange(holder, &request, START + Duration::from_secs(5)) {
+        Ok(reply) => reply,
+        Err(error) => {
+            let error = format!("{error:#}");
+            // An agent that refuses its session will refuse every prompt; the
+            // record says so as a failed start (deck#151 R6).
+            if refused_session(&error) {
+                runtime.session_refused(id, &error)?;
+            }
+            bail!(error);
+        }
+    };
+    match reply {
         Reply::Prompted(Prompted::Started { turn, session }) => {
             if let Some(session) = session {
                 runtime.session(id, &session)?;
@@ -39,6 +51,12 @@ pub(crate) fn prompt(runtime: &Runtime, id: &str, text: &str, from: Option<&str>
         Reply::Prompted(Prompted::Busy) => Ok(PromptReply::Busy),
         _ => bail!("the holder did not answer the prompt"),
     }
+}
+
+/// Whether the holder's error is the agent refusing to set its session up,
+/// as the observer names its own failed requests.
+fn refused_session(error: &str) -> bool {
+    ["initialize:", "session/new:", "session/load:"].iter().any(|method| error.starts_with(method))
 }
 
 /// Wait until `id`'s turn or state changes, at most `wait_ms` (capped). With
@@ -104,6 +122,16 @@ mod tests {
         assert!(done(&start, &task(State::Running, Some((4, Phase::Idle))), Some(3)));
         let stopped = State::Stopped { clean: true, reason: "stop".into() };
         assert!(done(&start, &task(stopped, Some((3, Phase::Idle))), Some(3)));
+    }
+
+    #[test]
+    fn only_a_refused_setup_is_a_session_refusal() {
+        use super::refused_session;
+        let floor = "session/new: context.optchat needs a context window of at least 65536 tokens; m has 32768";
+        assert!(refused_session(floor));
+        assert!(refused_session("session/load: no such session"));
+        assert!(!refused_session("session/prompt: model unavailable"));
+        assert!(!refused_session("the holder did not answer the prompt"));
     }
 
     #[test]

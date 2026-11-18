@@ -170,6 +170,22 @@ impl DaemonClient {
     pub fn run(&self, spec: Spec) -> Result<RunResult> {
         self.request(Request::Run { spec })
     }
+    /// A coordinator's policy and its project's coordinator command; with
+    /// `set`, replace both first (deck#151 R7).
+    pub fn coordinator_policy(
+        &self,
+        task: &str,
+        set: Option<crate::coordinator::Settings>,
+    ) -> Result<crate::coordinator::Settings> {
+        self.request(Request::CoordinatorPolicy { task: task.into(), set })
+    }
+
+    /// Report that the agent refused to set up its session; `deckd` stops
+    /// the task and records a failed start (deck#151 R6).
+    pub fn session_refused(&self, id: &str, error: &str) -> Result<Task> {
+        self.request(Request::SessionRefused { id: id.into(), error: error.into() })
+    }
+
     pub fn session(&self, id: &str, session_id: &str) -> Result<()> {
         self.request(Request::Session { id: id.into(), session_id: session_id.into() })
     }

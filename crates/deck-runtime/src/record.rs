@@ -58,6 +58,7 @@ struct Line {
 
 /// The tasks under one data root.
 pub struct Store {
+    data: PathBuf,
     tasks: PathBuf,
 }
 
@@ -88,7 +89,12 @@ impl Store {
     pub fn open(data: &Path) -> Result<Store> {
         let tasks = data.join("tasks");
         fs::create_dir_all(&tasks).with_context(|| format!("creating {}", tasks.display()))?;
-        Ok(Store { tasks })
+        Ok(Store { data: data.to_path_buf(), tasks })
+    }
+
+    /// The data root the records live under.
+    pub fn data(&self) -> &Path {
+        &self.data
     }
 
     /// A new task, recorded as created.
@@ -304,7 +310,14 @@ mod tests {
     }
 
     fn spec() -> Spec {
-        Spec { argv: vec!["agent".into()], cwd: "/w".into(), project: None, github: None, model: None }
+        Spec {
+            argv: vec!["agent".into()],
+            cwd: "/w".into(),
+            project: None,
+            github: None,
+            model: None,
+            ..Default::default()
+        }
     }
 
     #[test]

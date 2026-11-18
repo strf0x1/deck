@@ -32,7 +32,9 @@ impl GuardedLocal {
         let mut argv = vec![executable.into(), "--child".into(), "--".into()];
         argv.extend(spec.argv.iter().cloned());
         let mut inner = Local::spawn(
-            &Spec { argv, cwd: spec.cwd.clone(), project: None, github: None, model: None },
+            // The kind carries the agent's environment (`Spec::agent_env`)
+            // through the helper, which the agent inherits.
+            &Spec { argv, cwd: spec.cwd.clone(), kind: spec.kind, ..Default::default() },
             exited,
             None,
         )?;

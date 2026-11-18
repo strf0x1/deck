@@ -105,6 +105,7 @@ impl Daemon {
             project: None,
             github: None,
             model: None,
+            ..Default::default()
         }
     }
 
@@ -764,6 +765,7 @@ fn a_live_approvals_switch_applies_to_the_next_operation() {
                 identity: Default::default(),
             }),
             model: None,
+            ..Default::default()
         })
         .unwrap();
     let ask = deck_runtime::approvals::Ask {
@@ -1733,4 +1735,190 @@ fn a_graceful_stop_keeps_the_agent_and_the_next_daemon_adopts_it() {
     assert!(!running(holder.pid) && !running(agent));
     next.shutdown().unwrap();
     eventually(|| !running(hello.pid));
+}
+
+/// A coordinator spec for the project at `dir`, as a window sends it: the
+/// argv is ignored, because a coordinator runs its project's coordinator
+/// command.
+fn coordinator_spec(dir: &std::path::Path, project: &str) -> Spec {
+    Spec {
+        argv: vec!["ignored-window-argv".into()],
+        cwd: dir.to_path_buf(),
+        project: Some(project.into()),
+        kind: deck_runtime::TaskKind::Coordinator,
+        ..Default::default()
+    }
+}
+
+/// A stub agent that writes its context strategy to `out`, then echoes.
+fn strategy_stub(out: &std::path::Path) -> Vec<String> {
+    let script = format!("printf %s \"$CONSTRUCT_CONTEXT_STRATEGY\" > '{}'; exec cat", out.display());
+    vec!["sh".into(), "-c".into(), script]
+}
+
+#[test]
+fn a_coordinator_runs_its_projects_coordinator_command_and_a_worker_the_agent_command() {
+    let (mut daemon, client) = Daemon::new("coordinator-command");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["remote", "add", "origin", "https://github.com/owner/repo.git"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // The project's agent command is the fake agent; workers run it.
+    let fake = vec!["deck-fake-agent".to_string()];
+    let project = client.open_project(&repo, fake.clone()).unwrap();
+
+    // With no coordinator command recorded, a coordinator is `construct acp`.
+    let first = client.create(coordinator_spec(&repo, &project.id)).unwrap();
+    assert_eq!(first.spec.argv, vec!["construct".to_string(), "acp".to_string()]);
+    assert_eq!(first.spec.github, None, "no GitHub policy even with a GitHub origin");
+
+    // The user records a coordinator command; it applies to the next one.
+    let out = daemon.data.join("strategy");
+    let mut settings = client.coordinator_policy(&first.id, None).unwrap();
+    assert_eq!(settings.coordinator_argv, None);
+    settings.coordinator_argv = Some(strategy_stub(&out));
+    client.coordinator_policy(&first.id, Some(settings)).unwrap();
+    assert_eq!(client.task(&first.id).unwrap().spec.argv[0], "construct", "a recorded command does not move");
+    client.destroy(&first.id).unwrap();
+
+    let run = client.run(coordinator_spec(&repo, &project.id)).unwrap();
+    assert!(run.started);
+    assert_ne!(run.task.id, first.id, "a destroyed coordinator is replaced");
+    assert_eq!(run.task.spec.argv, strategy_stub(&out));
+    eventually(|| std::fs::read_to_string(&out).is_ok_and(|s| s == "optchat"));
+
+    let worker = client
+        .create(Spec {
+            argv: fake.clone(),
+            cwd: repo.clone(),
+            project: Some(project.id.clone()),
+            created_by: Some(run.task.id.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(worker.spec.argv, fake);
+    assert_eq!(worker.spec.kind, deck_runtime::TaskKind::Task);
+    let listed = client.tasks().unwrap();
+    let listed = listed.iter().find(|task| task.id == worker.id).unwrap();
+    assert_eq!(listed.spec.created_by.as_deref(), Some(run.task.id.as_str()), "the list carries provenance");
+    client.stop(&run.task.id).unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn one_coordinator_per_scope_and_destroying_it_leaves_its_workers_running() {
+    let (mut daemon, client) = Daemon::new("coordinator-scope");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let out = daemon.data.join("strategy");
+    let project = client.open_project(&repo, vec!["cat".into()]).unwrap();
+    let seed = client.create(coordinator_spec(&repo, &project.id)).unwrap();
+    let mut settings = client.coordinator_policy(&seed.id, None).unwrap();
+    settings.coordinator_argv = Some(strategy_stub(&out));
+    client.coordinator_policy(&seed.id, Some(settings)).unwrap();
+    client.destroy(&seed.id).unwrap();
+
+    let one = client.run(coordinator_spec(&repo, &project.id)).unwrap();
+    let two = client.run(coordinator_spec(&repo, &project.id)).unwrap();
+    assert_eq!(two.task.id, one.task.id);
+    assert!(!two.started, "the running coordinator is selected, not restarted");
+
+    let worker = client
+        .run(Spec {
+            argv: vec!["cat".into()],
+            cwd: repo.clone(),
+            project: Some(project.id.clone()),
+            created_by: Some(one.task.id.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_ne!(worker.task.id, one.task.id);
+
+    client.stop(&one.task.id).unwrap();
+    std::fs::remove_file(&out).unwrap();
+    let three = client.run(coordinator_spec(&repo, &project.id)).unwrap();
+    assert_eq!(three.task.id, one.task.id, "a stopped coordinator is started again");
+    eventually(|| std::fs::read_to_string(&out).is_ok_and(|s| s == "optchat"));
+
+    client.destroy(&one.task.id).unwrap();
+    let after = client.task(&worker.task.id).unwrap();
+    assert_eq!(after.state, State::Running, "destroy does not cascade");
+    assert_eq!(after.spec.created_by.as_deref(), Some(one.task.id.as_str()), "provenance stays");
+    assert!(running(after.pid.unwrap()));
+    let four = client.run(coordinator_spec(&repo, &project.id)).unwrap();
+    assert_ne!(four.task.id, one.task.id, "a destroyed coordinator is replaced");
+    client.stop(&four.task.id).unwrap();
+    client.stop(&worker.task.id).unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn the_user_raises_a_coordinators_cap_and_an_invalid_policy_is_refused() {
+    let (mut daemon, client) = Daemon::new("coordinator-policy");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let project = client.open_project(&repo, vec!["cat".into()]).unwrap();
+    let lead = client.create(coordinator_spec(&repo, &project.id)).unwrap();
+    let file = daemon.data.join("tasks").join(&lead.id).join("coordinator.json");
+    let before = std::fs::read(&file).unwrap();
+
+    let settings = client.coordinator_policy(&lead.id, None).unwrap();
+    assert_eq!(settings.policy.max_concurrent, 4);
+    let mut invalid = settings.clone();
+    invalid.policy.creates_per_hour = 0;
+    assert!(client.coordinator_policy(&lead.id, Some(invalid)).is_err());
+    let mut bad_argv = settings.clone();
+    bad_argv.coordinator_argv = Some(vec![]);
+    assert!(client.coordinator_policy(&lead.id, Some(bad_argv)).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), before, "a refused policy leaves the file");
+
+    let mut raised = settings;
+    raised.policy.max_concurrent = 5;
+    assert_eq!(client.coordinator_policy(&lead.id, Some(raised)).unwrap().policy.max_concurrent, 5);
+    let log = std::fs::read_to_string(daemon.data.join("tasks").join(&lead.id).join("events.jsonl")).unwrap();
+    assert!(log.contains(r#""event":"policy_changed","by":"user""#), "{log}");
+
+    let plain = client.create(daemon.spec(&["cat"])).unwrap();
+    assert!(client.coordinator_policy(&plain.id, None).is_err(), "only a coordinator has a policy");
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn a_refused_session_is_a_failed_start_and_a_resume_uses_optchat_again() {
+    let (mut daemon, client) = Daemon::new("coordinator-refused");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let out = daemon.data.join("strategy");
+    let project = client.open_project(&repo, vec!["cat".into()]).unwrap();
+    let seed = client.create(coordinator_spec(&repo, &project.id)).unwrap();
+    let mut settings = client.coordinator_policy(&seed.id, None).unwrap();
+    settings.coordinator_argv = Some(strategy_stub(&out));
+    client.coordinator_policy(&seed.id, Some(settings)).unwrap();
+    client.destroy(&seed.id).unwrap();
+    let run = client.run(coordinator_spec(&repo, &project.id)).unwrap();
+    eventually(|| out.exists());
+
+    let floor = "session/new: context.optchat needs a context window of at least 65536 tokens; small has 32768";
+    let failed = client.session_refused(&run.task.id, floor).unwrap();
+    let State::Failed { failure: Failure::StartFailed(reason) } = &failed.state else {
+        panic!("a refused session is a failed start: {:?}", failed.state);
+    };
+    assert!(reason.contains("65536"), "{reason}");
+    assert!(!running(run.task.pid.unwrap()), "the refused agent is stopped");
+
+    std::fs::remove_file(&out).unwrap();
+    let resumed = client.resume(&run.task.id).unwrap();
+    assert_eq!(resumed.state, State::Running);
+    eventually(|| std::fs::read_to_string(&out).is_ok_and(|s| s == "optchat"));
+    client.stop(&run.task.id).unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
 }

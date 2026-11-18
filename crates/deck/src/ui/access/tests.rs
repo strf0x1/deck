@@ -179,6 +179,7 @@ fn a_rule_names_its_project_and_falls_back_to_its_id() {
             name: "Strata".into(),
             checkouts: vec!["/src/strata".into()],
             argv: vec!["construct".into()],
+            coordinator_argv: None,
             opened_ms: 0,
             hidden: false,
         }]),

@@ -10,9 +10,26 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// What a task is for (ADR 0011 §2). A coordinator creates and prompts other
+/// tasks; every other task is a `task`. Recorded at create, so a resume runs
+/// it the same way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Task,
+    Coordinator,
+}
+
+impl TaskKind {
+    fn is_task(&self) -> bool {
+        *self == TaskKind::Task
+    }
+}
+
 /// What to run: the agent command, the directory it runs in, and the project
 /// policy the backend resolved at create.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spec {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
@@ -30,14 +47,37 @@ pub struct Spec {
     /// is written, and a local task records none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<crate::settings::Pick>,
+    /// A coordinator or an ordinary task (ADR 0011 §2). Absent in a record
+    /// written before coordinators, which is a task.
+    #[serde(default, skip_serializing_if = "TaskKind::is_task")]
+    pub kind: TaskKind,
+    /// The coordinator task that created this one, as host-recorded
+    /// provenance (ADR 0011 §6). It stays when that coordinator is destroyed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 impl Spec {
-    /// Whether two specs name the same command in the same directory. The
-    /// GitHub policy is resolved at create, so a changed project file must
-    /// still find the running task rather than start a second agent beside it.
+    /// Whether two specs name the same command in the same directory, for
+    /// the same kind of task and the same creator. The GitHub policy is
+    /// resolved at create, so a changed project file must still find the
+    /// running task rather than start a second agent beside it; a window's
+    /// run never picks up a coordinator or a coordinator's worker.
     pub fn same_command(&self, other: &Self) -> bool {
-        self.argv == other.argv && self.cwd == other.cwd
+        self.argv == other.argv
+            && self.cwd == other.cwd
+            && self.kind == other.kind
+            && self.created_by == other.created_by
+    }
+
+    /// What the agent's environment gains from the recorded kind, on every
+    /// backend and every run: a coordinator remembers with Construct's
+    /// `optchat` strategy (ADR 0011 §2), so a resume uses it again.
+    pub fn agent_env(&self) -> Vec<(&'static str, &'static str)> {
+        match self.kind {
+            TaskKind::Task => vec![],
+            TaskKind::Coordinator => vec![(crate::coordinator::STRATEGY_ENV, crate::coordinator::STRATEGY)],
+        }
     }
 
     /// The project key this task's grants use (ADR 0010 §4): its recorded
@@ -188,6 +228,12 @@ pub enum Event {
     Titled {
         title: String,
     },
+    /// The coordinator's policy was replaced (ADR 0011 §4); `by` is who
+    /// replaced it, which is only ever the user. Accounting, not a lifecycle
+    /// transition.
+    PolicyChanged {
+        by: String,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -316,6 +362,12 @@ impl Task {
             self.done_ms = if *done { Some(at_ms) } else { None };
             return Ok(());
         }
+        if let Event::PolicyChanged { .. } = ev {
+            if self.state == State::Destroyed {
+                bail!("task {}: `policy_changed` cannot follow destroyed", self.id);
+            }
+            return Ok(());
+        }
         if let Event::Titled { title } = ev {
             // A later title replaces an earlier one: the record keeps the
             // latest, and an agent-provided title may replace the prompt's.
@@ -383,6 +435,7 @@ fn name(ev: &Event) -> &'static str {
         Event::Seen { .. } => "seen",
         Event::Marked { .. } => "marked",
         Event::Titled { .. } => "titled",
+        Event::PolicyChanged { .. } => "policy_changed",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",
@@ -407,8 +460,18 @@ mod tests {
     fn created() -> Event {
         Event::Created {
             backend: "local".into(),
-            spec: Spec { argv: vec!["agent".into()], cwd: "/w".into(), project: None, github: None, model: None },
+            spec: Spec {
+                argv: vec!["agent".into()],
+                cwd: "/w".into(),
+                project: None,
+                github: None,
+                model: None,
+                ..Default::default()
+            },
         }
+    }
+    fn created_spec() -> Spec {
+        Spec { argv: vec!["agent".into()], cwd: "/w".into(), ..Default::default() }
     }
     fn started() -> Event {
         Event::Started { pid: Some(7), holder: None }
@@ -443,6 +506,46 @@ mod tests {
     }
 
     #[test]
+    fn an_old_spec_is_a_task_with_no_creator_and_a_task_writes_neither_field() {
+        let spec: Spec = serde_json::from_str(r#"{"argv":["agent"],"cwd":"/w"}"#).unwrap();
+        assert_eq!((spec.kind, spec.created_by.as_deref()), (TaskKind::Task, None));
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(!json.contains("kind") && !json.contains("created_by"), "additive: {json}");
+        assert!(spec.agent_env().is_empty());
+    }
+
+    #[test]
+    fn a_coordinator_and_a_workers_provenance_round_trip_and_survive_a_restart() {
+        let coordinator =
+            Spec { argv: vec!["construct".into(), "acp".into()], kind: TaskKind::Coordinator, ..created_spec() };
+        let json = serde_json::to_string(&coordinator).unwrap();
+        assert!(json.contains(r#""kind":"coordinator""#), "{json}");
+        assert_eq!(serde_json::from_str::<Spec>(&json).unwrap(), coordinator);
+        assert_eq!(coordinator.agent_env(), vec![("CONSTRUCT_CONTEXT_STRATEGY", "optchat")]);
+
+        let worker = Spec { created_by: Some("c1".into()), ..created_spec() };
+        let created = Event::Created { backend: "local".into(), spec: worker.clone() };
+        let t = fold(&[created, started(), stopped(false), started()]).unwrap();
+        assert_eq!(t.spec.created_by.as_deref(), Some("c1"), "provenance is the created spec's, across runs");
+    }
+
+    #[test]
+    fn the_same_command_is_also_the_same_kind_and_creator() {
+        let task = created_spec();
+        assert!(task.same_command(&task.clone()));
+        assert!(!task.same_command(&Spec { kind: TaskKind::Coordinator, ..task.clone() }));
+        assert!(!task.same_command(&Spec { created_by: Some("c1".into()), ..task.clone() }));
+    }
+
+    #[test]
+    fn a_policy_change_is_accounting_and_refused_after_destroy() {
+        let changed = Event::PolicyChanged { by: "user".into() };
+        let t = fold(&[created(), changed.clone(), started(), changed.clone()]).unwrap();
+        assert_eq!(t.state, State::Running);
+        assert!(fold(&[created(), Event::Destroyed, changed]).is_err());
+    }
+
+    #[test]
     fn a_recorded_project_is_the_task_project_key() {
         let spec = Spec {
             argv: vec!["agent".into()],
@@ -450,6 +553,7 @@ mod tests {
             project: Some("git:abc123".into()),
             github: None,
             model: None,
+            ..Default::default()
         };
         assert_eq!(spec.project_key(), "git:abc123");
     }

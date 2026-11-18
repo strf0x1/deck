@@ -45,6 +45,7 @@ fn spec(argv: &[&str]) -> Spec {
         project: None,
         github: None,
         model: None,
+        ..Default::default()
     }
 }
 
@@ -90,7 +91,16 @@ fn a_task_records_the_root_commit_of_its_checkout() {
     git(&repo, &["commit", "--quiet", "-m", "one"]);
     let root = git_output(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
     let rt = open(&dir);
-    let id = rt.create(Spec { argv: vec!["cat".into()], cwd: repo, project: None, github: None, model: None }).unwrap();
+    let id = rt
+        .create(Spec {
+            argv: vec!["cat".into()],
+            cwd: repo,
+            project: None,
+            github: None,
+            model: None,
+            ..Default::default()
+        })
+        .unwrap();
     let expected = format!("git:{root}");
     assert_eq!(rt.task(&id).unwrap().spec.project.as_deref(), Some(expected.as_str()));
 }

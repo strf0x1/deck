@@ -16,6 +16,7 @@ pub mod boundary;
 pub mod broker;
 pub mod catalog;
 pub mod child;
+pub mod coordinator;
 pub mod credentials;
 pub mod daemon;
 pub mod daemon_cli;
@@ -46,7 +47,7 @@ mod wire;
 
 pub use backend::{Backend, Exited, Instance, Stream};
 pub use daemon_client::{DaemonClient, Incompatible, RunResult, Watch};
-pub use lifecycle::{Event, Failure, Phase, Publication, Spec, State, Task, Turn};
+pub use lifecycle::{Event, Failure, Phase, Publication, Spec, State, Task, TaskKind, Turn};
 pub use local::Local;
 pub use runtime::{GRACE, Notice, Runtime};
 pub use vm::Vm;

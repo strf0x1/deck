@@ -137,7 +137,14 @@ fn state_reports_the_headers_selected_task(cx: &mut TestAppContext) {
     let opener = DaemonClient::connect_or_start(&data).unwrap();
     let project = opener.open_project(&project_root, argv.clone()).unwrap();
     let task = opener
-        .create(Spec { argv: argv.clone(), cwd: lane.clone(), project: Some(project.id), github: None, model: None })
+        .create(Spec {
+            argv: argv.clone(),
+            cwd: lane.clone(),
+            project: Some(project.id),
+            github: None,
+            model: None,
+            ..Default::default()
+        })
         .unwrap();
     // The header reads the record's title, not the checkout's name (#162).
     opener.title(&task.id, "name the row").unwrap();
@@ -194,6 +201,7 @@ fn dragging_and_the_rail_through_the_control_channel(cx: &mut TestAppContext) {
         name: "test".into(),
         checkouts: vec!["/src/a".into()],
         argv: vec!["x".into()],
+        coordinator_argv: None,
         opened_ms: 1,
         hidden: false,
     };
@@ -256,6 +264,7 @@ fn state_reports_the_needs_you_strip(cx: &mut TestAppContext) {
         name: "test".into(),
         checkouts: vec!["/src/a".into()],
         argv: vec!["x".into()],
+        coordinator_argv: None,
         opened_ms: 1,
         hidden: false,
     };
