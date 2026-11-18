@@ -92,8 +92,14 @@ impl Deck {
             }
         }
         self.published = published;
+        // A coordinator has no row or card: its project's view is its place
+        // (ADR 0011 §9). Selected, it is the project view, not a live card.
+        let own = own.filter(|id| !self.tasks.iter().any(|t| &t.id == id && super::coordinator::is_coordinator(t)));
         let mut visible = Vec::new();
         for record in &self.tasks {
+            if super::coordinator::is_coordinator(record) {
+                continue;
+            }
             if own.as_deref() == Some(record.id.as_str()) || self.projects.holds(record) {
                 visible.push(record.clone());
             }
@@ -144,7 +150,8 @@ impl Deck {
             self.board.to_front(live_lane);
         }
         // One small file read for the branch, every refresh, not every frame.
-        self.workspace = self.tasks.iter().find(|t| Some(&t.id) == own.as_ref()).map(super::prompt::Workspace::of);
+        let selected = self.task_id().map(str::to_owned);
+        self.workspace = self.tasks.iter().find(|t| Some(&t.id) == selected.as_ref()).map(super::prompt::Workspace::of);
         self.sync_live_lane();
         self.note_seen(cx);
         cx.notify();

@@ -235,13 +235,18 @@ pub fn state(d: &Deck) -> Value {
             })).collect::<Vec<_>>(),
             "dragging": board.dragging(),
         },
-        "main": if d.task_id().is_some() {
-            "task"
-        } else if d.project().is_some() {
+        "main": if d.showing_project() {
             "project"
+        } else if d.task_id().is_some() {
+            "task"
         } else {
             "none"
         },
+        "coordinator": d.coordinator().map(|task| json!({
+            "id": task.id,
+            "selected": d.coordinator_selected(),
+            "status": d.coordinator_status().map(|(_, text)| text),
+        })),
         "header": {
             "title": header.title,
             "project": header.project,

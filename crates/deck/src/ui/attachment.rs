@@ -116,7 +116,7 @@ impl Deck {
         let same = inside_fresh_checkout.then_some((argv, cwd.as_path()));
         let selection = self.projects.newest_task(&tasks, same);
         let Some(record) = selection.and_then(|id| tasks.iter().find(|task| task.id == id).cloned()) else {
-            self.clear_task(cx);
+            self.show_project(cx);
             return;
         };
         let task = WindowTask::of(daemon.clone(), &record);
@@ -171,6 +171,7 @@ impl Deck {
                         }
                     }
                 }
+                deck.reload_tasks(cx);
                 deck.sync_live_lane();
                 cx.notify();
             });
@@ -214,6 +215,7 @@ impl Deck {
                         }
                     }
                 }
+                deck.reload_tasks(cx);
                 deck.sync_live_lane();
                 cx.notify();
             });
@@ -278,55 +280,6 @@ impl Deck {
         .detach();
     }
 
-    /// The first prompt in a project with no task: create the task, select it,
-    /// and send the text once its connection is ready (ADR 0010 §5).
-    pub(super) fn first_prompt(&mut self, text: String, cx: &mut Context<Self>) {
-        if self.new_session.is_creating() {
-            return;
-        }
-        let Some(daemon) = self.daemon.clone() else { return };
-        let Some(spec) = self.project_spec() else { return };
-        let project = self.projects.selected_id().map(str::to_owned);
-        self.new_session = NewSession::Creating;
-        self.pending_prompt = Some(text.clone());
-        self.editor.take();
-        cx.notify();
-        let creating = daemon.clone();
-        let created = cx.background_executor().spawn(async move { creating.create(spec) });
-        cx.spawn(async move |this, cx| {
-            let created = created.await;
-            let _ = this.update(cx, |deck, cx| match created {
-                // The user switched project while it was created: the task
-                // stays a card in its own project, and the text is not lost.
-                Ok(record) if deck.projects.selected_id() != project.as_deref() => {
-                    deck.tasks.push(record);
-                    deck.pending_prompt = None;
-                    deck.new_session = NewSession::Idle;
-                    if deck.editor.is_empty() {
-                        deck.editor.insert(&text);
-                    }
-                    cx.notify();
-                }
-                Ok(record) => {
-                    deck.new_session = NewSession::Idle;
-                    deck.tasks.push(record.clone());
-                    let task = WindowTask::of(daemon, &record);
-                    deck.select_task(&task, record, cx);
-                    cx.notify();
-                }
-                Err(e) => {
-                    deck.pending_prompt = None;
-                    deck.new_session = NewSession::Failed(format!("{e:#}"));
-                    if deck.editor.is_empty() {
-                        deck.editor.insert(&text);
-                    }
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
     /// Apply a project list and selection already in hand: the rail's pure
     /// state, for tests and replies that need no daemon call.
     pub fn on_projects(&mut self, list: Vec<Project>, select: Option<String>, cx: &mut Context<Self>) {
@@ -343,7 +296,7 @@ impl Deck {
         }
         self.projects.clear_error();
         self.rail.select(Some(index));
-        self.clear_task(cx);
+        self.show_project(cx);
     }
 
     /// Point the column and transcript at the selected project's newest task,
@@ -362,7 +315,7 @@ impl Deck {
                 return;
             }
         }
-        self.clear_task(cx);
+        self.show_project(cx);
     }
 
     /// Keep the project open with no task: the main area shows its project
@@ -453,6 +406,15 @@ impl Deck {
         // launch always did: an approval submitted while no window watches
         // returns to the agent instead of waiting for this one.
         self.follow_boundary(&id, next.watch(), cx);
+        // Showing a project never runs its coordinator again: a stopped or
+        // failed one waits for Restart (ADR 0011 §9). A new one starts.
+        if super::coordinator::is_coordinator(&record) && !matches!(record.state, State::Running | State::Created) {
+            if let Some(attached) = self.attached.get_mut(&id) {
+                attached.session.status = Status::Down(super::coordinator::down(&record));
+            }
+            self.sync_live_lane();
+            return;
+        }
         let opened = cx.background_executor().spawn(async move { next.open() });
         cx.spawn(async move |this, cx| {
             let connection = opened.await;

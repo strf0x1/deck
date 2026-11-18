@@ -18,12 +18,13 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
+pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl IntoElement {
     let s = deck.session();
     let has_task = deck.task_id().is_some();
     // A launched window with no selected task is an open project (or no
     // project); a headless deck still shows the idle session's transcript.
     let empty_project = !has_task && deck.is_launched();
+    let project_view = deck.showing_project();
     let (status, color): (&str, Hsla) = match &s.status {
         _ if s.ask.is_some() => ("Needs you", Tokens::amber()),
         Status::Connecting => ("Connecting", Tokens::text_dim().into()),
@@ -36,14 +37,35 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     // The pane's top edge takes the session's colour, so its state reads
     // before any word on it does.
     let edge = if has_task { color } else { Tokens::accent() };
-    let (mark, mark_color) = if empty_project {
+    let (mark, mark_color) = if project_view {
+        (icon::AGENTS, if has_task { color } else { Tokens::text_dim().into() })
+    } else if empty_project {
         (icon::PROJECT, deck.project_name().map_or(Tokens::text_dim().into(), Tokens::hue))
     } else {
         (icon::AGENTS, color)
     };
-    let title = if empty_project { deck.project_name().unwrap_or("No project").to_string() } else { s.agent.clone() };
-    let subtitle = if empty_project { "project" } else { "live session" };
-    let title_selector = if empty_project { "empty-project" } else { "conversation-agent" };
+    let title = if project_view {
+        "Coordinator".to_string()
+    } else if empty_project {
+        deck.project_name().unwrap_or("No project").to_string()
+    } else {
+        s.agent.clone()
+    };
+    let subtitle = match (project_view, has_task) {
+        (true, true) => "the project's conversation",
+        (true, false) => "not started",
+        _ if empty_project => "project",
+        _ => "live session",
+    };
+    let title_selector = if project_view {
+        "coordinator-title"
+    } else if empty_project {
+        "empty-project"
+    } else {
+        "conversation-agent"
+    };
+    // The main area's width, for where the project view puts its cards.
+    let width = f32::from(window.viewport_size().width) - deck.rail.reserved() - 3. * super::root::GUTTER;
     pane()
         .flex_1()
         .min_w_0()
@@ -83,8 +105,8 @@ pub fn main(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
             super::access_panel::panel(deck, cx).into_any_element()
         } else if deck.open_publication().is_some() {
             super::publication_panel::panel(deck, cx).into_any_element()
-        } else if deck.project().is_some() && !has_task {
-            super::project_view::project_view(deck, cx)
+        } else if project_view {
+            super::project_view::project_view(deck, width, cx)
         } else if empty_project {
             empty(cx)
         } else {
@@ -311,16 +333,23 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
 }
 
 fn restart(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    let coordinator = deck.coordinator_selected();
     let title = match &deck.session().status {
+        Status::Down(detail) if coordinator && detail.as_str() == "stopped" => "The coordinator is stopped.",
+        Status::Down(_) if coordinator => "The coordinator is not running.",
         Status::Detached => "Your task is still running.",
         Status::Down(detail) if detail.as_str() == "stopped" => "This task is stopped.",
         _ => "The task connection needs to be restored.",
     };
     let action = match &deck.session().status {
+        Status::Down(_) if coordinator => "Restart",
         Status::Down(detail) if detail.as_str() == "stopped" => "Restart",
         _ => "Stop and restart",
     };
     let note = match &deck.session().status {
+        Status::Down(_) if coordinator => {
+            "Restart to run it again with its recorded conversation. Its sessions kept running without it."
+        }
         Status::Detached => "Restart to restore the conversation. Any unfinished turn will be interrupted.",
         Status::Down(detail) if detail.as_str() == "stopped" => {
             "Restart to start the agent again with its recorded history."

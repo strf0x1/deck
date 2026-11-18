@@ -1563,12 +1563,45 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     cleanup_daemon(&data);
 }
 
+/// Record `argv` as the project's coordinator command. `coordinator_policy`
+/// needs a coordinator, so one is created for the edit and destroyed: the
+/// command applies to the next (ADR 0011 §2).
+#[cfg(unix)]
+fn coordinator_command(daemon: &deck_runtime::DaemonClient, repo: &std::path::Path, project: &str, argv: &[String]) {
+    let seed = daemon
+        .create(deck_runtime::Spec {
+            argv: vec!["ignored".into()],
+            cwd: repo.to_path_buf(),
+            project: Some(project.into()),
+            kind: deck_runtime::TaskKind::Coordinator,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut settings = daemon.coordinator_policy(&seed.id, None).unwrap();
+    settings.coordinator_argv = Some(argv.to_vec());
+    daemon.coordinator_policy(&seed.id, Some(settings)).unwrap();
+    daemon.destroy(&seed.id).unwrap();
+}
+
+/// The live coordinators `deckd` lists for the project, never destroyed.
+#[cfg(unix)]
+fn coordinators(daemon: &deck_runtime::DaemonClient) -> Vec<deck_runtime::Task> {
+    daemon
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.spec.kind == deck_runtime::TaskKind::Coordinator && t.state != deck_runtime::State::Destroyed)
+        .collect()
+}
+
 #[cfg(unix)]
 #[gpui::test]
-fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext) {
-    use deck_runtime::DaemonClient;
+fn the_project_composer_starts_its_coordinator_reuses_a_stopped_one_and_replaces_a_destroyed_one(
+    cx: &mut TestAppContext,
+) {
+    use deck_runtime::{DaemonClient, State, TaskKind};
     cx.background_executor.allow_parking();
-    let data = std::env::temp_dir().join(format!("deck-view-first-prompt-{}", std::process::id()));
+    let data = std::env::temp_dir().join(format!("deck-view-coordinator-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let _holders = holders::Holders::new(&data);
     let repo = git_repo(&data, "repo");
@@ -1576,10 +1609,9 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
     let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
     let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
-    let project = {
-        let daemon = DaemonClient::connect_or_start(&data).unwrap();
-        daemon.open_project(&repo, argv.clone()).unwrap()
-    };
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    coordinator_command(&daemon, &repo, &project.id, &argv);
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
             .unwrap()
@@ -1590,37 +1622,82 @@ fn the_first_prompt_in_an_empty_project_creates_its_task(cx: &mut TestAppContext
     vcx.run_until_parked();
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.project(), Some(project.id.as_str()));
-        assert_eq!(d.task_id(), None);
-        assert!(d.awaiting_task());
+        assert!(d.awaiting_task() && d.showing_project() && d.coordinator().is_none());
     });
+    draw(&mut vcx);
     assert!(vcx.debug_bounds("project-view").is_some(), "an open project shows its project view");
-    assert!(vcx.debug_bounds("project-empty-state").is_some(), "with what a task would see");
+    assert!(vcx.debug_bounds("coordinator-empty").is_some(), "an empty conversation invites the brief");
+    assert!(vcx.debug_bounds("project-empty-state").is_some(), "and no sessions yet");
 
-    vcx.simulate_input("hello");
+    // The first prompt is the brief: deckd creates the project's coordinator.
+    vcx.simulate_input("clean up the sidebar");
     vcx.simulate_keystrokes("enter");
-    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["hello".to_string()]);
-    let id = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
-    assert_eq!(
-        deck.read_with(&vcx, |d, _| d.board().cards()[0].lane.title.clone()),
-        "hello",
-        "the row shows the first prompt before the next task refresh"
-    );
-    // The fake agent asks a permission during its turn; allow it so the
-    // transcript settles as an ordinary finished turn.
+    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["clean up the sidebar".to_string()]);
+    let first = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    let record = daemon.task(&first).unwrap();
+    assert_eq!(record.spec.kind, TaskKind::Coordinator);
+    assert_eq!(record.spec.argv, argv, "the project's coordinator command");
+    assert_eq!(record.spec.project.as_deref(), Some(project.id.as_str()));
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
     vcx.simulate_keystrokes("1");
-    ready_on(&deck, &mut vcx, Some(&id));
+    ready_on(&deck, &mut vcx, Some(&first));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.coordinator().is_some()));
+    draw(&mut vcx);
+    deck.read_with(&vcx, |d, _| {
+        assert!(d.showing_project() && d.coordinator_selected(), "the coordinator is the project view");
+        assert!(d.board().cards().is_empty(), "the coordinator has no sidebar row or card");
+        assert_eq!(d.header_title().title, None, "the header names the project, not a task");
+    });
+    assert!(vcx.debug_bounds("project-view").is_some());
+    assert!(vcx.debug_bounds("hdr-coordinator").is_some(), "its status is in the header");
+    assert!(vcx.debug_bounds("hdr-publication").is_none(), "and no publication chip");
+    assert!(vcx.debug_bounds("transcript-empty").is_none(), "its transcript fills the centre");
 
-    let daemon = DaemonClient::connect_or_start(&data).unwrap();
-    wait_view(&mut vcx, |_| daemon.task(&id).unwrap().title.as_deref() == Some("hello"));
-    let record = daemon.task(&id).unwrap();
-    assert_eq!(record.title.as_deref(), Some("hello"), "deckd recorded the first prompt's first line");
-    assert_eq!(record.spec.project.as_deref(), Some(project.id.as_str()));
-    assert_eq!(record.spec.cwd, repo, "the task runs in the project's checkout");
-    assert_eq!(record.spec.argv, argv, "with the project's command");
-    assert_eq!(daemon.tasks().unwrap().len(), 1, "the first prompt created exactly one task");
+    // A second start selects it: leaving the project view and coming back
+    // shows the same coordinator, and its composer prompts it.
+    click_control(&mut vcx, "hdr-new");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_some_and(|id| id != first)));
+    let plain = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    assert_eq!(daemon.task(&plain).unwrap().spec.kind, TaskKind::Task, "New session starts a plain task");
+    deck.update(&mut vcx, |d, cx| d.show_project(cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(first.as_str())));
+    assert_eq!(coordinators(&daemon).len(), 1, "one coordinator per project");
+
+    // Stopped, it shows its transcript with Restart; Restart reuses it.
+    click_control(&mut vcx, "hdr-stop");
+    wait_view(&mut vcx, |_| matches!(daemon.task(&first).unwrap().state, State::Stopped { .. }));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.can_restart()));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("hdr-restart").is_some(), "the header offers Restart");
+    assert_eq!(said(&deck, &vcx), vec!["clean up the sidebar".to_string()], "its transcript stays");
+    // Selecting the project again does not run it.
+    deck.update(&mut vcx, |d, cx| d.show_project(cx));
+    vcx.run_until_parked();
+    assert!(matches!(daemon.task(&first).unwrap().state, State::Stopped { .. }), "showing never starts it");
+    click_control(&mut vcx, "hdr-restart");
+    ready_on(&deck, &mut vcx, Some(&first));
+    assert_eq!(coordinators(&daemon).len(), 1);
+
+    // Destroyed, the composer is ready for the next one.
+    click_control(&mut vcx, "hdr-stop");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.coordinator().is_some_and(|c| matches!(c.state, State::Stopped { .. })))
+    });
+    click_control(&mut vcx, "hdr-destroy");
+    click_control(&mut vcx, "hdr-destroy");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.coordinator().is_none() && d.awaiting_task()));
+    assert_eq!(daemon.task(&first).unwrap().state, State::Destroyed);
+    vcx.simulate_input("next round");
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.coordinator().is_some_and(|c| c.id != first)));
+    let second = deck.read_with(&vcx, |d, _| d.coordinator().unwrap().id.clone());
+    assert_eq!(coordinators(&daemon).len(), 1, "a destroyed coordinator is replaced, not doubled");
+    assert_eq!(daemon.task(&plain).unwrap().state, State::Running, "its tasks keep running");
+
     cx.quit();
-    daemon.stop(&id).unwrap();
+    for id in [&second, &plain] {
+        let _ = daemon.stop(id);
+    }
     drop(daemon);
     cleanup_daemon(&data);
 }
@@ -1650,6 +1727,10 @@ fn a_prompt_cut_off_by_a_killed_agent_is_resent_with_its_key_and_runs_once(cx: &
     let deck = window.root(&mut vcx).unwrap();
     vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
     vcx.run_until_parked();
+    // A plain task starts from New session; the project's composer would
+    // brief a coordinator (ADR 0010 §5).
+    click_control(&mut vcx, "hdr-new");
+    ready_on(&deck, &mut vcx, None);
     vcx.simulate_input("ship it");
     vcx.simulate_keystrokes("enter");
     // The turn waits on a permission; kill the agent there, so the prompt's
@@ -2735,11 +2816,14 @@ fn the_project_view_lists_tasks_and_starts_another(cx: &mut TestAppContext) {
     assert!(!deck.read_with(&vcx, |d, _| d.access().is_open()));
     assert!(vcx.debug_bounds("project-view").is_some(), "closing the panel returns to the project view");
 
-    // Its composer starts another task, even though the project has tasks.
-    vcx.simulate_input("third");
-    vcx.simulate_keystrokes("enter");
+    // New session starts another plain task from the project view; its
+    // composer would brief a coordinator instead (ADR 0010 §5).
+    click_control(&mut vcx, "hdr-new");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_some_and(|id| id != a && id != b)));
     let created = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    ready_on(&deck, &mut vcx, Some(&created));
+    vcx.simulate_input("third");
+    vcx.simulate_keystrokes("enter");
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
     vcx.simulate_keystrokes("1");
     ready_on(&deck, &mut vcx, Some(&created));
