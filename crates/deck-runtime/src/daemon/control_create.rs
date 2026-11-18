@@ -48,8 +48,10 @@ pub(super) fn create(
             })
             .collect();
         let argv = recorded.as_ref().map(|project| project.argv.as_slice());
-        let budget = control::admit_create(policy, argv, requested, &workers, now_ms())?;
-        let (Some(recorded), Some(cwd)) = (&recorded, recorded.as_ref().and_then(|p| p.checkouts.first())) else {
+        let checkout = recorded.as_ref().and_then(|p| p.checkouts.first());
+        let in_place = (service.runtime.backend() == "local").then(|| in_checkout(&service.runtime, checkout));
+        let budget = control::admit_create(policy, argv, requested, &workers, in_place, now_ms())?;
+        let (Some(recorded), Some(cwd)) = (&recorded, checkout) else {
             return Err(control::Refusal::new(control::Code::Refused, "the project has no checkout Deck knows"));
         };
         let spec = Spec {
@@ -83,6 +85,19 @@ pub(super) fn create(
         eprintln!("deckd: starting worker {id}: {error}");
     }
     Ok(json!({ "id": id }))
+}
+
+/// Live workers, any coordinator's, running in `checkout` on the local
+/// backend: they would share it with the next one (deck#200).
+fn in_checkout(runtime: &crate::Runtime, checkout: Option<&std::path::PathBuf>) -> usize {
+    let Some(checkout) = checkout else { return 0 };
+    runtime.tasks().map_or(0, |tasks| {
+        tasks
+            .iter()
+            .filter(|task| task.spec.created_by.is_some() && task.backend == "local" && task.spec.cwd == *checkout)
+            .filter(|task| matches!(task.state, State::Created | State::Running))
+            .count()
+    })
 }
 
 /// Start the worker, then send the brief once its holder can take it. A

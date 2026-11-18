@@ -241,6 +241,14 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     settings.policy.max_concurrent = 4;
     settings.policy.creates_per_hour = 2;
     client.coordinator_policy(&coordinator, Some(settings)).unwrap();
+    // Under the caps, but the first worker still runs in the project's one
+    // local checkout (deck#200): retryable, and no Limit to raise.
+    let shared = post(&url, t, &second);
+    assert_eq!(code(&shared), (403, "deck_control_cap"));
+    assert!(shared.1["error"]["message"].as_str().is_some_and(|m| m.contains("one runs at a time")), "{}", shared.1);
+    // Stop answers the confirmed state, and makes room in the checkout.
+    let (status, stopped) = post(&url, t, &json!({ "operation": "stop", "id": worker }));
+    assert_eq!((status, stopped["state"].clone()), (200, json!("stopped")));
     let (status, again) = post(&url, t, &second);
     assert_eq!(status, 200, "{again}");
     let defaulted = client.task(again["id"].as_str().unwrap()).unwrap();
@@ -249,9 +257,7 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     let third = json!({ "operation": "create", "project": project.id, "brief": "Third" });
     assert_eq!(code(&post(&url, t, &third)), (403, "deck_control_cap"));
 
-    // Stop answers the confirmed state; no refusal made an approval.
-    let (status, stopped) = post(&url, t, &json!({ "operation": "stop", "id": worker }));
-    assert_eq!((status, stopped["state"].clone()), (200, json!("stopped")));
+    // No refusal made an approval.
     let prompt_stopped = json!({ "operation": "prompt", "id": worker, "text": "more" });
     assert_eq!(code(&post(&url, t, &prompt_stopped)), (403, "deck_control_refused"));
     assert!(client.approvals(&worker).unwrap().is_empty());
