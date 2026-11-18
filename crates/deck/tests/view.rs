@@ -3924,3 +3924,65 @@ fn a_workers_question_is_surfaced_and_a_cap_row_raises_the_limit(cx: &mut TestAp
     drop(daemon);
     cleanup_daemon(&data);
 }
+
+#[cfg(unix)]
+#[gpui::test]
+fn the_coordinator_needs_you_as_project_coordinator_and_opens_the_project_view(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-coordinator-needs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_string).to_vec();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    coordinator_command(&daemon, &repo, &project.id, &argv);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.run_until_parked();
+    prompt_fake(&deck, &mut vcx, "keep an eye on the sidebar work");
+    let coordinator = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    assert!(deck.read_with(&vcx, |d, _| d.needs_you().is_empty()), "a turn seen in the project view needs nothing");
+
+    // Away on a plain task, the coordinator's question needs the user.
+    click_control(&mut vcx, "hdr-new");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_some_and(|id| id != coordinator)));
+    let plain = deck.read_with(&vcx, |d, _| d.task_id().unwrap().to_string());
+    ready_on(&deck, &mut vcx, Some(&plain));
+    daemon.prompt(&coordinator, "status?", None).unwrap();
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().any(|i| i.task == coordinator)));
+    let (needs, projects) = deck.update(&mut vcx, |d, _| d.sidebar_inputs());
+    let need = needs.iter().find(|n| n.task == coordinator).unwrap();
+    assert_eq!((need.project_name.as_str(), need.title.as_str()), ("repo", "coordinator"), "reads repo › coordinator");
+    assert_eq!(projects[0].tasks, 1, "the coordinator is no task of the project's count");
+    let rows = deck::ui::sidebar::rows(&needs, &projects, Some(project.id.as_str()), false, 0);
+    assert!(
+        rows.iter().any(|r| matches!(r, deck::ui::sidebar::Row::Project { attention: true, .. })),
+        "and counts toward the project's attention dot"
+    );
+    deck.read_with(&vcx, |d, _| assert!(d.board().cards().len() == 1, "only the plain task has a row"));
+
+    // The item opens the project view, where its question waits.
+    let index = deck.read_with(&vcx, |d, _| d.needs_you().iter().position(|i| i.task == coordinator).unwrap());
+    deck.update(&mut vcx, |d, cx| d.open_item(index, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.coordinator_selected() && d.showing_project()));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&coordinator));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().all(|i| i.task != coordinator)));
+
+    cx.quit();
+    for id in [&coordinator, &plain] {
+        let _ = daemon.stop(id);
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}

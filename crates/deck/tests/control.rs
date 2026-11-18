@@ -286,3 +286,75 @@ fn state_reports_the_needs_you_strip(cx: &mut TestAppContext) {
     let label = format!("{} › {}", need["project"].as_str().unwrap(), need["title"].as_str().unwrap());
     assert!(label.starts_with("test › "), "the row reads project › title: {label}");
 }
+
+#[gpui::test]
+fn state_reports_the_projects_coordinator_and_its_surfaced_rows(cx: &mut TestAppContext) {
+    let (deck, mut cx, d) = open(cx);
+    let record = |id: &str, kind: &str, title: &str, by: Option<&str>| -> deck_runtime::Task {
+        serde_json::from_value(json!({
+            "id": id, "backend": "local", "title": title,
+            "spec": { "argv": ["x"], "cwd": "/src/a", "project": "git:test", "kind": kind, "created_by": by },
+            "state": { "state": "running" }, "pid": null,
+        }))
+        .unwrap()
+    };
+    let project = deck_runtime::project::Project {
+        id: "git:test".into(),
+        name: "test".into(),
+        checkouts: vec!["/src/a".into()],
+        argv: vec!["x".into()],
+        coordinator_argv: None,
+        opened_ms: 1,
+        hidden: false,
+    };
+    let approval = deck_runtime::approvals::Approval {
+        id: "a1".into(),
+        task: "w1".into(),
+        project: "git:test".into(),
+        session: None,
+        gateway: "web".into(),
+        operation: "connect".into(),
+        destination: "registry.npmjs.org".into(),
+        credential: None,
+        details: Default::default(),
+        reason: None,
+        created_ms: 0,
+        expires_ms: 0,
+        grant_expires_ms: None,
+        policy: 0,
+        state: deck_runtime::approvals::State::Pending,
+        waiters: 1,
+    };
+    deck.update(&mut cx, |d, cx| {
+        d.on_projects(vec![project], Some("git:test".into()), cx);
+        let tasks = vec![record("c1", "coordinator", "brief", None), record("w1", "task", "npm audit fix", Some("c1"))];
+        d.on_tasks(tasks, Default::default(), cx);
+        d.on_approvals([("w1".to_string(), vec![approval])].into(), cx);
+    });
+    let s = send(&mut cx, &d, json!({ "cmd": "state" }));
+    assert_eq!(s["main"], json!("project"));
+    assert_eq!(s["coordinator"]["id"], json!("c1"));
+    assert_eq!(s["coordinator"]["status"], json!("Coordinator starting"), "running, not attached yet");
+    assert_eq!(
+        s["surfaced"],
+        json!([{ "task": "w1", "title": "npm audit fix", "asks": "wants network:", "subject": "registry.npmjs.org" }])
+    );
+    assert_eq!(s["limit"], Value::Null);
+    assert_eq!(s["board"]["cards"].as_array().unwrap().len(), 1, "the coordinator has no card");
+
+    deck.update(&mut cx, |d, cx| {
+        let cap = deck_runtime::control::CapNotice { coordinator: "c1".into(), cap: "max_concurrent".into(), limit: 1 };
+        d.on_notice(
+            deck_runtime::Notice {
+                task: "c1".into(),
+                state: deck_runtime::State::Running,
+                turn: None,
+                prompt: None,
+                cap: Some(cap),
+            },
+            cx,
+        );
+    });
+    let s = send(&mut cx, &d, json!({ "cmd": "state" }));
+    assert_eq!(s["limit"], json!("Coordinator reached its limit of 1 running sessions"));
+}

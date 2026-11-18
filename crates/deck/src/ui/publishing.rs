@@ -172,9 +172,15 @@ impl Deck {
         Some((task, self.published.get(task).and_then(|p| publication::view(p, now_ms()))))
     }
 
-    /// The project name of task `id`, for the panel's heading.
+    /// Task `id`'s title, for the panel's heading and Needs you. A
+    /// coordinator is named for what it is, so its Needs-you row reads
+    /// `deck › coordinator` (ADR 0011 §9).
     pub fn task_title(&self, id: &str) -> String {
-        self.tasks.iter().find(|t| t.id == id).map_or_else(|| id.to_string(), super::tasks::title)
+        match self.tasks.iter().find(|t| t.id == id) {
+            Some(task) if super::coordinator::is_coordinator(task) => "coordinator".into(),
+            Some(task) => super::tasks::title(task),
+            None => id.to_string(),
+        }
     }
 
     /// The capability warning for the window's own task (ADR 0008 §1).
