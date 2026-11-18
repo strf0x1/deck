@@ -22,6 +22,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod control;
+mod control_create;
 mod coordinator;
 
 pub const IDLE: Duration = Duration::from_secs(5);
@@ -69,6 +71,8 @@ struct Service {
     boundary: Arc<Boundary>,
     broker: Arc<Broker>,
     settings: crate::settings::file::Store,
+    /// Workers whose coordinator brief is not delivered yet (deck#152).
+    briefs: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// Run until there are no running tasks and no control clients for `idle`.
@@ -110,6 +114,7 @@ pub fn serve(options: Options) -> Result<()> {
         boundary: boundary.clone(),
         broker: broker.clone(),
         settings,
+        briefs: Arc::default(),
     }));
     let reader = Arc::new(crate::pull_request::Reader::default());
     let clients = Arc::new(AtomicUsize::new(0));
@@ -234,6 +239,28 @@ fn connection(
                         Ok(serde_json::to_value(crate::daemon_turns::wait(&runtime, &task, after_turn, wait_ms)?)?)
                     }
                     _ => unreachable!("matched a turn request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
+            // A coordinator's operation may wait (a `wait`, a prompt's turn
+            // start), so it takes the service lock only for what it reads.
+            Ok(request @ Request::Control { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::Control { task, request } => {
+                        let (runtime, briefs) = {
+                            let service = service.lock().unwrap_or_else(|e| e.into_inner());
+                            (service.runtime.clone(), service.briefs.clone())
+                        };
+                        let cx = control::Context {
+                            service: service.clone(),
+                            boundary: boundary.clone(),
+                            reader: reader.clone(),
+                            runtime,
+                            briefs,
+                        };
+                        Ok(serde_json::to_value(control::control(&cx, &task, request))?)
+                    }
+                    _ => unreachable!("matched a control request"),
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
@@ -670,7 +697,9 @@ impl Service {
                 Ok(json!(null))
             }
             Request::Prompts { task } => Ok(serde_json::to_value(self.runtime.prompts(&task)?)?),
-            Request::Prompt { .. } | Request::Wait { .. } => unreachable!("handled before service dispatch"),
+            Request::Prompt { .. } | Request::Wait { .. } | Request::Control { .. } => {
+                unreachable!("handled before service dispatch")
+            }
             Request::Seen { id, turn } => {
                 self.runtime.seen(&id, turn)?;
                 Ok(json!(null))

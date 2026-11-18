@@ -188,6 +188,80 @@ On the local backend the agent runs on the host as the user and could reach
 are only as strong as its agent's sandbox; the VM backend is where they are
 enforced (ADR 0011 §2, amended 2026-11-17).
 
+### The control surface
+
+A coordinator's agent acts on other tasks through one closed surface
+(ADR 0011 §4, contract 1.4.0 §13, deck#152): `POST <DECK_CONTROL_URL>/control`
+with one JSON operation of at most 32 KiB from the set `tasks`, `task`,
+`create`, `prompt`, `wait`, `stop`. The gateway (`deck-gateway`'s
+`task_control`) checks the bearer token first (before the path, the method or
+any body byte), then the route, the body and the set, and forwards the typed
+operation to `deckd` as `{"op":"control", task, request}`, where `task` is
+the coordinator from the gateway's own arguments, never the guest. `deckd`
+answers `{"reply": body}` or `{"refused": {code, message}}` and the gateway
+turns the code into the contract's status: `deck_control_bad_request`
+400/404/405/411/413, `_unauthorized` 401 (with `WWW-Authenticate: Bearer
+realm="deck-control"`), `_scope`, `_cap` and `_refused` 403, `_unknown` 404,
+`_busy` 409, `_unavailable` 503 when `deckd` cannot be reached.
+
+- **VM coordinator.** The VMM starts the task's gateway with `--coordinator`,
+  so the extension port answers the `control` kind; the guest entry starts a
+  `deck-egress --kind control` relay on `127.0.0.1:8085` and exports
+  `DECK_CONTROL_URL`. No token: only the guest reaches that loopback.
+- **Local coordinator.** The holder starts `deck-gateway --control-listen
+  127.0.0.1:0 --control <deckd.sock> --task <id>` before the agent, with a
+  fresh 256-bit token in the gateway's environment (never an argument), and
+  gives the agent `DECK_CONTROL_URL` and `DECK_CONTROL_TOKEN`. The gateway
+  ends with the holder (its stdin pipe). It refuses to listen without a token
+  or off loopback. The token keeps other host processes off the surface; it
+  does not confine the agent, which runs as the user. A `deckd` with no
+  `deck-gateway` beside it (and no `DECK_GATEWAY_EXECUTABLE`) starts the
+  coordinator without a surface and says so in its log.
+
+`deckd` reads the coordinator's `coordinator.json` for every operation (no
+policy, or a task that is not a coordinator, is `refused`):
+
+- **Scope.** A task is visible when its project is in the policy's set and it
+  is not the caller; anything else is `unknown`, exactly like a missing id. A
+  project outside the set is `scope`. `prompt` and `stop` need the target's
+  `created_by` to name the caller (`scope` otherwise) and never reach a
+  coordinator (`refused`), and `wait` on the caller itself is `refused`.
+- **`create`** checks, in order, the project's recorded agent command
+  (`refused` without one), the budget (lower than the policy's
+  `worker_budget`, never higher: `refused`), live workers against
+  `max_concurrent` and workers created in the rolling hour against
+  `creates_per_hour` (`cap`). Under one service lock it records the worker
+  with the project's agent command, first checkout and GitHub policy,
+  `created_by` the coordinator, its budget in `budget.json` and its title
+  (the request's, or the brief's first line), and answers `{ id }`. A thread
+  then starts it and sends the brief through the holder's `prompt` with
+  `from` the coordinator, retrying while busy for up to 60 s; a worker that
+  fails to start is `failed` in its summary, which wakes a `wait`.
+- **`prompt`** waits up to 60 s for a just-created worker to run and its
+  brief to be sent, then prompts through the holder: `{ turn }`, or `busy`
+  while a turn is working or waiting. A stopped, failed or destroyed task is
+  `refused`; this surface does not resume.
+- **`wait`** (`wait_ms` at most 300000, larger is `bad_request`, never
+  shortened; `after_turn` defaults to 0) ends when the task stops, fails or
+  is destroyed, when a turn after `after_turn` is idle, or when a pending
+  approval or a waiting question appears after it began; otherwise it times
+  out with `timed_out: true`. Both reply with the summary.
+- **`stop`** stops a running worker and answers `{ id, state }`.
+- **Summaries** carry id, project, title, state, turn (`stopReason`
+  camel-cased as in §5.2), attention, the pending approval count, the
+  publication, the pull request reader's last read (no GitHub read during a
+  listing), `created_by` and the last assistant message (at most 2048 bytes,
+  `last_message_truncated` when cut). The holder writes that message to
+  `tasks/<id>/message.json` when a turn ends: the agent's text since its last
+  tool call. `tasks` lists at most 200, most recently created first.
+
+Every operation appends `{"event":"control", op, target?, outcome}` to the
+coordinator's record (`ok` or the refusal code; no body, prompt or token).
+A cap refusal is also announced on the notice stream with
+`cap: { coordinator, cap: "max_concurrent" | "creates_per_hour", limit }`,
+so the window can offer to raise it through `coordinator_policy`; no
+refusal ever creates an approval.
+
 An agent that refuses its session, as Construct refuses a model under
 `optchat`'s 65536-token window floor, is a failed start, not a silent
 fallback: when the holder's own `initialize`, `session/new` or `session/load`

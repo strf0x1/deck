@@ -96,6 +96,48 @@ fn idempotent_prompts_are_the_contracts() {
     assert!((idem["min_length"].as_u64().unwrap() as usize..=max).contains(&key.chars().count()), "{key}");
 }
 
+#[test]
+fn coordinator_control_is_the_contracts() {
+    let m = matrix();
+    let control = &m["control"];
+    assert_eq!(control["since"], "1.4.0");
+    assert_eq!(control["method"], "POST");
+    assert_eq!(control["path"], CONTROL_PATH);
+    assert_eq!(control["environment"]["url"], CONTROL_URL_ENV);
+    assert_eq!(control["environment"]["token"], CONTROL_TOKEN_ENV);
+    assert_eq!(control["capability"], Value::Null, "discovered from the environment, not initialize");
+    let operations: Vec<&str> =
+        control["operations"].as_array().unwrap().iter().map(|op| op["operation"].as_str().unwrap()).collect();
+    assert_eq!(operations, ["tasks", "task", "create", "prompt", "wait", "stop"]);
+    let codes: Vec<&str> =
+        control["refusals"].as_array().unwrap().iter().map(|row| row["code"].as_str().unwrap()).collect();
+    assert_eq!(
+        codes,
+        [
+            "deck_control_bad_request",
+            "deck_control_unauthorized",
+            "deck_control_scope",
+            "deck_control_cap",
+            "deck_control_refused",
+            "deck_control_unknown",
+            "deck_control_busy",
+            "deck_control_unavailable",
+        ]
+    );
+    // Every exchange names a schema'd request or a refusal the table lists.
+    let schemas = validators();
+    let exchanges = control["exchanges"].as_array().unwrap();
+    assert!(exchanges.len() >= 45, "the 1.4.0 exchange table");
+    for exchange in exchanges {
+        let expect = &exchange["expect"];
+        let name = if expect["status"] == 200 { None } else { Some("control-error.schema.json") };
+        if let Some(name) = name {
+            schemas[name].validate(&expect["body"]).unwrap();
+            assert!(codes.contains(&expect["code"].as_str().unwrap()), "{}", exchange["case"]);
+        }
+    }
+}
+
 fn validators() -> HashMap<String, jsonschema::Validator> {
     let schemas: Vec<_> = std::fs::read_dir(vendored().join("schema"))
         .unwrap()

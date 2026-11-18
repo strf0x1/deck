@@ -234,6 +234,16 @@ pub enum Event {
     PolicyChanged {
         by: String,
     },
+    /// One operation a coordinator sent through its control surface
+    /// (ADR 0011 §4, deck#152 R5): which, on which task, and how it ended
+    /// (`ok` or a refusal code). Never a body, a prompt or a credential.
+    /// Accounting on the coordinator's record, not a lifecycle transition.
+    Control {
+        op: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        outcome: String,
+    },
     Stopped {
         clean: bool,
         reason: String,
@@ -362,9 +372,9 @@ impl Task {
             self.done_ms = if *done { Some(at_ms) } else { None };
             return Ok(());
         }
-        if let Event::PolicyChanged { .. } = ev {
+        if let Event::PolicyChanged { .. } | Event::Control { .. } = ev {
             if self.state == State::Destroyed {
-                bail!("task {}: `policy_changed` cannot follow destroyed", self.id);
+                bail!("task {}: `{}` cannot follow destroyed", self.id, name(ev));
             }
             return Ok(());
         }
@@ -436,6 +446,7 @@ fn name(ev: &Event) -> &'static str {
         Event::Marked { .. } => "marked",
         Event::Titled { .. } => "titled",
         Event::PolicyChanged { .. } => "policy_changed",
+        Event::Control { .. } => "control",
         Event::Stopped { .. } => "stopped",
         Event::Failed { .. } => "failed",
         Event::Destroyed => "destroyed",

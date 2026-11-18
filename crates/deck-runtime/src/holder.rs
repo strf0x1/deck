@@ -77,7 +77,21 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
     let store = Store::open(data)?;
     let task = store.observe(id)?;
     let (exited, exit) = mpsc::channel();
-    let mut instance = match (GuardedLocal { executable: std::env::current_exe()? }).start(
+    // A coordinator's control surface on host loopback (ADR 0011 §4): its
+    // gateway lives as long as this holder, and the agent gets its URL and
+    // per-run token. Without it a coordinator would start with no authority.
+    let control_gateway = match task.spec.kind {
+        crate::TaskKind::Coordinator => match crate::local_control::start(data, id) {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                report(Err(format!("{error:#}")))?;
+                return Err(error);
+            }
+        },
+        crate::TaskKind::Task => None,
+    };
+    let env = control_gateway.as_ref().map(|gateway| gateway.env.clone()).unwrap_or_default();
+    let mut instance = match (GuardedLocal { executable: std::env::current_exe()?, env }).start(
         &task.spec,
         Box::new(move |reason| {
             let _ = exited.send(reason);

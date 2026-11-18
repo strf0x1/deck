@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-wait-request.schema.json",
+  "title": "Coordinator control `wait` request (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "wait"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "after_turn": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "wait_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 300000
+    }
+  },
+  "required": [
+    "operation",
+    "id",
+    "wait_ms"
+  ],
+  "additionalProperties": false
+}

@@ -67,10 +67,33 @@ pub fn read(reader: &mut impl BufRead) -> Result<Option<Request>, ReadError> {
 
 /// Read one request whose target has the given shape.
 pub fn read_shape(reader: &mut impl BufRead, shape: Shape) -> Result<Option<Request>, ReadError> {
+    let Some((mut request, length)) = read_head_only(reader, shape)? else {
+        return Ok(None);
+    };
+    let length = length.unwrap_or(0);
+    if length > MAX_BODY {
+        return Err(refused(413, format!("request body exceeds {MAX_BODY} bytes")));
+    }
+    request.body = read_body(reader, length)?;
+    Ok(Some(request))
+}
+
+/// Read and parse one origin- or absolute-form request head, leaving the body
+/// unread: a listener that must refuse before the body (an unauthenticated
+/// caller, a body over its own limit) decides with the head alone. The
+/// `content-length`, when sent, is returned beside the bodiless request.
+pub fn read_head_only(reader: &mut impl BufRead, shape: Shape) -> Result<Option<(Request, Option<usize>)>, ReadError> {
     let Some(head) = read_head(reader)? else {
         return Ok(None);
     };
-    parse(&head, reader, shape).map(Some)
+    parse(&head, shape).map(Some)
+}
+
+/// Read exactly `length` body bytes after [`read_head_only`].
+pub fn read_body(reader: &mut impl BufRead, length: usize) -> Result<Vec<u8>, ReadError> {
+    let mut body = vec![0; length];
+    read_exact(reader, &mut body)?;
+    Ok(body)
 }
 
 fn read_head(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, ReadError> {
@@ -112,7 +135,7 @@ fn take(reader: &mut impl BufRead) -> io::Result<Option<u8>> {
     Ok(Some(byte))
 }
 
-fn parse(head: &[u8], reader: &mut impl BufRead, shape: Shape) -> Result<Request, ReadError> {
+fn parse(head: &[u8], shape: Shape) -> Result<(Request, Option<usize>), ReadError> {
     let text = std::str::from_utf8(head).map_err(|_| refused(400, "request head is not UTF-8"))?;
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
@@ -166,16 +189,10 @@ fn parse(head: &[u8], reader: &mut impl BufRead, shape: Shape) -> Result<Request
         return Err(refused(417, "100-continue is not supported"));
     }
     let length = match headers.iter().find(|(name, _)| name == "content-length") {
-        Some((_, value)) => value.parse::<usize>().map_err(|_| refused(400, "content-length is not a number"))?,
-        None => 0,
+        Some((_, value)) => Some(value.parse::<usize>().map_err(|_| refused(400, "content-length is not a number"))?),
+        None => None,
     };
-    if length > MAX_BODY {
-        return Err(refused(413, format!("request body exceeds {MAX_BODY} bytes")));
-    }
-
-    let mut body = vec![0; length];
-    read_exact(reader, &mut body)?;
-    Ok(Request { method: method.to_string(), target: target.to_string(), headers, body })
+    Ok((Request { method: method.to_string(), target: target.to_string(), headers, body: Vec::new() }, length))
 }
 
 fn read_exact(reader: &mut impl BufRead, body: &mut [u8]) -> Result<(), ReadError> {
@@ -252,10 +269,12 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        409 => "Conflict",
         411 => "Length Required",
         413 => "Payload Too Large",
         417 => "Expectation Failed",

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-wait-response.schema.json",
+  "title": "Coordinator control `wait` reply, including a timeout (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "timed_out": {
+      "type": "boolean"
+    },
+    "task": {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-task-summary.schema.json"
+    }
+  },
+  "required": [
+    "timed_out",
+    "task"
+  ],
+  "additionalProperties": true
+}

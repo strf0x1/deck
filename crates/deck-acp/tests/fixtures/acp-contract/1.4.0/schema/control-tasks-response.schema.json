@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-tasks-response.schema.json",
+  "title": "Coordinator control `tasks` reply (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-task-summary.schema.json"
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "tasks",
+    "truncated"
+  ],
+  "additionalProperties": true
+}

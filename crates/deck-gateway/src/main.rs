@@ -15,11 +15,14 @@ use anyhow::{Context as _, Result, bail};
 use deck_gateway::control::Control;
 use deck_gateway::policy::{Budget, Usage};
 use deck_gateway::server::{self, Config, GitHubSettings, WebSettings};
+use deck_gateway::task_control;
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] (--secret NAME | --keyless) [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--grants PATH] [--project ID] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--exit-on-stdin-eof]";
+const USAGE: &str = "deck-gateway --model-socket PATH --extension-socket PATH [--web-socket PATH] [--github-socket PATH] --upstream URL --model NAME [--model NAME] (--secret NAME | --keyless) [--request-budget N] [--token-budget N] [--used-requests N] [--used-tokens N] [--budget-file PATH] [--control PATH --task ID] [--web-profile NAME] [--grants PATH] [--project ID] [--web-hosts PATH] [--github-repository OWNER/NAME --github-token SECRET --github-scratch PATH [--github-base BRANCH] [--github-api URL] [--github-remote URL] [--github-branch BRANCH] [--github-git PATH]] [--coordinator] [--exit-on-stdin-eof]";
+
+const CONTROL_USAGE: &str = "deck-gateway --control-listen 127.0.0.1:0 --control PATH --task ID [--exit-on-stdin-eof] (token in DECK_CONTROL_TOKEN)";
 
 fn main() -> ExitCode {
     match run() {
@@ -32,25 +35,68 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let (config, secret, watch_stdin) = parse(std::env::args().skip(1))?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--control-listen") {
+        return control_only(args);
+    }
+    let (config, secret, watch_stdin) = parse(args)?;
     let secret = secret.unwrap_or_else(|| "none (keyless)".into());
     if watch_stdin {
-        // The VMM holds the write end. Its death closes this pipe, which
-        // stops the gateway even when the VM's process group was not signalled.
-        std::thread::Builder::new().name("gateway-parent".into()).spawn(|| {
-            let mut byte = [0u8; 64];
-            let mut stdin = std::io::stdin();
-            loop {
-                match stdin.read(&mut byte) {
-                    Ok(0) => std::process::exit(1),
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => std::process::exit(1),
-                }
-            }
-        })?;
+        watch_parent()?;
     }
     server::serve(config).with_context(|| format!("serving the gateway for secret {secret}"))
+}
+
+/// The parent (the VMM, or a local coordinator's holder) holds the write
+/// end. Its death closes this pipe, which stops the gateway even when its
+/// process group was not signalled.
+fn watch_parent() -> Result<()> {
+    std::thread::Builder::new().name("gateway-parent".into()).spawn(|| {
+        let mut byte = [0u8; 64];
+        let mut stdin = std::io::stdin();
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(0) => std::process::exit(1),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => std::process::exit(1),
+            }
+        }
+    })?;
+    Ok(())
+}
+
+/// A local coordinator's gateway: the control surface alone, on host
+/// loopback, behind the token its holder put in this process's environment
+/// (never an argument, which other users' `ps` could read).
+fn control_only(args: Vec<String>) -> Result<()> {
+    let (listen, socket, task, watch_stdin) = parse_control(args)?;
+    let token = std::env::var(task_control::TOKEN_ENV)
+        .with_context(|| format!("--control-listen needs {}", task_control::TOKEN_ENV))?;
+    let token = task_control::wire::Token::new(&token).map_err(anyhow::Error::msg)?;
+    if watch_stdin {
+        watch_parent()?;
+    }
+    let daemon = std::sync::Arc::new(task_control::daemon::Deckd::new(socket));
+    task_control::serve_loopback(task_control::Surface::new(task, Some(token), daemon), listen)
+}
+
+fn parse_control(args: Vec<String>) -> Result<(std::net::SocketAddr, PathBuf, String, bool)> {
+    let (mut listen, mut socket, mut task, mut watch_stdin) = (None, None, None, false);
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--control-listen" => {
+                let address = value(&mut args, &flag)?;
+                listen = Some(address.parse().with_context(|| format!("--control-listen: {address:?}"))?);
+            }
+            "--control" => socket = Some(PathBuf::from(value(&mut args, &flag)?)),
+            "--task" => task = Some(value(&mut args, &flag)?),
+            "--exit-on-stdin-eof" => watch_stdin = true,
+            other => bail!("unknown argument {other:?}\n{CONTROL_USAGE}"),
+        }
+    }
+    Ok((listen.context(CONTROL_USAGE)?, socket.context(CONTROL_USAGE)?, task.context(CONTROL_USAGE)?, watch_stdin))
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<String>, bool)> {
@@ -83,6 +129,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
     let mut github_remote = None;
     let mut github_git = None;
     let mut watch_stdin = false;
+    let mut coordinator = false;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -118,6 +165,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
             "--github-remote" => github_remote = Some(value(&mut args, &flag)?),
             "--github-git" => github_git = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--exit-on-stdin-eof" => watch_stdin = true,
+            "--coordinator" => coordinator = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -160,6 +208,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
             None
         }
     };
+    if coordinator && (control.is_none() || task.is_none()) {
+        bail!("--coordinator needs --control and --task: the control kind forwards to deckd for one task");
+    }
     if (!grants.is_empty() || project.is_some()) && task.is_none() {
         bail!("--grants and --project need --task");
     }
@@ -220,6 +271,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
             extension_socket: extension_socket.context(USAGE)?,
             web,
             github,
+            coordinator,
         },
         secret,
         watch_stdin,

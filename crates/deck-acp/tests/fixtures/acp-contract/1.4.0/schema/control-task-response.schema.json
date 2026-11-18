@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-task-response.schema.json",
+  "title": "Coordinator control `task` reply (since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "task": {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-task-summary.schema.json"
+    }
+  },
+  "required": [
+    "task"
+  ],
+  "additionalProperties": true
+}

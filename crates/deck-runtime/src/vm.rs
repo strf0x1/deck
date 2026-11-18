@@ -323,6 +323,7 @@ impl Backend for Vm {
                 token_budget: self.token_budget,
                 usage: task.usage,
                 budget_file: self.dir(&task.id).join("budget.json"),
+                coordinator: task.spec.kind == crate::TaskKind::Coordinator,
                 secret: choice.provider.secret.clone(),
                 credentials: credentials.clone(),
                 control: self.paths.control(),
@@ -704,6 +705,10 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 fn task_environment(task: &Task, guest: &str, args: &[String], model: &str, web: bool, github: bool) -> Vec<String> {
     let mut env = guest_environment(guest, args, model, web, github);
     env.extend(task.spec.agent_env().into_iter().map(|(name, value)| format!("{name}={value}")));
+    // A coordinator's guest starts the `control` relay and exports
+    // DECK_CONTROL_URL (ADR 0011 §4); the guest's loopback needs no token.
+    let coordinator = task.spec.kind == crate::TaskKind::Coordinator;
+    env.push(format!("DECK_CONTROL_ENABLED={}", u8::from(coordinator)));
     env
 }
 
@@ -854,6 +859,11 @@ mod tests {
             task_environment(&coordinator, "/usr/local/bin/construct", &args, "m", false, false).contains(&strategy)
         );
         assert!(!task_environment(&task, "/usr/local/bin/construct", &args, "m", false, false).contains(&strategy));
+        let control = "DECK_CONTROL_ENABLED=1".to_string();
+        assert!(
+            task_environment(&coordinator, "/usr/local/bin/construct", &args, "m", false, false).contains(&control)
+        );
+        assert!(!task_environment(&task, "/usr/local/bin/construct", &args, "m", false, false).contains(&control));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

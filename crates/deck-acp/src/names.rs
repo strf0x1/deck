@@ -28,3 +28,11 @@ pub const GITHUB_OPERATIONS_VERSION: u64 = 1;
 pub const IDEMPOTENT_PROMPTS: &str = "idempotentPrompts";
 pub const IDEMPOTENCY_KEY: &str = "idempotencyKey";
 pub const IDEMPOTENCY_CONFLICT: &str = "idempotency_key_conflict";
+
+/// Coordinator task control (contract 1.4.0 §13): the agent's environment
+/// names the surface's loopback URL and, on host loopback, its bearer token;
+/// the client posts every operation to the one path. Set only for a
+/// coordinator; a worker never gets either variable.
+pub const CONTROL_URL_ENV: &str = "DECK_CONTROL_URL";
+pub const CONTROL_TOKEN_ENV: &str = "DECK_CONTROL_TOKEN";
+pub const CONTROL_PATH: &str = "/control";

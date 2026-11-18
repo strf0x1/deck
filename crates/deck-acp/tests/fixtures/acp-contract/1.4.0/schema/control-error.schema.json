@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-error.schema.json",
+  "title": "Coordinator control refusal body (every non-2xx reply, since 1.4.0)",
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "type": {
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "deck_control_bad_request",
+            "deck_control_unauthorized",
+            "deck_control_scope",
+            "deck_control_cap",
+            "deck_control_refused",
+            "deck_control_unknown",
+            "deck_control_busy",
+            "deck_control_unavailable"
+          ]
+        }
+      },
+      "required": [
+        "message",
+        "type",
+        "code"
+      ],
+      "additionalProperties": true
+    },
+    "retryable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "error",
+    "retryable"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_bad_request"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_bad_request"
+              }
+            }
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_unauthorized"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_unauthorized"
+              }
+            }
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_scope"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_scope"
+              }
+            }
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_cap"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_cap"
+              }
+            }
+          },
+          "retryable": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_refused"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_refused"
+              }
+            }
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_unknown"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_unknown"
+              }
+            }
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_busy"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_busy"
+              }
+            }
+          },
+          "retryable": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "deck_control_unavailable"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "type": {
+                "const": "deck_control_unavailable"
+              }
+            }
+          },
+          "retryable": {
+            "const": true
+          }
+        }
+      }
+    }
+  ]
+}

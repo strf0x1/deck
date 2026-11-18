@@ -151,6 +151,10 @@ pub struct Gateway {
     pub usage: Usage,
     /// The live budget file the gateway re-reads before each admission.
     pub budget_file: PathBuf,
+    /// The task is a coordinator: the gateway answers the `control` kind on
+    /// the extension port (ADR 0011 §4). Absent in older configs: no surface.
+    #[serde(default)]
+    pub coordinator: bool,
     /// The credential name the model gateway fetches the provider key under;
     /// `None` for a keyless provider (ADR 0012).
     #[serde(default)]
@@ -417,6 +421,9 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
     }
     if let Some(project) = &gateway.project {
         command.arg("--project").arg(project);
+    }
+    if gateway.coordinator {
+        command.arg("--coordinator");
     }
 
     if let Some(limit) = gateway.request_budget {
@@ -775,6 +782,7 @@ mod tests {
             token_budget: None,
             usage: Usage::default(),
             budget_file: PathBuf::from("/tmp/task.budget.json"),
+            coordinator: false,
             secret: Some("KEY".into()),
             credentials: vec!["KEY".into()],
             control: PathBuf::from("/tmp/task.control"),

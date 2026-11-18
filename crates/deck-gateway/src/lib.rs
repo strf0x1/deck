@@ -13,8 +13,11 @@
 //! [`model`] is the OpenAI-compatible reverse proxy. [`status`] is the
 //! boundary status kind on the extension port. [`web`] is the CONNECT and
 //! plain-mirror proxy, served on its own socket and on the extension port.
-//! [`github`] is the bounded publication gateway, likewise. [`server`] binds
-//! the sockets and dispatches.
+//! [`github`] is the bounded publication gateway, likewise. [`task_control`]
+//! is a coordinator's closed task-control surface (ADR 0011 §4), on the
+//! extension port for a VM coordinator and, as the one exception to the
+//! Unix-socket rule above, on host loopback behind a per-task bearer token
+//! for a local one. [`server`] binds the sockets and dispatches.
 
 pub mod control;
 pub mod credential;
@@ -25,5 +28,6 @@ pub mod model;
 pub mod policy;
 pub mod server;
 pub mod status;
+pub mod task_control;
 pub mod usage;
 pub mod web;

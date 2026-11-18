@@ -1,0 +1,1810 @@
+{
+  "contract": "1.4.0",
+  "acp": "1",
+  "names": {
+    "construct_meta": "com.sprawlcommons/construct",
+    "construct_meta_legacy": "construct",
+    "deck_meta": "com.sprawlcommons/deck",
+    "deck_meta_legacy": "deck",
+    "event_method": "_com.sprawlcommons/construct/event",
+    "event_method_legacy": "_construct/event",
+    "turn_method": "_com.sprawlcommons/construct/turn",
+    "turn_method_legacy": "_construct/turn",
+    "boundary_method": "_com.sprawlcommons/deck/boundary",
+    "boundary_method_legacy": "_deck/boundary"
+  },
+  "accepts": {
+    "boundary_methods": [
+      "_com.sprawlcommons/deck/boundary",
+      "_deck/boundary"
+    ],
+    "start_meta_keys": [
+      "com.sprawlcommons/construct",
+      "construct"
+    ],
+    "load_snapshot_keys": [
+      "com.sprawlcommons/construct",
+      "construct"
+    ]
+  },
+  "negotiation": [
+    {
+      "case": "current",
+      "client_meta": {
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "turn": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_com.sprawlcommons/construct/turn"
+      }
+    },
+    {
+      "case": "current-events-only",
+      "client_meta": {
+        "com.sprawlcommons/construct": {
+          "events": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "legacy",
+      "client_meta": {
+        "construct": {
+          "events": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "legacy-turn-is-not-a-capability",
+      "client_meta": {
+        "construct": {
+          "events": true,
+          "turn": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "none",
+      "client_meta": {},
+      "expect": {
+        "lossless": false,
+        "event_method": "_construct/event",
+        "turn_method": "_construct/turn"
+      }
+    },
+    {
+      "case": "both-keys-current-wins",
+      "client_meta": {
+        "construct": {
+          "events": true
+        },
+        "com.sprawlcommons/construct": {
+          "events": true,
+          "turn": true
+        }
+      },
+      "expect": {
+        "lossless": true,
+        "event_method": "_com.sprawlcommons/construct/event",
+        "turn_method": "_com.sprawlcommons/construct/turn"
+      }
+    }
+  ],
+  "boundary_grants": {
+    "timed_scope": "timed",
+    "deadline_field": "expires_at_ms",
+    "duration_ms": 300000,
+    "deadline_exclusive": true,
+    "capability": "boundary",
+    "new_capability_required": false,
+    "legacy_reader": "scope string accepted; deadline may be ignored; host authority unchanged",
+    "deadline_cases": [
+      {
+        "case": "before-deadline",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 300999,
+        "expires_at_ms": 301000,
+        "elapsed": false
+      },
+      {
+        "case": "at-exclusive-deadline",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 301000,
+        "expires_at_ms": 301000,
+        "elapsed": true
+      },
+      {
+        "case": "late-notice-does-not-renew",
+        "decision_at_ms": 1000,
+        "observed_at_ms": 700000,
+        "expires_at_ms": 301000,
+        "elapsed": true
+      }
+    ]
+  },
+  "github": {
+    "capability": {
+      "meta_key": "com.sprawlcommons/deck",
+      "field": "github_operations",
+      "version": 1,
+      "legacy_key": false
+    },
+    "environment": "DECK_GITHUB_URL",
+    "operations": [
+      {
+        "operation": "publish",
+        "path": "/operations/publish",
+        "writes": true,
+        "bundle": true,
+        "request": "github-publish-request.schema.json",
+        "response": "github-publish-response.schema.json"
+      },
+      {
+        "operation": "refs",
+        "path": "/operations/refs",
+        "writes": false,
+        "bundle": false,
+        "request": "github-refs-request.schema.json",
+        "response": "github-refs-response.schema.json"
+      },
+      {
+        "operation": "create_pr",
+        "path": "/operations/pull_request",
+        "writes": true,
+        "bundle": false,
+        "request": "github-create-pr-request.schema.json",
+        "response": "github-pull-request.schema.json"
+      },
+      {
+        "operation": "update_pr",
+        "path": "/operations/pull_request/update",
+        "writes": true,
+        "bundle": false,
+        "request": "github-update-pr-request.schema.json",
+        "response": "github-pull-request.schema.json"
+      },
+      {
+        "operation": "review",
+        "path": "/operations/pull_request/review",
+        "writes": false,
+        "bundle": false,
+        "request": "github-review-request.schema.json",
+        "response": "github-review-response.schema.json"
+      }
+    ],
+    "refused_by_name": [
+      "merge",
+      "close",
+      "delete",
+      "tag",
+      "release",
+      "force_push",
+      "workflow",
+      "dispatch",
+      "settings"
+    ],
+    "limits": {
+      "json_head_bytes": 65536,
+      "bundle_bytes": 16777216,
+      "pr_text_bytes": 65536,
+      "length_prefix": "u32-be",
+      "bundle_magic": "# v2 git bundle\n"
+    },
+    "refusals": [
+      {
+        "code": "deck_github_refused",
+        "status": [
+          403
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_conflict",
+        "status": [
+          409
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_bad_request",
+        "status": [
+          400,
+          405,
+          408,
+          411,
+          413,
+          431
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_not_found",
+        "status": [
+          404
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_rejected",
+        "status": [
+          409,
+          422
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_credential",
+        "status": [
+          502
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_github_failed",
+        "status": [
+          502
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_not_permitted",
+        "status": [
+          403,
+          404
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_boundary_denied",
+        "status": [
+          403
+        ],
+        "retryable": null
+      },
+      {
+        "code": "deck_boundary_unavailable",
+        "status": [
+          502
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_credential_missing",
+        "status": [
+          503
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_credential_unavailable",
+        "status": [
+          503
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_credential_refused",
+        "status": [
+          403
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_credential_revoked",
+        "status": [
+          403
+        ],
+        "retryable": false
+      }
+    ],
+    "framing_cases": [
+      {
+        "case": "full-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAc0jIHYyIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFlM2QxOWJlZDVkZmRmNzA0NSByZWZzL2hlYWRzL2RlY2svdC0xMjMKClBBQ0sAAAACAAAABpgKeJx9yrENAjEMAMA+U7inceK840gIwSiOYwuK59Er7M8GXH3rdAdioZCGw2tla2a4RahHD0WueSuNPUuR9NHT3wuUEfMoZNqn12w4M5dt1i5dbdRgQiGhSPpdz+OEBdd19xvk1qkXKohwQURMduz7ay3/U9JjThjpB4ycLR2XB3icfcoxDoAgDADAnVd0dylQrU2M8SsFS3QwJlj/7w+8+bybgWprTDJTrXWP46Q0iTblXbRENGLmYiVR0NePu4PD4putEFmypJwQYUBEDPW+rtPdfkoo+lj4ACKkIKmqA3icMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aDSGSSQyJFewzlHrF1+ua/Hlyfu/n0LBmlSIAMRUViDJ4nEvkAgAAzgBsMnicS+ICAADQAG2tAXicMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aAXxpCmaqg2XGnHIdUNOfc2ijJGSy19b9bA==",
+        "expect": {
+          "valid": true,
+          "branch": "deck/t-123",
+          "ref": "refs/heads/deck/t-123",
+          "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+          "prerequisites": []
+        }
+      },
+      {
+        "case": "incremental-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAWojIHYyIGdpdCBidW5kbGUKLWE2MDAxYjIzY2E5ZGU0MWMwZDE2MjVkNDk4OWFjYjRmNjMwODM4M2YgYmFzZQoxYzQxMGJjODYyYzEyNDkyYTRkNmU5MWUzZDE5YmVkNWRmZGY3MDQ1IHJlZnMvaGVhZHMvZGVjay90LTEyMwoKUEFDSwAAAAIAAAADmAp4nH3KsQ0CMQwAwD5TuKdx4rzjSAjBKI5jC4rn0SvszwZcfet0B2KhkIbDa2VrZrhFqEcPRa55K409S5H00dPfC5QR8yhk2qfXbDgzl23WLl1t1GBCIaFI+l3P44QF13X3G+TWqRcqiHBBREx27PtrLf9T0mNOGOkHjJwtHaoDeJwzNDAwMzFRSGSomCGplGit9TtBlUX/2972roMz/VoNIZJJDIkV7DOUesXX65r8eXJ+7+fQsGaVIgAxFRWIMnicS+ICAADQAG3WnxFTvQAeHLH9LO1KbqqcB478Sw==",
+        "expect": {
+          "valid": true,
+          "branch": "deck/t-123",
+          "ref": "refs/heads/deck/t-123",
+          "commit": "1c410bc862c12492a4d6e91e3d19bed5dfdf7045",
+          "prerequisites": [
+            "a6001b23ca9de41c0d1625d4989acb4f6308383f"
+          ]
+        }
+      },
+      {
+        "case": "two-refs",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAgYjIHYyIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFlM2QxOWJlZDVkZmRmNzA0NSByZWZzL2hlYWRzL2RlY2svdC0xMjMKYTYwMDFiMjNjYTlkZTQxYzBkMTYyNWQ0OTg5YWNiNGY2MzA4MzgzZiByZWZzL2hlYWRzL21haW4KClBBQ0sAAAACAAAABpgKeJx9yrENAjEMAMA+U7inceK840gIwSiOYwuK59Er7M8GXH3rdAdioZCGw2tla2a4RahHD0WueSuNPUuR9NHT3wuUEfMoZNqn12w4M5dt1i5dbdRgQiGhSPpdz+OEBdd19xvk1qkXKohwQURMduz7ay3/U9JjThjpB4ycLR2XB3icfcoxDoAgDADAnVd0dylQrU2M8SsFS3QwJlj/7w+8+bybgWprTDJTrXWP46Q0iTblXbRENGLmYiVR0NePu4PD4putEFmypJwQYUBEDPW+rtPdfkoo+lj4ACKkIKmqA3icMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aDSGSSQyJFewzlHrF1+ua/Hlyfu/n0LBmlSIAMRUViDJ4nEvkAgAAzgBsMnicS+ICAADQAG2tAXicMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aAXxpCmaqg2XGnHIdUNOfc2ijJGSy19b9bA==",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "ref-is-not-the-branch",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAPwjIHYyIGdpdCBidW5kbGUKYTYwMDFiMjNjYTlkZTQxYzBkMTYyNWQ0OTg5YWNiNGY2MzA4MzgzZiByZWZzL2hlYWRzL21haW4KClBBQ0sAAAACAAAAA5cHeJx9yjEOgCAMAMCdV3R3KVCtTYzxKwVLdDAmWP/vD7z5vJuBamtMMlOtdY/jpDSJNuVdtEQ0YuZiJVHQ14+7g8Pim60QWbKknBBhQEQM9b6u091+Sij6WPgAIqQgqa0BeJwzNDAwMzFRSGSomCGplGit9TtBlUX/2972roMz/VoBfGkKZjJ4nEvkAgAAzgBs4vFp4zWGbwkJHzotADiZjybMdN8=",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "not-bundle-v2",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAc0jIHYzIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFlM2QxOWJlZDVkZmRmNzA0NSByZWZzL2hlYWRzL2RlY2svdC0xMjMKClBBQ0sAAAACAAAABpgKeJx9yrENAjEMAMA+U7inceK840gIwSiOYwuK59Er7M8GXH3rdAdioZCGw2tla2a4RahHD0WueSuNPUuR9NHT3wuUEfMoZNqn12w4M5dt1i5dbdRgQiGhSPpdz+OEBdd19xvk1qkXKohwQURMduz7ay3/U9JjThjpB4ycLR2XB3icfcoxDoAgDADAnVd0dylQrU2M8SsFS3QwJlj/7w+8+bybgWprTDJTrXWP46Q0iTblXbRENGLmYiVR0NePu4PD4putEFmypJwQYUBEDPW+rtPdfkoo+lj4ACKkIKmqA3icMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aDSGSSQyJFewzlHrF1+ua/Hlyfu/n0LBmlSIAMRUViDJ4nEvkAgAAzgBsMnicS+ICAADQAG2tAXicMzQwMDMxUUhkqJghqZRorfU7QZVF/9ve9q6DM/1aAXxpCmaqg2XGnHIdUNOfc2ijJGSy19b9bA==",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "no-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQ==",
+        "expect": {
+          "valid": false,
+          "status": 411,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "declared-length-over-limit",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQEAAAE=",
+        "expect": {
+          "valid": false,
+          "status": 413,
+          "code": "deck_bad_request"
+        }
+      },
+      {
+        "case": "truncated-bundle",
+        "body_base64": "eyJvcGVyYXRpb24iOiJwdWJsaXNoIiwiYnJhbmNoIjoiZGVjay90LTEyMyIsInN1bW1hcnkiOnsic3ViamVjdCI6IkFkZCBiIiwiY291bnQiOjF9fQAAAc0jIHYyIGdpdCBidW5kbGUKMWM0MTBiYzg2MmMxMjQ5MmE0ZDZlOTFl",
+        "expect": {
+          "valid": false,
+          "status": 400,
+          "code": "deck_bad_request"
+        }
+      }
+    ]
+  },
+  "idempotent_prompts": {
+    "capability_key": "com.sprawlcommons/construct",
+    "capability": "idempotentPrompts",
+    "meta_key": "com.sprawlcommons/construct",
+    "field": "idempotencyKey",
+    "min_length": 1,
+    "max_length": 255,
+    "invalid_error": -32602,
+    "conflict_error": {
+      "code": -32602,
+      "reason": "idempotency_key_conflict"
+    },
+    "acp_v2_field": "PromptRequest.idempotencyKey",
+    "cases": [
+      {
+        "case": "new-key",
+        "recorded": "nothing",
+        "starts_turn": true,
+        "answer": "the turn's stop reason, when it ends"
+      },
+      {
+        "case": "queued",
+        "recorded": "queued",
+        "starts_turn": false,
+        "answer": "the first request's outcome"
+      },
+      {
+        "case": "running",
+        "recorded": "running",
+        "starts_turn": false,
+        "answer": "the turn's stop reason, when it ends"
+      },
+      {
+        "case": "ended",
+        "recorded": "ended",
+        "starts_turn": false,
+        "answer": "the recorded stop reason, at once"
+      },
+      {
+        "case": "cut-off",
+        "recorded": "no_stop_reason",
+        "starts_turn": false,
+        "answer": "cancelled, at once"
+      },
+      {
+        "case": "conflict",
+        "recorded": "different_prompt",
+        "starts_turn": false,
+        "answer": "-32602 idempotency_key_conflict, or as a retry"
+      },
+      {
+        "case": "invalid-key",
+        "recorded": "any",
+        "starts_turn": false,
+        "answer": "-32602"
+      }
+    ]
+  },
+  "control": {
+    "since": "1.4.0",
+    "method": "POST",
+    "path": "/control",
+    "environment": {
+      "url": "DECK_CONTROL_URL",
+      "token": "DECK_CONTROL_TOKEN"
+    },
+    "url_hosts": [
+      "127.0.0.1",
+      "[::1]"
+    ],
+    "capability": null,
+    "authorization": {
+      "header": "authorization",
+      "scheme": "Bearer",
+      "challenge": "Bearer realm=\"deck-control\"",
+      "token_pattern": "^[A-Za-z0-9._~+/-]+=*$",
+      "token_min_length": 32,
+      "token_max_length": 256,
+      "unset": "no header sent; any header ignored"
+    },
+    "limits": {
+      "body_bytes": 32768,
+      "reply_bytes": 1048576,
+      "tasks": 200,
+      "title_chars": 80,
+      "last_message_bytes": 2048,
+      "message_chars": 4096,
+      "wait_ms_max": 300000,
+      "prompt_session_wait_ms": 60000
+    },
+    "operations": [
+      {
+        "operation": "tasks",
+        "writes": false,
+        "request": "control-tasks-request.schema.json",
+        "response": "control-tasks-response.schema.json"
+      },
+      {
+        "operation": "task",
+        "writes": false,
+        "request": "control-task-request.schema.json",
+        "response": "control-task-response.schema.json"
+      },
+      {
+        "operation": "create",
+        "writes": true,
+        "request": "control-create-request.schema.json",
+        "response": "control-create-response.schema.json"
+      },
+      {
+        "operation": "prompt",
+        "writes": true,
+        "request": "control-prompt-request.schema.json",
+        "response": "control-prompt-response.schema.json"
+      },
+      {
+        "operation": "wait",
+        "writes": false,
+        "request": "control-wait-request.schema.json",
+        "response": "control-wait-response.schema.json"
+      },
+      {
+        "operation": "stop",
+        "writes": true,
+        "request": "control-stop-request.schema.json",
+        "response": "control-stop-response.schema.json"
+      }
+    ],
+    "summary": "control-task-summary.schema.json",
+    "error": "control-error.schema.json",
+    "refusals": [
+      {
+        "code": "deck_control_bad_request",
+        "status": [
+          400,
+          404,
+          405,
+          411,
+          413
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_control_unauthorized",
+        "status": [
+          401
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_control_scope",
+        "status": [
+          403
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_control_cap",
+        "status": [
+          403
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_control_refused",
+        "status": [
+          403
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_control_unknown",
+        "status": [
+          404
+        ],
+        "retryable": false
+      },
+      {
+        "code": "deck_control_busy",
+        "status": [
+          409
+        ],
+        "retryable": true
+      },
+      {
+        "code": "deck_control_unavailable",
+        "status": [
+          503
+        ],
+        "retryable": true
+      }
+    ],
+    "timeout": {
+      "status": 200,
+      "field": "timed_out",
+      "schema": "control-wait-response.schema.json"
+    },
+    "wait_wakes": [
+      "terminal-lifecycle",
+      "idle-turn-after",
+      "new-attention"
+    ],
+    "exchanges": [
+      {
+        "case": "tasks-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "tasks": [
+              {
+                "id": "01JD3W0RKER0000000000000001",
+                "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "title": "Fix the flaky login test",
+                "state": "running",
+                "turn": {
+                  "number": 2,
+                  "state": "working"
+                },
+                "attention": null,
+                "pending_approvals": 0,
+                "publication": {
+                  "kind": "pull_request",
+                  "number": 42,
+                  "url": "https://github.com/acme/app/pull/42",
+                  "title": "Fix the flaky login test",
+                  "draft": true
+                },
+                "pull_request": {
+                  "number": 42,
+                  "state": "open",
+                  "draft": true,
+                  "merged": false,
+                  "html_url": "https://github.com/acme/app/pull/42"
+                },
+                "created_by": "01JD3C00RD1NAT0R0000000001",
+                "last_message": "Pushed the fix; opening the pull request next."
+              },
+              {
+                "id": "01JD3W0RKER0000000000000001",
+                "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "title": null,
+                "state": "created",
+                "turn": null,
+                "attention": null,
+                "pending_approvals": 0,
+                "publication": null,
+                "pull_request": null,
+                "created_by": "01JD3C00RD1NAT0R0000000001",
+                "last_message": null
+              }
+            ],
+            "truncated": false
+          }
+        }
+      },
+      {
+        "case": "tasks-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "tasks": [
+              {
+                "id": "01JD3W0RKER0000000000000001",
+                "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "title": "Fix the flaky login test",
+                "state": "running",
+                "turn": {
+                  "number": 2,
+                  "state": "working"
+                },
+                "attention": null,
+                "pending_approvals": 0,
+                "publication": {
+                  "kind": "pull_request",
+                  "number": 42,
+                  "url": "https://github.com/acme/app/pull/42",
+                  "title": "Fix the flaky login test",
+                  "draft": true
+                },
+                "pull_request": {
+                  "number": 42,
+                  "state": "open",
+                  "draft": true,
+                  "merged": false,
+                  "html_url": "https://github.com/acme/app/pull/42"
+                },
+                "created_by": "01JD3C00RD1NAT0R0000000001",
+                "last_message": "Pushed the fix; opening the pull request next."
+              },
+              {
+                "id": "01JD3W0RKER0000000000000001",
+                "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "title": null,
+                "state": "created",
+                "turn": null,
+                "attention": null,
+                "pending_approvals": 0,
+                "publication": null,
+                "pull_request": null,
+                "created_by": "01JD3C00RD1NAT0R0000000001",
+                "last_message": null
+              }
+            ],
+            "truncated": false
+          }
+        }
+      },
+      {
+        "case": "task-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "task",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 1,
+                "state": "idle",
+                "stopReason": "end_turn"
+              },
+              "attention": "finished",
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "branch",
+                "branch": "deck/fix-login",
+                "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+              },
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "The test raced the session cookie; it now waits for the login redirect."
+            }
+          }
+        }
+      },
+      {
+        "case": "task-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "task",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 1,
+                "state": "idle",
+                "stopReason": "end_turn"
+              },
+              "attention": "finished",
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "branch",
+                "branch": "deck/fix-login",
+                "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+              },
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "The test raced the session cookie; it now waits for the login redirect."
+            }
+          }
+        }
+      },
+      {
+        "case": "create-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "create",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
+          "budget": {
+            "tokens": 200000
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000001"
+          }
+        }
+      },
+      {
+        "case": "create-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "create",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
+          "budget": {
+            "tokens": 200000
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000001"
+          }
+        }
+      },
+      {
+        "case": "prompt-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "prompt",
+          "id": "01JD3W0RKER0000000000000001",
+          "text": "Open a draft pull request."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "turn": 2
+          }
+        }
+      },
+      {
+        "case": "prompt-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "prompt",
+          "id": "01JD3W0RKER0000000000000001",
+          "text": "Open a draft pull request."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "turn": 2
+          }
+        }
+      },
+      {
+        "case": "wait-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000001",
+          "after_turn": 1,
+          "wait_ms": 300000
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "timed_out": false,
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 2,
+                "state": "idle",
+                "stopReason": "end_turn"
+              },
+              "attention": "finished",
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "branch",
+                "branch": "deck/fix-login",
+                "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+              },
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "The test raced the session cookie; it now waits for the login redirect."
+            }
+          }
+        }
+      },
+      {
+        "case": "wait-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000001",
+          "after_turn": 1,
+          "wait_ms": 300000
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "timed_out": false,
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 2,
+                "state": "idle",
+                "stopReason": "end_turn"
+              },
+              "attention": "finished",
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "branch",
+                "branch": "deck/fix-login",
+                "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+              },
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "The test raced the session cookie; it now waits for the login redirect."
+            }
+          }
+        }
+      },
+      {
+        "case": "stop-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "stop",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000001",
+            "state": "stopped"
+          }
+        }
+      },
+      {
+        "case": "stop-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "stop",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000001",
+            "state": "stopped"
+          }
+        }
+      },
+      {
+        "case": "wait-timeout-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000001",
+          "after_turn": 2,
+          "wait_ms": 1000
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "timed_out": true,
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 2,
+                "state": "working"
+              },
+              "attention": null,
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "pull_request",
+                "number": 42,
+                "url": "https://github.com/acme/app/pull/42",
+                "title": "Fix the flaky login test",
+                "draft": true
+              },
+              "pull_request": {
+                "number": 42,
+                "state": "open",
+                "draft": true,
+                "merged": false,
+                "html_url": "https://github.com/acme/app/pull/42"
+              },
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "Pushed the fix; opening the pull request next."
+            }
+          }
+        }
+      },
+      {
+        "case": "wait-timeout-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000001",
+          "after_turn": 2,
+          "wait_ms": 1000
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "timed_out": true,
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 2,
+                "state": "working"
+              },
+              "attention": null,
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "pull_request",
+                "number": 42,
+                "url": "https://github.com/acme/app/pull/42",
+                "title": "Fix the flaky login test",
+                "draft": true
+              },
+              "pull_request": {
+                "number": 42,
+                "state": "open",
+                "draft": true,
+                "merged": false,
+                "html_url": "https://github.com/acme/app/pull/42"
+              },
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "Pushed the fix; opening the pull request next."
+            }
+          }
+        }
+      },
+      {
+        "case": "scope-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "create",
+          "project": "git:0000000000000000000000000000000000000000",
+          "brief": "Hi"
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_scope",
+          "body": {
+            "error": {
+              "message": "project git:0000…0000 is not in this coordinator's project set",
+              "type": "deck_control_scope",
+              "code": "deck_control_scope"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "scope-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "create",
+          "project": "git:0000000000000000000000000000000000000000",
+          "brief": "Hi"
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_scope",
+          "body": {
+            "error": {
+              "message": "project git:0000…0000 is not in this coordinator's project set",
+              "type": "deck_control_scope",
+              "code": "deck_control_scope"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "cap-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "create",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
+          "budget": {
+            "tokens": 200000
+          }
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_cap",
+          "body": {
+            "error": {
+              "message": "this coordinator already has 4 live workers (cap 4)",
+              "type": "deck_control_cap",
+              "code": "deck_control_cap"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "cap-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "create",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Fix the flaky login test\n\nIt fails one run in ten on CI.",
+          "budget": {
+            "tokens": 200000
+          }
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_cap",
+          "body": {
+            "error": {
+              "message": "this coordinator already has 4 live workers (cap 4)",
+              "type": "deck_control_cap",
+              "code": "deck_control_cap"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "refused-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "create",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Hi",
+          "budget": {
+            "tokens": 1000000000
+          }
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_refused",
+          "body": {
+            "error": {
+              "message": "the requested budget is above this coordinator's worker budget",
+              "type": "deck_control_refused",
+              "code": "deck_control_refused"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "refused-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "create",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+          "brief": "Hi",
+          "budget": {
+            "tokens": 1000000000
+          }
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_refused",
+          "body": {
+            "error": {
+              "message": "the requested budget is above this coordinator's worker budget",
+              "type": "deck_control_refused",
+              "code": "deck_control_refused"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unknown-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "task",
+          "id": "01JD3N0SUCHTASK00000000000"
+        },
+        "expect": {
+          "status": 404,
+          "code": "deck_control_unknown",
+          "body": {
+            "error": {
+              "message": "no such task",
+              "type": "deck_control_unknown",
+              "code": "deck_control_unknown"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unknown-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "task",
+          "id": "01JD3N0SUCHTASK00000000000"
+        },
+        "expect": {
+          "status": 404,
+          "code": "deck_control_unknown",
+          "body": {
+            "error": {
+              "message": "no such task",
+              "type": "deck_control_unknown",
+              "code": "deck_control_unknown"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "busy-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "prompt",
+          "id": "01JD3W0RKER0000000000000001",
+          "text": "Open a draft pull request."
+        },
+        "expect": {
+          "status": 409,
+          "code": "deck_control_busy",
+          "body": {
+            "error": {
+              "message": "the task's turn is working",
+              "type": "deck_control_busy",
+              "code": "deck_control_busy"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "busy-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "prompt",
+          "id": "01JD3W0RKER0000000000000001",
+          "text": "Open a draft pull request."
+        },
+        "expect": {
+          "status": 409,
+          "code": "deck_control_busy",
+          "body": {
+            "error": {
+              "message": "the task's turn is working",
+              "type": "deck_control_busy",
+              "code": "deck_control_busy"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "unavailable-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 503,
+          "code": "deck_control_unavailable",
+          "body": {
+            "error": {
+              "message": "deckd is not reachable",
+              "type": "deck_control_unavailable",
+              "code": "deck_control_unavailable"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "unavailable-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 503,
+          "code": "deck_control_unavailable",
+          "body": {
+            "error": {
+              "message": "deckd is not reachable",
+              "type": "deck_control_unavailable",
+              "code": "deck_control_unavailable"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "unknown-field-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "stop",
+          "id": "01JD3W0RKER0000000000000001",
+          "force": true
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "unknown field `force`",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "wait-over-cap-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000001",
+          "wait_ms": 300001
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "wait_ms is at most 300000",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "no-operation-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "missing `operation`",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "operation-outside-set-vm",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "destroy",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_refused",
+          "body": {
+            "error": {
+              "message": "`destroy` is not a control operation; the set is tasks, task, create, prompt, wait, stop",
+              "type": "deck_control_refused",
+              "code": "deck_control_refused"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "wrong-path-vm",
+        "token": null,
+        "headers": {},
+        "path": "/operations/refs",
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 404,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "the only path is /control",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "wrong-method-vm",
+        "token": null,
+        "headers": {},
+        "method": "GET",
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 405,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "use POST",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unknown-field-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "stop",
+          "id": "01JD3W0RKER0000000000000001",
+          "force": true
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "unknown field `force`",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "wait-over-cap-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000001",
+          "wait_ms": 300001
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "wait_ms is at most 300000",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "no-operation-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "missing `operation`",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "operation-outside-set-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "destroy",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 403,
+          "code": "deck_control_refused",
+          "body": {
+            "error": {
+              "message": "`destroy` is not a control operation; the set is tasks, task, create, prompt, wait, stop",
+              "type": "deck_control_refused",
+              "code": "deck_control_refused"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "wrong-path-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "path": "/operations/refs",
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 404,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "the only path is /control",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "wrong-method-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "method": "GET",
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 405,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "use POST",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unauthorized-missing-header",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {},
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 401,
+          "code": "deck_control_unauthorized",
+          "body": {
+            "error": {
+              "message": "missing or wrong bearer token",
+              "type": "deck_control_unauthorized",
+              "code": "deck_control_unauthorized"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unauthorized-wrong-token",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_not_the_task_token_000000000000"
+        },
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 401,
+          "code": "deck_control_unauthorized",
+          "body": {
+            "error": {
+              "message": "missing or wrong bearer token",
+              "type": "deck_control_unauthorized",
+              "code": "deck_control_unauthorized"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unauthorized-other-scheme",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Basic dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 401,
+          "code": "deck_control_unauthorized",
+          "body": {
+            "error": {
+              "message": "missing or wrong bearer token",
+              "type": "deck_control_unauthorized",
+              "code": "deck_control_unauthorized"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unauthorized-before-body",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {},
+        "body": {
+          "operation": "destroy"
+        },
+        "expect": {
+          "status": 401,
+          "code": "deck_control_unauthorized",
+          "body": {
+            "error": {
+              "message": "missing or wrong bearer token",
+              "type": "deck_control_unauthorized",
+              "code": "deck_control_unauthorized"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "unauthorized-before-path",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {},
+        "path": "/nowhere",
+        "body": {
+          "operation": "tasks",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 401,
+          "code": "deck_control_unauthorized",
+          "body": {
+            "error": {
+              "message": "missing or wrong bearer token",
+              "type": "deck_control_unauthorized",
+              "code": "deck_control_unauthorized"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "scheme-case-insensitive-local",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "task",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 1,
+                "state": "idle",
+                "stopReason": "end_turn"
+              },
+              "attention": "finished",
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "branch",
+                "branch": "deck/fix-login",
+                "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+              },
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "The test raced the session cookie; it now waits for the login redirect."
+            }
+          }
+        }
+      },
+      {
+        "case": "header-ignored-vm",
+        "token": null,
+        "headers": {
+          "authorization": "Bearer anything-at-all"
+        },
+        "body": {
+          "operation": "task",
+          "id": "01JD3W0RKER0000000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "task": {
+              "id": "01JD3W0RKER0000000000000001",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Fix the flaky login test",
+              "state": "running",
+              "turn": {
+                "number": 1,
+                "state": "idle",
+                "stopReason": "end_turn"
+              },
+              "attention": "finished",
+              "pending_approvals": 0,
+              "publication": {
+                "kind": "branch",
+                "branch": "deck/fix-login",
+                "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+              },
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": "The test raced the session cookie; it now waits for the login redirect."
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -27,3 +27,7 @@ security-framework.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# A coordinator's task summary checked against the vendored contract schema.
+jsonschema = { version = "0.60.2", default-features = false }

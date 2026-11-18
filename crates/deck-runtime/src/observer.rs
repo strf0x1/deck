@@ -84,6 +84,7 @@ pub struct Observer {
     /// The holder's prompt, written, until its turn is seen to start.
     starting: Option<(Value, u64)>,
     setup: Option<Setup>,
+    message: crate::message::Reader,
 }
 
 impl Observer {
@@ -104,7 +105,13 @@ impl Observer {
             queued: None,
             starting: None,
             setup: None,
+            message: crate::message::Reader::default(),
         }
+    }
+
+    /// The agent's last assistant message on this session.
+    pub fn message(&self) -> Option<&crate::message::LastMessage> {
+        self.message.message()
     }
 
     pub fn turn(&self) -> Option<&Turn> {
@@ -176,6 +183,12 @@ impl Observer {
                 let mine = self.session.is_some() && self.session.as_deref() == params["sessionId"].as_str();
                 let events = if mine { self.observe(&params) } else { vec![] };
                 Step { forward: true, write: vec![], events }
+            }
+            Incoming::Notification { method, params } if method == "session/update" => {
+                if self.session.is_none() || self.session.as_deref() == params["sessionId"].as_str() {
+                    self.message.update(&params["update"]);
+                }
+                Step { forward: true, ..Step::default() }
             }
             Incoming::Request { id, method, .. } if method == "session/request_permission" => {
                 self.questions.insert(id);
@@ -412,6 +425,9 @@ impl Observer {
     fn set(&mut self, turn: Turn) -> Vec<Event> {
         if self.turn.as_ref() == Some(&turn) {
             return vec![];
+        }
+        if turn.state == Phase::Working && self.turn.as_ref().is_none_or(|t| t.number < turn.number) {
+            self.message.reset();
         }
         self.turn = Some(turn.clone());
         vec![Event::Turn(turn)]

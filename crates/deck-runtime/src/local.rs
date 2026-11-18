@@ -30,7 +30,7 @@ impl Backend for Local {
     }
 
     fn start(&mut self, task: &Task, lock: RecordLock, exited: Exited) -> Result<Box<dyn Instance>> {
-        Self::spawn(&task.spec, exited, Some(lock))
+        Self::spawn(&task.spec, &[], exited, Some(lock))
     }
 
     fn destroy(&mut self, _task: &Task) -> Result<()> {
@@ -39,11 +39,19 @@ impl Backend for Local {
 }
 
 impl Local {
-    pub(crate) fn spawn(spec: &Spec, exited: Exited, record_lock: Option<RecordLock>) -> Result<Box<dyn Instance>> {
+    /// Launch `spec`'s agent with its kind's environment plus `env` (a local
+    /// coordinator's control URL and token).
+    pub(crate) fn spawn(
+        spec: &Spec,
+        env: &[(String, String)],
+        exited: Exited,
+        record_lock: Option<RecordLock>,
+    ) -> Result<Box<dyn Instance>> {
         let (prog, args) = spec.argv.split_first().context("no agent command")?;
         let mut cmd = Command::new(prog);
         cmd.args(args).current_dir(&spec.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
         cmd.envs(spec.agent_env());
+        cmd.envs(env.iter().map(|(name, value)| (name, value)));
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let mut child = cmd.spawn().with_context(|| format!("launching {prog}"))?;

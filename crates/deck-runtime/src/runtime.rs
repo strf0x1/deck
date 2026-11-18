@@ -56,6 +56,10 @@ pub struct Notice {
     /// holder (deck#150 R8): who sent it and what it said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<crate::record::Prompt>,
+    /// Set when this notice announces a coordinator's `create` refused at a
+    /// cap (deck#152 R4), so the window can offer to raise it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<crate::control::CapNotice>,
 }
 
 /// Cheap to clone; clones share one runtime.
@@ -170,9 +174,44 @@ impl Runtime {
             state: task.state.clone(),
             turn: task.turn.clone(),
             prompt: Some(prompt.clone()),
+            cap: None,
         };
         inner.subscribers.retain(|tx| tx.unbounded_send(notice.clone()).is_ok());
         Ok(prompt)
+    }
+
+    /// Announce that coordinator `id`'s `create` met a cap. Nothing is
+    /// recorded here; the coordinator's `control` event is the audit.
+    pub fn announce_cap(&self, id: &str, cap: crate::control::CapNotice) -> Result<()> {
+        let mut inner = self.lock();
+        let task = inner.store.load(id)?;
+        let notice = Notice {
+            task: task.id.clone(),
+            state: task.state.clone(),
+            turn: task.turn.clone(),
+            prompt: None,
+            cap: Some(cap),
+        };
+        inner.subscribers.retain(|tx| tx.unbounded_send(notice.clone()).is_ok());
+        Ok(())
+    }
+
+    /// Append a coordinator's control audit row (deck#152 R5).
+    pub fn audit(&self, id: &str, op: &str, target: Option<&str>, outcome: &str) -> Result<()> {
+        let inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        let event = Event::Control { op: op.into(), target: target.map(str::to_owned), outcome: outcome.into() };
+        inner.store.append(&mut task, event)
+    }
+
+    /// When task `id` was created, from its record's first line.
+    pub fn created_ms(&self, id: &str) -> Result<u64> {
+        self.lock().store.created_ms(id)
+    }
+
+    /// The last assistant message `id`'s holder recorded.
+    pub fn last_message(&self, id: &str) -> Option<crate::message::LastMessage> {
+        self.lock().store.message(id)
     }
 
     /// The prompts the task's holder sent, oldest first.
@@ -467,7 +506,13 @@ impl Inner {
     }
 
     fn notify(&mut self, task: &Task) {
-        let notice = Notice { task: task.id.clone(), state: task.state.clone(), turn: task.turn.clone(), prompt: None };
+        let notice = Notice {
+            task: task.id.clone(),
+            state: task.state.clone(),
+            turn: task.turn.clone(),
+            prompt: None,
+            cap: None,
+        };
         self.subscribers.retain(|tx| tx.unbounded_send(notice.clone()).is_ok());
     }
 }

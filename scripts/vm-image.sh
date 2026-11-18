@@ -217,6 +217,16 @@ if [ "${DECK_GITHUB_ENABLED:-0}" = "1" ]; then
   /usr/local/bin/deck-egress --listen "127.0.0.1:${github_port}" --vsock "2:${github_vsock_port}" &
   export DECK_GITHUB_URL="http://127.0.0.1:${github_port}"
 fi
+# A coordinator's task-control surface (ADR 0011 §4): plain HTTP on guest
+# loopback, framed with the `control` kind before the host extension port
+# carries it. Only a coordinator gets the relay and DECK_CONTROL_URL; the
+# guest's loopback needs no token (contract 1.4.0 §13.2).
+control_port=${DECK_CONTROL_PORT:-8085}
+if [ "${DECK_CONTROL_ENABLED:-0}" = "1" ]; then
+  /usr/local/bin/deck-egress --listen "127.0.0.1:${control_port}" --vsock "2:${extension_port}" --kind control &
+  export DECK_CONTROL_URL="http://127.0.0.1:${control_port}"
+fi
+unset DECK_CONTROL_TOKEN
 export CONSTRUCT_BASE_URL="http://127.0.0.1:${relay_port}/v1"
 export DECK_BOUNDARY_URL="http://127.0.0.1:${boundary_port}"
 cd /workspace || cd /
