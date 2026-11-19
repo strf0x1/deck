@@ -81,6 +81,8 @@ pub struct Deck {
     pub(super) exhale: super::exhale::Exhale,
     /// The state marks' crossfades on the sidebar's rows (`marks.rs`).
     pub(super) marks: super::marks::Marks,
+    /// The send ripple: composer to the new user turn (`ripple.rs`).
+    pub(super) ripple: super::ripple::Ripple,
     pub(super) agent_cmd: String,
     /// The launch's agent command: a project opened from the picker uses it.
     pub(super) argv: Vec<String>,
@@ -188,6 +190,7 @@ impl Deck {
             sheen: Default::default(),
             exhale: Default::default(),
             marks: Default::default(),
+            ripple: Default::default(),
             agent_cmd: String::new(),
             argv: Vec::new(),
             data: None,
@@ -295,6 +298,12 @@ impl Deck {
     /// The state marks' crossfades: the view reads each row's fade.
     pub fn marks(&self) -> &super::marks::Marks {
         &self.marks
+    }
+
+    /// The send ripple's state: the composer and the new turn read their
+    /// passes; tests their rest.
+    pub fn ripple(&self) -> &super::ripple::Ripple {
+        &self.ripple
     }
 
     /// Whether any attachment the window holds has a turn in progress: the
@@ -599,6 +608,7 @@ impl Deck {
                     self.current_mut().keyed(key, &text);
                 }
                 self.current_mut().session.sent(&text);
+                self.ripple.send(self.selected.clone());
                 if let Some(id) = self.selected.clone() {
                     self.note_title(&id, &text, cx);
                 }
@@ -675,6 +685,7 @@ impl Deck {
         }
         self.editor.take();
         self.current_mut().session.sent(&text);
+        self.ripple.send(self.selected.clone());
         if let Some(id) = self.selected.clone() {
             self.note_title(&id, &text, cx);
         }
@@ -809,6 +820,7 @@ impl Deck {
             || !self.sheen.at_rest()
             || !self.exhale.at_rest()
             || !self.marks.at_rest()
+            || !self.ripple.at_rest()
     }
 
     /// The centre of the narrow glyph `index`, in window coordinates.
@@ -866,7 +878,8 @@ impl Deck {
         let sheen = self.sheen.step(dt, self.turn_working());
         let exhale = self.exhale.step(dt);
         let marks = self.marks.step(dt);
-        if board || rail || motion || sheen || exhale || marks {
+        let ripple = self.ripple.step(dt);
+        if board || rail || motion || sheen || exhale || marks || ripple {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {

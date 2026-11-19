@@ -272,6 +272,12 @@ impl Tokens {
     pub fn done_peak() -> Hsla {
         tint(Self::lime(), 0.7)
     }
+    /// The send ripple's peak: the user's own hue at the done pulse's
+    /// weight. Purple is the user — the ripple spends it once per send,
+    /// from the composer to the new turn (`ripple.rs`), never as decoration.
+    pub fn user_peak() -> Hsla {
+        tint(Self::accent(), 0.7)
+    }
     /// The failed bloom's peak: the failure hue at the done pulse's weight.
     /// Red means failed or denied — the bloom crosses a tool's card once
     /// when it fails (`motion.rs`), never as decoration.

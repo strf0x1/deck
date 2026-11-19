@@ -968,6 +968,42 @@ fn a_tool_finish_blooms_once_around_its_card_and_rests(cx: &mut TestAppContext) 
     deck.read_with(&cx, |d, _| assert!(!d.animating()));
 }
 
+#[gpui::test]
+fn the_send_ripples_from_the_composer_to_the_new_turn(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.ripple().for_task(None), "the idle session's own send");
+        assert!(d.ripple().composer().is_some(), "the composer leads");
+        assert!(d.animating(), "the gesture keeps the window drawing");
+        assert!(matches!(d.session().entries.last(), Some(Entry::You(_))), "the ripple arrives on the new turn");
+    });
+
+    // A beat later, the bubble's pass is under way.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| assert!(d.ripple().bubble().is_some(), "the bubble follows"));
+
+    // The turn ends; the gesture rests and the window settles.
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| {
+        assert!(d.ripple().at_rest());
+        assert!(d.ripple().composer().is_none());
+        assert!(d.ripple().bubble().is_none());
+        assert!(!d.animating());
+    });
+
+    // A prompt someone else sent through the holder is not the user's send.
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::UserMessage("from the holder".into()), cx));
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| assert!(d.ripple().at_rest(), "a holder's prompt does not ripple"));
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

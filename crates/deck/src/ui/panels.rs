@@ -126,7 +126,7 @@ pub fn outlined(color: Hsla) -> Div {
 /// pieces at the band's centre; paint-only, nothing re-measures. `peak` is
 /// the band's colour at full strength — its alpha is the band's own weight —
 /// and `alpha` scales the whole band, for a fade.
-pub fn band_border(center: f32, corner: f32, peak: Hsla, alpha: f32) -> impl IntoElement {
+pub fn band_border(center: f32, corners: [f32; 4], peak: Hsla, alpha: f32) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<gpui::Pixels>, _, window, _| {
@@ -134,7 +134,7 @@ pub fn band_border(center: f32, corner: f32, peak: Hsla, alpha: f32) -> impl Int
             let h = f32::from(bounds.size.height);
             let at = |x: f32, y: f32| bounds.origin + point(px(x), px(y));
             let color = |a: f32| tint(peak, peak.a * a * alpha);
-            for piece in super::band::pieces(w, h, corner, center) {
+            for piece in super::band::pieces(w, h, corners, center) {
                 match piece {
                     Piece::Ramp { x, y, w, h, a0, a1 } => {
                         let bounds = Bounds { origin: at(x, y), size: gpui::size(px(w), px(h)) };
@@ -167,13 +167,13 @@ pub fn band_border(center: f32, corner: f32, peak: Hsla, alpha: f32) -> impl Int
 /// The activity sheen as a shared mark: the neutral white band (`sheen.rs`)
 /// on the window sheen's centre.
 pub fn sheen_border(center: f32, corner: f32) -> impl IntoElement {
-    band_border(center, corner, Tokens::sheen_peak(), 1.)
+    band_border(center, [corner; 4], Tokens::sheen_peak(), 1.)
 }
 
 /// The done pulse as a shared mark: the same band in the done hue, crossing
 /// once when a turn ends (`exhale.rs`).
 pub fn pulse_border(center: f32, corner: f32) -> impl IntoElement {
-    band_border(center, corner, Tokens::done_peak(), 1.)
+    band_border(center, [corner; 4], Tokens::done_peak(), 1.)
 }
 
 /// The one loud button in a region: the user's own colour, in its border
