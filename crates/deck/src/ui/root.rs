@@ -83,6 +83,8 @@ pub struct Deck {
     pub(super) marks: super::marks::Marks,
     /// The send ripple: composer to the new user turn (`ripple.rs`).
     pub(super) ripple: super::ripple::Ripple,
+    /// The ask card's entrance: a spring-in and one amber pass (`arrival.rs`).
+    pub(super) arrival: super::arrival::Arrival,
     pub(super) agent_cmd: String,
     /// The launch's agent command: a project opened from the picker uses it.
     pub(super) argv: Vec<String>,
@@ -191,6 +193,7 @@ impl Deck {
             exhale: Default::default(),
             marks: Default::default(),
             ripple: Default::default(),
+            arrival: Default::default(),
             agent_cmd: String::new(),
             argv: Vec::new(),
             data: None,
@@ -304,6 +307,11 @@ impl Deck {
     /// passes; tests their rest.
     pub fn ripple(&self) -> &super::ripple::Ripple {
         &self.ripple
+    }
+
+    /// The ask card's entrance state: the card reads its opacity and flash.
+    pub fn arrival(&self) -> &super::arrival::Arrival {
+        &self.arrival
     }
 
     /// Whether any attachment the window holds has a turn in progress: the
@@ -821,6 +829,7 @@ impl Deck {
             || !self.exhale.at_rest()
             || !self.marks.at_rest()
             || !self.ripple.at_rest()
+            || !self.arrival.at_rest()
     }
 
     /// The centre of the narrow glyph `index`, in window coordinates.
@@ -872,6 +881,7 @@ impl Deck {
             })
             .collect();
         self.motion.tools(tools.iter().map(|(id, s)| (id.as_str(), *s)));
+        self.arrival.observe(self.session().ask.is_some());
         let board = self.board.step(dt);
         let rail = self.rail.step(dt);
         let motion = self.motion.step(dt);
@@ -879,7 +889,8 @@ impl Deck {
         let exhale = self.exhale.step(dt);
         let marks = self.marks.step(dt);
         let ripple = self.ripple.step(dt);
-        if board || rail || motion || sheen || exhale || marks || ripple {
+        let arrival = self.arrival.step(dt);
+        if board || rail || motion || sheen || exhale || marks || ripple || arrival {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {
