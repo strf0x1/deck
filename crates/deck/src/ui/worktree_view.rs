@@ -200,7 +200,7 @@ fn details(deck: &Deck, pane: &super::worktrees::Pane, fact: &WorktreeStatus, cx
         .children(pane.confirm.then(|| confirm(fact, pane.removing, cx)))
         .children(pane.reading.then(|| div().text_color(Tokens::text_faint()).child("Reading changes…")))
         .children(pane.diff.as_ref().map(|diff| match diff {
-            Ok(diff) => patch(diff),
+            Ok(diff) => super::worktree_diff::patch(deck, diff, exists.then_some(fact.path.as_path()), cx),
             Err(error) => super::access_panel::error(error),
         }))
         .into_any_element()
@@ -237,38 +237,6 @@ fn confirm(fact: &WorktreeStatus, removing: bool, cx: &mut Context<Deck>) -> Any
                         .on_click(cx.listener(|deck, _, _, cx| deck.confirm_worktree_removal(false, cx))),
                 )
         })
-        .into_any_element()
-}
-
-fn patch(diff: &deck_runtime::worktree::WorktreeDiff) -> AnyElement {
-    let rows = diff.text.lines().take(800).map(|line| {
-        let fg = if line.starts_with("@@") {
-            Tokens::cyan()
-        } else if line.starts_with('+') {
-            Tokens::lime()
-        } else if line.starts_with('-') {
-            Tokens::red()
-        } else {
-            Tokens::text_dim().into()
-        };
-        mono(line.to_owned()).text_color(fg)
-    });
-    div()
-        .id("worktree-diff")
-        .debug_selector(|| "worktree-diff".into())
-        .p(px(space::INSET))
-        .rounded(px(radius::CONTROL))
-        .border_1()
-        .border_color(Tokens::edge())
-        .bg(Tokens::sunken())
-        .child(
-            div().pb(px(space::LINE)).font_weight(FontWeight::MEDIUM).child("Tracked changes from the starting commit"),
-        )
-        .children(diff.text.is_empty().then(|| div().text_color(Tokens::text_faint()).child("No tracked changes.")))
-        .children(rows)
-        .children((diff.truncated || diff.text.lines().nth(800).is_some()).then(|| {
-            div().pt(px(space::LINE)).text_color(Tokens::amber()).child("Open the worktree to see the full diff.")
-        }))
         .into_any_element()
 }
 
