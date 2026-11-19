@@ -869,6 +869,105 @@ fn the_state_mark_crossfades_when_a_rows_state_changes(cx: &mut TestAppContext) 
     deck.read_with(&cx, |d, _| assert!(!d.animating()));
 }
 
+#[gpui::test]
+fn a_tool_finish_blooms_once_around_its_card_and_rests(cx: &mut TestAppContext) {
+    use deck_acp::{ToolCall, ToolKind, ToolStatus, ToolUpdate};
+
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+
+    // A running tool has no bloom yet; its card sweeps with the shared sheen.
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Tool(ToolCall {
+                id: "t1".into(),
+                title: "read src/lib.rs".into(),
+                kind: ToolKind::Read,
+                status: ToolStatus::Running,
+                ..ToolCall::default()
+            }),
+            cx,
+        )
+    });
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.motion().bloom("t1").is_none(), "a running tool has no bloom yet");
+        assert!(d.sheen().working(), "the turn works, the card sweeps");
+    });
+
+    // The finish blooms once, right to left, then rests. The turn ends too,
+    // so the window can settle (a working sheen never rests).
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::ToolUpdate(ToolUpdate {
+                id: "t1".into(),
+                status: Some(ToolStatus::Done),
+                ..ToolUpdate::default()
+            }),
+            cx,
+        );
+        d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx);
+    });
+    cx.update(|window, _| window.refresh());
+    let (first, failed) = deck.read_with(&cx, |d, _| d.motion().bloom("t1").expect("the finish blooms"));
+    assert!(!failed);
+    assert!(first > 0.9, "the pass starts at the right edge: {first}");
+    assert!(deck.read_with(&cx, |d, _| d.animating()));
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| {
+        assert!(d.motion().bloom("t1").is_none(), "one pass only");
+        assert!(!d.animating());
+    });
+
+    // A failure blooms in the failure hue; a tool first seen finished is
+    // replayed history and stays quiet.
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Tool(ToolCall {
+                id: "t2".into(),
+                title: "shell rm".into(),
+                kind: ToolKind::Execute,
+                status: ToolStatus::Running,
+                ..ToolCall::default()
+            }),
+            cx,
+        );
+        d.on_inbound(
+            Inbound::Tool(ToolCall {
+                id: "t3".into(),
+                title: "old read".into(),
+                kind: ToolKind::Read,
+                status: ToolStatus::Done,
+                ..ToolCall::default()
+            }),
+            cx,
+        );
+    });
+    cx.update(|window, _| window.refresh());
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::ToolUpdate(ToolUpdate {
+                id: "t2".into(),
+                status: Some(ToolStatus::Failed),
+                ..ToolUpdate::default()
+            }),
+            cx,
+        )
+    });
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        let (_, failed) = d.motion().bloom("t2").expect("a failure blooms too");
+        assert!(failed);
+        assert!(d.motion().bloom("t3").is_none(), "a first observation is not new work");
+    });
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| assert!(!d.animating()));
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

@@ -272,6 +272,12 @@ impl Tokens {
     pub fn done_peak() -> Hsla {
         tint(Self::lime(), 0.7)
     }
+    /// The failed bloom's peak: the failure hue at the done pulse's weight.
+    /// Red means failed or denied — the bloom crosses a tool's card once
+    /// when it fails (`motion.rs`), never as decoration.
+    pub fn failed_peak() -> Hsla {
+        tint(Self::red(), 0.7)
+    }
     /// Code: the accents again, a little softer, plus one blue for types,
     /// so highlighted code sits in the same palette as the window.
     pub fn code(class: Class) -> Hsla {
