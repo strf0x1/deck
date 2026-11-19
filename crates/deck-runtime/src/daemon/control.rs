@@ -83,6 +83,22 @@ fn decide(cx: &Context, coordinator: &str, operation: &Operation) -> Decided {
             let project = control::create_project(&policy, project.as_deref())?;
             super::control_create::create(cx, coordinator, &policy, &project, brief, title.as_deref(), *budget)
         }
+        Operation::Integrate { project, destination, contributors, brief, title, budget } => {
+            let project = control::create_project(&policy, project.as_deref())?;
+            super::control_integrate::integrate(
+                cx,
+                coordinator,
+                &policy,
+                super::control_integrate::Request {
+                    project: &project,
+                    destination,
+                    contributors,
+                    brief,
+                    title: title.as_deref(),
+                    budget: *budget,
+                },
+            )
+        }
         Operation::Prompt { id, text } => prompt(cx, coordinator, &policy, id, text),
         Operation::Wait { id, after_turn, wait_ms } => {
             wait(cx, coordinator, &policy, id, after_turn.unwrap_or(0), *wait_ms)
@@ -159,8 +175,8 @@ fn tasks(cx: &Context, coordinator: &str, policy: &Policy, project: Option<&str>
         .collect();
     listed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
     let truncated = listed.len() > control::TASKS_LIMIT;
-    let tasks: Vec<Value> = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task)).collect();
-    Ok(json!({ "tasks": tasks, "truncated": truncated, "projects": projects(cx, policy) }))
+    let tasks = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task));
+    summary::listing(projects(cx, policy), tasks, truncated).map_err(internal)
 }
 
 /// The coordinator's project set with the names the user sees (contract
@@ -179,6 +195,9 @@ fn prompt(cx: &Context, coordinator: &str, policy: &Policy, id: &str, text: &str
     loop {
         let task = cx.runtime.task(id).map_err(internal)?;
         control::promptable(&task)?;
+        if let Some(reason) = task.integration.as_deref().and_then(crate::integration::Plan::reason) {
+            return Err(Refusal::new(Code::Busy, reason));
+        }
         let briefing = cx.briefs.lock().unwrap_or_else(|e| e.into_inner()).contains(id);
         if task.state == State::Running && !briefing {
             break;

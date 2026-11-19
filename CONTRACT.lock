@@ -3,7 +3,7 @@
 # Verify with `scripts/acp-contract.sh verify`; refresh with
 # `scripts/acp-contract.sh update <version> [ref]`.
 repo = "strf0x1/sprawlcommons-acp"
-version = "1.5.0"
-commit = "d3409896fd92846d6406699852403fa9212eee7e"
-vendored = "crates/deck-acp/tests/fixtures/acp-contract/1.5.0"
-sha256 = "a535da12a9c865af3e94b8bf7a448db278f334573b20e6b79285d2afb10045bb"
+version = "1.6.0"
+commit = "3a4e034d1ad8c2655c5876a75a459adebb09822e"
+vendored = "crates/deck-acp/tests/fixtures/acp-contract/1.6.0"
+sha256 = "f3b4054e8cca0ec1ec28f972f105ef9df0e24487ad309cc4b2e90e1c1bd661d3"

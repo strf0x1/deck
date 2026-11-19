@@ -253,6 +253,14 @@ impl GitHub {
             Operation::Refs => String::new(),
         };
         let domain = self.client.destination(&detail);
+        if !self.client.settings().policy.admits_integration_operation(operation, ask.draft.unwrap_or(true)) {
+            return Err(self.failed(
+                &domain,
+                problem::Problem::refused(
+                    "This integration worker may only publish its result branch or open its permitted draft PR.",
+                ),
+            ));
+        }
         let identity = identity::review(ask, operation, bundle, self.client.settings())
             .map_err(|problem| self.failed(&domain, problem))?;
         // An update may only touch a pull request this task opened from a

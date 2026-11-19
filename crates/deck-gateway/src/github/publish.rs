@@ -172,6 +172,11 @@ impl Publisher {
         self.fetch(&bundle, &format!("+{reference}:{INCOMING_REF}"))
             .map_err(|problem| Problem::invalid(format!("the bundle cannot be fetched: {}", problem.message)))?;
         let commit = self.rev_parse(INCOMING_REF)?;
+        for required in self.policy.required_commits() {
+            if !self.ancestor(required, &commit.hex()).unwrap_or(false) {
+                return Err(Problem::refused(format!("The result must contain pinned integration commit {required}.")));
+            }
+        }
         if let Remote::At(previous) = remote
             && !self.ancestor(&previous.hex(), &commit.hex())?
         {

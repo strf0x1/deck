@@ -125,7 +125,7 @@ when the task briefs disagree. The user still decides what lands.
 | Destination | Where the integration worker gets the commits | Where the result goes |
 |---|---|---|
 | Local branch | Task branches in the source Git repository | The integration task's local branch |
-| New PR | Published worker branches fetched by the integration VM | One draft PR from the integration task's branch, using the existing gateway |
+| New PR | Published worker branches from the configured GitHub repository | One draft PR from the integration task's branch, using the existing gateway |
 | Existing PR | The current PR head and published contributor commits | A proposed update from the integration task's branch, with an explicitly authorized fast-forward to the PR head if supported |
 
 Agents contributing to one PR still work on their own branches.
@@ -146,6 +146,17 @@ a reason.
 
 The first worktree slice exposes the branch and commit information this
 role needs. The integration workflow follows separately.
+
+For VM integration, Deck pins the target and the published contributor
+commits before it starts the agent. Deck fetches from the configured
+repository with the host's GitHub credential and hands the guest a clean
+checkout through the existing import share. The guest's HTTPS proxy passes
+encrypted Git traffic through, so it cannot attach the host credential.
+
+The GitHub gateway accepts only the integration worker's own branch. Its
+published commit must contain the target and every contributor pin. New PR
+integrations can open a draft from that branch. Existing PR integrations
+return the result branch for the user to apply.
 
 ## Consequences
 

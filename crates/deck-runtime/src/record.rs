@@ -100,7 +100,16 @@ impl Store {
 
     /// A new task, recorded as created.
     pub fn create(&self, backend: &str, spec: Spec) -> Result<Task> {
-        let first = Event::Created { backend: backend.into(), spec };
+        self.create_with_plan(backend, spec, None)
+    }
+
+    pub(crate) fn create_with_plan(
+        &self,
+        backend: &str,
+        spec: Spec,
+        integration: Option<Box<crate::integration::Plan>>,
+    ) -> Result<Task> {
+        let first = Event::Created { backend: backend.into(), spec, integration };
         loop {
             let id = new_id();
             match fs::create_dir(self.tasks.join(&id)) {

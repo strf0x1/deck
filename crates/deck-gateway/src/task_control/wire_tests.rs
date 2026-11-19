@@ -82,7 +82,7 @@ fn malformed_requests_are_bad_requests_and_other_operations_are_refused() {
     assert_eq!(refused(r#"{"operation":7}"#).code, Code::BadRequest);
     let outside = refused(r#"{"operation":"destroy","id":"t"}"#);
     assert_eq!((outside.code, outside.status), (Code::Refused, 403));
-    assert!(outside.message.contains("tasks, task, create, prompt, wait, stop"), "{}", outside.message);
+    assert!(outside.message.ends_with(&OPERATIONS.join(", ")), "{}", outside.message);
     for body in [
         "not json",
         "[]",

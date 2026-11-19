@@ -1,4 +1,4 @@
-//! The control kind's wire (contract 1.4.0 §13), pure: the bearer check, the
+//! The control kind's wire (contract 1.6.0 §13), pure: the bearer check, the
 //! route, the closed operation set with its bounds, and the refusal codes
 //! with their statuses. No sockets, so every rule is a unit test.
 //!
@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
 
+mod integration;
+pub use integration::Destination;
+
 /// The only path the surface serves.
 pub const PATH: &str = "/control";
 /// The largest request body, refused before it is read.
@@ -20,7 +23,7 @@ pub const MAX_BODY: usize = 32 * 1024;
 /// The longest `wait`; a larger `wait_ms` is refused, never shortened.
 pub const WAIT_LIMIT_MS: u64 = 300_000;
 /// The operation set, in the contract's order.
-pub const OPERATIONS: [&str; 6] = ["tasks", "task", "create", "prompt", "wait", "stop"];
+pub const OPERATIONS: [&str; 7] = ["tasks", "task", "create", "integrate", "prompt", "wait", "stop"];
 /// The challenge a 401 carries.
 pub const CHALLENGE: &str = "Bearer realm=\"deck-control\"";
 /// The most characters a refusal's message carries.
@@ -204,6 +207,17 @@ pub enum Operation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<Budget>,
     },
+    Integrate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        destination: Destination,
+        contributors: Vec<String>,
+        brief: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<Budget>,
+    },
     Prompt {
         id: String,
         text: String,
@@ -225,6 +239,7 @@ impl Operation {
             Operation::Tasks { .. } => "tasks",
             Operation::Task { .. } => "task",
             Operation::Create { .. } => "create",
+            Operation::Integrate { .. } => "integrate",
             Operation::Prompt { .. } => "prompt",
             Operation::Wait { .. } => "wait",
             Operation::Stop { .. } => "stop",
@@ -241,6 +256,9 @@ impl Operation {
     }
 
     fn check(&self) -> Result<(), String> {
+        if let Operation::Integrate { destination, contributors, .. } = self {
+            integration::check(destination, contributors)?;
+        }
         let bounded = |name: &str, value: &str, max: usize| {
             if value.is_empty() || value.len() > max {
                 return Err(format!("`{name}` is 1 to {max} bytes"));
@@ -258,7 +276,8 @@ impl Operation {
                 }
                 Ok(())
             }
-            Operation::Create { project, brief, title, budget } => {
+            Operation::Create { project, brief, title, budget }
+            | Operation::Integrate { project, brief, title, budget, .. } => {
                 if let Some(project) = project {
                     bounded("project", project, 1024)?;
                 }

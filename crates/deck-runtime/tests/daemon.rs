@@ -887,6 +887,11 @@ fn a_publication_is_in_the_record_after_a_daemon_restart() {
     use deck_runtime::Publication;
     let (mut daemon, client) = Daemon::new("publication");
     let task = client.create(daemon.spec(&["cat"])).unwrap();
+    let own_branch = format!("deck/{}", task.id);
+    client.publication(&task.id, Publication::Branch { branch: own_branch.clone(), commit: "a".repeat(40) }).unwrap();
+    let tip = "b".repeat(40);
+    client.publication(&task.id, Publication::Branch { branch: own_branch, commit: tip.clone() }).unwrap();
+    client.publication(&task.id, Publication::Branch { branch: "shared".into(), commit: "c".repeat(40) }).unwrap();
     let publication = Publication::PullRequest {
         number: 7,
         url: "https://github.com/owner/repo/pull/7".into(),
@@ -900,7 +905,9 @@ fn a_publication_is_in_the_record_after_a_daemon_restart() {
     drop(client);
     assert!(daemon.wait_exit().success());
     let client = daemon.restart();
-    assert_eq!(client.task(&task.id).unwrap().publication, Some(publication));
+    let replayed = client.task(&task.id).unwrap();
+    assert_eq!(replayed.publication, Some(publication));
+    assert_eq!(replayed.own_branch_commit, Some(tip));
 }
 
 #[test]

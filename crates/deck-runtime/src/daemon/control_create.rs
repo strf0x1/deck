@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// How long the brief may wait for the worker's session.
 const BRIEF_WAIT: Duration = Duration::from_millis(control::SESSION_WAIT_MS);
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
@@ -111,6 +111,10 @@ fn start_and_brief(cx: &Context, id: &str, from: &str, brief: &str) {
         eprintln!("deckd: worker {id} did not start: {error:#}");
         return;
     }
+    deliver_brief(cx, id, from, brief);
+}
+
+pub(super) fn deliver_brief(cx: &Context, id: &str, from: &str, brief: &str) {
     let deadline = Instant::now() + BRIEF_WAIT;
     loop {
         match crate::daemon_turns::prompt(&cx.runtime, id, brief, Some(from)) {

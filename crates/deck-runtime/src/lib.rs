@@ -29,6 +29,7 @@ pub mod github;
 pub mod holder;
 mod holder_acp;
 pub mod import;
+pub mod integration;
 pub mod krun;
 pub mod lifecycle;
 pub mod local;

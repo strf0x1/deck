@@ -339,7 +339,15 @@ impl Runtime {
     /// default policy in `coordinator.json` and no GitHub policy, and is
     /// refused when its scope already has one; a worker's `created_by` must
     /// name a coordinator.
-    pub fn create(&self, mut spec: Spec) -> Result<String> {
+    pub fn create(&self, spec: Spec) -> Result<String> {
+        self.create_with_plan(spec, None)
+    }
+
+    pub(crate) fn create_with_plan(
+        &self,
+        mut spec: Spec,
+        integration: Option<Box<crate::integration::Plan>>,
+    ) -> Result<String> {
         if spec.project.is_none() {
             spec.project = Some(crate::project::identify(&spec.cwd)?.id);
         }
@@ -353,12 +361,22 @@ impl Runtime {
             // (ADR 0011 §2): no GitHub policy, so no gateway and no branch.
             spec.github = None;
         }
-        let task = inner.store.create(name, spec)?;
+        let task = if integration.is_some() {
+            inner.store.create_with_plan(name, spec, integration)?
+        } else {
+            inner.store.create(name, spec)?
+        };
         if let Some(policy) = policy {
             crate::coordinator::write(inner.store.data(), &task.id, policy)?;
         }
         inner.notify(&task);
         Ok(task.id)
+    }
+
+    pub(crate) fn record_integration(&self, id: &str, plan: crate::integration::Plan) -> Result<()> {
+        let mut inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        inner.record(&mut task, Event::IntegrationUpdated { plan: Box::new(plan) })
     }
 
     /// Run a task that has never run.
@@ -478,7 +496,10 @@ impl Runtime {
         let inner = self.lock();
         let backend = spec.backend.as_deref().unwrap_or(inner.backends.default_name());
         for task in inner.store.list()? {
-            let fits = task.backend == backend && task.spec.same_command(spec) && task.resumable();
+            let fits = task.integration.is_none()
+                && task.backend == backend
+                && task.spec.same_command(spec)
+                && task.resumable();
             if fits && !inner.live.contains_key(&task.id) && inner.store.lock(&task.id)?.is_some() {
                 return Ok(Some(task.id));
             }
@@ -494,6 +515,18 @@ impl Runtime {
 
 impl Inner {
     fn launch(&mut self, mut task: Task, me: Weak<Mutex<Inner>>) -> Result<()> {
+        if let Some(plan) = &task.integration {
+            if plan.phase != crate::integration::Phase::Ready {
+                bail!("integration input checkout has not been prepared");
+            }
+            if self.store.list()?.iter().any(|other| {
+                other.id != task.id
+                    && crate::integration::reserves(&other.state)
+                    && other.integration.as_ref().is_some_and(|other| other.target == plan.target)
+            }) {
+                bail!("another integration task is active for this destination");
+            }
+        }
         self.backends.of(&task)?;
         let lock =
             self.store.lock(&task.id)?.with_context(|| format!("task {} is held by another process", task.id))?;

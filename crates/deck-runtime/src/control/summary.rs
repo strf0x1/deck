@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 /// The most characters of a title a summary carries.
 const TITLE_CHARS: usize = 80;
+const REPLY_BYTES: usize = 1024 * 1024;
 
 /// What the daemon reads beside the record.
 #[derive(Debug, Clone, Default)]
@@ -38,6 +39,10 @@ pub fn state_name(state: &State) -> &'static str {
 pub fn attention(task: &Task, pending_approvals: usize) -> Option<&'static str> {
     if matches!(task.state, State::Failed { .. }) || matches!(&task.state, State::Stopped { clean: false, .. }) {
         return Some("failed");
+    }
+    if task.state == State::Created && task.integration.as_deref().and_then(crate::integration::Plan::reason).is_some()
+    {
+        return Some("integration_input");
     }
     if task.state != State::Running {
         return None;
@@ -83,11 +88,38 @@ pub fn summary(task: &Task, facts: &Facts) -> Value {
     if facts.message.as_ref().is_some_and(|m| m.truncated) {
         value["last_message_truncated"] = json!(true);
     }
+    if let Some(plan) = &task.integration {
+        value["integration"] = plan.summary(&task.id);
+    }
     if let State::Failed { failure: Failure::StartFailed(why) | Failure::ShutdownUnconfirmed(why) } = &task.state {
         // Open replies: a reader that knows the field learns why.
         value["failure"] = json!(why.chars().take(1024).collect::<String>());
     }
     value
+}
+
+/// Preserve newest-first order and the whole project set within the control
+/// reply limit, even when there is room for fewer than 200 task summaries.
+pub fn listing(projects: Vec<Value>, tasks: impl Iterator<Item = Value>, mut truncated: bool) -> anyhow::Result<Value> {
+    let mut reply = json!({ "tasks": [], "truncated": false, "projects": projects });
+    let mut bytes = reply.to_string().len();
+    if bytes > REPLY_BYTES {
+        anyhow::bail!("the coordinator's project set exceeds the control reply limit");
+    }
+    let mut included = Vec::new();
+    for task in tasks {
+        let separator = usize::from(!included.is_empty());
+        let size = task.to_string().len() + separator;
+        if size > REPLY_BYTES - bytes {
+            truncated = true;
+            break;
+        }
+        included.push(task);
+        bytes += size;
+    }
+    reply["tasks"] = json!(included);
+    reply["truncated"] = json!(truncated);
+    Ok(reply)
 }
 
 /// The contract's `pull_request` from a review reply, or `None` when the
@@ -108,11 +140,17 @@ pub struct Snapshot {
     pub state: State,
     pub turn: Option<crate::Turn>,
     pub pending_approvals: usize,
+    pub waiting_for_inputs: bool,
 }
 
 impl Snapshot {
     pub fn of(task: &Task, pending_approvals: usize) -> Self {
-        Snapshot { state: task.state.clone(), turn: task.turn.clone(), pending_approvals }
+        Snapshot {
+            state: task.state.clone(),
+            turn: task.turn.clone(),
+            pending_approvals,
+            waiting_for_inputs: task.integration.as_deref().and_then(crate::integration::Plan::reason).is_some(),
+        }
     }
 }
 
@@ -121,7 +159,7 @@ impl Snapshot {
 /// pending approval or a waiting question appeared since it began. A task
 /// that has not started yet waits.
 pub fn woke(start: &Snapshot, now: &Snapshot, after_turn: u64) -> bool {
-    if matches!(now.state, State::Stopped { .. } | State::Failed { .. } | State::Destroyed) {
+    if now.waiting_for_inputs || matches!(now.state, State::Stopped { .. } | State::Failed { .. } | State::Destroyed) {
         return true;
     }
     if now.turn.as_ref().is_some_and(|t| t.state == Phase::Idle && t.number > after_turn) {

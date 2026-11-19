@@ -9,7 +9,7 @@
 
 use deck_gateway::http::{self, Request};
 use deck_gateway::server::Ready;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -1343,6 +1343,18 @@ fn with_github_grants(
     token: Option<&str>,
     grants: &[&Path],
 ) -> Gateway {
+    with_github_args(name, api, remote, control, token, grants, &[])
+}
+
+fn with_github_args(
+    name: &str,
+    api: &str,
+    remote: &str,
+    control: Option<(&Path, &str)>,
+    token: Option<&str>,
+    grants: &[&Path],
+    args: &[&str],
+) -> Gateway {
     let dir = scratch(name);
     let mut command = Command::new(env!("CARGO_BIN_EXE_deck-gateway"));
     command
@@ -1362,6 +1374,7 @@ fn with_github_grants(
         .arg(dir.join("scratch"))
         .arg("--github-token")
         .arg("DECK_GATEWAY_TEST_GITHUB")
+        .args(args)
         .arg("--task")
         .arg("t-1")
         .arg("--upstream")
@@ -1392,6 +1405,61 @@ fn with_github_grants(
     // purpose: dropping it here would stop the process mid-test.
     std::mem::forget(stdin);
     Gateway { child, ready, deckd }
+}
+
+#[test]
+fn integration_publication_requires_every_pin_and_opens_only_a_draft() {
+    let (dir, remote) = bare("gh-integration");
+    let first = bundle(&dir, "deck/t-1", "work", &dir.join("none"));
+    let tip = || {
+        let output = Command::new("git").arg("-C").arg(dir.join("work")).args(["rev-parse", "HEAD"]).output().unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let base = tip();
+    let result = bundle_with(&dir, "deck/t-1", "work", &dir.join("none"), b"combined", None);
+    let combined = tip();
+    let (api, seen, _) = api(|request| {
+        if request.target.ends_with("/pulls") {
+            r#"{"number":7,"title":"Integration","state":"open","draft":true,"head":{"ref":"deck/t-1","sha":"abc"},"base":{"ref":"main"},"html_url":"https://github.com/owner/repo/pull/7"}"#.into()
+        } else {
+            r#"{"private":true}"#.into()
+        }
+    });
+    let gateway = with_github_args(
+        "gh-integration-gw",
+        &api,
+        &url(&remote),
+        Some((&agreement("gh-integration-queue"), "t-1")),
+        Some("token"),
+        &[],
+        &[
+            "--github-branch",
+            "main",
+            "--github-integration",
+            "draft",
+            "--github-required-commit",
+            &base,
+            "--github-required-commit",
+            &combined,
+        ],
+    );
+    let github = gateway.ready.github.clone().unwrap();
+    assert!(publish(&github, "deck/t-1", &first).contains("must contain pinned integration commit"));
+    assert!(publish(&github, "deck/t-1", &result).starts_with("HTTP/1.1 200 OK"));
+    let create = |draft| {
+        let body = json!({ "operation": "create_pr", "head": "deck/t-1", "base": "main", "title": "Integration", "draft": draft }).to_string();
+        send(
+            &github,
+            &format!("POST /operations/pull_request HTTP/1.1\r\ncontent-length: {}\r\n\r\n{body}", body.len()),
+        )
+    };
+    assert!(create(false).starts_with("HTTP/1.1 403"));
+    let draft = create(true);
+    assert!(draft.starts_with("HTTP/1.1 200 OK") && draft.contains("\"draft\":true"), "{draft}");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.iter().filter(|request| request.target.ends_with("/pulls")).count(), 1);
+    let refs = Command::new("git").arg("--git-dir").arg(&remote).args(["show-ref"]).output().unwrap();
+    assert_eq!(String::from_utf8(refs.stdout).unwrap().trim(), format!("{combined} refs/heads/deck/t-1"));
 }
 
 /// A bare repository on host loopback stands in for GitHub: `git push` and

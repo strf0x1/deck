@@ -1,5 +1,5 @@
 {
-  "contract": "1.5.0",
+  "contract": "1.6.0",
   "acp": "1",
   "names": {
     "construct_meta": "com.sprawlcommons/construct",
@@ -485,7 +485,9 @@
       "last_message_bytes": 2048,
       "message_chars": 4096,
       "wait_ms_max": 300000,
-      "prompt_session_wait_ms": 60000
+      "prompt_session_wait_ms": 60000,
+      "integration_contributors": 16,
+      "integration_reason_chars": 512
     },
     "operations": [
       {
@@ -505,6 +507,12 @@
         "writes": true,
         "request": "control-create-request.schema.json",
         "response": "control-create-response.schema.json"
+      },
+      {
+        "operation": "integrate",
+        "writes": true,
+        "request": "control-integrate-request.schema.json",
+        "response": "control-integrate-response.schema.json"
       },
       {
         "operation": "prompt",
@@ -597,7 +605,8 @@
     "wait_wakes": [
       "terminal-lifecycle",
       "idle-turn-after",
-      "new-attention"
+      "new-attention",
+      "integration-waiting"
     ],
     "exchanges": [
       {
@@ -1479,7 +1488,7 @@
           "code": "deck_control_refused",
           "body": {
             "error": {
-              "message": "`destroy` is not a control operation; the set is tasks, task, create, prompt, wait, stop",
+              "message": "`destroy` is not a control operation; the set is tasks, task, create, integrate, prompt, wait, stop",
               "type": "deck_control_refused",
               "code": "deck_control_refused"
             },
@@ -1616,7 +1625,7 @@
           "code": "deck_control_refused",
           "body": {
             "error": {
-              "message": "`destroy` is not a control operation; the set is tasks, task, create, prompt, wait, stop",
+              "message": "`destroy` is not a control operation; the set is tasks, task, create, integrate, prompt, wait, stop",
               "type": "deck_control_refused",
               "code": "deck_control_refused"
             },
@@ -1854,8 +1863,213 @@
             }
           }
         }
+      },
+      {
+        "case": "integrate-local-branch",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "integrate",
+          "destination": {
+            "kind": "local_branch",
+            "branch": "main"
+          },
+          "contributors": [
+            "01JD3W0RKER0000000000000001",
+            "01JD3W0RKER0000000000000002"
+          ],
+          "brief": "Resolve the overlapping edits and run the combined tests."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000003"
+          }
+        }
+      },
+      {
+        "case": "integrate-new-pr",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "integrate",
+          "destination": {
+            "kind": "new_pull_request"
+          },
+          "contributors": [
+            "01JD3W0RKER0000000000000001",
+            "01JD3W0RKER0000000000000002"
+          ],
+          "brief": "Resolve the overlapping edits and run the combined tests.",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000003"
+          }
+        }
+      },
+      {
+        "case": "integrate-existing-pr",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "integrate",
+          "destination": {
+            "kind": "existing_pull_request",
+            "number": 42
+          },
+          "contributors": [
+            "01JD3W0RKER0000000000000002"
+          ],
+          "brief": "Resolve the overlapping edits and run the combined tests."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000003"
+          }
+        }
+      },
+      {
+        "case": "integrate-reuse",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "integrate",
+          "destination": {
+            "kind": "local_branch",
+            "branch": "main"
+          },
+          "contributors": [
+            "01JD3W0RKER0000000000000001",
+            "01JD3W0RKER0000000000000002"
+          ],
+          "brief": "Resolve the overlapping edits and run the combined tests."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "01JD3W0RKER0000000000000003"
+          }
+        }
+      },
+      {
+        "case": "integrate-occupied",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "integrate",
+          "destination": {
+            "kind": "new_pull_request"
+          },
+          "contributors": [
+            "01JD3W0RKER0000000000000002",
+            "01JD3W0RKER0000000000000001"
+          ],
+          "brief": "Resolve the overlapping edits and run the combined tests.",
+          "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        },
+        "expect": {
+          "status": 409,
+          "code": "deck_control_busy",
+          "body": {
+            "error": {
+              "message": "Integration task 01JD3W0RKER0000000000000003 already holds this destination.",
+              "type": "deck_control_busy",
+              "code": "deck_control_busy"
+            },
+            "retryable": true
+          }
+        }
+      },
+      {
+        "case": "integrate-duplicate-contributor",
+        "token": "dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd",
+        "headers": {
+          "authorization": "Bearer dct_q8Zr1vKcY3nT0fWb6LmE2pXhS9aJ4uGd"
+        },
+        "body": {
+          "operation": "integrate",
+          "destination": {
+            "kind": "local_branch",
+            "branch": "main"
+          },
+          "contributors": [
+            "01JD3W0RKER0000000000000001",
+            "01JD3W0RKER0000000000000001"
+          ],
+          "brief": "Resolve the overlapping edits and run the combined tests."
+        },
+        "expect": {
+          "status": 400,
+          "code": "deck_control_bad_request",
+          "body": {
+            "error": {
+              "message": "Contributors must be distinct task IDs.",
+              "type": "deck_control_bad_request",
+              "code": "deck_control_bad_request"
+            },
+            "retryable": false
+          }
+        }
+      },
+      {
+        "case": "integrate-waiting-for-input",
+        "token": null,
+        "headers": {},
+        "body": {
+          "operation": "wait",
+          "id": "01JD3W0RKER0000000000000003",
+          "wait_ms": 60000
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "timed_out": false,
+            "task": {
+              "id": "01JD3W0RKER0000000000000003",
+              "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+              "title": "Combine the worker changes",
+              "state": "created",
+              "turn": null,
+              "attention": "integration_input",
+              "pending_approvals": 0,
+              "publication": null,
+              "pull_request": null,
+              "created_by": "01JD3C00RD1NAT0R0000000001",
+              "last_message": null,
+              "integration": {
+                "destination": {
+                  "kind": "new_pull_request"
+                },
+                "branch": "deck/01JD3W0RKER0000000000000003",
+                "phase": "waiting",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "contributors": [
+                  {
+                    "id": "01JD3W0RKER0000000000000001",
+                    "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                  },
+                  {
+                    "id": "01JD3W0RKER0000000000000002"
+                  }
+                ],
+                "reason": "Contributor 01JD3W0RKER0000000000000002 has no published task branch.",
+                "repository": "acme/app",
+                "base_branch": "main"
+              }
+            }
+          }
+        }
       }
     ],
-    "project_default_since": "1.5.0"
+    "project_default_since": "1.5.0",
+    "integration_since": "1.6.0"
   }
 }

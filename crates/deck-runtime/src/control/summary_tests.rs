@@ -15,15 +15,33 @@ fn task(state: State, turn: Option<(u64, Phase)>) -> Task {
     task
 }
 
+#[test]
+fn a_listing_stops_at_the_byte_limit_and_keeps_the_newest_tasks_and_projects() {
+    let projects = vec![json!({ "id": "git:abc", "name": "App" })];
+    // Escapes expand inside JSON, so count the serialized response.
+    let summary = |id: &str| json!({ "id": id, "last_message": "\\".repeat(350_000) });
+    let tasks = [summary("newest"), summary("second"), json!({ "id": "oldest" })];
+    let reply = listing(projects.clone(), tasks.into_iter(), false).unwrap();
+    assert!(reply.to_string().len() <= 1_048_576);
+    assert_eq!(reply["projects"], json!(projects));
+    assert_eq!(reply["truncated"], true);
+    assert_eq!(reply["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(reply["tasks"][0]["id"], "newest");
+}
+
 fn validator() -> jsonschema::Validator {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let lock = std::fs::read_to_string(root.join("CONTRACT.lock")).unwrap();
     let line = lock.lines().find(|line| line.starts_with("vendored")).unwrap();
     let dir = root.join(line.split_once('=').unwrap().1.trim().trim_matches('"'));
-    let schema: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("schema/control-task-summary.schema.json")).unwrap())
-            .unwrap();
-    jsonschema::validator_for(&schema).unwrap()
+    let read = |name: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join("schema").join(name)).unwrap()).unwrap()
+    };
+    let schema = read("control-task-summary.schema.json");
+    let integration = read("control-integration.schema.json");
+    let id = integration["$id"].as_str().unwrap().to_owned();
+    let registry = jsonschema::Registry::new().add(&id, integration).unwrap().prepare().unwrap();
+    jsonschema::options().with_registry(&registry).build(&schema).unwrap()
 }
 
 #[test]
