@@ -23,6 +23,12 @@ const SHOWN: Duration = Duration::from_millis(1500);
 
 /// A copy button for `text`, keyed by `key` so its check is its own.
 pub fn button(deck: &Deck, key: String, text: String, cx: &mut Context<Deck>) -> AnyElement {
+    button_in(ROW, deck, key, text, cx)
+}
+
+/// The same button revealed by hovering `group`, for a card outside the
+/// transcript (a worktree review's file).
+pub fn button_in(group: &'static str, deck: &Deck, key: String, text: String, cx: &mut Context<Deck>) -> AnyElement {
     let done = deck.copied.as_deref() == Some(key.as_str());
     let selector = format!("copy-{key}");
     div()
@@ -38,7 +44,7 @@ pub fn button(deck: &Deck, key: String, text: String, cx: &mut Context<Deck>) ->
         .text_color(if done { Tokens::lime() } else { Tokens::text_faint().into() })
         .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text_dim()))
         // Hidden until the row is hovered, unless it is showing its check.
-        .when(!done, |d| d.invisible().group_hover(ROW, |s| s.visible()))
+        .when(!done, |d| d.invisible().group_hover(group, |s| s.visible()))
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.stop_propagation();
             this.copy(&key, &text, cx);

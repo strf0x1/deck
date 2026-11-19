@@ -40,17 +40,26 @@ pub fn diff(changes: &[transcript::Change], open: bool, typography: &Typography,
         // or comment keeps its context; diff line numbers index these.
         let lang = highlight::language_of(&change.path);
         let (old, new) = (highlight::lines(lang, &change.old), highlight::lines(lang, &change.new));
-        out = out.children(rows.into_iter().map(|r| diff_line(r, change.numbered, &old, &new, typography, runs)));
+        out = out.children(rows.into_iter().map(|r| {
+            let spans = match r {
+                DiffRow::Line(l) if l.kind == diff::Kind::Removed => l.old.and_then(|n| old.get(n - 1)),
+                DiffRow::Line(l) => l.new.and_then(|n| new.get(n - 1)),
+                DiffRow::Gap(_) => None,
+            };
+            diff_line(r, change.numbered, spans, typography, runs)
+        }));
     }
     let toggle = (cut_total > 0 || open).then(|| more(cut_total, "lines", open));
     div().flex().flex_col().child(out).children(toggle).into_any_element()
 }
 
-fn diff_line(
+/// One diff row as an edit card draws it: a sign column and a faint wash
+/// over the line's own syntax colours (`spans`), or a run of unchanged
+/// lines left out. The worktree review draws a Git patch with it too.
+pub(super) fn diff_line(
     row: DiffRow<'_>,
     numbered: bool,
-    old: &[highlight::Line],
-    new: &[highlight::Line],
+    spans: Option<&highlight::Line>,
     typography: &Typography,
     runs: &RowRuns,
 ) -> Div {
@@ -73,10 +82,6 @@ fn diff_line(
         if numbered { line.new.or(line.old).map(|n| n.to_string()).unwrap_or_default() } else { String::new() };
     // The sign carries add/remove; the text keeps its syntax colours, a
     // little dimmer on unchanged lines.
-    let spans = match line.kind {
-        diff::Kind::Removed => line.old.and_then(|n| old.get(n - 1)),
-        _ => line.new.and_then(|n| new.get(n - 1)),
-    };
     let text = prose::code_text(
         &line.text,
         spans.map(std::slice::from_ref).unwrap_or_default(),

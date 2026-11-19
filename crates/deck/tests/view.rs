@@ -4546,6 +4546,15 @@ fn the_worktree_pane_reviews_and_removes_a_stopped_worker(cx: &mut TestAppContex
     });
     draw(&mut vcx);
     assert!(vcx.debug_bounds("worktree-diff").is_some());
+    // Drawn with the edit cards' rows, a header per file from the patch.
+    assert!(vcx.debug_bounds("worktree-diff-file-0").is_some());
+    assert!(vcx.debug_bounds("worktree-diff-file-1").is_none());
+    // A file's copy button gives the path to open in an editor.
+    let copy = vcx.debug_bounds("copy-worktree-file-0").unwrap();
+    vcx.simulate_mouse_move(copy.center(), None, Modifiers::none());
+    click_control(&mut vcx, "copy-worktree-file-0");
+    let copied = vcx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied, Some(worktree.join("notes.txt").display().to_string()));
     assert!(vcx.debug_bounds("worktree-remove").is_none());
 
     git(&worktree, &["commit", "-qm", "Worker result"]);
