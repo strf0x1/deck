@@ -7,8 +7,9 @@
 
 use super::board::{CARD_H, Card, LaneState};
 use super::glyph::glyph;
-use super::panels::state_mark;
+use super::panels::{sheen_border, state_mark};
 use super::root::Deck;
+use super::session::Status;
 use super::sidebar_rows::TASK_INDENT;
 use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::prelude::FluentBuilder as _;
@@ -51,6 +52,15 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
     };
     let id = c.lane.id;
     let task = deck.lanes.task(id, deck.task_id());
+    // The sheen means a turn is working, not just a process: only an
+    // attachment the window holds knows that, and a row that asks wears the
+    // waiting mark instead.
+    let sheen_on = c.lane.state == LaneState::Working
+        && c.lane.attention.is_none()
+        && match task.as_deref() {
+            Some(task) => deck.attached.get(task).is_some_and(|a| a.session.status == Status::Working),
+            None => live && deck.idle.session.status == Status::Working,
+        };
     let done = task
         .as_deref()
         .and_then(|task| deck.tasks.iter().find(|record| record.id == task))
@@ -135,6 +145,9 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
         }])
         .when(held, |s| s.cursor_grabbing())
         .when(!held, |s| s.cursor_grab())
+        // The activity sheen: the shared border mark, gated on this row's
+        // own turn.
+        .children(sheen_on.then(|| sheen_border(deck.sheen().center(), radius::CONTROL)))
         .hover(|s| s.bg(Tokens::raised_hover()))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             let hovered = if *hovered {

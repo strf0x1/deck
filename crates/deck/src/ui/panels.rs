@@ -1,5 +1,5 @@
 //! Render helpers for the small shared pieces other regions use: icon marks,
-//! state colours, pills, the two button weights and panes.
+//! state colours, pills, the two button weights, the activity sheen and panes.
 //!
 //! The design choice: free functions, not separate entities. Nothing here owns
 //! state; every interaction calls back into `Deck`. A colour arrives as an
@@ -7,8 +7,9 @@
 
 use super::board::LaneState;
 use super::glyph::glyph;
+use super::sheen::BAND;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
-use gpui::{Div, FontWeight, Hsla, ParentElement as _, Styled as _, div, px};
+use gpui::{Div, FontWeight, Hsla, ParentElement as _, Styled as _, div, px, relative};
 
 pub fn state_color(s: LaneState) -> Hsla {
     match s {
@@ -79,6 +80,36 @@ pub fn pill(color: Hsla, label: impl Into<String>) -> Div {
 /// how a coloured mark stands off the glass without a wash of colour.
 pub fn outlined(color: Hsla) -> Div {
     div().border_1().border_color(tint(color, 0.5)).bg(Tokens::well()).text_color(color)
+}
+
+/// The activity sheen as a shared mark: a bright band riding a surface's
+/// outline, never its body. Four edge strips clip the same two gradient
+/// halves to each side of the border, inside the surface's `corner`
+/// rounding. The caller gates it on its own activity and passes the window
+/// sheen's centre (`sheen.rs`); paint-only, nothing re-measures.
+pub fn sheen_border(center: f32, corner: f32) -> Div {
+    let half = BAND / 2.;
+    let edge = px(1.5);
+    let halves = |from_right: bool| {
+        let place = |d: Div, at: f32| if from_right { d.right(relative(at)) } else { d.left(relative(at)) };
+        let (rising_at, falling_at) =
+            if from_right { (1. - center, 1. - center - half) } else { (center - half, center) };
+        [
+            place(div().absolute().top_0().bottom_0().w(relative(half)), rising_at).bg(Tokens::sheen_rising()),
+            place(div().absolute().top_0().bottom_0().w(relative(half)), falling_at).bg(Tokens::sheen_falling()),
+        ]
+    };
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .rounded(px(corner))
+        .overflow_hidden()
+        .child(div().absolute().top_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
+        .child(div().absolute().bottom_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
+        .child(div().absolute().top_0().left_0().w(edge).h_full().overflow_hidden().children(halves(false)))
+        .child(div().absolute().top_0().right_0().w(edge).h_full().overflow_hidden().children(halves(true)))
 }
 
 /// The one loud button in a region: the user's own colour, in its border
