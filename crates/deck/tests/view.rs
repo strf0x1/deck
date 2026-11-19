@@ -1004,6 +1004,48 @@ fn the_send_ripples_from_the_composer_to_the_new_turn(cx: &mut TestAppContext) {
     deck.read_with(&cx, |d, _| assert!(d.ripple().at_rest(), "a holder's prompt does not ripple"));
 }
 
+#[gpui::test]
+fn the_ask_card_springs_in_with_one_amber_pass(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+
+    // The question arrives: the card springs in and the amber pass runs.
+    let options = ["allow", "reject"]
+        .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
+        .to_vec();
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell git push".into(), options }, cx)
+    });
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.arrival().opacity() < 1., "the card is still arriving: {}", d.arrival().opacity());
+        assert!(d.arrival().flash().is_some(), "the amber pass runs");
+        assert!(d.animating(), "the entrance keeps the window drawing");
+    });
+
+    // The question is open and nothing else moves: the entrance finishes
+    // and the window rests with the card fully shown.
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| {
+        assert!(d.arrival().opacity() > 0.99, "the card is fully shown");
+        assert!(d.arrival().flash().is_none(), "one pass only");
+        assert!(d.session().ask.is_some(), "the question is still open");
+        assert!(!d.animating());
+    });
+
+    // The answer takes the card; the entrance resets with it.
+    cx.simulate_keystrokes("2");
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.session().ask.is_none(), "answered");
+        assert!(d.arrival().at_rest(), "the entrance reset with the card");
+    });
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

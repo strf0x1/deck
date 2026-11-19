@@ -17,6 +17,7 @@ mod access_grants;
 mod access_panel;
 mod appearance;
 mod appearance_ops;
+pub mod arrival;
 mod attached;
 mod attachment;
 pub mod attention;

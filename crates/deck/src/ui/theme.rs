@@ -284,6 +284,12 @@ impl Tokens {
     pub fn failed_peak() -> Hsla {
         tint(Self::red(), 0.7)
     }
+    /// The ask card's arrival flash: the waiting hue at the done pulse's
+    /// weight. Amber means waiting on a human — one pass for the moment
+    /// that blocks on you (`arrival.rs`), never as decoration.
+    pub fn ask_peak() -> Hsla {
+        tint(Self::amber(), 0.7)
+    }
     /// Code: the accents again, a little softer, plus one blue for types,
     /// so highlighted code sits in the same palette as the window.
     pub fn code(class: Class) -> Hsla {

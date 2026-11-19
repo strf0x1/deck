@@ -8,7 +8,7 @@
 
 use super::chrome::kbd;
 use super::glyph::glyph;
-use super::panels::{icon_mark, pane, pill, primary};
+use super::panels::{band_border, icon_mark, pane, pill, primary};
 use super::root::Deck;
 use super::session::Status;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
@@ -339,6 +339,12 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .child(ask.title.clone()),
         )
         .child(div().flex().gap(px(space::LINE)).children(buttons))
+        // The entrance: the card springs in on opacity alone (never height),
+        // and one amber pass crosses its outline — the waiting hue, spent
+        // once on the moment that blocks on a human (`arrival.rs`).
+        .opacity(deck.arrival().opacity())
+        .relative()
+        .children(deck.arrival().flash().map(|center| band_border(center, [radius::BUBBLE; 4], Tokens::ask_peak(), 1.)))
         .into_any_element()
 }
 
