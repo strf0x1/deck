@@ -212,6 +212,30 @@
     },
     "integration": {
       "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-integration.schema.json"
+    },
+    "worktree": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._/-]{1,200}$"
+        },
+        "base_commit": {
+          "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-integration.schema.json#/$defs/commit"
+        },
+        "target_ref": {
+          "type": "string",
+          "pattern": "^refs/heads/.+$"
+        },
+        "review_commit": {
+          "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-integration.schema.json#/$defs/commit"
+        }
+      },
+      "required": [
+        "branch",
+        "base_commit"
+      ],
+      "additionalProperties": true
     }
   },
   "required": [

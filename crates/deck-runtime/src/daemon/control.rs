@@ -78,7 +78,7 @@ fn decide(cx: &Context, coordinator: &str, operation: &Operation) -> Decided {
     let policy = policy(cx, coordinator)?;
     match operation {
         Operation::Tasks { project } => tasks(cx, coordinator, &policy, project.as_deref()),
-        Operation::Task { id } => Ok(json!({ "task": summarize(cx, &visible(cx, coordinator, &policy, id)?) })),
+        Operation::Task { id } => Ok(json!({ "task": summarize(cx, &visible(cx, coordinator, &policy, id)?, true) })),
         Operation::Create { project, brief, title, budget } => {
             let project = control::create_project(&policy, project.as_deref())?;
             super::control_create::create(cx, coordinator, &policy, &project, brief, title.as_deref(), *budget)
@@ -135,7 +135,7 @@ fn drivable(cx: &Context, coordinator: &str, policy: &Policy, id: &str) -> Resul
     Ok(task)
 }
 
-pub(super) fn summarize(cx: &Context, task: &Task) -> Value {
+fn summarize(cx: &Context, task: &Task, detailed: bool) -> Value {
     let pending = cx.boundary.pending(&task.id).map_or(0, |items| items.len());
     // No gateway read here: a listing of 200 tasks must not wait on GitHub.
     // The reader's last read is what the window last refreshed.
@@ -145,6 +145,11 @@ pub(super) fn summarize(cx: &Context, task: &Task) -> Value {
         pending_approvals: pending,
         pull_request: live.and_then(|live| live.pull_request),
         message: cx.runtime.last_message(&task.id),
+        review_commit: task
+            .workspace
+            .as_ref()
+            .filter(|_| detailed)
+            .and_then(|ws| ws.review_commit(task).ok().flatten()),
     };
     summary::summary(task, &facts)
 }
@@ -175,7 +180,7 @@ fn tasks(cx: &Context, coordinator: &str, policy: &Policy, project: Option<&str>
         .collect();
     listed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
     let truncated = listed.len() > control::TASKS_LIMIT;
-    let tasks = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task));
+    let tasks = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task, false));
     summary::listing(projects(cx, policy), tasks, truncated).map_err(internal)
 }
 
@@ -245,7 +250,7 @@ fn wait(cx: &Context, coordinator: &str, policy: &Policy, id: &str, after_turn: 
         now = cx.snapshot(id)?;
     };
     let task = cx.runtime.task(id).map_err(internal)?;
-    Ok(json!({ "timed_out": timed_out, "task": summarize(cx, &task) }))
+    Ok(json!({ "timed_out": timed_out, "task": summarize(cx, &task, true) }))
 }
 
 fn stop(cx: &Context, coordinator: &str, policy: &Policy, id: &str) -> Decided {

@@ -229,7 +229,7 @@ fn audit(data: &Path, id: &str) -> Vec<Value> {
 fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     let (daemon, client) = daemon("e2e");
     let repo = daemon.data.join("repo");
-    git_repo(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
     let fake =
         deck_runtime::daemon_client::sibling_binary("deck-fake-agent").expect("build the workspace binaries first");
     let agent = vec!["env".to_string(), "DECK_FAKE_DELAY_MS=20".into(), fake.display().to_string()];
@@ -393,4 +393,152 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     for id in [coordinator.as_str(), mine.id.as_str(), again["id"].as_str().unwrap()] {
         let _ = client.stop(id);
     }
+}
+
+#[test]
+fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
+    let (daemon, client) = daemon("worktrees");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let repo = repo.canonicalize().unwrap();
+    let git = |cwd: &Path, args: &[&str]| {
+        let output = Command::new("git").current_dir(cwd).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8(output.stdout).unwrap().trim_end().to_owned()
+    };
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("README.md"), "dirty project files\n").unwrap();
+    std::fs::write(repo.join("private"), "untracked project files\n").unwrap();
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let project = client.open_project(&repo, vec![fake.display().to_string()]).unwrap();
+    let spec = Spec {
+        cwd: repo.clone(),
+        project: Some(project.id.clone()),
+        kind: TaskKind::Coordinator,
+        ..Default::default()
+    };
+    let first = client.create(spec.clone()).unwrap();
+    let out = daemon.data.join("worktrees-control-env");
+    let mut settings = client.coordinator_policy(&first.id, None).unwrap();
+    settings.coordinator_argv = Some(env_stub(&out));
+    client.coordinator_policy(&first.id, Some(settings)).unwrap();
+    client.destroy(&first.id).unwrap();
+    client.run(spec).unwrap();
+    eventually(|| out.exists());
+    let env = std::fs::read_to_string(&out).unwrap();
+    let mut lines = env.lines();
+    let url = lines.next().unwrap();
+    let token = lines.next().unwrap();
+    let create = |brief: &str| {
+        let (status, reply) = post(url, Some(token), &json!({ "operation": "create", "brief": brief }));
+        assert_eq!(status, 200, "{reply}");
+        reply["id"].as_str().unwrap().to_owned()
+    };
+    let (a, b) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| create("first worker"));
+        let second = create("second worker");
+        (first.join().unwrap(), second)
+    });
+    assert_ne!(a, b);
+    for id in [&a, &b] {
+        eventually(|| client.task(id).is_ok_and(|task| task.state == deck_runtime::State::Running));
+        let task = client.task(id).unwrap();
+        let workspace = task.workspace.unwrap();
+        assert!(workspace.ready);
+        assert_eq!(workspace.start, base);
+        assert_eq!(workspace.source, repo);
+        let worktree = task.spec.cwd;
+        assert_eq!(worktree, daemon.data.canonicalize().unwrap().join("tasks").join(id).join("worktree"));
+        assert_eq!(git(&worktree, &["branch", "--show-current"]), format!("deck/{id}"));
+        assert_eq!(git(&worktree, &["rev-parse", "HEAD"]), base);
+        assert_eq!(std::fs::read_to_string(worktree.join("README.md")).unwrap(), "one\n");
+        assert!(!worktree.join("private").exists());
+        let reopened = client.open_project(&worktree, vec![]).unwrap();
+        assert_eq!(reopened.checkouts, vec![repo.clone()]);
+    }
+    let worktree = |id: &str| client.task(id).unwrap().spec.cwd;
+    let commit = |cwd: &Path, content: &str| {
+        std::fs::write(cwd.join("README.md"), content).unwrap();
+        git(cwd, &["add", "--", "README.md"]);
+        git(cwd, &["commit", "-m", "Contributor update"]);
+        git(cwd, &["rev-parse", "HEAD"])
+    };
+    let a_pin = commit(&worktree(&a), "first contributor\n");
+    let request = json!({
+        "operation": "integrate", "destination": { "kind": "local_branch", "branch": "main" },
+        "contributors": [a, b], "brief": "Keep both README edits and run the combined checks."
+    });
+    let (status, created) = post(url, Some(token), &request);
+    assert_eq!(status, 200, "{created}");
+    let integration = created["id"].as_str().unwrap();
+    let wait = json!({ "operation": "wait", "id": integration, "wait_ms": 10000 });
+    let (status, result) = post(url, Some(token), &wait);
+    assert_eq!(status, 200, "{result}");
+    let plan = &result["task"]["integration"];
+    assert_eq!(plan["phase"], "waiting", "{result}");
+    assert!(plan["reason"].as_str().unwrap().contains("no committed work"), "{result}");
+    assert_eq!(plan["base_commit"], base);
+    assert_eq!(plan["contributors"][0], json!({"id": a, "commit": a_pin}));
+    assert_eq!(plan["contributors"][1], json!({"id": b}));
+    assert!(!worktree(integration).exists());
+
+    let a_later = commit(&worktree(&a), "later contributor work\n");
+    let b_pin = commit(&worktree(&b), "second contributor\n");
+    assert_eq!(post(url, Some(token), &request), (200, created.clone()));
+    eventually(|| client.prompts(integration).is_ok_and(|prompts| !prompts.is_empty()));
+    let detail = || {
+        let (status, result) = post(url, Some(token), &json!({ "operation": "task", "id": integration }));
+        assert_eq!(status, 200, "{result}");
+        result
+    };
+    let result = detail();
+    let plan = &result["task"]["integration"];
+    assert_eq!(plan["phase"], "ready");
+    assert_eq!(plan["contributors"], json!([{"id":a,"commit":a_pin},{"id":b,"commit":b_pin}]));
+    assert_eq!(plan["branch"], format!("deck/{integration}"));
+    assert_eq!(result["task"]["worktree"]["target_ref"], "refs/heads/main");
+    assert!(result["task"]["worktree"].get("review_commit").is_none());
+    let brief = &client.prompts(integration).unwrap()[0].text;
+    assert!(brief.find(&a_pin).unwrap() < brief.find(&b_pin).unwrap());
+    assert!(brief.contains("developer merge_start"));
+
+    let integrate_at = worktree(integration);
+    assert_eq!(git(&integrate_at, &["rev-parse", "HEAD"]), base);
+    git(&integrate_at, &["merge", "--no-ff", "--no-edit", &a_pin]);
+    assert!(detail()["task"]["worktree"].get("review_commit").is_none());
+    let conflict = Command::new("git")
+        .current_dir(&integrate_at)
+        .args(["merge", "--no-ff", "--no-edit", &b_pin])
+        .output()
+        .unwrap();
+    assert_eq!(conflict.status.code(), Some(1));
+    assert!(git(&integrate_at, &["status", "--porcelain"]).contains("UU README.md"));
+    let reviewed = commit(&integrate_at, "first contributor\nsecond contributor\n");
+    assert_eq!(
+        git(&integrate_at, &["show", &format!("{reviewed}:README.md")]),
+        "first contributor\nsecond contributor"
+    );
+    for pin in [&base, &a_pin, &b_pin] {
+        git(&integrate_at, &["merge-base", "--is-ancestor", pin, &reviewed]);
+    }
+    assert_eq!(detail()["task"]["worktree"]["review_commit"], reviewed);
+    assert_eq!(git(&worktree(&a), &["rev-parse", "HEAD"]), a_later);
+    assert_eq!(git(&worktree(&b), &["rev-parse", "HEAD"]), b_pin);
+    assert_eq!(git(&repo, &["rev-parse", "refs/heads/main"]), base);
+
+    let worktree = client.task(&a).unwrap().spec.cwd;
+    assert_eq!(
+        client.run(Spec { cwd: worktree.clone(), ..Default::default() }).unwrap().task.id,
+        a,
+        "opening an existing worktree should select its task",
+    );
+    client.stop(&a).unwrap();
+    std::fs::write(worktree.join("uncommitted"), "remember me").unwrap();
+    let moved = worktree.with_extension("moved");
+    std::fs::rename(&worktree, &moved).unwrap();
+    assert!(client.resume(&a).is_err());
+    assert!(!worktree.exists());
+    assert_eq!(std::fs::read_to_string(moved.join("uncommitted")).unwrap(), "remember me");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), base);
+    assert_eq!(std::fs::read_to_string(repo.join("README.md")).unwrap(), "dirty project files\n");
 }

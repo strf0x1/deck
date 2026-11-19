@@ -100,20 +100,25 @@ impl Store {
 
     /// A new task, recorded as created.
     pub fn create(&self, backend: &str, spec: Spec) -> Result<Task> {
-        self.create_with_plan(backend, spec, None)
+        self.create_task(backend, spec, None, None)
     }
 
-    pub(crate) fn create_with_plan(
+    pub(crate) fn create_task(
         &self,
         backend: &str,
-        spec: Spec,
+        mut spec: Spec,
         integration: Option<Box<crate::integration::Plan>>,
+        workspace: Option<Box<crate::worktree::Workspace>>,
     ) -> Result<Task> {
-        let first = Event::Created { backend: backend.into(), spec, integration };
         loop {
             let id = new_id();
-            match fs::create_dir(self.tasks.join(&id)) {
+            let dir = self.tasks.join(&id);
+            match fs::create_dir(&dir) {
                 Ok(()) => {
+                    if workspace.is_some() {
+                        spec.cwd = dir.canonicalize()?.join(crate::worktree::CHECKOUT);
+                    }
+                    let first = Event::Created { backend: backend.into(), spec, integration, workspace };
                     let task = Task::new(&id, &first)?;
                     self.write(&task, &first, now_ms())?;
                     return Ok(task);

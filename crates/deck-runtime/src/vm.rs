@@ -322,7 +322,7 @@ impl Backend for Vm {
                 github_base: github.map(|github| github.base.clone()).unwrap_or_default(),
                 github_branches: github.map(|github| github.branches.clone()).unwrap_or_default(),
                 github_integration: task.integration.as_ref().map(|plan| vmm::GithubIntegration {
-                    draft: matches!(plan.target.reference, crate::integration::Reference::Base { .. }),
+                    draft: plan.target.opens_draft(),
                     commits: plan
                         .base_commit
                         .iter()
@@ -824,6 +824,7 @@ mod tests {
         let task = Task {
             id: "legacy".into(),
             integration: None,
+            workspace: None,
             backend: "vm".into(),
             spec: Spec {
                 argv: vec!["construct".into(), "acp".into()],

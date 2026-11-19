@@ -49,6 +49,7 @@ pub mod vm;
 pub mod vmm;
 mod wait;
 mod wire;
+pub mod worktree;
 
 pub use backend::{Backend, Exited, Instance, Stream};
 pub use daemon_client::{DaemonClient, Incompatible, RunResult, Watch};

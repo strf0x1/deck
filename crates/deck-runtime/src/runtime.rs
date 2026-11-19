@@ -345,8 +345,17 @@ impl Runtime {
 
     pub(crate) fn create_with_plan(
         &self,
+        spec: Spec,
+        integration: Option<Box<crate::integration::Plan>>,
+    ) -> Result<String> {
+        self.create_task(spec, integration, None)
+    }
+
+    pub(crate) fn create_task(
+        &self,
         mut spec: Spec,
         integration: Option<Box<crate::integration::Plan>>,
+        workspace: Option<Box<crate::worktree::Workspace>>,
     ) -> Result<String> {
         if spec.project.is_none() {
             spec.project = Some(crate::project::identify(&spec.cwd)?.id);
@@ -361,11 +370,7 @@ impl Runtime {
             // (ADR 0011 §2): no GitHub policy, so no gateway and no branch.
             spec.github = None;
         }
-        let task = if integration.is_some() {
-            inner.store.create_with_plan(name, spec, integration)?
-        } else {
-            inner.store.create(name, spec)?
-        };
+        let task = inner.store.create_task(name, spec, integration, workspace)?;
         if let Some(policy) = policy {
             crate::coordinator::write(inner.store.data(), &task.id, policy)?;
         }
@@ -377,6 +382,16 @@ impl Runtime {
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
         inner.record(&mut task, Event::IntegrationUpdated { plan: Box::new(plan) })
+    }
+
+    pub(crate) fn prepare_workspace(&self, id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        if !task.startable() {
+            bail!("task {id} cannot prepare a workspace while {:?}", task.state);
+        }
+        let _lock = inner.store.lock(id)?.with_context(|| format!("task {id} is held by another process"))?;
+        inner.prepare_workspace(&mut task)
     }
 
     /// Run a task that has never run.
@@ -530,6 +545,12 @@ impl Inner {
         self.backends.of(&task)?;
         let lock =
             self.store.lock(&task.id)?.with_context(|| format!("task {} is held by another process", task.id))?;
+        if task.workspace.is_some()
+            && let Err(error) = self.prepare_workspace(&mut task)
+        {
+            self.record(&mut task, Event::Failed { failure: Failure::StartFailed(format!("{error:#}")) })?;
+            return Err(error);
+        }
         let generation = Arc::new(());
         let exited = exit_notice(task.id.clone(), me, generation.clone());
         match self.backends.of(&task)?.start(&task, lock, exited) {
@@ -543,6 +564,16 @@ impl Inner {
                 Err(e)
             }
         }
+    }
+
+    fn prepare_workspace(&mut self, task: &mut Task) -> Result<()> {
+        let workspace = task.workspace.as_ref().context("task has no managed worktree")?;
+        self.backends.of(task)?.reconcile(task)?;
+        workspace.prepare(&task.spec.cwd, &task.id)?;
+        if !workspace.ready {
+            self.record(task, Event::WorktreeReady)?;
+        }
+        Ok(())
     }
 
     fn record(&mut self, task: &mut Task, ev: Event) -> Result<()> {

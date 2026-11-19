@@ -31,12 +31,25 @@ impl Destination {
     }
 }
 
-/// The VM path resolves repository identity from the project's GitHub policy.
-/// The configured base matters for new PRs. Existing PRs are keyed by number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Target {
-    pub(crate) repository: String,
-    pub(crate) reference: Reference,
+#[serde(untagged)]
+pub(crate) enum Target {
+    // Preserve the on-disk shape of earlier VM plans.
+    Github { repository: String, reference: Reference },
+    Local { local: crate::worktree::Repository, branch: String },
+}
+
+impl Target {
+    pub(crate) fn github(&self) -> Result<(&str, &Reference)> {
+        match self {
+            Self::Github { repository, reference } => Ok((repository, reference)),
+            Self::Local { .. } => bail!("expected a GitHub integration destination"),
+        }
+    }
+
+    pub(crate) fn opens_draft(&self) -> bool {
+        matches!(self, Self::Github { reference: Reference::Base { .. }, .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,16 +126,22 @@ impl Plan {
     }
 
     pub(crate) fn summary(&self, id: &str) -> Value {
-        let destination = match &self.target.reference {
-            Reference::Base { .. } => Destination::NewPullRequest {},
-            Reference::Pull { number } => Destination::ExistingPullRequest { number: *number },
+        let destination = match &self.target {
+            Target::Github { reference: Reference::Base { .. }, .. } => Destination::NewPullRequest {},
+            Target::Github { reference: Reference::Pull { number }, .. } => {
+                Destination::ExistingPullRequest { number: *number }
+            }
+            Target::Local { branch, .. } => Destination::LocalBranch { branch: branch.clone() },
         };
         let mut summary = json!({
-            "destination": destination, "repository": self.target.repository,
+            "destination": destination,
             "branch": crate::github::task_branch(id), "contributors": self.inputs,
         });
-        if let Reference::Base { branch } = &self.target.reference {
-            summary["base_branch"] = json!(branch);
+        if let Target::Github { repository, reference } = &self.target {
+            summary["repository"] = json!(repository);
+            if let Reference::Base { branch } = reference {
+                summary["base_branch"] = json!(branch);
+            }
         }
         if let Some(commit) = &self.base_commit {
             summary["base_commit"] = json!(commit);

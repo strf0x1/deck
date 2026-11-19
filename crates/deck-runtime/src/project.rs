@@ -210,7 +210,8 @@ fn backfill(data: &Path) -> Result<Vec<Project>> {
     let mut order = vec![];
     let mut groups: BTreeMap<String, Project> = BTreeMap::new();
     for (at, task) in tasks {
-        let Ok(identity) = identify(&task.spec.cwd) else {
+        let source = task.workspace.as_ref().map_or(&task.spec.cwd, |workspace| &workspace.source);
+        let Ok(identity) = identify(source) else {
             continue;
         };
         let id = identity.id.clone();

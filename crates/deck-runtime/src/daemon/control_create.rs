@@ -51,7 +51,18 @@ pub(super) fn create(
         let checkout = recorded.as_ref().and_then(|p| p.checkouts.first());
         // A worker runs where its coordinator runs (ADR 0016).
         let backend = service.runtime.task(coordinator).map_err(internal)?.backend;
-        let in_place = (backend == "local").then(|| in_checkout(&service.runtime, checkout));
+        let workspace = match (backend.as_str(), checkout) {
+            ("local", Some(path)) => crate::worktree::Workspace::capture(path)
+                .map_err(|error| control::Refusal::new(control::Code::Refused, error.to_string()))?,
+            _ => None,
+        };
+        if backend == "local" && workspace.is_none() && project.starts_with("git:") {
+            return Err(control::Refusal::new(
+                control::Code::Refused,
+                "The recorded source Git checkout is unavailable.",
+            ));
+        }
+        let in_place = (backend == "local" && workspace.is_none()).then(|| in_checkout(&service.runtime, checkout));
         let budget = control::admit_create(policy, argv, requested, &workers, in_place, now_ms())?;
         let (Some(recorded), Some(cwd)) = (&recorded, checkout) else {
             return Err(control::Refusal::new(control::Code::Refused, "the project has no checkout Deck knows"));
@@ -64,7 +75,7 @@ pub(super) fn create(
             backend: Some(backend),
             ..Default::default()
         };
-        let id = service.runtime.create(spec).map_err(internal)?;
+        let id = service.runtime.create_task(spec, None, workspace.map(Box::new)).map_err(internal)?;
         let titled = title
             .map(str::to_owned)
             .or_else(|| brief.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned));
