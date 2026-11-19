@@ -7,16 +7,15 @@
 
 use super::board::{CARD_H, Card, LaneState};
 use super::glyph::glyph;
-use super::panels::state_mark;
+use super::panels::{sheen_border, state_mark};
 use super::root::Deck;
 use super::session::Status;
-use super::sheen::BAND;
 use super::sidebar_rows::TASK_INDENT;
 use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, BoxShadow, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, point, px, relative,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, point, px,
 };
 
 /// The selected project's compact task rows, drawn on the board's pitch so drag
@@ -146,37 +145,9 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
         }])
         .when(held, |s| s.cursor_grabbing())
         .when(!held, |s| s.cursor_grab())
-        // The activity sheen: the band rides the row's outline, not its body.
-        // Four edge strips clip the same two gradient halves to each side of
-        // the border, inside the row's rounding. Paint-only; no re-measure.
-        .children(sheen_on.then(|| {
-            let center = deck.sheen().center();
-            let half = BAND / 2.;
-            let edge = px(1.5);
-            let halves = |from_right: bool| {
-                let place = |d: gpui::Div, at: f32| {
-                    if from_right { d.right(relative(at)) } else { d.left(relative(at)) }
-                };
-                let (rising_at, falling_at) =
-                    if from_right { (1. - center, 1. - center - half) } else { (center - half, center) };
-                [
-                    place(div().absolute().top_0().bottom_0().w(relative(half)), rising_at).bg(Tokens::sheen_rising()),
-                    place(div().absolute().top_0().bottom_0().w(relative(half)), falling_at)
-                        .bg(Tokens::sheen_falling()),
-                ]
-            };
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .rounded(px(radius::CONTROL))
-                .overflow_hidden()
-                .child(div().absolute().top_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
-                .child(div().absolute().bottom_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
-                .child(div().absolute().top_0().left_0().w(edge).h_full().overflow_hidden().children(halves(false)))
-                .child(div().absolute().top_0().right_0().w(edge).h_full().overflow_hidden().children(halves(true)))
-        }))
+        // The activity sheen: the shared border mark, gated on this row's
+        // own turn.
+        .children(sheen_on.then(|| sheen_border(deck.sheen().center(), radius::CONTROL)))
         .hover(|s| s.bg(Tokens::raised_hover()))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             let hovered = if *hovered {
