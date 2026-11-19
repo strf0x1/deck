@@ -260,15 +260,17 @@ impl Tokens {
             linear_color_stop(tint(Self::accent(), a * 0.4), 1.),
         )
     }
-    /// The activity sheen's rising half: transparent to a bright white peak.
-    /// Neutral white — the sheen means activity, never a hue; the row's mark
-    /// keeps its colour. The two halves meet at the band's centre (`sheen.rs`).
-    pub fn sheen_rising() -> Background {
-        linear_gradient(90., linear_color_stop(rgba(0xffffff00), 0.), linear_color_stop(rgba(0xffffffb3), 1.))
+    /// The activity sheen's peak: bright neutral white — the sheen means
+    /// activity, never a hue; the row's mark keeps its colour. The band
+    /// ramps to this peak and back (`band.rs`, `sheen.rs`).
+    pub fn sheen_peak() -> Hsla {
+        rgba(0xffffffb3).into()
     }
-    /// The activity sheen's falling half: the peak back to transparent.
-    pub fn sheen_falling() -> Background {
-        linear_gradient(90., linear_color_stop(rgba(0xffffffb3), 0.), linear_color_stop(rgba(0xffffff00), 1.))
+    /// The done pulse's peak: the done hue at the sheen's weight. Green
+    /// means done — the pulse crosses a row once when its turn ends
+    /// (`exhale.rs`), never as decoration.
+    pub fn done_peak() -> Hsla {
+        tint(Self::lime(), 0.7)
     }
     /// Code: the accents again, a little softer, plus one blue for types,
     /// so highlighted code sits in the same palette as the window.
