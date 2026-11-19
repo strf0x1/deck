@@ -141,7 +141,8 @@ its own socat; it is the process that connects out and starts the agent.
 - A guest image is required for every task; the backend names it by
   environment and refuses to start without it, rather than falling back to
   the local backend.
-- One runtime serves one backend. `Runtime::open` skips records whose
+- One runtime serves one backend (amended by ADR 0016: one runtime may
+  serve several, and each task picks one). `Runtime::open` skips records whose
   `backend` is another name, and `destroy` refuses them, so switching a data
   root between `local` and `vm` leaves the old tasks alone instead of
   mis-reconciling or deleting them.

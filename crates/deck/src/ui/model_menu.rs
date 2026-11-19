@@ -1,5 +1,6 @@
-//! New session's model menu (ADR 0012 §4): every `<provider>/<model>` the
-//! settings offer, the one New session will start on checked, `deckd`'s
+//! New session's model menu (ADR 0012 §4): where it runs, when `deckd`
+//! offers more than one backend (ADR 0016), then every `<provider>/<model>`
+//! the settings offer, the one New session will start on checked, `deckd`'s
 //! default tagged. No state of its own.
 //!
 //! Picks reach VM sessions only: a local Construct runs on its own config,
@@ -28,6 +29,42 @@ pub const LOCAL: &str = "construct config";
 pub fn model_menu(deck: &Deck, top: f32, right: f32, cx: &mut Context<Deck>) -> AnyElement {
     let current = deck.settings().session_model();
     let default = deck.settings().settings().map(|s| s.default.clone());
+    let backends = deck.settings().backends();
+    let current_backend = deck.settings().session_backend();
+    let places = (backends.len() > 1).then(|| {
+        backends.iter().enumerate().map(|(i, name)| {
+            let on = current_backend.as_deref() == Some(name.as_str());
+            let pick = name.clone();
+            let (mark, hue) =
+                if name == "vm" { (icon::LOCK, Tokens::lime()) } else { (icon::TERMINAL, Tokens::text_faint().into()) };
+            div()
+                .id(("hdr-backend-choice", i))
+                .debug_selector(move || format!("hdr-backend-{i}"))
+                .min_h(px(28.))
+                .px(px(space::INSET))
+                .flex()
+                .items_center()
+                .gap(px(space::LINE))
+                .rounded(px(radius::CONTROL))
+                .cursor_pointer()
+                .text_color(if on { Tokens::text() } else { Tokens::text_dim() })
+                .hover(|s| s.bg(Tokens::raised_hover()).text_color(Tokens::text()))
+                .on_click(cx.listener(move |this, _, _, cx| this.pick_session_backend(&pick, cx)))
+                .child(div().w(px(12.)).children(on.then(|| glyph(icon::CHECK, 11.).text_color(Tokens::cyan()))))
+                .child(glyph(mark, 11.).text_color(hue))
+                .child(div().font_family(MONO).text_size(size::scaled(size::SMALL)).child(name.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(size::scaled(size::SMALL))
+                        .text_color(Tokens::text_faint())
+                        .child(super::session_backend::describe(name)),
+                )
+                .children((i == 0).then(|| tag("default", Tokens::accent())))
+        })
+    });
     let rows = deck.settings().choices().into_iter().enumerate().map(|(i, choice)| {
         let on = current.as_deref() == Some(choice.as_str());
         let pick = choice.clone();
@@ -70,6 +107,17 @@ pub fn model_menu(deck: &Deck, top: f32, right: f32, cx: &mut Context<Deck>) -> 
             blur_radius: px(28.),
             spread_radius: px(0.),
         }])
+        .children(places.map(|places| {
+            div()
+                .flex()
+                .flex_col()
+                .pb(px(space::TIGHT))
+                .mb(px(space::TIGHT))
+                .border_b_1()
+                .border_color(Tokens::edge())
+                .child(div().px(px(space::INSET)).py(px(space::TIGHT)).child(eyebrow("New session runs in")))
+                .children(places)
+        }))
         .child(div().px(px(space::INSET)).py(px(space::TIGHT)).child(eyebrow("New session starts on")))
         .children((deck.next_backend() == "local").then(|| {
             div()

@@ -34,6 +34,10 @@ pub struct Snapshot {
     pub settings: Settings,
     /// Notes for each environment variable that changes what a task gets.
     pub overrides: Vec<String>,
+    /// The backends a new task may run on, the default first (ADR 0016).
+    /// `deckd` fills it in; the store does not know them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backends: Vec<String>,
 }
 
 /// The reply to a save.
@@ -78,6 +82,7 @@ impl Store {
             stored: stored.is_some(),
             settings: stored.unwrap_or_else(|| Settings::implicit(&self.env)),
             overrides,
+            backends: Vec::new(),
         })
     }
 

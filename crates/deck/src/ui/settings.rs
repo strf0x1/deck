@@ -39,6 +39,8 @@ pub struct SettingsPanel {
     pending_models: Option<String>,
     /// The New session model, when the user picked one other than the default.
     session_model: Option<String>,
+    /// Where New session runs, when the user picked other than the default.
+    session_backend: super::session_backend::SessionBackend,
     picking: bool,
 }
 
@@ -443,6 +445,28 @@ impl SettingsPanel {
         self.session_model.clone()
     }
 
+    /// The backends `deckd` offers a new task, its default first; empty
+    /// until the snapshot arrives or from a daemon that names none.
+    pub fn backends(&self) -> &[String] {
+        self.snapshot.as_ref().map(|s| s.backends.as_slice()).unwrap_or_default()
+    }
+
+    /// Where New session runs: the pick, else `deckd`'s default.
+    pub fn session_backend(&self) -> Option<String> {
+        self.session_backend.current(self.backends())
+    }
+
+    /// The backend to name in a create: only a pick (ADR 0016).
+    pub fn backend_request(&self) -> Option<String> {
+        self.session_backend.request(self.backends())
+    }
+
+    pub fn pick_backend(&mut self, name: &str) {
+        let offered = self.backends().to_vec();
+        self.session_backend.pick(name, &offered);
+        self.picking = false;
+    }
+
     pub fn toggle_picker(&mut self) {
         self.picking = !self.picking;
     }
@@ -473,6 +497,7 @@ mod tests {
                 }],
             },
             overrides: Vec::new(),
+            backends: Vec::new(),
         }
     }
 

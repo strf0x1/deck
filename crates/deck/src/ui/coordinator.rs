@@ -79,11 +79,12 @@ pub fn refused_session(failure: &str) -> bool {
     failure.starts_with("session/new:") || failure.starts_with("session/load:")
 }
 
-/// The backend a new task will run on: the one `deckd` ran the newest
-/// task on, or the window's own guess from its environment before any task.
-pub fn backend(tasks: &[Task], vm_configured: bool) -> String {
-    match tasks.iter().max_by(|a, b| a.id.cmp(&b.id)) {
-        Some(task) => task.backend.clone(),
+/// The backend a new task will run on: New session's pick or `deckd`'s
+/// default (ADR 0016); before `deckd`'s settings name its backends, the one
+/// it ran the newest task on, or the window's own guess from its environment.
+pub fn backend(session: Option<String>, tasks: &[Task], vm_configured: bool) -> String {
+    match session.or_else(|| tasks.iter().max_by(|a, b| a.id.cmp(&b.id)).map(|task| task.backend.clone())) {
+        Some(backend) => backend,
         None if vm_configured => "vm".into(),
         None => "local".into(),
     }
@@ -202,12 +203,13 @@ mod tests {
     }
 
     #[test]
-    fn a_new_coordinator_runs_where_deckd_ran_the_newest_task() {
-        assert_eq!(backend(&[], false), "local");
-        assert_eq!(backend(&[], true), "vm");
+    fn a_new_coordinator_runs_where_new_session_will_or_the_windows_guess() {
+        assert_eq!(backend(None, &[], false), "local");
+        assert_eq!(backend(None, &[], true), "vm");
         let mut vm = task("02", "task", "git:a", json!({ "state": "running" }), None);
         vm.backend = "vm".into();
         let tasks = vec![task("01", "task", "git:a", json!({ "state": "running" }), None), vm];
-        assert_eq!(backend(&tasks, false), "vm");
+        assert_eq!(backend(None, &tasks, false), "vm", "before deckd names its backends, the newest task's");
+        assert_eq!(backend(Some("local".into()), &tasks, true), "local", "the pick or deckd's default wins");
     }
 }

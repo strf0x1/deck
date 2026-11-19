@@ -7,6 +7,7 @@ use crate::broker::{Broker, Refusal};
 use crate::credentials::{Store, revoked::Revocation};
 use crate::detached::Detached;
 use crate::paths::Paths;
+use crate::settings::file::{Saved, Snapshot};
 use crate::wire::{self, Reply, Request, RunResult};
 use crate::{Runtime, Spec, State, Task};
 use anyhow::{Context as _, Result, bail};
@@ -92,13 +93,15 @@ pub fn serve(options: Options) -> Result<()> {
     let listener = UnixListener::bind(&path)?;
     let _socket = SocketPath(path);
     listener.set_nonblocking(true)?;
-    let runtime = if std::env::var_os(crate::vm::IMAGE_ENV).is_some() {
-        Runtime::open(&options.data, crate::vm::Vm::from_env(&options.data, options.paths.clone())?)?
-    } else {
-        let backend =
-            Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
-        Runtime::open(&options.data, backend)?
-    };
+    // Every task picks its backend (ADR 0016). The local one is always
+    // here; a configured VM is the default for a task that names none.
+    let local =
+        Detached { executable: std::env::current_exe()?, data: options.data.clone(), paths: options.paths.clone() };
+    let mut backends: Vec<Box<dyn crate::Backend>> = vec![Box::new(local)];
+    if std::env::var_os(crate::vm::IMAGE_ENV).is_some() {
+        backends.insert(0, Box::new(crate::vm::Vm::from_env(&options.data, options.paths.clone())?));
+    }
+    let runtime = Runtime::open_with(&options.data, backends)?;
     let projects = crate::project::Projects::open(&options.data)?;
     let boundary = Boundary::open(&options.data)?;
     let broker = Arc::new(Broker::open(&options.data, store)?);
@@ -716,9 +719,13 @@ impl Service {
                 self.runtime.set_budget(&task, requests, tokens)?;
                 Ok(json!(null))
             }
-            Request::Settings => Ok(serde_json::to_value(self.settings.snapshot()?)?),
+            Request::Settings => Ok(serde_json::to_value(self.offered(self.settings.snapshot()?))?),
             Request::SetSettings { settings, revision } => {
-                Ok(serde_json::to_value(self.settings.replace(settings, revision)?)?)
+                let saved = match self.settings.replace(settings, revision)? {
+                    Saved::Saved(snapshot) => Saved::Saved(self.offered(snapshot)),
+                    Saved::Stale(snapshot) => Saved::Stale(self.offered(snapshot)),
+                };
+                Ok(serde_json::to_value(saved)?)
             }
             Request::Subscribe
             | Request::Watch { .. }
@@ -747,9 +754,16 @@ impl Service {
         }
     }
 
+    /// A settings snapshot with the backends a new session may run on.
+    fn offered(&self, mut snapshot: Snapshot) -> Snapshot {
+        snapshot.backends = self.runtime.backends().into_iter().map(str::to_owned).collect();
+        snapshot
+    }
+
     fn run(&mut self, spec: Spec) -> Result<RunResult> {
         let tasks = self.runtime.tasks()?;
-        let fits = |t: &&Task| t.backend == "local" && t.spec.same_command(&spec);
+        let backend = spec.backend.clone().unwrap_or_else(|| self.runtime.backend().to_owned());
+        let fits = |t: &&Task| t.backend == backend && t.spec.same_command(&spec);
         if let Some(task) = tasks.iter().filter(fits).find(|t| t.state == State::Running) {
             return Ok(RunResult { task: task.clone(), started: false });
         }

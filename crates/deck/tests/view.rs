@@ -3164,6 +3164,7 @@ fn settings_snapshot() -> deck_runtime::settings::file::Snapshot {
             }],
         },
         overrides: Vec::new(),
+        backends: Vec::new(),
     }
 }
 
@@ -3496,6 +3497,35 @@ fn the_model_chip_says_construct_config_when_new_sessions_run_locally(cx: &mut T
     assert!(cx.debug_bounds("hdr-model-local").is_some(), "the chip says construct config");
     click_control(&mut cx, "hdr-model");
     assert!(cx.debug_bounds("hdr-model-local-note").is_some(), "the menu says picks reach VM sessions");
+}
+
+#[gpui::test]
+fn the_menu_picks_where_new_session_runs_while_deckd_offers_a_choice(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    cx.run_until_parked();
+    // One backend: no choice to show.
+    let one = deck_runtime::settings::file::Snapshot { backends: vec!["local".into()], ..settings_snapshot() };
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(one), cx));
+    click_control(&mut cx, "hdr-model");
+    assert!(cx.debug_bounds("hdr-backend-0").is_none());
+    cx.simulate_keystrokes("escape");
+
+    let both =
+        deck_runtime::settings::file::Snapshot { backends: vec!["vm".into(), "local".into()], ..settings_snapshot() };
+    deck.update(&mut cx, |d, cx| d.on_settings(0, Ok(both), cx));
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.settings().session_backend().as_deref(), Some("vm"), "deckd's default");
+        assert_eq!(d.settings().backend_request(), None, "the default is not sent");
+        assert_eq!(d.next_backend(), "vm", "a new coordinator's preview follows it");
+    });
+    click_control(&mut cx, "hdr-model");
+    click_control(&mut cx, "hdr-backend-1");
+    deck.read_with(&cx, |d, _| {
+        assert!(!d.settings().picking());
+        assert_eq!(d.settings().session_backend().as_deref(), Some("local"));
+        assert_eq!(d.settings().backend_request().as_deref(), Some("local"), "a create names the pick");
+        assert_eq!(d.next_backend(), "local");
+    });
 }
 
 #[gpui::test]

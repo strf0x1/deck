@@ -69,6 +69,7 @@ mod selectable;
 mod selecting;
 pub mod selection;
 pub mod session;
+pub mod session_backend;
 pub mod settings;
 mod settings_fields;
 mod settings_form;
