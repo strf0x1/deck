@@ -275,6 +275,15 @@ fn connection(
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
+            Ok(
+                request @ (Request::WorktreeStatus { .. }
+                | Request::WorktreeDiff { .. }
+                | Request::RemoveWorktree { .. }
+                | Request::WorktreeSource { .. }),
+            ) => {
+                let result = request.validate().and_then(|()| worktree(&service, request));
+                wire::write(&mut socket, &reply(result))?;
+            }
             Ok(request @ Request::Credentials { .. }) => {
                 let result = request.validate().and_then(|()| match request {
                     Request::Credentials { task } => {
@@ -524,6 +533,34 @@ fn pull_request(
     Ok(serde_json::to_value(reader.state(task, &dir, publication, socket, refresh))?)
 }
 
+/// Git inspection does not take the service lock while it reads a checkout.
+fn worktree(service: &Mutex<Service>, request: Request) -> Result<Value> {
+    if let Request::WorktreeSource { project } = request {
+        let checkout = {
+            let service = service.lock().unwrap_or_else(|error| error.into_inner());
+            let project = service.projects.get(&project).context("Unknown project.")?;
+            project.checkouts.first().cloned()
+        };
+        let preview =
+            checkout.as_deref().map(|path| crate::worktree::SourcePreview::read(path, &project)).transpose()?.flatten();
+        return Ok(serde_json::to_value(preview)?);
+    }
+    let runtime = service.lock().unwrap_or_else(|error| error.into_inner()).runtime.clone();
+    let (id, diff) = match request {
+        Request::RemoveWorktree { id } => return Ok(serde_json::to_value(runtime.remove_worktree(&id)?)?),
+        Request::WorktreeStatus { id } => (id, false),
+        Request::WorktreeDiff { id } => (id, true),
+        _ => unreachable!("matched a worktree request"),
+    };
+    let task = runtime.task(&id)?;
+    let workspace = task.workspace.as_ref().context("This task has no managed worktree.")?;
+    Ok(if diff {
+        serde_json::to_value(workspace.diff(&task)?)?
+    } else {
+        serde_json::to_value(workspace.status(&task))?
+    })
+}
+
 /// One credential value for one gateway operation. The task must be running
 /// and the name in its `vmm.json` set; the store is read without the service
 /// lock. The reply carries the value and is never logged; the log line names
@@ -666,6 +703,18 @@ impl Service {
                 Ok(json!(null))
             }
             Request::Task { id } => Ok(serde_json::to_value(self.runtime.task(&id)?)?),
+            Request::ChooseWorktreeSource { project, path } => {
+                if !project.starts_with("git:") || self.projects.get(&project).is_none() {
+                    bail!("This project has no Git checkout to replace.");
+                }
+                if self.managed_workspace_at(&path)?.is_some() {
+                    bail!("Choose a project checkout. This path belongs to a managed worktree.");
+                }
+                let preview = crate::worktree::SourcePreview::read(&path, &project)?
+                    .context("Choose a Git checkout with a committed starting point.")?;
+                self.projects.select_checkout(&project, &preview.path)?;
+                Ok(serde_json::to_value(preview)?)
+            }
             Request::Tasks => Ok(serde_json::to_value(self.runtime.tasks()?)?),
             Request::Projects => Ok(serde_json::to_value(self.projects.list())?),
             Request::OpenProject { path, argv } => {
@@ -696,6 +745,10 @@ impl Service {
                 Ok(json!(null))
             }
             Request::PullState { .. } => unreachable!("handled before service dispatch"),
+            Request::WorktreeStatus { .. }
+            | Request::WorktreeDiff { .. }
+            | Request::RemoveWorktree { .. }
+            | Request::WorktreeSource { .. } => unreachable!("handled before service dispatch"),
             Request::Publication { task, publication } => {
                 self.runtime.publication(&task, publication)?;
                 Ok(json!(null))
@@ -795,7 +848,11 @@ impl Service {
 
     fn managed_workspace_at(&self, path: &std::path::Path) -> Result<Option<Task>> {
         let Ok(path) = path.canonicalize() else { return Ok(None) };
-        Ok(self.runtime.tasks()?.into_iter().find(|task| task.workspace.is_some() && path.starts_with(&task.spec.cwd)))
+        Ok(self
+            .runtime
+            .tasks()?
+            .into_iter()
+            .find(|task| task.workspace.as_ref().is_some_and(|workspace| workspace.contains_path(task, &path))))
     }
 
     fn launch(&mut self, id: &str, resume: bool) -> Result<()> {

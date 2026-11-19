@@ -1,6 +1,6 @@
 # 0015 — Give each local Git worker its own worktree
 
-Status: proposed, 2026-11-18.
+Status: accepted, 2026-11-19.
 
 ## Context
 
@@ -15,8 +15,7 @@ parallel. VM publication stays under [ADR 0008].
 ### Starting work
 
 Deck shows the source branch, short commit, and checkout before delegation.
-For this first version, the source is the project's first registered
-checkout. Deck uses its committed HEAD and pins that commit at each
+The default source is the project's first registered checkout. Deck uses its committed HEAD and pins that commit at each
 dispatch. If the checkout moved or disappeared, Deck shows its path
 and asks the user to select a replacement source. If the source has
 local changes, Deck says, "Workers start from committed files. Local
@@ -41,9 +40,11 @@ behavior.
 
 ### Reviewing and integrating work
 
-The worker card shows the branch, starting commit, and integration target.
-It offers **Review changes** against the starting commit, **Open worktree**,
-and **Copy branch**. A completed turn can leave staged, unstaged, or
+The worker card shows the branch and status. Its status opens a worktree
+pane with the starting commit, integration target, and checkout path.
+The same pane is available from the worker header and from settled rows.
+It offers **Review changes** for tracked files against the starting
+commit, **Open worktree**, and **Copy branch**. A completed turn can leave staged, unstaged, or
 untracked changes. Show **Uncommitted changes** in that case and let the
 user ask the worker to commit or open the worktree. Show **Ready for
 review** when an idle or stopped worker has committed changes to review
@@ -86,10 +87,12 @@ or ignored files, or cannot verify that the branch retains the work,
 Deck keeps the directory and explains what to save or clear. Ignored
 files can include local data, even if some are build output.
 
-Use Git's ordinary worktree removal for clean, verified checkouts. Keep
-the task branch and its name in the task record. Report blocked or failed
-removal and allow retry. The same rules apply during recovery. Neither a
-merge signal nor a daemon restart authorizes worktree removal.
+Keep settled tasks with retained worktrees available for cleanup. Deck
+records the removal attempt, moves the checkout out of its working path,
+and checks its contents again before ordinary Git removal. An interrupted
+attempt can be retried from the pane. Deck keeps the task branch and can
+still show its committed diff after cleanup. A merge signal or daemon
+restart leaves the checkout in place.
 
 ### Runtime ownership and default agent support
 
@@ -143,9 +146,6 @@ fetch worker commits already published under project policy. If a commit
 exists only on a worker disk, the integration needs an approved way to
 receive it. In either backend, missing inputs keep the task waiting with
 a reason.
-
-The first worktree slice exposes the branch and commit information this
-role needs. The integration workflow follows separately.
 
 For VM integration, Deck pins the target and the published contributor
 commits before it starts the agent. Deck fetches from the configured

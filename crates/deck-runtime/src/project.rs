@@ -114,6 +114,22 @@ impl Projects {
         self.projects.iter().find(|project| project.id == id)
     }
 
+    /// Select the checkout used for future local workers. Existing workers
+    /// keep the repository and commit recorded at their own dispatch.
+    pub(crate) fn select_checkout(&mut self, id: &str, path: &Path) -> Result<()> {
+        let project = self.projects.iter_mut().find(|project| project.id == id).context("Unknown project.")?;
+        let previous = project.checkouts.clone();
+        project.checkouts.retain(|checkout| checkout != path);
+        project.checkouts.insert(0, path.into());
+        if let Err(error) = self.save() {
+            if let Some(project) = self.projects.iter_mut().find(|project| project.id == id) {
+                project.checkouts = previous;
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// The command a new coordinator for project `id` runs: its recorded
     /// coordinator command, or `construct acp` (also for a project the index
     /// does not know).

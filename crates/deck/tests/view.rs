@@ -4368,6 +4368,140 @@ fn a_workers_question_is_surfaced_and_a_cap_row_raises_the_limit(cx: &mut TestAp
 
 #[cfg(unix)]
 #[gpui::test]
+fn the_worktree_pane_reviews_and_removes_a_stopped_worker(cx: &mut TestAppContext) {
+    use deck_runtime::{DaemonClient, State, worktree::WorktreeState};
+    use std::path::Path;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-worktree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let git = |cwd: &Path, args: &[&str]| {
+        let result = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(["-c", "user.email=deck@test", "-c", "user.name=deck", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&result.stderr));
+        String::from_utf8(result.stdout).unwrap().trim().to_owned()
+    };
+    let start = git(&repo, &["rev-parse", "HEAD"]);
+    let target = git(&repo, &["branch", "--show-current"]);
+    std::fs::write(repo.join("host-only"), "source draft").unwrap();
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let journal = format!("DECK_FAKE_STATE={}", data.join("journal").display());
+    let argv = ["env", "DECK_FAKE_DELAY_MS=1", &journal, &fake.display().to_string()].map(str::to_owned).to_vec();
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    coordinator_command(&daemon, &repo, &project.id, &argv);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv.clone(), repo.clone(), cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    vcx.simulate_resize(gpui::size(px(1200.), px(860.)));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| matches!(d.worktree_source(), Some(Ok(Some(_))))));
+    deck.read_with(&vcx, |d, _| {
+        let preview = d.worktree_source().unwrap().as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(
+            (preview.path.as_path(), preview.branch.as_deref(), preview.commit.as_str(), preview.dirty),
+            (repo.as_path(), Some(target.as_str()), start.as_str(), true)
+        );
+    });
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("worker-source").is_some());
+
+    vcx.simulate_input(&format!(
+        "deck {}",
+        json!({"operation":"create","brief":"review local edits","title":"Review worker"})
+    ));
+    vcx.simulate_keystrokes("enter");
+    let mut worker = None;
+    eventually(
+        || {
+            vcx.run_until_parked();
+            worker = daemon.tasks().unwrap().into_iter().find(|task| {
+                task.state == State::Running && task.workspace.as_ref().is_some_and(|workspace| workspace.ready)
+            });
+            worker.is_some()
+        },
+        "the coordinator never started the worker in its worktree",
+    );
+    let worker = worker.unwrap();
+    let id = worker.id;
+    let coordinator = worker.spec.created_by.unwrap();
+    let worktree = worker.spec.cwd;
+    let branch = format!("deck/{id}");
+    assert_eq!(git(&worktree, &["rev-parse", "HEAD"]), start);
+    assert!(!worktree.join("host-only").exists());
+    daemon.stop(&id).unwrap();
+    std::fs::write(worktree.join("notes.txt"), "review text\n").unwrap();
+    git(&worktree, &["add", "notes.txt"]);
+    deck.update(&mut vcx, |d, cx| d.on_tasks(daemon.tasks().unwrap(), Default::default(), cx));
+    draw(&mut vcx);
+    let lane = deck.read_with(&vcx, |d, _| {
+        d.board().cards().iter().find(|card| card.lane.title == "Review worker").unwrap().lane.id
+    });
+    let selector = Box::leak(format!("project-worktree-{lane}").into_boxed_str());
+    click_control(&mut vcx, selector);
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.worktree_pane().is_some_and(|pane| pane.id == id)
+                && d.worktree_status(&id).is_some_and(|fact| fact.state == WorktreeState::Uncommitted)
+        })
+    });
+    assert!(matches!(daemon.task(&id).unwrap().state, State::Stopped { clean: true, .. }));
+    assert!(deck.read_with(&vcx, |d, _| d.coordinator_selected()));
+    click_control(&mut vcx, "worktree-copy");
+    let copied = vcx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some(branch.as_str()));
+    click_control(&mut vcx, "worktree-review");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.worktree_pane()
+                .and_then(|pane| pane.diff.as_ref())
+                .is_some_and(|diff| diff.as_ref().is_ok_and(|diff| diff.text.contains("+review text")))
+        })
+    });
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("worktree-diff").is_some());
+    assert!(vcx.debug_bounds("worktree-remove").is_none());
+
+    git(&worktree, &["commit", "-qm", "Worker result"]);
+    git(&repo, &["merge", "--ff-only", &branch]);
+    deck.update(&mut vcx, |d, cx| d.open_worktree(&id, cx));
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.worktree_status(&id).is_some_and(|fact| fact.state == WorktreeState::Merged && fact.removable)
+        })
+    });
+    let tip = git(&repo, &["rev-parse", "HEAD"]);
+    click_control(&mut vcx, "worktree-close");
+    open_sidebar(&deck, &mut vcx);
+    click_control(&mut vcx, "settled-fold");
+    draw(&mut vcx);
+    let settled = deck.read_with(&vcx, |d, _| d.settled().iter().position(|entry| entry.task.id == id).unwrap());
+    click_control(&mut vcx, Box::leak(format!("settled-worktree-{settled}").into_boxed_str()));
+    click_control(&mut vcx, "worktree-remove");
+    assert!(worktree.is_dir(), "confirmation must precede removal");
+    click_control(&mut vcx, "worktree-confirm-remove");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.worktree_status(&id).is_some_and(|fact| fact.state == WorktreeState::Removed))
+    });
+    assert!(!worktree.exists());
+    assert_eq!(git(&repo, &["rev-parse", &branch]), tip);
+    assert_eq!(std::fs::read_to_string(repo.join("host-only")).unwrap(), "source draft");
+    cx.quit();
+    daemon.stop(&coordinator).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn the_coordinator_needs_you_as_project_coordinator_and_opens_the_project_view(cx: &mut TestAppContext) {
     use deck_runtime::DaemonClient;
     cx.background_executor.allow_parking();

@@ -250,6 +250,18 @@ pub fn state(d: &Deck) -> Value {
             "selected": d.coordinator_selected(),
             "status": d.coordinator_status().map(|(_, text)| text),
         })),
+        "worktree_source": d.worktree_source().map(|result| match result {
+            Ok(preview) => json!({ "preview": preview }),
+            Err(error) => json!({ "error": error }),
+        }),
+        "worktree": d.worktree_pane().map(|pane| json!({
+            "task": pane.id,
+            "status": d.worktree_status(&pane.id),
+            "diff_loaded": pane.diff.as_ref().is_some_and(Result::is_ok),
+            "confirm": pane.confirm,
+            "removing": pane.removing,
+            "error": pane.error,
+        })),
         "surfaced": d.surfaced().iter().map(|row| json!({
             "task": row.task,
             "title": row.title,

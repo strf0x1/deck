@@ -195,6 +195,8 @@ pub enum Event {
         workspace: Option<Box<crate::worktree::Workspace>>,
     },
     WorktreeReady,
+    WorktreeRemovalStarted,
+    WorktreeRemoved,
     IntegrationUpdated {
         plan: Box<crate::integration::Plan>,
     },
@@ -367,6 +369,14 @@ impl Task {
             workspace.ready = true;
             return Ok(());
         }
+        if matches!(ev, Event::WorktreeRemovalStarted | Event::WorktreeRemoved) {
+            if matches!(self.state, State::Running | State::Failed { failure: Failure::ShutdownUnconfirmed(_) }) {
+                bail!("the worker must exit before removing its worktree");
+            }
+            let workspace = self.workspace.as_mut().context("task has no managed worktree")?;
+            workspace.record_removal(matches!(ev, Event::WorktreeRemoved))?;
+            return Ok(());
+        }
         if let Event::IntegrationUpdated { plan } = ev {
             if self.state != State::Created {
                 bail!("task {}: integration preparation requires a created task", self.id);
@@ -491,6 +501,8 @@ fn name(ev: &Event) -> &'static str {
     match ev {
         Event::Created { .. } => "created",
         Event::WorktreeReady => "worktree_ready",
+        Event::WorktreeRemovalStarted => "worktree_removal_started",
+        Event::WorktreeRemoved => "worktree_removed",
         Event::IntegrationUpdated { .. } => "integration_updated",
         Event::Started { .. } => "started",
         Event::Adopted => "adopted",
@@ -572,6 +584,32 @@ mod tests {
         let spec: Spec = serde_json::from_str(r#"{"argv":["agent"],"cwd":"/w"}"#).unwrap();
         assert_eq!(spec.project, None);
         assert_eq!(spec.project_key(), "/w", "a record from before projects keeps its directory as the key");
+    }
+
+    #[test]
+    fn removing_a_worktree_records_intent_and_requires_an_exited_worker() {
+        let created: Event = serde_json::from_value(serde_json::json!({
+            "event": "created",
+            "backend": "local",
+            "spec": {"argv": ["agent"], "cwd": "/task/worktree", "created_by": "coordinator"},
+            "workspace": {
+                "source": "/repo",
+                "repository": {"common": "/repo/.git", "device": 1, "inode": 2},
+                "start": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "target": "refs/heads/main"
+            }
+        }))
+        .unwrap();
+        let mut task = fold(&[created, Event::WorktreeReady, started()]).unwrap();
+        assert!(task.apply(AT, &Event::WorktreeRemovalStarted).is_err());
+        task.apply(AT, &stopped(true)).unwrap();
+        assert!(task.apply(AT, &Event::WorktreeRemoved).is_err());
+        task.apply(AT, &Event::WorktreeRemovalStarted).unwrap();
+        assert!(task.workspace.as_ref().unwrap().removal_pending());
+        assert!(task.apply(AT, &Event::WorktreeRemovalStarted).is_err());
+        task.apply(AT, &Event::WorktreeRemoved).unwrap();
+        assert!(task.workspace.as_ref().unwrap().removed());
+        assert!(matches!(task.state, State::Stopped { clean: true, .. }));
     }
 
     #[test]

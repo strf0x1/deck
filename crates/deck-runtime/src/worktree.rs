@@ -8,8 +8,11 @@ use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 mod git;
+mod removal;
+mod review;
 
 use self::git::{Shadow, branch, command, commit, common_dir, git_dir, path_output, reference_exists, write_private};
+pub use review::{SourcePreview, WorktreeDiff, WorktreeState, WorktreeStatus};
 
 pub(crate) const CHECKOUT: &str = "worktree";
 
@@ -21,6 +24,15 @@ pub struct Workspace {
     pub target: Option<String>,
     #[serde(default)]
     pub ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    removal: Option<Removal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Removal {
+    Pending,
+    Removed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +43,21 @@ pub(crate) struct Repository {
 }
 
 impl Workspace {
+    pub(crate) fn capture_project(path: &Path, project: &str) -> Result<Option<Self>> {
+        let checkout =
+            Self::capture(path).with_context(|| format!("Could not read the checkout at {}.", path.display()))?;
+        if project.starts_with("git:") {
+            let checkout =
+                checkout.as_ref().with_context(|| format!("The Git checkout at {} is unavailable.", path.display()))?;
+            ensure!(
+                crate::project::matches(project, &checkout.source),
+                "The checkout at {} belongs to another project.",
+                path.display()
+            );
+        }
+        Ok(checkout)
+    }
+
     pub(crate) fn capture(path: &Path) -> Result<Option<Self>> {
         let probe = command(path).args(["rev-parse", "--show-toplevel"]).output()?;
         if !probe.status.success() {
@@ -42,7 +69,7 @@ impl Workspace {
         let start = commit(&source, "HEAD").context("Commit the first project files before starting a worker.")?;
         let target = branch(&source)?;
         let repository = Repository { common, device: metadata.dev(), inode: metadata.ino() };
-        Ok(Some(Self { source, repository, start, target, ready: false }))
+        Ok(Some(Self { source, repository, start, target, ready: false, removal: None }))
     }
 
     pub(crate) fn target_branch(&mut self, branch: &str) -> Result<()> {
@@ -91,6 +118,7 @@ impl Workspace {
     }
 
     pub(crate) fn prepare(&self, path: &Path, id: &str) -> Result<()> {
+        ensure!(!self.removed(), "This worktree was removed. Its task branch remains in the source repository.");
         let branch = format!("refs/heads/{}", crate::github::task_branch(id));
         if self.ready {
             self.verify(path, &branch)?;
@@ -149,6 +177,20 @@ impl Workspace {
         }
         fs::remove_dir_all(&scratch.0)?;
         Ok(())
+    }
+
+    pub(crate) fn record_removal(&mut self, complete: bool) -> Result<()> {
+        ensure!(self.ready, "the worktree was never prepared");
+        self.removal = match (self.removal, complete) {
+            (None, false) => Some(Removal::Pending),
+            (Some(Removal::Pending), true) => Some(Removal::Removed),
+            _ => bail!("invalid worktree removal transition"),
+        };
+        Ok(())
+    }
+
+    pub(crate) fn removal_pending(&self) -> bool {
+        self.removal == Some(Removal::Pending)
     }
 
     fn verify_source(&self) -> Result<()> {

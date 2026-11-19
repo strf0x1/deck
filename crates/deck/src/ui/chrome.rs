@@ -51,6 +51,11 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_publication(live_lane, cx)))
     }))
+    .children(
+        deck.task_id()
+            .filter(|_| !project_view)
+            .and_then(|id| super::worktree_view::task_button(deck, id, "hdr-worktree".into(), cx)),
+    )
     .children(deck.publish_notice().map(|notice| {
         notice_chip(icon::BELL, Tokens::amber(), notice.to_string(), 320.)
             .debug_selector(|| "hdr-publish-notice".into())

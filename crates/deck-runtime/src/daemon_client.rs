@@ -155,6 +155,21 @@ impl DaemonClient {
     pub fn task(&self, id: &str) -> Result<Task> {
         self.request(Request::Task { id: id.into() })
     }
+    pub fn worktree_status(&self, id: &str) -> Result<crate::worktree::WorktreeStatus> {
+        self.request(Request::WorktreeStatus { id: id.into() })
+    }
+    pub fn worktree_diff(&self, id: &str) -> Result<crate::worktree::WorktreeDiff> {
+        self.request(Request::WorktreeDiff { id: id.into() })
+    }
+    pub fn remove_worktree(&self, id: &str) -> Result<crate::worktree::WorktreeStatus> {
+        self.request(Request::RemoveWorktree { id: id.into() })
+    }
+    pub fn worktree_source(&self, project: &str) -> Result<Option<crate::worktree::SourcePreview>> {
+        self.request(Request::WorktreeSource { project: project.into() })
+    }
+    pub fn choose_worktree_source(&self, project: &str, path: &Path) -> Result<crate::worktree::SourcePreview> {
+        self.request(Request::ChooseWorktreeSource { project: project.into(), path: path.into() })
+    }
     pub fn tasks(&self) -> Result<Vec<Task>> {
         self.request(Request::Tasks)
     }
