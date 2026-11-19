@@ -18,7 +18,7 @@ use super::session::{Session, Status};
 use super::theme::{Tokens, size, tint};
 use super::typography::Typography;
 use super::{chrome, conversation, sidebar_view};
-use deck_acp::{Client, Inbound, TurnState};
+use deck_acp::{Client, Inbound, ToolStatus, TurnState};
 use deck_runtime::approvals::{Approval, Decision, State};
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
@@ -276,6 +276,12 @@ impl Deck {
     /// The activity sheen's state: the view reads its phase, tests its rest.
     pub fn sheen(&self) -> &super::sheen::Sheen {
         &self.sheen
+    }
+
+    /// The transcript motion's state: the view reads reveals, the pill and
+    /// each tool's bloom; tests their rest.
+    pub fn motion(&self) -> &super::motion::Motion {
+        &self.motion
     }
 
     /// The turn-end exhale's state: the view reads each row's frame, tests
@@ -836,6 +842,18 @@ impl Deck {
         }
         self.exhale.retain(&ids);
         self.marks.retain(&ids);
+        // The transcript's tools: a finish blooms once in its outcome hue;
+        // replayed history is a first observation and stays quiet.
+        let tools: Vec<(String, ToolStatus)> = self
+            .session()
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                super::session::Entry::Tool(t) => Some((t.call.id.clone(), t.call.status)),
+                _ => None,
+            })
+            .collect();
+        self.motion.tools(tools.iter().map(|(id, s)| (id.as_str(), *s)));
         let board = self.board.step(dt);
         let rail = self.rail.step(dt);
         let motion = self.motion.step(dt);

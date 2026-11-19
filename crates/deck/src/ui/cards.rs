@@ -10,11 +10,11 @@
 
 use super::copy;
 use super::glyph::glyph;
-use super::panels::icon_mark;
+use super::panels::{band_border, icon_mark, sheen_border};
 use super::prose;
 use super::root::Deck;
 use super::selectable::{RowRuns, Text};
-use super::session::{Entry, Tool};
+use super::session::{Entry, Status, Tool};
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use super::transcript::{self, Row};
 use deck_acp::{ToolKind, ToolStatus};
@@ -266,10 +266,20 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, runs: &RowRuns, cx: &
         ToolStatus::Failed => Some(Tokens::red()),
         ToolStatus::Done => None,
     };
+    // A running call sweeps with the window's sheen while its turn works;
+    // a permission pause rests it, like the sidebar's rows.
+    let sweeping = call.status == ToolStatus::Running && deck.session().status == Status::Working;
+    // The finish blooms once around the card in the outcome hue.
+    let bloom = deck.motion.bloom(&call.id);
     frame(selected)
         .when_some(edge, |d, edge| d.border_color(tint(edge, 0.4)))
         .when(!selected && call.status == ToolStatus::Running, |d| d.shadow(glow(Tokens::cyan(), 0.3)))
         .child(header)
         .children(body.map(|b| div().opacity(fade).child(b)))
+        // The band rides the outline over the header's hover wash.
+        .children(sweeping.then(|| sheen_border(deck.sheen().center(), radius::CARD)))
+        .children(bloom.map(|(center, failed)| {
+            band_border(center, radius::CARD, if failed { Tokens::failed_peak() } else { Tokens::done_peak() }, 1.)
+        }))
         .into_any_element()
 }
