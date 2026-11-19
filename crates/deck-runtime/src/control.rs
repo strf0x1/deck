@@ -56,6 +56,17 @@ pub enum Operation {
         #[serde(default)]
         budget: Option<Requested>,
     },
+    Integrate {
+        #[serde(default)]
+        project: Option<String>,
+        destination: crate::integration::Destination,
+        contributors: Vec<String>,
+        brief: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        budget: Option<Requested>,
+    },
     Prompt {
         id: String,
         text: String,
@@ -77,6 +88,7 @@ impl Operation {
             Operation::Tasks { .. } => "tasks",
             Operation::Task { .. } => "task",
             Operation::Create { .. } => "create",
+            Operation::Integrate { .. } => "integrate",
             Operation::Prompt { .. } => "prompt",
             Operation::Wait { .. } => "wait",
             Operation::Stop { .. } => "stop",
@@ -90,7 +102,9 @@ impl Operation {
             | Operation::Prompt { id, .. }
             | Operation::Wait { id, .. }
             | Operation::Stop { id } => Some(id),
-            Operation::Tasks { project } | Operation::Create { project, .. } => project.as_deref(),
+            Operation::Tasks { project } | Operation::Create { project, .. } | Operation::Integrate { project, .. } => {
+                project.as_deref()
+            }
         }
     }
 
@@ -98,14 +112,30 @@ impl Operation {
     /// this, not only the gateway.
     pub fn validate(&self) -> Result<(), Refusal> {
         let bad = |message: &str| Err(Refusal::new(Code::BadRequest, message));
+        if let Operation::Integrate { destination, contributors, .. } = self {
+            let ids: std::collections::HashSet<_> = contributors.iter().collect();
+            if !destination.validate() {
+                return bad("invalid integration destination");
+            }
+            if !(1..=crate::integration::MAX_INPUTS).contains(&contributors.len())
+                || ids.len() != contributors.len()
+                || ids.iter().any(|id| !(1..=128).contains(&id.chars().count()))
+            {
+                return bad("integration requires 1 to 16 distinct contributor task IDs");
+            }
+        }
         match self {
             Operation::Wait { wait_ms, .. } if *wait_ms > WAIT_LIMIT_MS => bad("wait_ms is at most 300000"),
             Operation::Prompt { text, .. } if text.trim().is_empty() => bad("a prompt cannot be empty"),
-            Operation::Create { brief, .. } if brief.trim().is_empty() => bad("a brief cannot be empty"),
-            Operation::Create { title: Some(title), .. } if title.trim().is_empty() || title.chars().count() > 80 => {
+            Operation::Create { brief, .. } | Operation::Integrate { brief, .. } if brief.trim().is_empty() => {
+                bad("a brief cannot be empty")
+            }
+            Operation::Create { title: Some(title), .. } | Operation::Integrate { title: Some(title), .. }
+                if title.trim().is_empty() || title.chars().count() > 80 =>
+            {
                 bad("`title` is 1 to 80 characters")
             }
-            Operation::Create { budget: Some(budget), .. }
+            Operation::Create { budget: Some(budget), .. } | Operation::Integrate { budget: Some(budget), .. }
                 if budget.requests == Some(0) || budget.tokens == Some(0) || *budget == Requested::none() =>
             {
                 bad("a budget names requests or tokens, each at least 1")

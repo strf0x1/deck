@@ -189,6 +189,11 @@ pub enum Event {
     Created {
         backend: String,
         spec: Spec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        integration: Option<Box<crate::integration::Plan>>,
+    },
+    IntegrationUpdated {
+        plan: Box<crate::integration::Plan>,
     },
     Started {
         pid: Option<u32>,
@@ -265,6 +270,9 @@ pub struct Task {
     pub id: String,
     pub backend: String,
     pub spec: Spec,
+    /// Host-recorded destination, ordered inputs and preparation state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration: Option<Box<crate::integration::Plan>>,
     /// The task's human title, from the first line of its first prompt
     /// (ADR 0010 §9). Set once by the window; a task from before titles has
     /// none.
@@ -309,13 +317,14 @@ pub struct Task {
 impl Task {
     /// The task a record's first event creates.
     pub fn new(id: &str, first: &Event) -> Result<Task> {
-        let Event::Created { backend, spec } = first else {
+        let Event::Created { backend, spec, integration } = first else {
             bail!("a task record must start with `created`, not {}", name(first));
         };
         Ok(Task {
             id: id.into(),
             backend: backend.clone(),
             spec: spec.clone(),
+            integration: integration.clone(),
             title: None,
             state: State::Created,
             pid: None,
@@ -335,6 +344,13 @@ impl Task {
     /// `at_ms` is the log line's time: the attention facts record when they
     /// happened, so the fold takes it with the event.
     pub fn apply(&mut self, at_ms: u64, ev: &Event) -> Result<()> {
+        if let Event::IntegrationUpdated { plan } = ev {
+            if self.state != State::Created {
+                bail!("task {}: integration preparation requires a created task", self.id);
+            }
+            let Some(current) = &mut self.integration else { bail!("task {} has no integration plan", self.id) };
+            return current.update(plan);
+        }
         if matches!(ev, Event::Adopted) {
             if self.state != State::Running || self.holder.is_none() {
                 bail!("task {} has no running holder to adopt", self.id);
@@ -451,6 +467,7 @@ impl Task {
 fn name(ev: &Event) -> &'static str {
     match ev {
         Event::Created { .. } => "created",
+        Event::IntegrationUpdated { .. } => "integration_updated",
         Event::Started { .. } => "started",
         Event::Adopted => "adopted",
         Event::Session { .. } => "session",
@@ -486,6 +503,7 @@ mod tests {
     fn created() -> Event {
         Event::Created {
             backend: "local".into(),
+            integration: None,
             spec: Spec {
                 argv: vec!["agent".into()],
                 cwd: "/w".into(),
@@ -550,7 +568,7 @@ mod tests {
         assert_eq!(coordinator.agent_env(), vec![("CONSTRUCT_CONTEXT_STRATEGY", "optchat")]);
 
         let worker = Spec { created_by: Some("c1".into()), ..created_spec() };
-        let created = Event::Created { backend: "local".into(), spec: worker.clone() };
+        let created = Event::Created { backend: "local".into(), spec: worker.clone(), integration: None };
         let t = fold(&[created, started(), stopped(false), started()]).unwrap();
         assert_eq!(t.spec.created_by.as_deref(), Some("c1"), "provenance is the created spec's, across runs");
     }

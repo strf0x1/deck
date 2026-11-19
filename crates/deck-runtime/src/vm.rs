@@ -248,7 +248,13 @@ impl Backend for Vm {
         // Staging before the clone means a staging failure leaves no disk
         // that would boot without an import.
         let first = !self.disk(&task.id).is_file();
-        let staged = if first && task.spec.cwd.is_dir() {
+        let staged = if task.integration.is_some() {
+            let staged = self.dir(&task.id).join(crate::integration::remote::IMPORT);
+            if first && !staged.is_dir() {
+                bail!("the prepared integration checkout is missing");
+            }
+            staged.is_dir().then_some(staged)
+        } else if first && task.spec.cwd.is_dir() {
             let staged = self.dir(&task.id).join("import");
             import::stage(&task.spec.cwd, &staged)?;
             Some(staged)
@@ -283,7 +289,7 @@ impl Backend for Vm {
             forward,
             console: self.console(&task.id),
             import: staged.clone(),
-            import_required: task.spec.cwd.is_dir(),
+            import_required: task.integration.is_some() || task.spec.cwd.is_dir(),
             checkout: github.map(|policy| vmm::Checkout {
                 branch: github::task_branch(&task.id),
                 repository: policy.repository.clone(),
@@ -315,6 +321,15 @@ impl Backend for Vm {
                 github_repository: github.map(|github| github.repository.clone()),
                 github_base: github.map(|github| github.base.clone()).unwrap_or_default(),
                 github_branches: github.map(|github| github.branches.clone()).unwrap_or_default(),
+                github_integration: task.integration.as_ref().map(|plan| vmm::GithubIntegration {
+                    draft: matches!(plan.target.reference, crate::integration::Reference::Base { .. }),
+                    commits: plan
+                        .base_commit
+                        .iter()
+                        .chain(plan.inputs.iter().filter_map(|input| input.commit.as_ref()))
+                        .cloned()
+                        .collect(),
+                }),
                 github_token: github.map(|github| github.credential.clone()).unwrap_or_default(),
                 github_scratch: self.dir(&task.id).join("github"),
                 upstream: choice.provider.url.clone(),
@@ -468,10 +483,12 @@ impl Backend for Vm {
                 Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
             }
         }
-        match std::fs::remove_dir_all(self.dir(&task.id).join("import")) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).context("removing the staged import"),
+        for import in ["import", crate::integration::remote::IMPORT] {
+            match std::fs::remove_dir_all(self.dir(&task.id).join(import)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context("removing the staged import"),
+            }
         }
         cleanup(&self.paths, &task.id);
         Ok(())
@@ -806,6 +823,7 @@ mod tests {
 
         let task = Task {
             id: "legacy".into(),
+            integration: None,
             backend: "vm".into(),
             spec: Spec {
                 argv: vec!["construct".into(), "acp".into()],

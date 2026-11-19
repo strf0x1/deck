@@ -303,7 +303,7 @@ fn repository_name(repository: &str) -> Result<String> {
 /// What `git check-ref-format --branch` accepts, narrowed as the gateway
 /// narrows it: ascii letters, digits and `._-` and `/`, no `..`, no leading
 /// or trailing `/` or `.`, and never `HEAD`.
-fn branch_name(branch: &str) -> Option<String> {
+pub(crate) fn branch_name(branch: &str) -> Option<String> {
     let branch = branch.trim();
     if branch.is_empty() || branch.len() > 200 || branch == "HEAD" || branch.starts_with('-') {
         return None;

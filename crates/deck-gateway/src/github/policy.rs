@@ -106,6 +106,13 @@ pub struct Policy {
     base: String,
     /// Branches beyond `deck/<task>` the project allows a task to write.
     branches: Vec<String>,
+    integration: Option<Integration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Integration {
+    draft: bool,
+    required_commits: Vec<String>,
 }
 
 impl Policy {
@@ -123,7 +130,32 @@ impl Policy {
             let name = branch_name(branch).ok_or_else(|| format!("{branch:?} is not a branch name"))?;
             writable.push(name);
         }
-        Ok(Self { repository, base, branches: writable })
+        Ok(Self { repository, base, branches: writable, integration: None })
+    }
+
+    pub fn with_integration(mut self, draft: bool, required_commits: Vec<String>) -> Result<Self, String> {
+        if !(2..=17).contains(&required_commits.len())
+            || required_commits
+                .iter()
+                .any(|sha| sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            return Err("an integration publication requires a destination and contributor commit IDs".into());
+        }
+        self.branches.clear();
+        self.integration = Some(Integration { draft, required_commits });
+        Ok(self)
+    }
+
+    pub(super) fn required_commits(&self) -> &[String] {
+        self.integration.as_ref().map_or(&[], |integration| &integration.required_commits)
+    }
+
+    pub(super) fn admits_integration_operation(&self, operation: Operation, draft: bool) -> bool {
+        self.integration.as_ref().is_none_or(|integration| match operation {
+            Operation::PullRequest => integration.draft && draft,
+            Operation::UpdatePullRequest => false,
+            _ => true,
+        })
     }
 
     pub fn repository(&self) -> &str {

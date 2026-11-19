@@ -35,12 +35,27 @@ impl Drop for Daemon {
 }
 
 fn daemon(name: &str) -> (Daemon, DaemonClient) {
+    daemon_with(name, false)
+}
+
+fn daemon_with(name: &str, vm: bool) -> (Daemon, DaemonClient) {
     let data = std::env::temp_dir().join(format!("deck-control-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
     let gateway =
         deck_runtime::daemon_client::sibling_binary("deck-gateway").expect("build the workspace binaries first");
-    let child = Command::new(env!("CARGO_BIN_EXE_deckd"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deckd"));
+    if vm {
+        let placeholder = data.join("unused-vm-fixture");
+        std::fs::write(&placeholder, "").unwrap();
+        command
+            .env("DECK_VM_IMAGE", &placeholder)
+            .env("DECK_VM_JOURNAL", &placeholder)
+            .env("DECK_VM_KRUN", &placeholder);
+    } else {
+        command.env_remove("DECK_VM_IMAGE");
+    }
+    let child = command
         .arg("--data")
         .arg(&data)
         .args(["--idle-ms", "500"])
@@ -56,6 +71,102 @@ fn daemon(name: &str) -> (Daemon, DaemonClient) {
     eventually(|| DaemonClient::connect(&data).is_ok());
     let client = DaemonClient::connect(&data).unwrap();
     (Daemon { data, child, _holders: holders }, client)
+}
+
+#[test]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+fn an_integration_reserves_its_destination_and_keeps_the_first_published_pin() {
+    let (daemon, client) = daemon_with("integrate", true);
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["remote", "add", "origin", "https://github.com/deck-test/integration.git"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let project = client.open_project(&repo, vec!["construct".into(), "acp".into()]).unwrap();
+    let spec = Spec {
+        argv: project.argv.clone(),
+        cwd: repo.clone(),
+        project: Some(project.id.clone()),
+        backend: Some("local".into()),
+        kind: TaskKind::Coordinator,
+        ..Default::default()
+    };
+    let first = client.create(spec.clone()).unwrap();
+    let out = daemon.data.join("integration-control-env");
+    let mut policy = client.coordinator_policy(&first.id, None).unwrap();
+    policy.coordinator_argv = Some(env_stub(&out));
+    client.coordinator_policy(&first.id, Some(policy)).unwrap();
+    client.destroy(&first.id).unwrap();
+    let coordinator = client.run(spec).unwrap().task;
+    eventually(|| out.exists());
+    let env = std::fs::read_to_string(&out).unwrap();
+    let mut lines = env.lines();
+    let (url, token) = (lines.next().unwrap(), lines.next());
+
+    let contributor = || {
+        client
+            .create(Spec {
+                argv: project.argv.clone(),
+                cwd: repo.clone(),
+                project: Some(project.id.clone()),
+                backend: Some("vm".into()),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let (a, b) = (contributor(), contributor());
+    let branch = format!("deck/{}", a.id);
+    let pin = "a".repeat(40);
+    client
+        .publication(&a.id, deck_runtime::Publication::Branch { branch: branch.clone(), commit: pin.clone() })
+        .unwrap();
+    let args = json!({
+        "operation": "integrate", "destination": { "kind": "new_pull_request" },
+        "contributors": [a.id, b.id], "brief": "Resolve both changes."
+    });
+    let (one, two) = std::thread::scope(|scope| {
+        let request = scope.spawn(|| post(url, token, &args));
+        let other = post(url, token, &args);
+        (request.join().unwrap(), other)
+    });
+    assert_eq!(one, two);
+    assert_eq!(one.0, 200, "{}", one.1);
+    let id = one.1["id"].as_str().unwrap();
+    let wait = json!({ "operation": "wait", "id": id, "wait_ms": 5000 });
+    let read = || {
+        let (status, body) = post(url, token, &wait);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["timed_out"], false, "{body}");
+        let integration = body["task"]["integration"].clone();
+        assert_eq!(integration["phase"], "waiting");
+        assert_eq!(integration["contributors"], json!([{ "id": a.id, "commit": pin }, { "id": b.id }]));
+        assert!(integration["reason"].as_str().unwrap().contains(&b.id));
+        assert_eq!(body["task"]["attention"], "integration_input");
+    };
+    read();
+    let mut different_order = args.clone();
+    different_order["contributors"] = json!([b.id, a.id]);
+    assert_eq!(code(&post(url, token, &different_order)), (409, "deck_control_busy"));
+    assert_eq!(
+        code(&post(url, token, &json!({"operation":"prompt","id":id,"text":"Start anyway"}))),
+        (409, "deck_control_busy")
+    );
+    assert!(client.start(id).is_err());
+    client.publication(&a.id, deck_runtime::Publication::Branch { branch, commit: "b".repeat(40) }).unwrap();
+    assert_eq!(post(url, token, &args), one);
+    read();
+    client.destroy(id).unwrap();
+    let (status, replacement) = post(url, token, &args);
+    assert_eq!(status, 200);
+    assert_ne!(replacement["id"], id);
+    client.destroy(replacement["id"].as_str().unwrap()).unwrap();
+    client.stop(&coordinator.id).unwrap();
 }
 
 fn eventually(mut check: impl FnMut() -> bool) {

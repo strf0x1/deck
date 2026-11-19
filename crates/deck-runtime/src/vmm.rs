@@ -133,6 +133,8 @@ pub struct Gateway {
     pub github_base: String,
     #[serde(default)]
     pub github_branches: Vec<String>,
+    #[serde(default)]
+    pub github_integration: Option<GithubIntegration>,
     /// The credential name the GitHub token is fetched under. Its value is
     /// never in this config.
     #[serde(default)]
@@ -167,6 +169,12 @@ pub struct Gateway {
     /// configured with can ask the approval queue (ADR 0004 §5).
     pub control: PathBuf,
     pub task: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GithubIntegration {
+    pub draft: bool,
+    pub commits: Vec<String>,
 }
 
 fn default_port() -> u32 {
@@ -408,6 +416,12 @@ fn start_gateway(gateway: &Gateway) -> Result<std::process::ChildStdin> {
         }
         for branch in &gateway.github_branches {
             command.args(["--github-branch", branch]);
+        }
+        if let Some(integration) = &gateway.github_integration {
+            command.args(["--github-integration", if integration.draft { "draft" } else { "branch" }]);
+            for commit in &integration.commits {
+                command.args(["--github-required-commit", commit]);
+            }
         }
     }
     if let Some(socket) = &gateway.web_socket {
@@ -774,6 +788,7 @@ mod tests {
             github_repository: None,
             github_base: String::new(),
             github_branches: Vec::new(),
+            github_integration: None,
             github_token: String::new(),
             github_scratch: PathBuf::from("/tmp/task.github"),
             upstream: "http://127.0.0.1:1/v1".into(),

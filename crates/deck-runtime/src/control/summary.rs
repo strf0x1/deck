@@ -40,6 +40,10 @@ pub fn attention(task: &Task, pending_approvals: usize) -> Option<&'static str> 
     if matches!(task.state, State::Failed { .. }) || matches!(&task.state, State::Stopped { clean: false, .. }) {
         return Some("failed");
     }
+    if task.state == State::Created && task.integration.as_deref().and_then(crate::integration::Plan::reason).is_some()
+    {
+        return Some("integration_input");
+    }
     if task.state != State::Running {
         return None;
     }
@@ -83,6 +87,9 @@ pub fn summary(task: &Task, facts: &Facts) -> Value {
     });
     if facts.message.as_ref().is_some_and(|m| m.truncated) {
         value["last_message_truncated"] = json!(true);
+    }
+    if let Some(plan) = &task.integration {
+        value["integration"] = plan.summary(&task.id);
     }
     if let State::Failed { failure: Failure::StartFailed(why) | Failure::ShutdownUnconfirmed(why) } = &task.state {
         // Open replies: a reader that knows the field learns why.
@@ -133,11 +140,17 @@ pub struct Snapshot {
     pub state: State,
     pub turn: Option<crate::Turn>,
     pub pending_approvals: usize,
+    pub waiting_for_inputs: bool,
 }
 
 impl Snapshot {
     pub fn of(task: &Task, pending_approvals: usize) -> Self {
-        Snapshot { state: task.state.clone(), turn: task.turn.clone(), pending_approvals }
+        Snapshot {
+            state: task.state.clone(),
+            turn: task.turn.clone(),
+            pending_approvals,
+            waiting_for_inputs: task.integration.as_deref().and_then(crate::integration::Plan::reason).is_some(),
+        }
     }
 }
 
@@ -146,7 +159,7 @@ impl Snapshot {
 /// pending approval or a waiting question appeared since it began. A task
 /// that has not started yet waits.
 pub fn woke(start: &Snapshot, now: &Snapshot, after_turn: u64) -> bool {
-    if matches!(now.state, State::Stopped { .. } | State::Failed { .. } | State::Destroyed) {
+    if now.waiting_for_inputs || matches!(now.state, State::Stopped { .. } | State::Failed { .. } | State::Destroyed) {
         return true;
     }
     if now.turn.as_ref().is_some_and(|t| t.state == Phase::Idle && t.number > after_turn) {

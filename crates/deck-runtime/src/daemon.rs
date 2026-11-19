@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 mod control;
 mod control_create;
+mod control_integrate;
 mod coordinator;
 
 pub const IDLE: Duration = Duration::from_secs(5);
@@ -156,7 +157,7 @@ pub fn serve(options: Options) -> Result<()> {
         }
         let running = {
             let service = service.lock().unwrap_or_else(|e| e.into_inner());
-            service.runtime.has_live_tasks()
+            service.runtime.has_live_tasks() || !service.briefs.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
         };
         if running || clients.load(Ordering::Acquire) != 0 {
             idle_since = Instant::now();
@@ -763,7 +764,7 @@ impl Service {
     fn run(&mut self, spec: Spec) -> Result<RunResult> {
         let tasks = self.runtime.tasks()?;
         let backend = spec.backend.clone().unwrap_or_else(|| self.runtime.backend().to_owned());
-        let fits = |t: &&Task| t.backend == backend && t.spec.same_command(&spec);
+        let fits = |t: &&Task| t.integration.is_none() && t.backend == backend && t.spec.same_command(&spec);
         if let Some(task) = tasks.iter().filter(fits).find(|t| t.state == State::Running) {
             return Ok(RunResult { task: task.clone(), started: false });
         }

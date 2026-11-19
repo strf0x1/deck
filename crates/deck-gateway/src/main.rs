@@ -123,6 +123,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
     let mut github_repository = None;
     let mut github_base = None;
     let mut github_branches = Vec::new();
+    let mut github_integration = None;
+    let mut github_required_commits = Vec::new();
     let mut github_token = None;
     let mut github_scratch = None;
     let mut github_api = None;
@@ -159,6 +161,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
             "--github-repository" => github_repository = Some(value(&mut args, &flag)?),
             "--github-base" => github_base = Some(value(&mut args, &flag)?),
             "--github-branch" => github_branches.push(value(&mut args, &flag)?),
+            "--github-integration" => github_integration = Some(value(&mut args, &flag)?),
+            "--github-required-commit" => github_required_commits.push(value(&mut args, &flag)?),
             "--github-token" => github_token = Some(value(&mut args, &flag)?),
             "--github-scratch" => github_scratch = Some(PathBuf::from(value(&mut args, &flag)?)),
             "--github-api" => github_api = Some(value(&mut args, &flag)?),
@@ -218,12 +222,22 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
     let github = match github_socket {
         Some(socket) => {
             let repository = github_repository.context("--github-socket needs --github-repository")?;
-            let policy = deck_gateway::github::policy::Policy::new(
+            let mut policy = deck_gateway::github::policy::Policy::new(
                 &repository,
                 github_base.as_deref().unwrap_or("main"),
                 github_branches,
             )
             .map_err(anyhow::Error::msg)?;
+            if let Some(mode) = github_integration {
+                let draft = match mode.as_str() {
+                    "draft" => true,
+                    "branch" => false,
+                    _ => bail!("--github-integration must be draft or branch"),
+                };
+                policy = policy.with_integration(draft, github_required_commits).map_err(anyhow::Error::msg)?;
+            } else if !github_required_commits.is_empty() {
+                bail!("--github-required-commit needs --github-integration");
+            }
             let name = github_token.unwrap_or_else(|| "DECK_GITHUB_TOKEN".to_string());
             if task_id.is_empty() {
                 bail!("--github-socket needs --task: every branch rule is derived from it");
@@ -248,6 +262,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Config, Option<Strin
                 || github_remote.is_some()
                 || github_git.is_some()
                 || !github_branches.is_empty()
+                || github_integration.is_some()
+                || !github_required_commits.is_empty()
                 || github_base.is_some()
             {
                 bail!("the --github-* flags need --github-socket");
