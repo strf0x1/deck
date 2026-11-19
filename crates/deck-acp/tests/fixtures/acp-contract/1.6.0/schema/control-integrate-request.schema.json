@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-integrate-request.schema.json",
+  "title": "Coordinator control integrate request (since 1.6.0)",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "integrate"
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "The project key. Optional since 1.5.0: omitted, the server uses the coordinator's only project, or refuses when its set has several."
+    },
+    "destination": {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-integration.schema.json#/$defs/destination",
+      "unevaluatedProperties": false
+    },
+    "contributors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "brief": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "operation",
+    "destination",
+    "contributors",
+    "brief"
+  ],
+  "additionalProperties": false
+}

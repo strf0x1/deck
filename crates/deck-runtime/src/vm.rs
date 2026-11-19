@@ -822,6 +822,7 @@ mod tests {
             session_id: None,
             usage: Default::default(),
             publication: None,
+            own_branch_commit: None,
             seen: 0,
             done_ms: None,
             destroyed_ms: None,

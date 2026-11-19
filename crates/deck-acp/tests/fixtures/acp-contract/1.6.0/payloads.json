@@ -1,5 +1,5 @@
 {
-  "contract": "1.5.0",
+  "contract": "1.6.0",
   "cases": [
     {
       "case": "canonical-boundary",
@@ -2532,6 +2532,379 @@
           "message": "x",
           "type": "deck_control_unknown",
           "code": "deck_control_unknown"
+        }
+      }
+    },
+    {
+      "case": "control-integrate-local-branch",
+      "schema": "control-integrate-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "local_branch",
+          "branch": "main"
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000001",
+          "01JD3W0RKER0000000000000002"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests."
+      }
+    },
+    {
+      "case": "control-integrate-new-pull-request",
+      "schema": "control-integrate-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "new_pull_request"
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000001",
+          "01JD3W0RKER0000000000000002"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests.",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+      }
+    },
+    {
+      "case": "control-integrate-existing-pull-request",
+      "schema": "control-integrate-request.schema.json",
+      "valid": true,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "existing_pull_request",
+          "number": 42
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000002"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests."
+      }
+    },
+    {
+      "case": "control-integrate-duplicates",
+      "schema": "control-integrate-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "local_branch",
+          "branch": "main"
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000001",
+          "01JD3W0RKER0000000000000001"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests."
+      }
+    },
+    {
+      "case": "control-integrate-empty",
+      "schema": "control-integrate-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "local_branch",
+          "branch": "main"
+        },
+        "contributors": [],
+        "brief": "Resolve the overlapping edits and run the combined tests."
+      }
+    },
+    {
+      "case": "control-integrate-over-limit",
+      "schema": "control-integrate-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "local_branch",
+          "branch": "main"
+        },
+        "contributors": [
+          "task-0",
+          "task-1",
+          "task-2",
+          "task-3",
+          "task-4",
+          "task-5",
+          "task-6",
+          "task-7",
+          "task-8",
+          "task-9",
+          "task-10",
+          "task-11",
+          "task-12",
+          "task-13",
+          "task-14",
+          "task-15",
+          "task-16"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests."
+      }
+    },
+    {
+      "case": "control-integrate-no-pr-number",
+      "schema": "control-integrate-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "existing_pull_request"
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000001",
+          "01JD3W0RKER0000000000000002"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests."
+      }
+    },
+    {
+      "case": "control-integrate-repository-override",
+      "schema": "control-integrate-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "new_pull_request",
+          "repository": "other/repo"
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000001",
+          "01JD3W0RKER0000000000000002"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests.",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+      }
+    },
+    {
+      "case": "control-integrate-commit-override",
+      "schema": "control-integrate-request.schema.json",
+      "valid": false,
+      "payload": {
+        "operation": "integrate",
+        "destination": {
+          "kind": "local_branch",
+          "branch": "main"
+        },
+        "contributors": [
+          "01JD3W0RKER0000000000000001",
+          "01JD3W0RKER0000000000000002"
+        ],
+        "brief": "Resolve the overlapping edits and run the combined tests.",
+        "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "case": "control-integrate-response",
+      "schema": "control-integrate-response.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000003"
+      }
+    },
+    {
+      "case": "control-integration-waiting",
+      "schema": "control-integration.schema.json",
+      "valid": true,
+      "payload": {
+        "destination": {
+          "kind": "new_pull_request"
+        },
+        "branch": "deck/01JD3W0RKER0000000000000003",
+        "phase": "waiting",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contributors": [
+          {
+            "id": "01JD3W0RKER0000000000000001",
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "id": "01JD3W0RKER0000000000000002"
+          }
+        ],
+        "reason": "Contributor 01JD3W0RKER0000000000000002 has no published task branch.",
+        "repository": "acme/app",
+        "base_branch": "main"
+      }
+    },
+    {
+      "case": "control-integration-ready",
+      "schema": "control-integration.schema.json",
+      "valid": true,
+      "payload": {
+        "destination": {
+          "kind": "new_pull_request"
+        },
+        "branch": "deck/01JD3W0RKER0000000000000003",
+        "phase": "ready",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contributors": [
+          {
+            "id": "01JD3W0RKER0000000000000001",
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "id": "01JD3W0RKER0000000000000002",
+            "commit": "cccccccccccccccccccccccccccccccccccccccc"
+          }
+        ],
+        "repository": "acme/app",
+        "base_branch": "main"
+      }
+    },
+    {
+      "case": "control-integration-waiting-no-reason",
+      "schema": "control-integration.schema.json",
+      "valid": false,
+      "payload": {
+        "destination": {
+          "kind": "new_pull_request"
+        },
+        "branch": "deck/01JD3W0RKER0000000000000003",
+        "phase": "waiting",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contributors": [
+          {
+            "id": "01JD3W0RKER0000000000000001",
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "id": "01JD3W0RKER0000000000000002"
+          }
+        ],
+        "reason": "",
+        "repository": "acme/app",
+        "base_branch": "main"
+      }
+    },
+    {
+      "case": "control-integration-ready-missing-pin",
+      "schema": "control-integration.schema.json",
+      "valid": false,
+      "payload": {
+        "destination": {
+          "kind": "new_pull_request"
+        },
+        "branch": "deck/01JD3W0RKER0000000000000003",
+        "phase": "ready",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contributors": [
+          {
+            "id": "01JD3W0RKER0000000000000001",
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "id": "01JD3W0RKER0000000000000002"
+          }
+        ],
+        "repository": "acme/app",
+        "base_branch": "main"
+      }
+    },
+    {
+      "case": "control-integration-ready-short-pin",
+      "schema": "control-integration.schema.json",
+      "valid": false,
+      "payload": {
+        "destination": {
+          "kind": "new_pull_request"
+        },
+        "branch": "deck/01JD3W0RKER0000000000000003",
+        "phase": "ready",
+        "base_commit": "abcdef",
+        "contributors": [
+          {
+            "id": "01JD3W0RKER0000000000000001",
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "id": "01JD3W0RKER0000000000000002",
+            "commit": "cccccccccccccccccccccccccccccccccccccccc"
+          }
+        ],
+        "repository": "acme/app",
+        "base_branch": "main"
+      }
+    },
+    {
+      "case": "control-summary-integration-waiting",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000003",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Combine the worker changes",
+        "state": "created",
+        "turn": null,
+        "attention": "integration_input",
+        "pending_approvals": 0,
+        "publication": null,
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": null,
+        "integration": {
+          "destination": {
+            "kind": "new_pull_request"
+          },
+          "branch": "deck/01JD3W0RKER0000000000000003",
+          "phase": "waiting",
+          "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contributors": [
+            {
+              "id": "01JD3W0RKER0000000000000001",
+              "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            {
+              "id": "01JD3W0RKER0000000000000002"
+            }
+          ],
+          "reason": "Contributor 01JD3W0RKER0000000000000002 has no published task branch.",
+          "repository": "acme/app",
+          "base_branch": "main"
+        }
+      }
+    },
+    {
+      "case": "control-summary-integration-invalid",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000003",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Combine the worker changes",
+        "state": "created",
+        "turn": null,
+        "attention": "integration_input",
+        "pending_approvals": 0,
+        "publication": null,
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": null,
+        "integration": {
+          "destination": {
+            "kind": "new_pull_request"
+          },
+          "branch": "deck/01JD3W0RKER0000000000000003",
+          "phase": "ready",
+          "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contributors": [
+            {
+              "id": "01JD3W0RKER0000000000000001",
+              "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            {
+              "id": "01JD3W0RKER0000000000000002"
+            }
+          ],
+          "reason": "Contributor 01JD3W0RKER0000000000000002 has no published task branch.",
+          "repository": "acme/app",
+          "base_branch": "main"
         }
       }
     }

@@ -108,7 +108,7 @@ fn coordinator_control_is_the_contracts() {
     assert_eq!(control["capability"], Value::Null, "discovered from the environment, not initialize");
     let operations: Vec<&str> =
         control["operations"].as_array().unwrap().iter().map(|op| op["operation"].as_str().unwrap()).collect();
-    assert_eq!(operations, ["tasks", "task", "create", "prompt", "wait", "stop"]);
+    assert_eq!(operations, ["tasks", "task", "create", "integrate", "prompt", "wait", "stop"]);
     let codes: Vec<&str> =
         control["refusals"].as_array().unwrap().iter().map(|row| row["code"].as_str().unwrap()).collect();
     assert_eq!(

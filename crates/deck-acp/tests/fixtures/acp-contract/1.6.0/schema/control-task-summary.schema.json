@@ -209,6 +209,9 @@
     },
     "last_message_truncated": {
       "type": "boolean"
+    },
+    "integration": {
+      "$ref": "https://github.com/strf0x1/sprawlcommons-acp/schema/control-integration.schema.json"
     }
   },
   "required": [

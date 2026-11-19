@@ -285,6 +285,10 @@ pub struct Task {
     /// restarts (ADR 0008 §8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<Publication>,
+    /// The latest commit the gateway published to this task's own branch.
+    /// A later PR write or publication to another branch leaves it intact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_branch_commit: Option<String>,
     /// The turn number last shown to the user; it only moves forward
     /// (ADR 0010 §6).
     #[serde(default)]
@@ -319,6 +323,7 @@ impl Task {
             session_id: None,
             usage: Usage::default(),
             publication: None,
+            own_branch_commit: None,
             seen: 0,
             done_ms: None,
             destroyed_ms: None,
@@ -363,6 +368,11 @@ impl Task {
         if let Event::Publication { publication } = ev {
             if self.state == State::Destroyed {
                 bail!("task {}: `publication` cannot follow destroyed", self.id);
+            }
+            if let Publication::Branch { branch, commit } = publication
+                && branch == &crate::github::task_branch(&self.id)
+            {
+                self.own_branch_commit = Some(commit.clone());
             }
             self.publication = Some(publication.clone());
             return Ok(());
@@ -597,6 +607,7 @@ mod tests {
         let t = fold(&[created(), started(), branch.clone(), stopped(true)]).unwrap();
         assert_eq!(t.publication, Some(Publication::Branch { branch: "deck/t".into(), commit: "a".repeat(40) }));
         let t = fold(&[created(), started(), branch.clone(), stopped(true), pull.clone()]).unwrap();
+        assert_eq!(t.own_branch_commit.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert_eq!(
             t.publication,
             Some(Publication::PullRequest {
