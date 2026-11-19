@@ -668,7 +668,11 @@ impl Service {
             Request::Task { id } => Ok(serde_json::to_value(self.runtime.task(&id)?)?),
             Request::Tasks => Ok(serde_json::to_value(self.runtime.tasks()?)?),
             Request::Projects => Ok(serde_json::to_value(self.projects.list())?),
-            Request::OpenProject { path, argv } => Ok(serde_json::to_value(self.projects.open_project(&path, argv)?)?),
+            Request::OpenProject { path, argv } => {
+                let task = self.managed_workspace_at(&path)?;
+                let source = task.and_then(|task| task.workspace).map_or(path, |workspace| workspace.source);
+                Ok(serde_json::to_value(self.projects.open_project(&source, argv)?)?)
+            }
             Request::ForgetProject { id } => {
                 self.projects.forget(&id)?;
                 Ok(json!(null))
@@ -762,6 +766,18 @@ impl Service {
     }
 
     fn run(&mut self, spec: Spec) -> Result<RunResult> {
+        if let Some(task) = self.managed_workspace_at(&spec.cwd)? {
+            if task.state == State::Destroyed {
+                anyhow::bail!(
+                    "This worktree belongs to a destroyed task. The branch remains in the source repository."
+                );
+            }
+            if task.state == State::Running {
+                return Ok(RunResult { task, started: false });
+            }
+            self.launch(&task.id, task.resumable())?;
+            return Ok(RunResult { task: self.runtime.task(&task.id)?, started: true });
+        }
         let tasks = self.runtime.tasks()?;
         let backend = spec.backend.clone().unwrap_or_else(|| self.runtime.backend().to_owned());
         let fits = |t: &&Task| t.integration.is_none() && t.backend == backend && t.spec.same_command(&spec);
@@ -775,6 +791,11 @@ impl Service {
         let resume = self.runtime.task(&id)?.resumable();
         self.launch(&id, resume)?;
         Ok(RunResult { task: self.runtime.task(&id)?, started: true })
+    }
+
+    fn managed_workspace_at(&self, path: &std::path::Path) -> Result<Option<Task>> {
+        let Ok(path) = path.canonicalize() else { return Ok(None) };
+        Ok(self.runtime.tasks()?.into_iter().find(|task| task.workspace.is_some() && path.starts_with(&task.spec.cwd)))
     }
 
     fn launch(&mut self, id: &str, resume: bool) -> Result<()> {

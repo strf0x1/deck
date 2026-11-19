@@ -1,4 +1,4 @@
-//! Reserve VM integration workers under the daemon's worker admission lock.
+//! Reserve integration workers under the daemon's worker admission lock.
 //! Prepare the checkout off that lock, then launch through the ordinary
 //! worker path once the task record contains every pin and a ready checkout.
 
@@ -28,23 +28,35 @@ pub(super) fn integrate(cx: &Context, coordinator: &str, policy: &Policy, reques
         let project =
             service.projects.get(request.project).ok_or_else(|| refused("Deck does not know this project."))?;
         let cwd = project.checkouts.first().ok_or_else(|| refused("The project has no checkout Deck knows."))?;
-        if matches!(request.destination, Destination::LocalBranch { .. }) {
-            return Err(refused("Local integration requires managed contributor worktrees (Deck #207)."));
-        }
-        if !service.runtime.backends().contains(&"vm") {
-            return Err(refused("Deck has no VM backend configured for this destination."));
-        }
-        let overrides = crate::github::Override::from_env().map_err(internal)?;
-        let mut github = crate::github::resolve(cwd, overrides.as_ref())
-            .map_err(internal)?
-            .ok_or_else(|| refused("The project has no GitHub repository configured."))?;
-        github.branches.clear();
-        let reference = match request.destination {
-            Destination::NewPullRequest {} => Reference::Base { branch: github.base.clone() },
-            Destination::ExistingPullRequest { number } => Reference::Pull { number: *number },
-            Destination::LocalBranch { .. } => unreachable!("local integration returned earlier"),
+        let (target, backend, github, mut workspace) = match request.destination {
+            Destination::LocalBranch { branch } => {
+                if !service.runtime.backends().contains(&"local") {
+                    return Err(refused("Deck has no local backend configured for this destination."));
+                }
+                let workspace = crate::worktree::Workspace::capture(cwd)
+                    .map_err(|error| refused(&error.to_string()))?
+                    .ok_or_else(|| refused("Local integration needs a registered source Git checkout."))?;
+                let target = Target::Local { local: workspace.repository.clone(), branch: branch.clone() };
+                (target, "local", None, Some(workspace))
+            }
+            destination => {
+                if !service.runtime.backends().contains(&"vm") {
+                    return Err(refused("Deck has no VM backend configured for this destination."));
+                }
+                let overrides = crate::github::Override::from_env().map_err(internal)?;
+                let mut github = crate::github::resolve(cwd, overrides.as_ref())
+                    .map_err(internal)?
+                    .ok_or_else(|| refused("The project has no GitHub repository configured."))?;
+                github.branches.clear();
+                let reference = match destination {
+                    Destination::NewPullRequest {} => Reference::Base { branch: github.base.clone() },
+                    Destination::ExistingPullRequest { number } => Reference::Pull { number: *number },
+                    Destination::LocalBranch { .. } => unreachable!("handled local destination"),
+                };
+                let target = Target::Github { repository: github.repository.clone(), reference };
+                (target, "vm", Some(github), None)
+            }
         };
-        let target = Target { repository: github.repository.clone(), reference };
         let tasks = service.runtime.tasks().map_err(internal)?;
         let matching = tasks.iter().find(|task| {
             integration::reserves(&task.state) && task.integration.as_ref().is_some_and(|plan| plan.target == target)
@@ -71,7 +83,7 @@ pub(super) fn integrate(cx: &Context, coordinator: &str, policy: &Policy, reques
                 .iter()
                 .map(|id| {
                     let source = tasks.iter().find(|task| task.id == *id).ok_or_else(control::unknown)?;
-                    Ok(Input { id: id.clone(), commit: published(source, request.project, &target.repository)? })
+                    Ok(Input { id: id.clone(), commit: contribution(source, request.project, &target)? })
                 })
                 .collect::<Result<Vec<_>, Refusal>>()?;
             let workers: Vec<(State, u64)> = tasks
@@ -80,17 +92,22 @@ pub(super) fn integrate(cx: &Context, coordinator: &str, policy: &Policy, reques
                 .map(|task| (task.state.clone(), service.runtime.created_ms(&task.id).unwrap_or(0)))
                 .collect();
             let budget = control::admit_create(policy, Some(&project.argv), request.budget, &workers, None, now_ms())?;
+            if let (Target::Local { branch, .. }, Some(workspace)) = (&target, &mut workspace) {
+                workspace.target_branch(branch).map_err(|error| refused(&error.to_string()))?;
+            }
+            let base_commit = workspace.as_ref().map(|workspace| workspace.start.clone());
             let spec = Spec {
                 argv: project.argv.clone(),
                 cwd: cwd.clone(),
                 project: Some(request.project.into()),
                 created_by: Some(coordinator.into()),
-                backend: Some("vm".into()),
-                github: Some(github),
+                backend: Some(backend.into()),
+                github,
                 ..Spec::default()
             };
-            let plan = Plan { target, brief: request.brief.into(), inputs, base_commit: None, phase: Phase::Preparing };
-            let id = service.runtime.create_with_plan(spec, Some(Box::new(plan))).map_err(internal)?;
+            let plan = Plan { target, brief: request.brief.into(), inputs, base_commit, phase: Phase::Preparing };
+            let id =
+                service.runtime.create_task(spec, Some(Box::new(plan)), workspace.map(Box::new)).map_err(internal)?;
             if let Err(error) = service.runtime.set_budget(&id, budget.requests, budget.tokens) {
                 let _ = service.runtime.destroy(&id);
                 return Err(internal(error));
@@ -130,17 +147,35 @@ fn refused(reason: &str) -> Refusal {
     Refusal::new(Code::Refused, reason)
 }
 
-fn published(task: &Task, project: &str, repository: &str) -> Result<Option<String>, Refusal> {
+fn contribution(task: &Task, project: &str, target: &Target) -> Result<Option<String>, Refusal> {
     if task.spec.project.as_deref() != Some(project) {
         return Err(control::unknown());
     }
     if task.spec.kind != TaskKind::Task {
         return Err(refused("A coordinator cannot be a contributor."));
     }
-    if task.backend != "vm" || !task.spec.github.as_ref().is_some_and(|github| github.repository == repository) {
-        return Err(refused("A contributor is from an incompatible repository or backend."));
+    match target {
+        Target::Local { local, .. } => {
+            let workspace = task
+                .workspace
+                .as_ref()
+                .filter(|workspace| &workspace.repository == local)
+                .ok_or_else(|| refused("Local contributors need managed worktrees in the same Git repository."))?;
+            if !workspace.ready {
+                return Ok(None);
+            }
+            let reference = format!("refs/heads/{}", crate::github::task_branch(&task.id));
+            let tip = workspace.branch_commit(&reference).map_err(|error| refused(&error.to_string()))?;
+            Ok(tip.filter(|tip| tip != &workspace.start))
+        }
+        Target::Github { repository, .. } => {
+            if task.backend != "vm" || !task.spec.github.as_ref().is_some_and(|github| &github.repository == repository)
+            {
+                return Err(refused("A contributor is from an incompatible repository or backend."));
+            }
+            Ok(task.own_branch_commit.as_ref().filter(|sha| integration::is_commit(sha)).cloned())
+        }
     }
-    Ok(task.own_branch_commit.as_ref().filter(|sha| integration::is_commit(sha)).cloned())
 }
 
 fn prepare_and_launch(cx: &Context, task: &Task) -> Result<()> {
@@ -172,19 +207,34 @@ fn prepare_and_launch(cx: &Context, task: &Task) -> Result<()> {
 
 fn prepare(cx: &Context, task: &Task, plan: &mut Plan) -> Result<()> {
     let project = task.spec.project.as_deref().context("Integration has no project")?;
-    let github = task.spec.github.as_ref().context("Integration has no GitHub policy")?;
     for input in &mut plan.inputs {
         if input.commit.is_none() {
             let source =
                 cx.runtime.task(&input.id).with_context(|| format!("Contributor {} is unavailable.", input.id))?;
-            input.commit =
-                published(&source, project, &plan.target.repository).map_err(|err| anyhow::anyhow!(err.message))?;
+            input.commit = contribution(&source, project, &plan.target).map_err(|err| anyhow::anyhow!(err.message))?;
         }
     }
     cx.runtime.record_integration(&task.id, plan.clone())?;
     if let Some(missing) = plan.inputs.iter().find(|input| input.commit.is_none()) {
+        if matches!(plan.target, Target::Local { .. }) {
+            anyhow::bail!("Contributor {} has no committed work on its task branch.", missing.id);
+        }
         anyhow::bail!("Contributor {} has no published task branch.", missing.id);
     }
+    if let Target::Local { .. } = &plan.target {
+        let workspace = task.workspace.as_ref().context("Local integration has no worktree intent")?;
+        for input in &plan.inputs {
+            let commit = input.commit.as_deref().context("Contributor has no pinned commit")?;
+            anyhow::ensure!(
+                workspace.has_commit(commit)?,
+                "Pinned commit {commit} for contributor {} is unavailable.",
+                input.id
+            );
+        }
+        cx.runtime.prepare_workspace(&task.id)?;
+        return Ok(());
+    }
+    let github = task.spec.github.as_ref().context("Integration has no GitHub policy")?;
     let (broker, path) = {
         let service = cx.service.lock().unwrap_or_else(|e| e.into_inner());
         (service.broker.clone(), service.data.join("tasks").join(&task.id).join(remote::IMPORT))
@@ -221,9 +271,14 @@ fn worker_brief(cx: &Context, plan: &Plan) -> String {
             json!(context.chars().take(1000).collect::<String>())
         );
     }
-    let publication = match plan.target.reference {
-        Reference::Base { .. } => "Publish your task branch and open a draft PR after the tests pass.",
-        Reference::Pull { .. } => {
+    let publication = match &plan.target {
+        Target::Local { .. } => {
+            "If developer is not available, use enable_tools to enable the developer group. Use developer merge_start for each commit ID. Use developer status, stage, and commit to finish each merge. Report your local task branch after the tests pass. Keep the target and contributor branches unchanged."
+        }
+        Target::Github { reference: Reference::Base { .. }, .. } => {
+            "Publish your task branch and open a draft PR after the tests pass."
+        }
+        Target::Github { reference: Reference::Pull { .. }, .. } => {
             "Publish only your task branch for review after the tests pass. Leave the existing PR and its head untouched."
         }
     };

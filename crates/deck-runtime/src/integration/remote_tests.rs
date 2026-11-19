@@ -57,7 +57,7 @@ fn a_clean_integration_checkout_preserves_an_existing_head_and_uses_the_old_pins
     std::fs::write(repo.join("dirty"), "host only").unwrap();
 
     let plan = Plan {
-        target: Target { repository: "owner/repo".into(), reference: Reference::Pull { number: 42 } },
+        target: Target::Github { repository: "owner/repo".into(), reference: Reference::Pull { number: 42 } },
         brief: "Integrate".into(),
         base_commit: Some(head.clone()),
         phase: Phase::Preparing,
@@ -144,7 +144,10 @@ exec /usr/local/bin/construct acp
         })
         .unwrap();
     let plan = Plan {
-        target: Target { repository: "owner/repo".into(), reference: Reference::Base { branch: "main".into() } },
+        target: Target::Github {
+            repository: "owner/repo".into(),
+            reference: Reference::Base { branch: "main".into() },
+        },
         brief: "Integrate".into(),
         base_commit: Some(base.clone()),
         phase: Phase::Ready,

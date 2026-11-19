@@ -56,6 +56,7 @@ fn a_summary_is_the_contracts_shape() {
         pull_request: Some(json!({ "number": 4, "state": "open", "draft": true, "merged": false,
             "html_url": "https://github.com/o/r/pull/4", "checks": [] })),
         message: Some(LastMessage { text: "Done.".into(), truncated: true }),
+        review_commit: None,
     };
     let value = summary(&worker, &facts);
     schema.validate(&value).unwrap();

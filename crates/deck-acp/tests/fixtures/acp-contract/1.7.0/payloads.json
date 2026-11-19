@@ -1,5 +1,5 @@
 {
-  "contract": "1.6.0",
+  "contract": "1.7.0",
   "cases": [
     {
       "case": "canonical-boundary",

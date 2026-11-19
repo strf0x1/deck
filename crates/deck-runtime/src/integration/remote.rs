@@ -16,14 +16,15 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) fn starting_commit(target: &Target, token: Option<&str>) -> Result<String> {
+    let (repository, reference) = target.github()?;
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder().max_redirects(0).timeout_global(Some(LOOKUP_TIMEOUT)).build(),
     );
-    let suffix = match &target.reference {
+    let suffix = match reference {
         Reference::Base { branch } => format!("git/ref/heads/{branch}"),
         Reference::Pull { number } => format!("pulls/{number}"),
     };
-    let url = format!("https://api.github.com/repos/{}/{suffix}", target.repository);
+    let url = format!("https://api.github.com/repos/{repository}/{suffix}");
     let mut request = agent.get(&url).header("accept", "application/vnd.github+json").header("user-agent", "Deck");
     if let Some(token) = token {
         request = request.header("authorization", format!("Bearer {token}"));
@@ -37,7 +38,7 @@ pub(crate) fn starting_commit(target: &Target, token: Option<&str>) -> Result<St
         .read_to_vec()
         .map_err(|_| anyhow::anyhow!("Could not read the GitHub destination response."))?;
     let body: Value = serde_json::from_slice(&bytes).context("GitHub returned an invalid destination response")?;
-    let sha = match &target.reference {
+    let sha = match reference {
         Reference::Base { branch } => {
             ensure!(body["ref"] == format!("refs/heads/{branch}"), "GitHub returned a different destination branch.");
             body.pointer("/object/sha")
@@ -55,13 +56,15 @@ pub(crate) fn starting_commit(target: &Target, token: Option<&str>) -> Result<St
 }
 
 pub(crate) fn prepare(path: &Path, plan: &Plan, branch: &str, token: Option<&str>) -> Result<()> {
-    let url = format!("https://github.com/{}.git", plan.target.repository);
+    let (repository, _) = plan.target.github()?;
+    let url = format!("https://github.com/{repository}.git");
     checkout(path, plan, branch, &url, "https", token)
 }
 
 fn checkout(path: &Path, plan: &Plan, branch: &str, url: &str, protocol: &str, token: Option<&str>) -> Result<()> {
     let start = plan.base_commit.as_deref().context("The integration destination has no pinned commit.")?;
-    let base_ref = match &plan.target.reference {
+    let (_, reference) = plan.target.github()?;
+    let base_ref = match reference {
         Reference::Base { branch } => format!("refs/heads/{branch}"),
         Reference::Pull { number } => format!("refs/pull/{number}/head"),
     };

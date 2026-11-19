@@ -158,6 +158,19 @@ published commit must contain the target and every contributor pin. New PR
 integrations can open a draft from that branch. Existing PR integrations
 return the result branch for the user to apply.
 
+Local coordinator workers record the source Git repository, its starting
+commit, and the local target ref before launch. Deck registers and
+materializes the worktree through private Git configuration. Resume checks
+the original registration and preserves files in the worktree.
+
+A local integration uses the same worktree setup at the selected branch's
+pinned tip. Deck resolves contributor task branches in the same repository.
+A branch with no contributor commit leaves the integration waiting. A
+request retry can fill missing inputs and keeps the recorded pins.
+Coordinator summaries carry the local branch and starting commit under
+contract 1.7.0. Deck reports a review commit after checking that its
+ancestry includes the starting commit and every contributor pin.
+
 ## Consequences
 
 Workers can edit and test in parallel without overwriting each other's

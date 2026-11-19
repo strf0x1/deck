@@ -22,6 +22,7 @@ pub struct Facts {
     /// The pull request reader's last `github-review-response`, if any.
     pub pull_request: Option<Value>,
     pub message: Option<LastMessage>,
+    pub review_commit: Option<String>,
 }
 
 /// The lifecycle state's wire name.
@@ -90,6 +91,19 @@ pub fn summary(task: &Task, facts: &Facts) -> Value {
     }
     if let Some(plan) = &task.integration {
         value["integration"] = plan.summary(&task.id);
+    }
+    if let Some(workspace) = &task.workspace {
+        let mut worktree = json!({
+            "branch": crate::github::task_branch(&task.id),
+            "base_commit": workspace.start,
+        });
+        if let Some(target) = &workspace.target {
+            worktree["target_ref"] = json!(target);
+        }
+        if let Some(commit) = &facts.review_commit {
+            worktree["review_commit"] = json!(commit);
+        }
+        value["worktree"] = worktree;
     }
     if let State::Failed { failure: Failure::StartFailed(why) | Failure::ShutdownUnconfirmed(why) } = &task.state {
         // Open replies: a reader that knows the field learns why.
