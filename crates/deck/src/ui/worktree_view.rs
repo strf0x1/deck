@@ -133,8 +133,7 @@ pub(super) fn pane(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .gap(px(space::STACK))
         .child(super::panels::icon_mark(icon::BRANCH, Tokens::violet(), 26.))
         .child(div().font_weight(FontWeight::SEMIBOLD).text_size(size::scaled(size::TITLE)).child("Worktree"))
-        .child(div().min_w_0().truncate().text_color(Tokens::text_faint()).child(title))
-        .child(div().flex_1())
+        .child(div().flex_1().min_w_0().truncate().text_color(Tokens::text_faint()).child(title))
         .child(control("worktree-close", "Close", Tokens::text_dim(), cx, Deck::close_worktree));
     let body = match fact {
         Some(fact) => details(deck, pane, fact, cx),
@@ -278,7 +277,7 @@ fn row(label: &'static str, text: String) -> gpui::Div {
         .flex()
         .gap(px(space::LINE))
         .child(div().w(px(122.)).flex_none().text_color(Tokens::text_faint()).child(label))
-        .child(mono(text))
+        .child(mono(text).flex_1())
 }
 
 fn mono(text: String) -> gpui::Div {
