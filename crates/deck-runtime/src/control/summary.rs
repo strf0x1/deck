@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 /// The most characters of a title a summary carries.
 const TITLE_CHARS: usize = 80;
+const REPLY_BYTES: usize = 1024 * 1024;
 
 /// What the daemon reads beside the record.
 #[derive(Debug, Clone, Default)]
@@ -88,6 +89,30 @@ pub fn summary(task: &Task, facts: &Facts) -> Value {
         value["failure"] = json!(why.chars().take(1024).collect::<String>());
     }
     value
+}
+
+/// Preserve newest-first order and the whole project set within the control
+/// reply limit, even when there is room for fewer than 200 task summaries.
+pub fn listing(projects: Vec<Value>, tasks: impl Iterator<Item = Value>, mut truncated: bool) -> anyhow::Result<Value> {
+    let mut reply = json!({ "tasks": [], "truncated": false, "projects": projects });
+    let mut bytes = reply.to_string().len();
+    if bytes > REPLY_BYTES {
+        anyhow::bail!("the coordinator's project set exceeds the control reply limit");
+    }
+    let mut included = Vec::new();
+    for task in tasks {
+        let separator = usize::from(!included.is_empty());
+        let size = task.to_string().len() + separator;
+        if size > REPLY_BYTES - bytes {
+            truncated = true;
+            break;
+        }
+        included.push(task);
+        bytes += size;
+    }
+    reply["tasks"] = json!(included);
+    reply["truncated"] = json!(truncated);
+    Ok(reply)
 }
 
 /// The contract's `pull_request` from a review reply, or `None` when the

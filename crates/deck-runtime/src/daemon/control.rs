@@ -159,8 +159,8 @@ fn tasks(cx: &Context, coordinator: &str, policy: &Policy, project: Option<&str>
         .collect();
     listed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
     let truncated = listed.len() > control::TASKS_LIMIT;
-    let tasks: Vec<Value> = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task)).collect();
-    Ok(json!({ "tasks": tasks, "truncated": truncated, "projects": projects(cx, policy) }))
+    let tasks = listed.iter().take(control::TASKS_LIMIT).map(|(_, task)| summarize(cx, task));
+    summary::listing(projects(cx, policy), tasks, truncated).map_err(internal)
 }
 
 /// The coordinator's project set with the names the user sees (contract
