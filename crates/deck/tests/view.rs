@@ -14,6 +14,12 @@ use deck_runtime::approvals::{Approval, Details, Summary};
 use gpui::{AppContext as _, Focusable as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use serde_json::json;
 
+/// How long a test polls for another process (`deckd`, a holder, an agent)
+/// before failing. Generous because a poll returns the moment it is
+/// satisfied, and a loaded CI runner starting dozens of daemons at once can
+/// take several seconds for one reply; a short limit only made tests flaky.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn open(cx: &mut TestAppContext) -> (gpui::Entity<Deck>, VisualTestContext) {
     let window = cx.update(|cx| cx.open_window(Default::default(), |_, cx| cx.new(Deck::detached)).unwrap());
     let mut vcx = VisualTestContext::from_window(window.into(), cx);
@@ -754,8 +760,9 @@ fn card_bounds(cx: &mut VisualTestContext, lane: usize) -> gpui::Bounds<gpui::Pi
     cx.debug_bounds(selector).unwrap_or_else(|| panic!("no project-view card for lane {lane}"))
 }
 
+#[track_caller]
 fn wait_view(cx: &mut VisualTestContext, mut ready: impl FnMut(&VisualTestContext) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         cx.run_until_parked();
         if ready(cx) {
@@ -1423,6 +1430,9 @@ fn launching_into_a_project_with_a_coordinator_opens_its_project_view(cx: &mut T
     let argv = vec!["sleep".to_string(), "30".to_string()];
     let daemon = DaemonClient::connect_or_start(&data).unwrap();
     let project = daemon.open_project(&repo, argv.clone()).unwrap();
+    // Not the default `construct acp`: a real Construct on PATH would start
+    // and outlive the test's cleanup deadline.
+    coordinator_command(&daemon, &repo, &project.id, &argv);
     let spec = |kind| Spec {
         argv: argv.clone(),
         cwd: repo.clone(),
@@ -1446,8 +1456,11 @@ fn launching_into_a_project_with_a_coordinator_opens_its_project_view(cx: &mut T
         assert!(d.showing_project() && d.coordinator_selected(), "the coordinator's project view, not the newest task");
         assert_eq!(d.task_id(), Some(coordinator.id.as_str()), "the composer prompts the coordinator");
     });
-    drop(daemon);
     cx.quit();
+    for id in [&coordinator.id, &newer.id] {
+        let _ = daemon.stop(id);
+    }
+    drop(daemon);
     cleanup_daemon(&data);
 }
 
@@ -1816,7 +1829,7 @@ fn a_prompt_cut_off_by_a_killed_agent_is_resent_with_its_key_and_runs_once(cx: &
 #[cfg(unix)]
 fn cleanup_daemon(data: &std::path::Path) {
     let paths = deck_runtime::paths::Paths::for_data(data).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let deadline = std::time::Instant::now() + PATIENCE;
     while paths.control().exists() {
         assert!(std::time::Instant::now() < deadline, "test daemon did not exit after detaching");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1874,7 +1887,7 @@ fn a_boundary_approval_from_the_daemon_is_answered_by_key(cx: &mut TestAppContex
     };
     let asked = id.clone();
     let approved = std::thread::spawn(move || holder.request_approval(&asked, ask));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         vcx.run_until_parked();
         let shown = deck.read_with(&vcx, |d, _| d.boundary().pending().is_some());
@@ -1960,7 +1973,7 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
     };
     let asked = id.clone();
     let approved = std::thread::spawn(move || holder.request_approval(&asked, ask));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         vcx.run_until_parked();
         if deck.read_with(&vcx, |d, _| d.boundary().pending().is_some()) {
@@ -1975,7 +1988,7 @@ fn a_late_boundary_decision_reaches_an_agent_that_advertised_it(cx: &mut TestApp
 
     // The agent was not waiting, so Deck sends the reverse-DNS boundary
     // notification; the fake agent puts the same note in its transcript.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         vcx.run_until_parked();
         let noted = deck.read_with(&vcx, |d, _| {
@@ -2826,7 +2839,7 @@ fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppCont
     let b_ask = b.clone();
     let holder = DaemonClient::connect(&data).unwrap();
     let asked = std::thread::spawn(move || holder.request_approval(&b_ask, ask));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PATIENCE;
     while daemon.approvals(&b).unwrap().is_empty() {
         assert!(std::time::Instant::now() < deadline, "beta's approval was never queued");
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -3359,7 +3372,7 @@ fn settings_fetch_a_providers_models_search_them_and_add_one(cx: &mut TestAppCon
         .spawn()
         .unwrap();
     let daemon = {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PATIENCE;
         loop {
             if let Ok(daemon) = deck_runtime::DaemonClient::connect(&data) {
                 break daemon;
@@ -3551,7 +3564,7 @@ fn settings_save_a_provider_and_store_its_key_through_a_real_daemon(cx: &mut Tes
         .spawn()
         .unwrap();
     let daemon = {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PATIENCE;
         loop {
             if let Ok(daemon) = deck_runtime::DaemonClient::connect(&data) {
                 break daemon;
