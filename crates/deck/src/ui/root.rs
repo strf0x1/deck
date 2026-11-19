@@ -14,7 +14,7 @@ use super::boundary::Boundary;
 use super::composer;
 use super::editor::Editor;
 use super::rail::Rail;
-use super::session::Session;
+use super::session::{Session, Status};
 use super::theme::{Tokens, size, tint};
 use super::typography::Typography;
 use super::{chrome, conversation, sidebar_view};
@@ -74,6 +74,8 @@ pub struct Deck {
     pub(super) focused: Option<String>,
     /// Card bodies fading in and the jump pill (`motion.rs`).
     pub(super) motion: super::motion::Motion,
+    /// The activity sheen on rows whose turn is working (`sheen.rs`).
+    pub(super) sheen: super::sheen::Sheen,
     pub(super) agent_cmd: String,
     /// The launch's agent command: a project opened from the picker uses it.
     pub(super) argv: Vec<String>,
@@ -177,6 +179,7 @@ impl Deck {
             copied: None,
             focused: None,
             motion: super::motion::Motion::default(),
+            sheen: Default::default(),
             agent_cmd: String::new(),
             argv: Vec::new(),
             data: None,
@@ -262,6 +265,20 @@ impl Deck {
 
     pub fn session(&self) -> &Session {
         &self.current().session
+    }
+
+    /// The activity sheen's state: the view reads its phase, tests its rest.
+    pub fn sheen(&self) -> &super::sheen::Sheen {
+        &self.sheen
+    }
+
+    /// Whether any attachment the window holds has a turn in progress: the
+    /// sheen's licence to keep requesting frames. A task the window is not
+    /// attached to reports only its process, never a turn, so it cannot light
+    /// the sheen.
+    fn turn_working(&self) -> bool {
+        self.attached.values().any(|a| a.session.status == Status::Working)
+            || self.idle.session.status == Status::Working
     }
 
     /// The New session control's state.
@@ -741,7 +758,7 @@ impl Deck {
     pub fn animating(&self) -> bool {
         let board = self.board.cards().iter().any(|c| !c.y.at_rest() || !c.lift.at_rest());
         let rail = !self.rail.width.at_rest() || !self.rail.marker.at_rest();
-        self.board.dragging().is_some() || board || rail || !self.motion.at_rest()
+        self.board.dragging().is_some() || board || rail || !self.motion.at_rest() || !self.sheen.at_rest()
     }
 
     /// The centre of the narrow glyph `index`, in window coordinates.
@@ -760,7 +777,8 @@ impl Deck {
         let board = self.board.step(dt);
         let rail = self.rail.step(dt);
         let motion = self.motion.step(dt);
-        if board || rail || motion {
+        let sheen = self.sheen.step(dt, self.turn_working());
+        if board || rail || motion || sheen {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {

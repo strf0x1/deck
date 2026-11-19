@@ -260,6 +260,16 @@ impl Tokens {
             linear_color_stop(tint(Self::accent(), a * 0.4), 1.),
         )
     }
+    /// The activity sheen's rising half: transparent to a soft white peak.
+    /// Neutral white — the sheen means activity, never a hue; the row's mark
+    /// keeps its colour. The two halves meet at the band's centre (`sheen.rs`).
+    pub fn sheen_rising() -> Background {
+        linear_gradient(90., linear_color_stop(rgba(0xffffff00), 0.), linear_color_stop(rgba(0xffffff26), 1.))
+    }
+    /// The activity sheen's falling half: the peak back to transparent.
+    pub fn sheen_falling() -> Background {
+        linear_gradient(90., linear_color_stop(rgba(0xffffff26), 0.), linear_color_stop(rgba(0xffffff00), 1.))
+    }
     /// Code: the accents again, a little softer, plus one blue for types,
     /// so highlighted code sits in the same palette as the window.
     pub fn code(class: Class) -> Hsla {

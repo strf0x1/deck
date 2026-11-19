@@ -717,6 +717,35 @@ fn copy_leaves_diff_gutters_out_and_the_composers_own_selection_wins(cx: &mut Te
     assert_eq!(clipboard(&mut cx).as_deref(), Some("lo"));
 }
 
+#[gpui::test]
+fn the_sheen_sweeps_while_a_turn_works_and_rests_when_it_ends(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    deck.read_with(&cx, |d, _| assert_eq!(d.session().status, Status::Working));
+
+    // A working turn is motion: each frame advances the pass, right to left.
+    cx.update(|window, _| window.refresh());
+    let first = deck.read_with(&cx, |d, _| (d.sheen().phase(), d.sheen().center()));
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    cx.update(|window, _| window.refresh());
+    let second = deck.read_with(&cx, |d, _| (d.sheen().phase(), d.sheen().center()));
+    assert!(second.0 > first.0, "the pass advances: {first:?} -> {second:?}");
+    assert!(second.1 < first.1, "the band moves left: {first:?} -> {second:?}");
+    assert!(deck.read_with(&cx, |d, _| d.animating()), "a working turn keeps the window drawing");
+
+    // The turn ends: the sheen rests, and the window settles like any idle one.
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(!d.sheen().working(), "no turn, no sheen");
+        assert!(d.sheen().at_rest());
+    });
+    settle(&deck, &mut cx);
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

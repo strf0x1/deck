@@ -9,12 +9,14 @@ use super::board::{CARD_H, Card, LaneState};
 use super::glyph::glyph;
 use super::panels::state_mark;
 use super::root::Deck;
+use super::session::Status;
+use super::sheen::BAND;
 use super::sidebar_rows::TASK_INDENT;
 use super::theme::{Tokens, icon, radius, size, space, tint};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, BoxShadow, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, point, px,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, point, px, relative,
 };
 
 /// The selected project's compact task rows, drawn on the board's pitch so drag
@@ -51,6 +53,15 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
     };
     let id = c.lane.id;
     let task = deck.lanes.task(id, deck.task_id());
+    // The sheen means a turn is working, not just a process: only an
+    // attachment the window holds knows that, and a row that asks wears the
+    // waiting mark instead.
+    let sheen_on = c.lane.state == LaneState::Working
+        && c.lane.attention.is_none()
+        && match task.as_deref() {
+            Some(task) => deck.attached.get(task).is_some_and(|a| a.session.status == Status::Working),
+            None => live && deck.idle.session.status == Status::Working,
+        };
     let done = task
         .as_deref()
         .and_then(|task| deck.tasks.iter().find(|record| record.id == task))
@@ -135,6 +146,37 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
         }])
         .when(held, |s| s.cursor_grabbing())
         .when(!held, |s| s.cursor_grab())
+        // The activity sheen: a soft band crossing the row under its text,
+        // clipped to the row's rounding. Paint-only; the row never re-measures.
+        .children(sheen_on.then(|| {
+            let center = deck.sheen().center();
+            let half = BAND / 2.;
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded(px(radius::CONTROL))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(center - half))
+                        .w(relative(half))
+                        .bg(Tokens::sheen_rising()),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(center))
+                        .w(relative(half))
+                        .bg(Tokens::sheen_falling()),
+                )
+        }))
         .hover(|s| s.bg(Tokens::raised_hover()))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             let hovered = if *hovered {
