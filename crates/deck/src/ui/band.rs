@@ -42,37 +42,42 @@ pub fn alpha(f: f32, center: f32) -> f32 {
     (1. - (f - center).abs() / (BAND / 2.)).clamp(0., 1.)
 }
 
-/// The pieces of the band on a `w`×`h` surface with `corner` rounding, the
-/// band's centre at the `center` x fraction. Pieces tile the border ring
-/// without overlap; a band fully off the surface yields none.
-pub fn pieces(w: f32, h: f32, corner: f32, center: f32) -> Vec<Piece> {
+/// The pieces of the band on a `w`×`h` surface whose corners round by
+/// `corners` (top-left, top-right, bottom-right, bottom-left), the band's
+/// centre at the `center` x fraction. Pieces tile the border ring without
+/// overlap; a band fully off the surface yields none.
+pub fn pieces(w: f32, h: f32, corners: [f32; 4], center: f32) -> Vec<Piece> {
     let mut out = Vec::new();
     if w <= 0. || h <= 0. {
         return out;
     }
-    let r = corner.min(w / 2.).min(h / 2.).max(0.);
-    // The straight top and bottom edges, between the corner arcs.
-    for y in [0., h - EDGE] {
-        ramp(&mut out, r, w - r, y, center, w);
-    }
+    let clamp = |r: f32| r.min(w / 2.).min(h / 2.).max(0.);
+    let [tl, tr, br, bl] = [clamp(corners[0]), clamp(corners[1]), clamp(corners[2]), clamp(corners[3])];
+    // The straight top and bottom edges, between their corner arcs.
+    ramp(&mut out, tl, w - tr, 0., center, w);
+    ramp(&mut out, bl, w - br, h - EDGE, center, w);
     // The straight left and right edges: one solid run each.
-    for x in [0., w - EDGE] {
+    for (x, top, bottom) in [(0., tl, bl), (w - EDGE, tr, br)] {
         let a = alpha((x + EDGE / 2.) / w, center);
-        if a > MIN && h > 2. * r {
-            out.push(Piece::Solid { x, y: r, w: EDGE, h: h - 2. * r, a });
+        if a > MIN && h > top + bottom {
+            out.push(Piece::Solid { x, y: top, w: EDGE, h: h - top - bottom, a });
         }
     }
-    // The corner arcs, as annular sectors. Angles in screen coordinates
-    // (y down): each arc runs from the side edge to the top or bottom edge.
+    // The corner arcs, as annular sectors, each on its own radius. Angles
+    // in screen coordinates (y down): each arc runs from the side edge to
+    // the top or bottom edge.
     let pi = std::f32::consts::PI;
-    let corners = [
-        ((r, r), pi, 1.5 * pi),
-        ((w - r, r), 1.5 * pi, 2. * pi),
-        ((w - r, h - r), 0., 0.5 * pi),
-        ((r, h - r), 0.5 * pi, pi),
+    let arcs = [
+        ((tl, tl), tl, pi, 1.5 * pi),
+        ((w - tr, tr), tr, 1.5 * pi, 2. * pi),
+        ((w - br, h - br), br, 0., 0.5 * pi),
+        ((bl, h - bl), bl, 0.5 * pi, pi),
     ];
-    let arc_r = (r - EDGE / 2.).max(0.);
-    for ((cx, cy), a0, a1) in corners {
+    for ((cx, cy), r, a0, a1) in arcs {
+        if r <= 0. {
+            continue;
+        }
+        let arc_r = (r - EDGE / 2.).max(0.);
         let steps = (((a1 - a0) * arc_r) / STEP).ceil().max(1.) as usize;
         for i in 0..steps {
             let t0 = a0 + (a1 - a0) * i as f32 / steps as f32;
@@ -131,7 +136,7 @@ mod tests {
 
     #[test]
     fn the_straight_edges_are_ramps_split_at_the_peak() {
-        let ps = pieces(W, H, R, 0.5);
+        let ps = pieces(W, H, [R; 4], 0.5);
         let top: Vec<_> = ps.iter().filter(|p| matches!(p, Piece::Ramp { y, .. } if *y == 0.)).collect();
         assert_eq!(top.len(), 2, "the peak splits the top edge");
         let Piece::Ramp { x, w, a0, a1, .. } = top[0] else { unreachable!() };
@@ -146,7 +151,7 @@ mod tests {
 
     #[test]
     fn the_sides_are_solid_runs_between_the_arcs() {
-        let ps = pieces(W, H, R, 0.02);
+        let ps = pieces(W, H, [R; 4], 0.02);
         let left = ps.iter().find_map(|p| match p {
             Piece::Solid { x, y, w, h, a } if *x == 0. => Some((*y, *w, *h, *a)),
             _ => None,
@@ -158,7 +163,7 @@ mod tests {
 
     #[test]
     fn the_corner_sectors_follow_the_arc_and_tile_it() {
-        let ps = pieces(W, H, R, 0.05);
+        let ps = pieces(W, H, [R; 4], 0.05);
         let sectors: Vec<_> = ps
             .iter()
             .filter_map(|p| match p {
@@ -191,13 +196,48 @@ mod tests {
 
     #[test]
     fn a_band_off_the_row_paints_nothing() {
-        assert!(pieces(W, H, R, 2.).is_empty());
-        assert!(pieces(W, H, R, -1.).is_empty());
+        assert!(pieces(W, H, [R; 4], 2.).is_empty());
+        assert!(pieces(W, H, [R; 4], -1.).is_empty());
+    }
+
+    #[test]
+    fn each_corner_keeps_its_own_radius() {
+        // A user bubble: round but for a tight bottom-right corner.
+        let ps = pieces(W, H, [12., 12., 6., 12.], 0.95);
+        // The bottom edge runs from the bottom-left arc to the tight one.
+        let bottom: Vec<_> = ps.iter().filter(|p| matches!(p, Piece::Ramp { y, .. } if *y == H - EDGE)).collect();
+        let (first, last) = (bottom.first().unwrap(), bottom.last().unwrap());
+        let Piece::Ramp { x, .. } = first else { unreachable!() };
+        assert!(*x >= 12., "the bottom run stays between its arcs");
+        let Piece::Ramp { x, w, .. } = last else { unreachable!() };
+        assert_eq!(*x + *w, W - 6.);
+        // The right side runs between the two right arcs.
+        let right = ps.iter().find_map(|p| match p {
+            Piece::Solid { x, y, h, .. } if *x == W - EDGE => Some((*y, *h)),
+            _ => None,
+        });
+        assert_eq!(right, Some((12., H - 12. - 6.)));
+        // Bottom-right sectors sit on the tight circle about (W-6, H-6).
+        let br: Vec<_> = ps
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Sector { points, .. } if points[0].0 > W - 12. && points[0].1 > H - 12. => Some(points),
+                _ => None,
+            })
+            .collect();
+        assert!(!br.is_empty(), "the band near the right edge lights the tight corner");
+        for pts in br {
+            for (i, (x, y)) in pts.iter().enumerate() {
+                let rad = if i < 2 { 6. } else { 6. - EDGE };
+                let d = ((x - (W - 6.)).powi(2) + (y - (H - 6.)).powi(2)).sqrt();
+                assert!((d - rad).abs() < 1e-3, "point {i} on the tight circle: {d} vs {rad}");
+            }
+        }
     }
 
     #[test]
     fn the_radius_clamps_to_a_small_surface() {
-        let ps = pieces(10., 10., 10., 0.5);
+        let ps = pieces(10., 10., [10.; 4], 0.5);
         assert!(!ps.is_empty());
         for p in &ps {
             match p {

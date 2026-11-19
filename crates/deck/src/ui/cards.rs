@@ -41,41 +41,62 @@ pub fn row(deck: &Deck, row: &Row, runs: &RowRuns, cx: &mut Context<Deck>) -> An
         Row::Summary(turn) => super::turn_footer::footer(deck, turn.clone(), cx),
         Row::Waits(range) => super::deck_calls::waits(deck, &entries[range.clone()], key, cx),
         Row::One(i) => match &entries[*i] {
-            Entry::You(t) => div()
-                .text_size(size::scaled(size::BODY))
-                .flex()
-                .justify_end()
-                .items_center()
-                .gap(px(space::TIGHT))
-                // A prompt the coordinator sent is the user's colour, but says
-                // who sent it (ADR 0011 §9); the user's own carry no label.
-                .children(deck.from_coordinator().contains(i).then(|| {
-                    div()
-                        .debug_selector(move || format!("from-coordinator-{key_index}", key_index = *i))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(space::DETAIL))
-                        .text_size(size::scaled(size::MICRO))
-                        .text_color(Tokens::text_faint())
-                        .child(glyph(icon::AGENTS, 11.).text_color(tint(Tokens::cyan(), 0.7)))
-                        .child("from coordinator")
-                }))
-                .child(copy::button(deck, key, t.clone(), cx))
-                .child(
-                    div()
-                        .max_w(relative(0.72))
-                        .px(px(space::PAD))
-                        .py(px(9.))
-                        .rounded(px(radius::BUBBLE))
-                        .rounded_br(px(radius::CHIP))
-                        .border_1()
-                        .border_color(tint(Tokens::accent(), 0.4))
-                        .bg(Tokens::well())
-                        .line_height(relative(1.5))
-                        .child(runs.text(Text::Plain(t.clone()))),
-                )
-                .into_any_element(),
+            Entry::You(t) => {
+                // The send ripple arrives on the newest own turn: the user's
+                // gesture, a beat after the composer's pass. A coordinator's
+                // prompt is not the user's send, and a replay is not new.
+                let newest = entries.iter().rposition(|e| matches!(e, Entry::You(_))) == Some(*i);
+                let rippling = newest
+                    && !deck.from_coordinator().contains(i)
+                    && deck.ripple().for_task(deck.task_id())
+                    && deck.ripple().bubble().is_some();
+                div()
+                    .text_size(size::scaled(size::BODY))
+                    .flex()
+                    .justify_end()
+                    .items_center()
+                    .gap(px(space::TIGHT))
+                    // A prompt the coordinator sent is the user's colour, but says
+                    // who sent it (ADR 0011 §9); the user's own carry no label.
+                    .children(deck.from_coordinator().contains(i).then(|| {
+                        div()
+                            .debug_selector(move || format!("from-coordinator-{key_index}", key_index = *i))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::DETAIL))
+                            .text_size(size::scaled(size::MICRO))
+                            .text_color(Tokens::text_faint())
+                            .child(glyph(icon::AGENTS, 11.).text_color(tint(Tokens::cyan(), 0.7)))
+                            .child("from coordinator")
+                    }))
+                    .child(copy::button(deck, key, t.clone(), cx))
+                    .child(
+                        div()
+                            .relative()
+                            .max_w(relative(0.72))
+                            .px(px(space::PAD))
+                            .py(px(9.))
+                            .rounded(px(radius::BUBBLE))
+                            .rounded_br(px(radius::CHIP))
+                            .border_1()
+                            .border_color(tint(Tokens::accent(), 0.4))
+                            .bg(Tokens::well())
+                            .line_height(relative(1.5))
+                            .child(runs.text(Text::Plain(t.clone())))
+                            // The ripple rides the bubble's own corners, tight
+                            // bottom-right included.
+                            .children(rippling.then(|| {
+                                band_border(
+                                    deck.ripple().bubble().unwrap_or(0.),
+                                    [radius::BUBBLE, radius::BUBBLE, radius::CHIP, radius::BUBBLE],
+                                    Tokens::user_peak(),
+                                    1.,
+                                )
+                            })),
+                    )
+                    .into_any_element()
+            }
             Entry::Agent(t) => div()
                 .debug_selector(|| "agent-prose".into())
                 .flex()
@@ -279,7 +300,7 @@ fn card(deck: &Deck, tool: &Tool, key: String, open: bool, runs: &RowRuns, cx: &
         // The band rides the outline over the header's hover wash.
         .children(sweeping.then(|| sheen_border(deck.sheen().center(), radius::CARD)))
         .children(bloom.map(|(center, failed)| {
-            band_border(center, radius::CARD, if failed { Tokens::failed_peak() } else { Tokens::done_peak() }, 1.)
+            band_border(center, [radius::CARD; 4], if failed { Tokens::failed_peak() } else { Tokens::done_peak() }, 1.)
         }))
         .into_any_element()
 }

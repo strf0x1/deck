@@ -153,8 +153,9 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
                 .left_0()
                 .size_full()
                 .children(
-                    (f.white_alpha > 0.)
-                        .then(|| band_border(f.white_center, radius::CONTROL, Tokens::sheen_peak(), f.white_alpha)),
+                    (f.white_alpha > 0.).then(|| {
+                        band_border(f.white_center, [radius::CONTROL; 4], Tokens::sheen_peak(), f.white_alpha)
+                    }),
                 )
                 .child(pulse_border(f.pulse_center, radius::CONTROL))
         }))

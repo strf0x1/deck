@@ -11,6 +11,7 @@
 use super::chrome::agent_label;
 use super::composer::Field;
 use super::glyph::glyph;
+use super::panels::band_border;
 use super::root::Deck;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
 use gpui::{
@@ -175,6 +176,14 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         .overflow_hidden()
         .child(div().pl(px(16.)).pr(px(8.)).flex().items_end().gap(px(space::STACK)).child(field).child(send))
         .child(status_row(deck))
+        // The send ripple leaves from the composer's outline.
+        .children(
+            deck.ripple()
+                .for_task(deck.task_id())
+                .then(|| deck.ripple().composer())
+                .flatten()
+                .map(|center| band_border(center, [radius::FIELD; 4], Tokens::user_peak(), 1.)),
+        )
 }
 
 /// Agent · backend · directory · branch, with tokens and the key hint at the right.
