@@ -5,11 +5,14 @@
 //! state; every interaction calls back into `Deck`. A colour arrives as an
 //! argument, so each caller says what the hue means where it is used.
 
+use super::band::Piece;
 use super::board::{Lane, LaneState};
 use super::glyph::glyph;
-use super::sheen::BAND;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
-use gpui::{Background, Div, FontWeight, Hsla, ParentElement as _, Styled as _, div, px, relative};
+use gpui::{
+    Bounds, Div, FontWeight, Hsla, IntoElement, ParentElement as _, Path, Styled as _, canvas, div, fill,
+    linear_color_stop, linear_gradient, point, px,
+};
 
 pub fn state_color(s: LaneState) -> Hsla {
     match s {
@@ -116,45 +119,61 @@ pub fn outlined(color: Hsla) -> Div {
     div().border_1().border_color(tint(color, 0.5)).bg(Tokens::well()).text_color(color)
 }
 
-/// A gradient band riding a surface's outline, never its body: four edge
-/// strips clip the same two gradient halves to each side of the border,
-/// inside the surface's `corner` rounding. The caller gates it on its own
-/// activity and passes the band's centre; paint-only, nothing re-measures.
-pub fn band_border(center: f32, corner: f32, rising: Background, falling: Background) -> Div {
-    let half = BAND / 2.;
-    let edge = px(1.5);
-    let halves = |from_right: bool| {
-        let place = |d: Div, at: f32| if from_right { d.right(relative(at)) } else { d.left(relative(at)) };
-        let (rising_at, falling_at) =
-            if from_right { (1. - center, 1. - center - half) } else { (center - half, center) };
-        [
-            place(div().absolute().top_0().bottom_0().w(relative(half)), rising_at).bg(rising),
-            place(div().absolute().top_0().bottom_0().w(relative(half)), falling_at).bg(falling),
-        ]
-    };
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .rounded(px(corner))
-        .overflow_hidden()
-        .child(div().absolute().top_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
-        .child(div().absolute().bottom_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
-        .child(div().absolute().top_0().left_0().w(edge).h_full().overflow_hidden().children(halves(false)))
-        .child(div().absolute().top_0().right_0().w(edge).h_full().overflow_hidden().children(halves(true)))
+/// A gradient band riding a surface's outline, never its body, following
+/// the rounded contour through its corners (`band.rs`): linear ramps on the
+/// straight edges, annular sectors through the arcs, solid runs down the
+/// sides. The canvas reads the size the surface laid out and paints the
+/// pieces at the band's centre; paint-only, nothing re-measures. `peak` is
+/// the band's colour at full strength — its alpha is the band's own weight —
+/// and `alpha` scales the whole band, for a fade.
+pub fn band_border(center: f32, corner: f32, peak: Hsla, alpha: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<gpui::Pixels>, _, window, _| {
+            let w = f32::from(bounds.size.width);
+            let h = f32::from(bounds.size.height);
+            let at = |x: f32, y: f32| bounds.origin + point(px(x), px(y));
+            let color = |a: f32| tint(peak, peak.a * a * alpha);
+            for piece in super::band::pieces(w, h, corner, center) {
+                match piece {
+                    Piece::Ramp { x, y, w, h, a0, a1 } => {
+                        let bounds = Bounds { origin: at(x, y), size: gpui::size(px(w), px(h)) };
+                        window.paint_quad(fill(
+                            bounds,
+                            linear_gradient(90., linear_color_stop(color(a0), 0.), linear_color_stop(color(a1), 1.)),
+                        ));
+                    }
+                    Piece::Solid { x, y, w, h, a } => {
+                        let bounds = Bounds { origin: at(x, y), size: gpui::size(px(w), px(h)) };
+                        window.paint_quad(fill(bounds, color(a)));
+                    }
+                    Piece::Sector { points, a } => {
+                        let mut path = Path::new(at(points[0].0, points[0].1));
+                        for (x, y) in &points[1..] {
+                            path.line_to(at(*x, *y));
+                        }
+                        window.paint_path(path, color(a));
+                    }
+                }
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// The activity sheen as a shared mark: the neutral white band (`sheen.rs`)
 /// on the window sheen's centre.
-pub fn sheen_border(center: f32, corner: f32) -> Div {
-    band_border(center, corner, Tokens::sheen_rising(), Tokens::sheen_falling())
+pub fn sheen_border(center: f32, corner: f32) -> impl IntoElement {
+    band_border(center, corner, Tokens::sheen_peak(), 1.)
 }
 
 /// The done pulse as a shared mark: the same band in the done hue, crossing
 /// once when a turn ends (`exhale.rs`).
-pub fn pulse_border(center: f32, corner: f32) -> Div {
-    band_border(center, corner, Tokens::done_rising(), Tokens::done_falling())
+pub fn pulse_border(center: f32, corner: f32) -> impl IntoElement {
+    band_border(center, corner, Tokens::done_peak(), 1.)
 }
 
 /// The one loud button in a region: the user's own colour, in its border

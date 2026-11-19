@@ -152,10 +152,10 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
                 .top_0()
                 .left_0()
                 .size_full()
-                .children((f.white_alpha > 0.).then(|| {
-                    band_border(f.white_center, radius::CONTROL, Tokens::sheen_rising(), Tokens::sheen_falling())
-                        .opacity(f.white_alpha)
-                }))
+                .children(
+                    (f.white_alpha > 0.)
+                        .then(|| band_border(f.white_center, radius::CONTROL, Tokens::sheen_peak(), f.white_alpha)),
+                )
                 .child(pulse_border(f.pulse_center, radius::CONTROL))
         }))
         .hover(|s| s.bg(Tokens::raised_hover()))
