@@ -17,7 +17,7 @@ pub const WAIT_LIMIT_MS: u64 = 300_000;
 /// The control grammar's protocol. Bump it whenever a [`Request`] variant or
 /// its meaning changes: a window then refuses a daemon from another build with
 /// an instruction instead of failing in the middle of a conversation.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 /// What a daemon answers to [`Request::Hello`]. A daemon predating the
 /// handshake answers `unknown variant`, which the client reports as
@@ -55,6 +55,22 @@ pub(crate) enum Request {
     },
     Task {
         id: String,
+    },
+    WorktreeStatus {
+        id: String,
+    },
+    WorktreeDiff {
+        id: String,
+    },
+    RemoveWorktree {
+        id: String,
+    },
+    WorktreeSource {
+        project: String,
+    },
+    ChooseWorktreeSource {
+        project: String,
+        path: PathBuf,
     },
     Tasks,
     /// The projects a window may show.
@@ -312,6 +328,9 @@ impl Request {
             Self::Hello
                 | Self::Tasks
                 | Self::Task { .. }
+                | Self::WorktreeStatus { .. }
+                | Self::WorktreeDiff { .. }
+                | Self::WorktreeSource { .. }
                 | Self::Wait { .. }
                 | Self::Prompts { .. }
                 | Self::Projects
@@ -338,6 +357,9 @@ impl Request {
             | Self::Stop { id }
             | Self::Destroy { id }
             | Self::Task { id }
+            | Self::WorktreeStatus { id }
+            | Self::WorktreeDiff { id }
+            | Self::RemoveWorktree { id }
             | Self::Session { id, .. }
             | Self::Approval { task: id, .. }
             | Self::Approvals { task: id }
@@ -414,7 +436,9 @@ impl Request {
         {
             bail!("a session refusal needs a reason of at most {REFUSAL_LIMIT} bytes");
         }
-        if let Self::ForgetProject { id } = self
+        if let Self::ForgetProject { id }
+        | Self::WorktreeSource { project: id }
+        | Self::ChooseWorktreeSource { project: id, .. } = self
             && id.is_empty()
         {
             bail!("invalid project id");

@@ -63,6 +63,7 @@ pub struct Deck {
     pub(super) text_select: super::selecting::TextSelect,
     /// The window's task as `deckd` last listed it, for the status row.
     pub(super) workspace: Option<super::prompt::Workspace>,
+    pub(super) worktrees: super::worktrees::Worktrees,
     /// The transcript's virtualized list, the signature of each row it
     /// last measured, and the rows the user expanded (`transcript.rs`).
     pub(super) transcript: ListState,
@@ -177,6 +178,7 @@ impl Deck {
             selecting: false,
             text_select: Default::default(),
             workspace: None,
+            worktrees: Default::default(),
             transcript: super::transcript_list::following(),
             row_sigs: Vec::new(),
             expanded: HashSet::new(),
@@ -746,6 +748,10 @@ impl Deck {
             cx.stop_propagation();
             return self.close_publication(cx);
         }
+        if self.worktree_pane().is_some() && k.key == "escape" {
+            cx.stop_propagation();
+            return self.close_worktree(cx);
+        }
         if self.current().session.ask.is_some() && !self.current().boundary.is_reviewing() {
             cx.stop_propagation();
             if k.modifiers.control || k.modifiers.platform || k.modifiers.alt {
@@ -776,7 +782,7 @@ impl Deck {
             }
             return;
         }
-        if self.can_restart() {
+        if self.can_restart() || self.worktree_pane().is_some() {
             return cx.stop_propagation();
         }
         if self.selection_key(ev, cx) {

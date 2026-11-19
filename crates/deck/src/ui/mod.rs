@@ -97,3 +97,5 @@ pub mod transcript;
 mod transcript_list;
 mod turn_footer;
 pub mod typography;
+mod worktree_view;
+mod worktrees;

@@ -33,8 +33,8 @@ pub(super) fn integrate(cx: &Context, coordinator: &str, policy: &Policy, reques
                 if !service.runtime.backends().contains(&"local") {
                     return Err(refused("Deck has no local backend configured for this destination."));
                 }
-                let workspace = crate::worktree::Workspace::capture(cwd)
-                    .map_err(|error| refused(&error.to_string()))?
+                let workspace = crate::worktree::Workspace::capture_project(cwd, request.project)
+                    .map_err(|error| refused(&format!("{error:#}")))?
                     .ok_or_else(|| refused("Local integration needs a registered source Git checkout."))?;
                 let target = Target::Local { local: workspace.repository.clone(), branch: branch.clone() };
                 (target, "local", None, Some(workspace))

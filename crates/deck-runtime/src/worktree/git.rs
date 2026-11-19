@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail, ensure};
 use std::fs;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -12,6 +12,14 @@ pub(super) struct Shadow(pub(super) PathBuf);
 
 impl Shadow {
     pub(super) fn prepare(path: PathBuf, source: &Path, common: &Path) -> Result<Self> {
+        Self::new(path, source, common, true)
+    }
+
+    pub(super) fn inspect(path: PathBuf, source: &Path, common: &Path) -> Result<Self> {
+        Self::new(path, source, common, false)
+    }
+
+    fn new(path: PathBuf, source: &Path, common: &Path, register: bool) -> Result<Self> {
         let objects = git(source, &["rev-parse", "--show-object-format"])?;
         let refs = git(source, &["rev-parse", "--show-ref-format"])?;
         ensure!(matches!(objects.as_str(), "sha1" | "sha256"), "Unsupported Git object format.");
@@ -22,8 +30,10 @@ impl Shadow {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(&path)?,
             Err(error) => return Err(error.into()),
         }
-        fs::create_dir_all(common.join("worktrees"))?;
-        for name in ["objects", "refs", "packed-refs", "worktrees", "logs", "reftable"] {
+        if register {
+            fs::create_dir_all(common.join("worktrees"))?;
+        }
+        for name in ["objects", "refs", "packed-refs", "worktrees", "logs", "reftable", "info"] {
             let native = common.join(name);
             if native.exists() || matches!(name, "packed-refs" | "logs") {
                 if native.exists() {
@@ -37,7 +47,7 @@ impl Shadow {
                 }
             }
         }
-        if refs == "files" {
+        if refs == "files" && register {
             fs::create_dir_all(common.join("logs"))?;
         }
         let extended = objects == "sha256" || refs == "reftable";
@@ -56,15 +66,32 @@ impl Shadow {
     }
 
     pub(super) fn git(&self, work: &Path, git_dir: &Path, args: &[&str]) -> Result<String> {
-        output(
-            command(work)
-                .env("GIT_DIR", git_dir)
-                .env("GIT_COMMON_DIR", &self.0)
-                .env("GIT_WORK_TREE", work)
-                .args(args)
-                .output()?,
-        )
+        output(self.command(work, git_dir).args(args).output()?)
     }
+
+    pub(super) fn command(&self, work: &Path, git_dir: &Path) -> Command {
+        let mut git = command(work);
+        git.env("GIT_DIR", git_dir).env("GIT_COMMON_DIR", &self.0).env("GIT_WORK_TREE", work);
+        git
+    }
+}
+
+/// Read one bounded prefix. A pipe avoids collecting an entire diff before
+/// truncating it. Stderr cannot block the subprocess while the prefix is read.
+pub(super) fn bounded(command: &mut Command, limit: usize) -> Result<(Vec<u8>, bool)> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    let mut bytes = Vec::new();
+    let pipe = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Git returned no output pipe"))?;
+    let read = pipe.take((limit + 1) as u64).read_to_end(&mut bytes);
+    let truncated = bytes.len() > limit;
+    if truncated || read.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    read?;
+    ensure!(truncated || status.success(), "Git could not inspect this checkout.");
+    bytes.truncate(limit);
+    Ok((bytes, truncated))
 }
 
 pub(super) fn write_private(path: &Path, text: &str) -> Result<()> {
@@ -109,7 +136,7 @@ pub(super) fn command(path: &Path) -> Command {
 fn output(result: Output) -> Result<String> {
     ensure!(
         result.status.success(),
-        "Git could not prepare the task worktree. {}",
+        "Git could not complete the worktree operation. {}",
         String::from_utf8_lossy(&result.stderr).trim().chars().take(512).collect::<String>()
     );
     Ok(String::from_utf8(result.stdout)?.trim_end_matches(['\n', '\r']).to_owned())

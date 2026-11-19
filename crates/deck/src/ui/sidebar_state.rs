@@ -20,7 +20,8 @@ impl Deck {
     pub fn sidebar_inputs(&mut self) -> (Vec<NeedIn>, Vec<ProjectIn>) {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for record in &self.tasks {
-            let settled = attention::settled(record, self.published.get(&record.id)).is_some();
+            let settled = attention::settled(record, self.published.get(&record.id)).is_some()
+                || self.local_merged_at(&record.id).is_some();
             // A coordinator is its project's view, not one of its tasks.
             if record.state == State::Destroyed || settled || super::coordinator::is_coordinator(record) {
                 continue;

@@ -292,8 +292,12 @@ impl Deck {
     /// Apply a project list and selection already in hand: the rail's pure
     /// state, for tests and replies that need no daemon call.
     pub fn on_projects(&mut self, list: Vec<Project>, select: Option<String>, cx: &mut Context<Self>) {
+        if self.projects.selected_id() != select.as_deref() {
+            self.close_worktree(cx);
+        }
         self.projects.set(list, select);
         self.rail.select(self.projects.index());
+        self.refresh_worktrees(false, cx);
         cx.notify();
     }
 
@@ -330,6 +334,7 @@ impl Deck {
     /// Keep the project open with no task: the main area shows its project
     /// view (ADR 0010 §1). The tasks' attachments stay (ADR 0010 §8).
     pub(super) fn clear_task(&mut self, cx: &mut Context<Self>) {
+        self.close_worktree(cx);
         self.selected = None;
         self.pending_prompt = None;
         self.expanded.clear();
@@ -386,6 +391,7 @@ impl Deck {
     /// Make `record` the selection and reset what belongs to the previous
     /// one. Connect it only if it has no attachment yet.
     pub(super) fn select_task(&mut self, current: &WindowTask, record: Task, cx: &mut Context<Self>) {
+        self.close_worktree(cx);
         let id = record.id.clone();
         // The selected task's row becomes the live card; the previous one
         // keeps the lane it had, so rows never trade places on a switch.

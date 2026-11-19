@@ -107,6 +107,8 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
             super::access_panel::panel(deck, cx).into_any_element()
         } else if deck.open_publication().is_some() {
             super::publication_panel::panel(deck, cx).into_any_element()
+        } else if deck.worktree_pane().is_some() {
+            super::worktree_view::pane(deck, cx)
         } else if project_view {
             super::project_view::project_view(deck, width, cx)
         } else if empty_project {
@@ -124,13 +126,19 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
                 .children(s.ask.as_ref().map(|_| ask(deck, cx)))
                 // Access takes the keyboard, so the field it would block is not shown.
-                .children((!deck.access.is_open() && !deck.settings.is_open() && !deck.limits_open()).then(|| {
-                    if deck.can_restart() {
-                        restart(deck, cx)
-                    } else {
-                        super::prompt::prompt(deck, cx).into_any_element()
-                    }
-                })),
+                .children(
+                    (!deck.access.is_open()
+                        && !deck.settings.is_open()
+                        && !deck.limits_open()
+                        && deck.worktree_pane().is_none())
+                    .then(|| {
+                        if deck.can_restart() {
+                            restart(deck, cx)
+                        } else {
+                            super::prompt::prompt(deck, cx).into_any_element()
+                        }
+                    }),
+                ),
         )
 }
 

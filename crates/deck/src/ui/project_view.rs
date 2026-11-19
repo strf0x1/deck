@@ -43,6 +43,7 @@ pub fn project_view(deck: &Deck, width: f32, cx: &mut Context<Deck>) -> AnyEleme
         .flex()
         .flex_col()
         .children(deck.coordinator_refusal().map(refusal))
+        .children(super::worktree_view::source(deck, cx))
         .child(centre)
         .children(super::surfaced_view::rows(deck, cx));
     let wide = width >= WIDE;
@@ -74,12 +75,6 @@ fn empty(name: &str) -> AnyElement {
             "Tell it what you want done. It starts sessions in this project, follows them, and brings you \
              what they need you to decide; you answer those yourself.",
         ))
-        .child(
-            div()
-                .text_size(size::scaled(size::SMALL))
-                .text_color(Tokens::text_faint())
-                .child("Each session sees the project's tracked and untracked files, but not ignored ones."),
-        )
         .into_any_element()
 }
 
@@ -196,6 +191,18 @@ fn card_row(deck: &Deck, card: &Card, cx: &mut Context<Deck>) -> AnyElement {
         None => div().text_color(Tokens::text_faint()).child(lane.detail.clone()),
     };
     let chip = lane.chip.as_ref().map(|(dot, label)| super::publication_panel::chip(*dot, label));
+    let worker = deck.lanes.task(id, deck.task_id());
+    let local = worker
+        .as_ref()
+        .and_then(|task| super::worktree_view::task_button(deck, task, format!("project-worktree-{id}"), cx));
+    let branch = worker.as_ref().filter(|_| local.is_some()).map(|task| {
+        div()
+            .truncate()
+            .font_family(MONO)
+            .text_size(size::scaled(size::MICRO))
+            .text_color(Tokens::text_faint())
+            .child(deck_runtime::github::task_branch(task))
+    });
     let provenance = deck.lane_provenance(id).map(|text| {
         div()
             .debug_selector(move || format!("project-view-provenance-{id}"))
@@ -237,6 +244,8 @@ fn card_row(deck: &Deck, card: &Card, cx: &mut Context<Deck>) -> AnyElement {
                 )
                 .child(div().truncate().text_size(size::scaled(size::SMALL)).child(line))
                 .children(provenance)
+                .children(branch)
+                .children(local.map(|chip| div().flex().child(chip)))
                 .children(chip.map(|chip| div().flex().child(chip))),
         )
         .into_any_element()

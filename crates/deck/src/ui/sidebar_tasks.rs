@@ -248,6 +248,7 @@ fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &mut Deck, c
         "merged"
     };
     let id = settled.task.id.clone();
+    let worktree = super::worktree_view::task_button(deck, &id, format!("settled-worktree-{index}"), cx);
     let lane = deck.lanes.lane_of(&id, deck.task_id());
     let chip = lane.and_then(|lane| deck.publication_of(lane).map(|view| (lane, view)));
     let toggle = (!destroyed).then(|| {
@@ -287,6 +288,7 @@ fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &mut Deck, c
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_publication(lane, cx)))
         }))
+        .children(worktree)
         .children(toggle)
         .into_any_element()
 }

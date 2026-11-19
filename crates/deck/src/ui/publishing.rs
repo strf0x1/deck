@@ -108,11 +108,16 @@ impl Deck {
         let mut shown = Vec::new();
         let mut settled = Vec::new();
         for record in visible {
-            let at = super::attention::settled(&record, self.published.get(&record.id));
+            let at = super::attention::settled(&record, self.published.get(&record.id))
+                .or_else(|| self.local_merged_at(&record.id));
             let is_own = own.as_deref() == Some(record.id.as_str());
+            let retained_worktree = record.workspace.is_some()
+                && self
+                    .worktree_status(&record.id)
+                    .is_none_or(|fact| fact.state != deck_runtime::worktree::WorktreeState::Removed);
             if !is_own
                 && let Some(at_ms) = at
-                && now.saturating_sub(at_ms) < super::tasks::SETTLED_WINDOW_MS
+                && (retained_worktree || now.saturating_sub(at_ms) < super::tasks::SETTLED_WINDOW_MS)
             {
                 settled.push(super::tasks::Settled { task: record, at_ms });
             } else if is_own || at.is_none() {
@@ -157,6 +162,7 @@ impl Deck {
         self.workspace = self.tasks.iter().find(|t| Some(&t.id) == selected.as_ref()).map(super::prompt::Workspace::of);
         self.sync_live_lane();
         self.note_seen(cx);
+        self.refresh_worktrees(false, cx);
         cx.notify();
     }
 
@@ -191,6 +197,7 @@ impl Deck {
 
     /// Open the panel for lane `lane`'s task, or close it if it is open.
     pub fn toggle_publication(&mut self, lane: usize, cx: &mut Context<Self>) {
+        self.close_worktree(cx);
         let task = self.lanes.task(lane, self.task_id());
         self.destroy_confirm = false;
         self.publication_open = if self.publication_open == task { None } else { task };

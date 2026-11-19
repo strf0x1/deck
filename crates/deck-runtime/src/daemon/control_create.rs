@@ -52,16 +52,10 @@ pub(super) fn create(
         // A worker runs where its coordinator runs (ADR 0016).
         let backend = service.runtime.task(coordinator).map_err(internal)?.backend;
         let workspace = match (backend.as_str(), checkout) {
-            ("local", Some(path)) => crate::worktree::Workspace::capture(path)
-                .map_err(|error| control::Refusal::new(control::Code::Refused, error.to_string()))?,
+            ("local", Some(path)) => crate::worktree::Workspace::capture_project(path, project)
+                .map_err(|error| control::Refusal::new(control::Code::Refused, format!("{error:#}")))?,
             _ => None,
         };
-        if backend == "local" && workspace.is_none() && project.starts_with("git:") {
-            return Err(control::Refusal::new(
-                control::Code::Refused,
-                "The recorded source Git checkout is unavailable.",
-            ));
-        }
         let in_place = (backend == "local" && workspace.is_none()).then(|| in_checkout(&service.runtime, checkout));
         let budget = control::admit_create(policy, argv, requested, &workers, in_place, now_ms())?;
         let (Some(recorded), Some(cwd)) = (&recorded, checkout) else {

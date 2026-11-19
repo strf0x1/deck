@@ -411,6 +411,11 @@ fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
     std::fs::write(repo.join("private"), "untracked project files\n").unwrap();
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     let project = client.open_project(&repo, vec![fake.display().to_string()]).unwrap();
+    let source = client.worktree_source(&project.id).unwrap().unwrap();
+    assert_eq!(
+        (source.path, source.branch.as_deref(), source.commit, source.dirty),
+        (repo.clone(), Some("main"), base.clone(), true)
+    );
     let spec = Spec {
         cwd: repo.clone(),
         project: Some(project.id.clone()),
@@ -526,6 +531,58 @@ fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
     assert_eq!(git(&worktree(&b), &["rev-parse", "HEAD"]), b_pin);
     assert_eq!(git(&repo, &["rev-parse", "refs/heads/main"]), base);
 
+    use deck_runtime::worktree::WorktreeState;
+    assert!(client.remove_worktree(integration).is_err());
+    client.stop(integration).unwrap();
+    let status = client.worktree_status(integration).unwrap();
+    assert_eq!(status.state, WorktreeState::Ready);
+    assert_eq!(status.tip.as_deref(), Some(reviewed.as_str()));
+    let branch = format!("refs/heads/{}", status.branch);
+    let diff = client.worktree_diff(integration).unwrap();
+    assert!(diff.text.contains("+first contributor\n+second contributor"), "{}", diff.text);
+    assert!(!diff.truncated);
+
+    // A fast-forward outside Deck updates the status without touching the
+    // worktree. Restore the fixture's destination for the remaining checks.
+    git(&repo, &["update-ref", "refs/heads/main", &reviewed, &base]);
+    assert_eq!(client.worktree_status(integration).unwrap().state, WorktreeState::Merged);
+    git(&repo, &["update-ref", "refs/heads/main", &base, &reviewed]);
+
+    std::fs::write(integrate_at.join("README.md"), "unstaged edit\n").unwrap();
+    assert_eq!(client.worktree_status(integration).unwrap().state, WorktreeState::Uncommitted);
+    assert!(client.remove_worktree(integration).is_err());
+    git(&integrate_at, &["add", "--", "README.md"]);
+    assert!(client.remove_worktree(integration).is_err());
+    assert_eq!(git(&integrate_at, &["show", ":README.md"]), "unstaged edit");
+    git(&integrate_at, &["restore", "--staged", "--worktree", "--", "README.md"]);
+
+    let evidence = integrate_at.join("local-kept");
+    std::fs::write(&evidence, "keep me").unwrap();
+    assert!(client.remove_worktree(integration).is_err());
+    std::fs::write(repo.join(".git/info/exclude"), "local-kept\n").unwrap();
+    let ignored = client.worktree_status(integration).unwrap();
+    assert!(!ignored.removable);
+    assert!(ignored.reason.unwrap().contains("ignored files"));
+    assert!(client.remove_worktree(integration).is_err());
+    assert_eq!(std::fs::read_to_string(&evidence).unwrap(), "keep me");
+    std::fs::remove_file(&evidence).unwrap();
+
+    git(&integrate_at, &["update-index", "--assume-unchanged", "--", "README.md"]);
+    assert!(client.remove_worktree(integration).is_err());
+    git(&integrate_at, &["update-index", "--no-assume-unchanged", "--", "README.md"]);
+    git(&repo, &["update-ref", "refs/heads/main", &reviewed, &base]);
+    let removed = client.remove_worktree(integration).unwrap();
+    assert_eq!(removed.state, WorktreeState::Removed);
+    assert!(removed.merged);
+    assert_eq!(client.remove_worktree(integration).unwrap().state, WorktreeState::Removed);
+    let reread = client.worktree_status(integration).unwrap();
+    assert_eq!(reread.state, WorktreeState::Removed);
+    assert!(reread.merged);
+    git(&repo, &["update-ref", "refs/heads/main", &base, &reviewed]);
+    assert!(!integrate_at.exists());
+    assert_eq!(git(&repo, &["rev-parse", &branch]), reviewed);
+    assert_eq!(client.worktree_diff(integration).unwrap(), diff);
+
     let worktree = client.task(&a).unwrap().spec.cwd;
     assert_eq!(
         client.run(Spec { cwd: worktree.clone(), ..Default::default() }).unwrap().task.id,
@@ -541,4 +598,39 @@ fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
     assert_eq!(std::fs::read_to_string(moved.join("uncommitted")).unwrap(), "remember me");
     assert_eq!(git(&repo, &["rev-parse", "main"]), base);
     assert_eq!(std::fs::read_to_string(repo.join("README.md")).unwrap(), "dirty project files\n");
+
+    let replacement = repo.with_extension("replacement");
+    git(&repo, &["clone", "--no-hardlinks", "--", repo.to_str().unwrap(), replacement.to_str().unwrap()]);
+    assert!(client.choose_worktree_source(&project.id, &client.task(&b).unwrap().spec.cwd).is_err());
+    let new_source = client.choose_worktree_source(&project.id, &replacement).unwrap();
+    assert_eq!(new_source.path, replacement);
+    assert!(!new_source.dirty);
+    assert_eq!(client.worktree_source(&project.id).unwrap(), Some(new_source));
+    let worker = create("replacement checkout");
+    eventually(|| client.task(&worker).is_ok_and(|task| task.state == deck_runtime::State::Running));
+    assert_eq!(client.task(&worker).unwrap().workspace.unwrap().source, replacement);
+
+    // Simulate interruption after Git has moved a stopped worktree and the
+    // removal intent is durable. A subsequent explicit retry must preserve
+    // files found at the private path until the user has saved them.
+    client.stop(&worker).unwrap();
+    let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
+    let mut interrupted = store.load(&worker).unwrap();
+    store.append(&mut interrupted, deck_runtime::lifecycle::Event::WorktreeRemovalStarted).unwrap();
+    let original = &interrupted.spec.cwd;
+    let held = original.with_file_name(".worktree-removing");
+    git(&replacement, &["worktree", "move", "--", original.to_str().unwrap(), held.to_str().unwrap()]);
+    std::fs::write(replacement.join(".git/info/exclude"), "keep-local\n").unwrap();
+    let local = held.join("keep-local");
+    std::fs::write(&local, "interrupted local file").unwrap();
+    let pending = client.worktree_status(&worker).unwrap();
+    assert_eq!(pending.path, held);
+    assert!(!pending.removable);
+    assert!(client.remove_worktree(&worker).is_err());
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "interrupted local file");
+    std::fs::remove_file(local).unwrap();
+    assert!(client.worktree_status(&worker).unwrap().removable);
+    assert_eq!(client.remove_worktree(&worker).unwrap().state, WorktreeState::Removed);
+    assert!(!held.exists() && !original.exists());
+    assert_eq!(git(&replacement, &["rev-parse", &format!("refs/heads/deck/{worker}")]), base);
 }

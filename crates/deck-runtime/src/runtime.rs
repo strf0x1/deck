@@ -479,6 +479,30 @@ impl Runtime {
         inner.record(&mut task, Event::Destroyed)
     }
 
+    /// Remove a stopped worker's registered checkout and keep its branch.
+    /// Record the intent before Git changes the filesystem so an explicit
+    /// retry can finish recording a removal after a daemon restart.
+    pub fn remove_worktree(&self, id: &str) -> Result<crate::worktree::WorktreeStatus> {
+        let mut inner = self.lock();
+        let mut task = inner.store.load(id)?;
+        let workspace = task.workspace.as_ref().context("This task has no managed worktree.")?;
+        if workspace.removed() {
+            return Ok(workspace.status(&task));
+        }
+        if inner.live.contains_key(id) {
+            bail!("Stop the worker before removing its worktree.");
+        }
+        let Some(_lock) = inner.store.lock(id)? else { bail!("The worker has not exited yet.") };
+        workspace.check_removal(&task)?;
+        inner.backends.of(&task)?.reconcile(&task)?;
+        if !workspace.removal_pending() {
+            inner.record(&mut task, Event::WorktreeRemovalStarted)?;
+        }
+        task.workspace.as_ref().context("This task has no managed worktree.")?.remove(&task)?;
+        inner.record(&mut task, Event::WorktreeRemoved)?;
+        Ok(task.workspace.as_ref().context("This task has no managed worktree.")?.status(&task))
+    }
+
     /// Run `spec` and attach to it: reuse a task of this spec that is at
     /// rest and not held by anyone, or create one. A coordinator reuses its
     /// scope's coordinator instead, whatever its command.
