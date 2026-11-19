@@ -9,7 +9,7 @@
 
 use super::access::Access;
 use super::attached::Attached;
-use super::board::{Board, Lane};
+use super::board::{Board, Card, Lane, LaneState};
 use super::boundary::Boundary;
 use super::composer;
 use super::editor::Editor;
@@ -76,6 +76,10 @@ pub struct Deck {
     pub(super) motion: super::motion::Motion,
     /// The activity sheen on rows whose turn is working (`sheen.rs`).
     pub(super) sheen: super::sheen::Sheen,
+    /// The exhale on rows whose turn just ended (`exhale.rs`).
+    pub(super) exhale: super::exhale::Exhale,
+    /// The state marks' crossfades on the sidebar's rows (`marks.rs`).
+    pub(super) marks: super::marks::Marks,
     pub(super) agent_cmd: String,
     /// The launch's agent command: a project opened from the picker uses it.
     pub(super) argv: Vec<String>,
@@ -180,6 +184,8 @@ impl Deck {
             focused: None,
             motion: super::motion::Motion::default(),
             sheen: Default::default(),
+            exhale: Default::default(),
+            marks: Default::default(),
             agent_cmd: String::new(),
             argv: Vec::new(),
             data: None,
@@ -272,6 +278,17 @@ impl Deck {
         &self.sheen
     }
 
+    /// The turn-end exhale's state: the view reads each row's frame, tests
+    /// its rest.
+    pub fn exhale(&self) -> &super::exhale::Exhale {
+        &self.exhale
+    }
+
+    /// The state marks' crossfades: the view reads each row's fade.
+    pub fn marks(&self) -> &super::marks::Marks {
+        &self.marks
+    }
+
     /// Whether any attachment the window holds has a turn in progress: the
     /// sheen's licence to keep requesting frames. A task the window is not
     /// attached to reports only its process, never a turn, so it cannot light
@@ -279,6 +296,21 @@ impl Deck {
     fn turn_working(&self) -> bool {
         self.attached.values().any(|a| a.session.status == Status::Working)
             || self.idle.session.status == Status::Working
+    }
+
+    /// This row's own session status: only an attachment the window holds
+    /// knows it, and the live row falls back to the idle session. A task the
+    /// window is not attached to reports only its process, never a turn.
+    fn row_status(&self, c: &Card) -> Option<&Status> {
+        match self.lanes.task(c.lane.id, self.task_id()) {
+            Some(task) => self.attached.get(&task).map(|a| &a.session.status),
+            None => (c.lane.id == self.live_lane()).then_some(&self.idle.session.status),
+        }
+    }
+
+    /// Whether this row's own turn is working.
+    pub(super) fn row_turn_working(&self, c: &Card) -> bool {
+        self.row_status(c) == Some(&Status::Working)
     }
 
     /// The New session control's state.
@@ -758,7 +790,13 @@ impl Deck {
     pub fn animating(&self) -> bool {
         let board = self.board.cards().iter().any(|c| !c.y.at_rest() || !c.lift.at_rest());
         let rail = !self.rail.width.at_rest() || !self.rail.marker.at_rest();
-        self.board.dragging().is_some() || board || rail || !self.motion.at_rest() || !self.sheen.at_rest()
+        self.board.dragging().is_some()
+            || board
+            || rail
+            || !self.motion.at_rest()
+            || !self.sheen.at_rest()
+            || !self.exhale.at_rest()
+            || !self.marks.at_rest()
     }
 
     /// The centre of the narrow glyph `index`, in window coordinates.
@@ -774,11 +812,37 @@ impl Deck {
     fn tick(&mut self, window: &mut Window) {
         let now = Instant::now();
         let dt = self.last_frame.map_or(0., |t| now.duration_since(t).as_secs_f32());
+        // Observe the rows before stepping: the exhale captures the sheen's
+        // last centre, before a resting sheen resets it.
+        let center = self.sheen.center();
+        let rows: Vec<(usize, bool, bool, LaneState)> = self
+            .board
+            .cards()
+            .iter()
+            .map(|c| {
+                let status = self.row_status(c);
+                (
+                    c.lane.id,
+                    status == Some(&Status::Working),
+                    status == Some(&Status::Ready),
+                    super::panels::mark_state(&c.lane),
+                )
+            })
+            .collect();
+        let ids: Vec<usize> = rows.iter().map(|(id, _, _, _)| *id).collect();
+        for (id, working, ended, state) in rows {
+            self.exhale.observe(id, working, ended, center);
+            self.marks.observe(id, state);
+        }
+        self.exhale.retain(&ids);
+        self.marks.retain(&ids);
         let board = self.board.step(dt);
         let rail = self.rail.step(dt);
         let motion = self.motion.step(dt);
         let sheen = self.sheen.step(dt, self.turn_working());
-        if board || rail || motion || sheen {
+        let exhale = self.exhale.step(dt);
+        let marks = self.marks.step(dt);
+        if board || rail || motion || sheen || exhale || marks {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {

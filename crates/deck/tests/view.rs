@@ -746,6 +746,129 @@ fn the_sheen_sweeps_while_a_turn_works_and_rests_when_it_ends(cx: &mut TestAppCo
     settle(&deck, &mut cx);
 }
 
+#[gpui::test]
+fn the_exhale_fades_the_sheen_and_pulses_done_once_when_a_turn_ends(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    cx.update(|window, _| window.refresh());
+
+    // The turn ends: the sheen rests, but the row exhales — its white band
+    // fades where it stood while one green pulse crosses the border.
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    cx.update(|window, _| window.refresh());
+    let live = deck.read_with(&cx, |d, _| d.live_lane());
+    let first = deck.read_with(&cx, |d, _| {
+        assert!(d.sheen().at_rest(), "no turn, no sheen");
+        assert!(d.animating(), "the exhale keeps the window drawing");
+        d.exhale().frame(live).expect("the row exhales when its turn ends")
+    });
+    assert!(first.white_alpha > 0., "the white band starts where it stood");
+    assert!(first.pulse_center > 0.9, "the pulse starts at the right edge: {}", first.pulse_center);
+
+    // The white band fades out while the pulse is still crossing: sample
+    // frames until the pass ends, whatever the frame gap.
+    let mut last = first;
+    let mut faded_while_crossing = false;
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        cx.update(|window, _| window.refresh());
+        let Some(f) = deck.read_with(&cx, |d, _| d.exhale().frame(live)) else { break };
+        assert!(f.pulse_center < last.pulse_center, "the pulse only moves left");
+        faded_while_crossing |= f.white_alpha == 0. && f.pulse_center > 0.;
+        last = f;
+    }
+    assert!(faded_while_crossing, "the white band faded before the pulse finished");
+
+    // One pass only: the exhale rests and the window settles like any idle one.
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| {
+        assert!(d.exhale().at_rest());
+        assert!(d.exhale().frame(live).is_none());
+        assert!(!d.animating());
+    });
+}
+
+#[gpui::test]
+fn the_exhale_fires_when_a_turn_ends_right_after_a_permission_answer(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+
+    // The question pauses the turn: a pause is not an end, so no exhale.
+    let options = ["allow", "reject"]
+        .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
+        .to_vec();
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell git push".into(), options }, cx)
+    });
+    cx.update(|window, _| window.refresh());
+    let live = deck.read_with(&cx, |d, _| d.live_lane());
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.session().status, Status::Waiting);
+        assert!(d.exhale().frame(live).is_none(), "a pause is not an end");
+    });
+
+    // The answer and the turn's end land before the next frame, as the fake
+    // agent's do: the window still saw the turn work, so it still exhales.
+    cx.simulate_keystrokes("2");
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.exhale().frame(live).is_some(), "the end after a pause still exhales");
+        assert!(d.animating());
+    });
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| {
+        assert!(d.exhale().at_rest());
+        assert!(!d.animating());
+    });
+}
+
+#[gpui::test]
+fn the_state_mark_crossfades_when_a_rows_state_changes(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.update(|window, _| window.refresh());
+    let live = deck.read_with(&cx, |d, _| d.live_lane());
+    deck.read_with(&cx, |d, _| assert!(d.marks().fade(live).is_none(), "a first mark does not fade"));
+
+    // The turn starts: the ring crossfades into the bolt, on the spring.
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+    let (from, t) = deck.read_with(&cx, |d, _| d.marks().fade(live).expect("the mark changes with the turn"));
+    assert_eq!(from, deck::ui::board::LaneState::Idle);
+    assert!(t < 1., "the new mark is still arriving: {t}");
+    assert!(deck.read_with(&cx, |d, _| d.animating()));
+    // The crossfade rests even while the sheen keeps sweeping the working
+    // row, so wait on the fade alone rather than the whole window.
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cx.update(|window, _| window.refresh());
+        if deck.read_with(&cx, |d, _| d.marks().fade(live).is_none()) {
+            break;
+        }
+    }
+    deck.read_with(&cx, |d, _| assert!(d.marks().fade(live).is_none(), "the crossfade rests"));
+
+    // And back: the turn's end crossfades the bolt out for the ring.
+    deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    cx.update(|window, _| window.refresh());
+    let (from, _) = deck.read_with(&cx, |d, _| d.marks().fade(live).expect("the mark changes again"));
+    assert_eq!(from, deck::ui::board::LaneState::Working);
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| assert!(!d.animating()));
+}
+
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("missing control {selector}"));

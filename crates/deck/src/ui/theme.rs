@@ -270,6 +270,24 @@ impl Tokens {
     pub fn sheen_falling() -> Background {
         linear_gradient(90., linear_color_stop(rgba(0xffffffb3), 0.), linear_color_stop(rgba(0xffffff00), 1.))
     }
+    /// The done pulse's rising half: transparent to the done hue's peak.
+    /// Green means done — the pulse crosses a row once when its turn ends
+    /// (`exhale.rs`), never as decoration.
+    pub fn done_rising() -> Background {
+        linear_gradient(
+            90.,
+            linear_color_stop(tint(Self::lime(), 0.), 0.),
+            linear_color_stop(tint(Self::lime(), 0.7), 1.),
+        )
+    }
+    /// The done pulse's falling half: the peak back to transparent.
+    pub fn done_falling() -> Background {
+        linear_gradient(
+            90.,
+            linear_color_stop(tint(Self::lime(), 0.7), 0.),
+            linear_color_stop(tint(Self::lime(), 0.), 1.),
+        )
+    }
     /// Code: the accents again, a little softer, plus one blue for types,
     /// so highlighted code sits in the same palette as the window.
     pub fn code(class: Class) -> Hsla {

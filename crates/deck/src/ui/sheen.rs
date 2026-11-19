@@ -8,7 +8,7 @@
 //! nothing again.
 
 /// Seconds for one pass: fully off the right edge to fully off the left.
-const PERIOD: f32 = 3.2;
+pub const PERIOD: f32 = 3.2;
 /// The band's width as a fraction of the row's width.
 pub const BAND: f32 = 0.45;
 
