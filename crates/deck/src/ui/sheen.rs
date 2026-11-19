@@ -1,5 +1,5 @@
-//! The activity sheen: a soft white band sweeping right-to-left across a
-//! sidebar row whose turn is working.
+//! The activity sheen: a bright white band sweeping right-to-left along a
+//! sidebar row's border while its turn is working.
 //!
 //! The design choice: one shared phase for every working row, stepped by the
 //! real frame gap like the springs, so rows in activity sweep together. The

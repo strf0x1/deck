@@ -146,11 +146,25 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
         }])
         .when(held, |s| s.cursor_grabbing())
         .when(!held, |s| s.cursor_grab())
-        // The activity sheen: a soft band crossing the row under its text,
-        // clipped to the row's rounding. Paint-only; the row never re-measures.
+        // The activity sheen: the band rides the row's outline, not its body.
+        // Four edge strips clip the same two gradient halves to each side of
+        // the border, inside the row's rounding. Paint-only; no re-measure.
         .children(sheen_on.then(|| {
             let center = deck.sheen().center();
             let half = BAND / 2.;
+            let edge = px(1.5);
+            let halves = |from_right: bool| {
+                let place = |d: gpui::Div, at: f32| {
+                    if from_right { d.right(relative(at)) } else { d.left(relative(at)) }
+                };
+                let (rising_at, falling_at) =
+                    if from_right { (1. - center, 1. - center - half) } else { (center - half, center) };
+                [
+                    place(div().absolute().top_0().bottom_0().w(relative(half)), rising_at).bg(Tokens::sheen_rising()),
+                    place(div().absolute().top_0().bottom_0().w(relative(half)), falling_at)
+                        .bg(Tokens::sheen_falling()),
+                ]
+            };
             div()
                 .absolute()
                 .top_0()
@@ -158,24 +172,10 @@ fn task_row(c: &Card, held: bool, deck: &mut Deck, cx: &mut Context<Deck>) -> An
                 .size_full()
                 .rounded(px(radius::CONTROL))
                 .overflow_hidden()
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(center - half))
-                        .w(relative(half))
-                        .bg(Tokens::sheen_rising()),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(center))
-                        .w(relative(half))
-                        .bg(Tokens::sheen_falling()),
-                )
+                .child(div().absolute().top_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
+                .child(div().absolute().bottom_0().left_0().w_full().h(edge).overflow_hidden().children(halves(false)))
+                .child(div().absolute().top_0().left_0().w(edge).h_full().overflow_hidden().children(halves(false)))
+                .child(div().absolute().top_0().right_0().w(edge).h_full().overflow_hidden().children(halves(true)))
         }))
         .hover(|s| s.bg(Tokens::raised_hover()))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
