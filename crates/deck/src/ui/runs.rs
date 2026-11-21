@@ -44,6 +44,22 @@ pub fn prose(text: &str) -> Vec<Run> {
                 Block::Quote(inner) => walk(inner, out),
                 Block::List { items, .. } => items.iter().for_each(|item| walk(item, out)),
                 Block::Rule => {}
+                Block::Table { rows } => {
+                    for (r, row) in rows.iter().enumerate() {
+                        for (c, cell) in row.iter().enumerate() {
+                            out.push(run(
+                                &cell.text,
+                                if c > 0 {
+                                    "\t"
+                                } else if r > 0 {
+                                    LINE
+                                } else {
+                                    PARAGRAPH
+                                },
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -114,6 +130,19 @@ mod tests {
     fn prose_lists_blocks_in_reading_order() {
         let md = "# Title\n\nSome **bold** text.\n\n- one\n- two\n\n> quoted\n\n```rust\nfn x() {}\n```\n\n---\n";
         assert_eq!(texts(prose(md)), ["Title", "Some bold text.", "one", "two", "quoted", "fn x() {}"]);
+    }
+
+    #[test]
+    fn copying_tables_keeps_empty_cells_and_block_separators() {
+        use super::super::selection::{Selection, Unit, unit_at};
+        let md = "Before\n\n| | B | C |\n|---|---|---|\n| x | | |\n\nAfter";
+        let listed = prose(md);
+        let start = unit_at("row", 0, "Before", 0, Unit::Char);
+        let end = unit_at("row", 7, "After", 5, Unit::Char);
+        let mut selection = Selection::new(start, Unit::Char);
+        selection.extend(end);
+        let copied = selection.span(&["row".into()]).unwrap().text(|_| listed.clone());
+        assert_eq!(copied, "Before\n\n\tB\tC\nx\t\t\n\nAfter");
     }
 
     #[test]
