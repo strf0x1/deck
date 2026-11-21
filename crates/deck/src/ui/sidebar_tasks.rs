@@ -249,6 +249,7 @@ fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &mut Deck, c
         "merged"
     };
     let id = settled.task.id.clone();
+    let select = id.clone();
     let worktree = super::worktree_view::task_button(deck, &id, format!("settled-worktree-{index}"), cx);
     let lane = deck.lanes.lane_of(&id, deck.task_id());
     let chip = lane.and_then(|lane| deck.publication_of(lane).map(|view| (lane, view)));
@@ -256,6 +257,7 @@ fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &mut Deck, c
         div()
             .id(("settled-done", index))
             .debug_selector(move || format!("settled-done-{index}"))
+            .flex_none()
             .h(px(20.))
             .px(px(space::TIGHT))
             .flex()
@@ -271,25 +273,44 @@ fn settled_row(settled: &super::tasks::Settled, index: usize, deck: &mut Deck, c
             .child(if done { "Not done" } else { "Mark done" })
     });
     div()
-        .h(px(26.))
+        .debug_selector(move || format!("settled-row-{index}"))
+        .min_w_0()
         .px(px(space::TIGHT))
+        .py(px(space::LINE))
         .flex()
-        .items_center()
+        .flex_col()
         .gap(px(space::TIGHT))
         .rounded(px(radius::CONTROL))
         .bg(Tokens::raised())
         .text_size(size::scaled(size::SMALL))
         .text_color(Tokens::text_dim())
-        .child(div().flex_1().min_w_0().truncate().child(title))
-        .child(div().flex_none().text_color(Tokens::text_faint()).child(label))
-        .children(chip.map(|(lane, view)| {
-            super::publication_panel::chip(view.dot, &view.label)
-                .id(("settled-chip", index))
-                .debug_selector(move || format!("settled-chip-{index}"))
+        .child(
+            div()
+                .id(("settled-title", index))
+                .debug_selector(move || format!("settled-title-{index}"))
+                .w_full()
+                .min_w_0()
+                .truncate()
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_publication(lane, cx)))
-        }))
-        .children(worktree)
-        .children(toggle)
+                .on_click(cx.listener(move |this, _, _, cx| this.select_task_id(&select, cx)))
+                .child(title),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(space::TIGHT))
+                .child(div().flex_none().text_color(Tokens::text_faint()).child(label))
+                .children(chip.map(|(lane, view)| {
+                    super::publication_panel::chip(view.dot, &view.label)
+                        .id(("settled-chip", index))
+                        .debug_selector(move || format!("settled-chip-{index}"))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_publication(lane, cx)))
+                }))
+                .children(worktree)
+                .children(toggle),
+        )
         .into_any_element()
 }

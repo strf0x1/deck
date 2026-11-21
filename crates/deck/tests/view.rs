@@ -2500,8 +2500,7 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) {
-    use deck::ui::board::LaneState;
+fn a_merged_selected_task_folds_without_closing_its_transcript(cx: &mut TestAppContext) {
     use deck_runtime::pull_request::{Live, State as Published};
     use deck_runtime::{DaemonClient, Spec};
     cx.background_executor.allow_parking();
@@ -2534,7 +2533,10 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     let merged = Published {
         publication: Some(serde_json::from_value(pull).unwrap()),
         live: Some(Live {
-            read_at_ms: 1,
+            read_at_ms: u64::try_from(
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            )
+            .unwrap(),
             pull_request: Some(json!({ "state": "closed", "merged": true })),
             ..Live::default()
         }),
@@ -2542,11 +2544,11 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     };
     let record = daemon.task(&task.id).unwrap();
     deck.update(&mut vcx, |d, cx| d.on_tasks(vec![record], [(task.id.clone(), merged)].into(), cx));
-    let (state, detail) = deck.read_with(&vcx, |d, _| {
-        let card = d.board().cards().iter().find(|c| c.lane.id == d.live_lane()).unwrap();
-        (card.lane.state, card.lane.detail.clone())
+    deck.read_with(&vcx, |d, _| {
+        assert!(d.board().cards().is_empty(), "a settled selection has no active row");
+        assert_eq!(d.settled()[0].task.id, task.id);
+        assert_eq!(d.task_id(), Some(task.id.as_str()), "folding keeps the transcript open");
     });
-    assert_eq!((state, detail.as_str()), (LaneState::Review, "done · merged"));
     cx.quit();
     daemon.stop(&task.id).unwrap();
     drop(daemon);
@@ -3449,6 +3451,32 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().is_empty() && d.board().cards().len() == 2));
     assert_eq!(daemon.task(&older.id).unwrap().done_ms, None);
     assert!(deck.read_with(&vcx, |d, _| d.board().order().contains(&lane)));
+
+    // Marking the selected, stopped task folds it immediately, too. Switching
+    // away and reloading the daemon's records cannot put it back in active.
+    daemon.stop(&newer.id).unwrap();
+    deck.update(&mut vcx, |d, cx| d.mark_task(&newer.id, true, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)), Some(newer.id.clone()));
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&older.id, cx));
+    daemon.shutdown().unwrap();
+    let records = daemon.tasks().unwrap();
+    deck.update(&mut vcx, |d, cx| d.on_tasks(records, Default::default(), cx));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.settled()[0].task.id, newer.id);
+        assert_eq!(d.board().cards().len(), 1);
+    });
+    draw(&mut vcx);
+    let row = vcx.debug_bounds("settled-row-0").unwrap();
+    let title = vcx.debug_bounds("settled-title-0").unwrap();
+    let toggle = vcx.debug_bounds("settled-done-0").unwrap();
+    assert!(title.size.width > px(140.), "the title gets its own line: {title:?}");
+    assert!(toggle.top() >= title.bottom(), "controls sit below the title");
+    assert!(toggle.right() <= row.right() && toggle.bottom() <= row.bottom());
+    click_control(&mut vcx, "settled-title-0");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)), Some(newer.id.clone()));
+    click_control(&mut vcx, "settled-done-0");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().is_empty() && d.board().cards().len() == 2));
 
     // A task destroyed longer ago than the column's window is absent; a
     // recent one is folded. Records keep the times.
@@ -4571,6 +4599,15 @@ fn the_worktree_pane_reviews_and_removes_a_stopped_worker(cx: &mut TestAppContex
     click_control(&mut vcx, "settled-fold");
     draw(&mut vcx);
     let settled = deck.read_with(&vcx, |d, _| d.settled().iter().position(|entry| entry.task.id == id).unwrap());
+    let row = vcx.debug_bounds(Box::leak(format!("settled-row-{settled}").into_boxed_str())).unwrap();
+    let title = vcx.debug_bounds(Box::leak(format!("settled-title-{settled}").into_boxed_str())).unwrap();
+    let worktree_chip = vcx.debug_bounds(Box::leak(format!("settled-worktree-{settled}").into_boxed_str())).unwrap();
+    let toggle = vcx.debug_bounds(Box::leak(format!("settled-done-{settled}").into_boxed_str())).unwrap();
+    assert!(title.size.width > px(140.), "merged workers keep a readable title");
+    for control in [title, worktree_chip, toggle] {
+        assert!(control.left() >= row.left() && control.right() <= row.right());
+        assert!(control.top() >= row.top() && control.bottom() <= row.bottom());
+    }
     click_control(&mut vcx, Box::leak(format!("settled-worktree-{settled}").into_boxed_str()));
     click_control(&mut vcx, "worktree-remove");
     assert!(worktree.is_dir(), "confirmation must precede removal");
