@@ -41,6 +41,7 @@ impl GuardedLocal {
             &self.env,
             exited,
             None,
+            true,
         )?;
         let mut stream = inner.attach()?;
         before_start(inner.pid().context("helper has no pid")?)?;

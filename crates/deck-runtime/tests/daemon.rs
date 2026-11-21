@@ -706,6 +706,54 @@ for line in sys.stdin:
 }
 
 #[test]
+fn a_user_stop_records_the_agents_exit_before_group_cleanup() {
+    let script = r#"
+import os,signal,subprocess,sys,time
+from pathlib import Path
+assert 'DECK_CHILD_STATUS_FD' not in os.environ
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+tool = subprocess.Popen(['sleep', '30'])
+Path(sys.argv[1]).write_text(str(tool.pid))
+while True: time.sleep(1)
+"#;
+    let (mut daemon, client) = Daemon::new("exit-stop");
+    let ready = daemon.data.join("ready");
+    let run = client.run(daemon.spec(&["python3", "-u", "-c", script, ready.to_str().unwrap()])).unwrap();
+    let mut tool = None;
+    eventually(|| {
+        tool = std::fs::read_to_string(&ready).ok().and_then(|text| text.parse::<u32>().ok()).filter(|pid| *pid > 0);
+        tool.is_some()
+    });
+    let tool = tool.unwrap();
+    client.stop(&run.task.id).unwrap();
+    assert_eq!(
+        client.task(&run.task.id).unwrap().state,
+        State::Stopped { clean: true, reason: "exited with code 0".into() }
+    );
+    eventually(|| !running(tool));
+    assert!(!running(run.task.pid.unwrap()));
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn a_forced_supervisor_stop_keeps_the_sigkill_reason() {
+    let (mut daemon, client) = Daemon::new("exit-forced");
+    let marker = daemon.data.join("ready");
+    let script = "import signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).touch(); time.sleep(30)";
+    let run = client.run(daemon.spec(&["python3", "-u", "-c", script, marker.to_str().unwrap()])).unwrap();
+    eventually(|| marker.exists());
+    client.stop(&run.task.id).unwrap();
+    let State::Stopped { clean: true, reason } = client.task(&run.task.id).unwrap().state else {
+        panic!("not stopped")
+    };
+    assert!(reason.starts_with("killed by signal 9, after"), "{reason}");
+    assert!(!running(run.task.pid.unwrap()));
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
 fn an_unresponsive_close_does_not_prevent_confirmed_stop() {
     let (mut daemon, client) = Daemon::new("close-timeout");
     let run = client.run(daemon.spec(&["sleep", "30"])).unwrap();

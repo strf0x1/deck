@@ -100,6 +100,13 @@ impl Session {
         self.status == Status::Ready
     }
 
+    /// A confirmed user stop retires every permission from that process.
+    pub(super) fn stopped(&mut self) {
+        self.status = Status::Down("stopped".into());
+        self.ask = None;
+        self.questions.clear();
+    }
+
     /// No turn is running: the last turn is finished.
     pub fn idle(&self) -> bool {
         matches!(self.status, Status::Ready | Status::Down(_))

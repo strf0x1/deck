@@ -215,7 +215,7 @@ impl Deck {
                 match result {
                     Ok(()) => {
                         if let Some(attached) = deck.attached.get_mut(&id) {
-                            attached.session.status = Status::Down("stopped".into());
+                            attached.session.stopped();
                         }
                     }
                     Err(e) => {
