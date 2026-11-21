@@ -630,6 +630,52 @@ fn every_drawn_run_is_one_runs_rs_lists(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn markdown_tables_align_cells_scroll_and_copy_in_reading_order(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Message("| Feature | Result |\n|---|---|\n| `--top N` | passed |\n| | four tests |".into()),
+            cx,
+        );
+    });
+    draw(&mut cx);
+    let header = run_bounds(&deck, &cx, "entry:0", 0);
+    let second = run_bounds(&deck, &cx, "entry:0", 1);
+    let feature = run_bounds(&deck, &cx, "entry:0", 2);
+    let last = run_bounds(&deck, &cx, "entry:0", 5);
+    assert_eq!(header.left(), feature.left(), "column starts align");
+    assert_eq!(header.top(), second.top(), "header cells share a row");
+    assert!(feature.top() > header.top());
+    assert!(second.left() > header.right());
+    deck.read_with(&cx, |d, _| assert_eq!(d.drawn_runs(), d.listed_runs()));
+    drag(&mut cx, point(header.left(), header.center().y), point(last.right() + px(2.), last.center().y));
+    cx.simulate_keystrokes("cmd-c");
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("Feature\tResult\n--top N\tpassed\n\tfour tests"));
+
+    // A wide value gets a horizontal viewport, keeping its text unwrapped.
+    cx.simulate_keystrokes("escape");
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Message(format!("\n\n| Long | Tail |\n|---|---|\n| {} | end |", "wide ".repeat(80))), cx);
+    });
+    draw(&mut cx);
+    let before = run_bounds(&deck, &cx, "entry:0", 8);
+    let viewport = cx.debug_bounds("agent-table").unwrap();
+    assert!(
+        before.size.width > viewport.size.width,
+        "the wide cell stays unwrapped: {before:?}, viewport {viewport:?}"
+    );
+    cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(-300.), px(0.))),
+        ..ScrollWheelEvent::default()
+    });
+    draw(&mut cx);
+    let after = run_bounds(&deck, &cx, "entry:0", 8);
+    assert!(after.left() < before.left(), "horizontal scrolling moves the cells");
+}
+
+#[gpui::test]
 fn dragging_across_rows_selects_text_and_copies_it_from_the_session(cx: &mut TestAppContext) {
     let (deck, mut cx) = open(cx);
     selectable_session(&deck, &mut cx);
