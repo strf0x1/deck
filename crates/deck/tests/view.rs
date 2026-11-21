@@ -3181,6 +3181,73 @@ fn launching_attaches_every_running_task_that_recorded_a_session(cx: &mut TestAp
 
 #[cfg(unix)]
 #[gpui::test]
+fn a_type_ahead_draft_and_its_selection_stay_with_the_task(cx: &mut TestAppContext) {
+    use deck_acp::TurnState;
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, beta) = two_fake_tasks("drafts");
+    let _holders = holders::Holders::new(&data);
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.attached_ids().contains(&b)));
+    // Hold A in a working turn without a timer race with the fake's question.
+    deck.update(&mut vcx, |d, cx| d.on_inbound(Inbound::Turn { number: 1, state: TurnState::Working }, cx));
+    vcx.simulate_input("follow up α\nnext");
+    vcx.simulate_keystrokes("enter shift-left shift-left");
+    let selection = deck.read_with(&vcx, |d, _| d.draft_selection());
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnext");
+    assert!(said(&deck, &vcx).is_empty(), "Enter while working keeps the draft unsent");
+
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    ready_on(&deck, &mut vcx, Some(&b));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "", "A's draft never appears on B");
+    vcx.simulate_input("beta draft");
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&a, cx));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.draft(), "follow up α\nnext");
+        assert_eq!(d.draft_selection(), selection);
+    });
+    vcx.simulate_input("w");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnew");
+
+    // Leaving for the project view also keeps the task's editor intact.
+    click_control(&mut vcx, "hdr-project");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none()));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "");
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&a, cx));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnew");
+    deck.update(&mut vcx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    vcx.simulate_keystrokes("enter");
+    assert_eq!(said(&deck, &vcx), ["follow up α\nnew"]);
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&a));
+    vcx.simulate_keystrokes("up");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnew", "A recalls its own prompt");
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "beta draft");
+    vcx.simulate_keystrokes("up");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "beta draft", "B cannot recall A's prompts");
+
+    cx.quit();
+    for id in [&a, &b] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppContext) {
     use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
     use deck_runtime::{DaemonClient, State};

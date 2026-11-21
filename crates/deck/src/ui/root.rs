@@ -12,7 +12,6 @@ use super::attached::Attached;
 use super::board::{Board, Card, Lane, LaneState};
 use super::boundary::Boundary;
 use super::composer;
-use super::editor::Editor;
 use super::rail::Rail;
 use super::session::{Session, Status};
 use super::theme::{Tokens, size, tint};
@@ -54,7 +53,6 @@ pub struct Deck {
     pub(super) access_refresh: Option<gpui::Task<()>>,
     /// The settings panel and New session's model (ADR 0012 §4).
     pub(super) settings: super::settings::SettingsPanel,
-    pub(super) editor: Editor,
     /// What the composer drew last, for hit tests and up/down moves.
     pub(super) composer: composer::Layout,
     /// A mouse press in the composer is selecting text.
@@ -177,7 +175,6 @@ impl Deck {
             access: Access::new(),
             access_refresh: None,
             settings: super::settings::SettingsPanel::default(),
-            editor: Editor::new(),
             composer: composer::Layout::default(),
             selecting: false,
             text_select: Default::default(),
@@ -394,12 +391,12 @@ impl Deck {
     }
 
     pub fn draft(&self) -> &str {
-        self.editor.text()
+        self.current().editor.text()
     }
 
     /// The composer's selection, as byte offsets into [`Deck::draft`].
     pub fn draft_selection(&self) -> std::ops::Range<usize> {
-        self.editor.selection()
+        self.current().editor.selection()
     }
 
     pub fn boundary(&self) -> &Boundary {
@@ -625,8 +622,8 @@ impl Deck {
             }
             Some((Err(e), _)) => {
                 self.current_mut().session.apply(Inbound::Failed(format!("sending the first prompt: {e:#}")));
-                if self.editor.is_empty() {
-                    self.editor.insert(&text);
+                if self.current().editor.is_empty() {
+                    self.current_mut().editor.insert(&text);
                 }
             }
             None => self.pending_prompt = Some(text),
@@ -666,7 +663,7 @@ impl Deck {
     /// (ADR 0010 §5); `coordinator_ops.rs` creates it, then
     /// [`Deck::send_pending`] sends the text once the connection is ready.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        let text = self.editor.text().trim().to_string();
+        let text = self.current().editor.text().trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -691,7 +688,7 @@ impl Deck {
                 self.current_mut().keyed(key, &text);
             }
         }
-        self.editor.take();
+        self.current_mut().editor.take();
         self.current_mut().session.sent(&text);
         self.ripple.send(self.selected.clone());
         if let Some(id) = self.selected.clone() {
@@ -809,7 +806,7 @@ impl Deck {
         }
         if self.edit(ev, cx) {
             // Selecting in the composer lets go of the transcript's selection.
-            if !self.editor.selection().is_empty() {
+            if !self.current().editor.selection().is_empty() {
                 self.clear_selection(cx);
             }
             cx.stop_propagation();
