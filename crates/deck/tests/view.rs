@@ -2547,6 +2547,7 @@ fn a_merged_selected_task_folds_without_closing_its_transcript(cx: &mut TestAppC
     deck.read_with(&vcx, |d, _| {
         assert!(d.board().cards().is_empty(), "a settled selection has no active row");
         assert_eq!(d.settled()[0].task.id, task.id);
+        assert_eq!(d.header_title().detail.as_deref(), Some("done · merged"));
         assert_eq!(d.task_id(), Some(task.id.as_str()), "folding keeps the transcript open");
     });
     cx.quit();
