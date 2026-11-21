@@ -3532,7 +3532,9 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
     assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)), Some(newer.id.clone()));
     deck.update(&mut vcx, |d, cx| d.select_task_id(&older.id, cx));
+    let before = daemon.hello().unwrap().pid;
     daemon.shutdown().unwrap();
+    wait_view(&mut vcx, |_| daemon.hello().is_ok_and(|hello| hello.pid != before));
     let records = daemon.tasks().unwrap();
     deck.update(&mut vcx, |d, cx| d.on_tasks(records, Default::default(), cx));
     deck.read_with(&vcx, |d, _| {
