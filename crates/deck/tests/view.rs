@@ -1697,14 +1697,20 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
     vcx.run_until_parked();
     assert!(deck.read_with(&vcx, |d, _| d.can_stop()), "the detached task is stoppable");
+    deck.update(&mut vcx, |d, cx| {
+        d.on_inbound(Inbound::Permission { request: json!(42), title: "run a command".into(), options: vec![] }, cx)
+    });
+    draw(&mut vcx);
     let stop = vcx.debug_bounds("hdr-stop").expect("the stop button is shown").center();
     vcx.simulate_click(stop, Modifiers::none());
     vcx.run_until_parked();
     assert!(matches!(daemon.task(&original.id).unwrap().state, State::Stopped { .. }));
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.session().status, Status::Down("stopped".into()));
+        assert!(d.session().ask.is_none(), "stopped agents have no pending permission");
         assert!(d.can_restart());
     });
+    assert!(vcx.debug_bounds("conversation-status-Stopped").is_some(), "a user stop has a neutral Stopped badge");
     assert!(vcx.debug_bounds("restart-task").is_some(), "the stopped task shows its restart card");
     vcx.simulate_keystrokes(deck::app::RESTART_KEY);
     vcx.run_until_parked();
@@ -2899,7 +2905,8 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     let _holders = holders::Holders::new(&data);
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
-    let argv = vec![fake.display().to_string()];
+    let argv =
+        vec!["sh".into(), "-c".into(), "exec \"$1\"".into(), "long-command-".repeat(25), fake.display().to_string()];
     let one = git_repo(&data, "one");
     let two = git_repo(&data, "two");
     let alpha = one.join("alpha");
@@ -2945,6 +2952,25 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     let chip = vcx.debug_bounds("hdr-project").expect("the chip renders");
     assert!(title.size.width > px(10.), "the title shows its text, not only an ellipsis: {title:?}");
     assert!(chip.left() <= title.right() + px(12.), "the chip sits beside the title: {title:?} {chip:?}");
+
+    daemon.title(&a, "Review the worker output and summarize its changes").unwrap();
+    deck.update(&mut vcx, |d, cx| {
+        d.on_tasks(daemon.tasks().unwrap(), Default::default(), cx);
+        d.on_inbound(Inbound::Permission { request: json!(9), title: "run a command".into(), options: vec![] }, cx);
+    });
+    vcx.simulate_resize(gpui::size(px(1050.), px(800.)));
+    draw(&mut vcx);
+    let title = vcx.debug_bounds("hdr-title").unwrap();
+    let agent = vcx.debug_bounds("hdr-agent").unwrap();
+    let detail = vcx.debug_bounds("hdr-detail").unwrap();
+    assert!(title.size.width >= px(160.), "the task title keeps its minimum width: {title:?}");
+    assert!(agent.size.width <= px(240.));
+    assert!(detail.size.width >= px(200.), "the status line keeps its space: {detail:?}");
+
+    vcx.simulate_resize(gpui::size(px(760.), px(600.)));
+    draw(&mut vcx);
+    let new_session = vcx.debug_bounds("hdr-new").unwrap();
+    assert!(new_session.right() <= px(760.), "the controls stay inside the minimum window: {new_session:?}");
 
     // Another project's task: both the title and the chip follow the selection.
     deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
@@ -3506,7 +3532,9 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
     assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)), Some(newer.id.clone()));
     deck.update(&mut vcx, |d, cx| d.select_task_id(&older.id, cx));
+    let before = daemon.hello().unwrap().pid;
     daemon.shutdown().unwrap();
+    wait_view(&mut vcx, |_| daemon.hello().is_ok_and(|hello| hello.pid != before));
     let records = daemon.tasks().unwrap();
     deck.update(&mut vcx, |d, cx| d.on_tasks(records, Default::default(), cx));
     deck.read_with(&vcx, |d, _| {

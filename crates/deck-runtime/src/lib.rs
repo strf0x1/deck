@@ -17,6 +17,7 @@ pub mod boundary;
 pub mod broker;
 pub mod catalog;
 pub mod child;
+mod child_status;
 pub mod control;
 pub mod coordinator;
 pub mod credentials;

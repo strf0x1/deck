@@ -32,6 +32,7 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
         Status::Waiting => ("Waiting", Tokens::amber()),
         Status::Working => ("Working", Tokens::cyan()),
         Status::Detached => ("Running, detached", Tokens::cyan()),
+        Status::Down(reason) if reason == "stopped" => ("Stopped", Tokens::text_dim().into()),
         Status::Down(_) => ("Down", Tokens::red()),
     };
     // The pane's top edge takes the session's colour, so its state reads
@@ -97,7 +98,10 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 )
                 .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_faint()).child(subtitle))
                 .child(div().flex_1())
-                .children(has_task.then(|| pill(color, status))),
+                .children(
+                    has_task
+                        .then(|| pill(color, status).debug_selector(move || format!("conversation-status-{status}"))),
+                ),
         )
         .child(if deck.limits_open() {
             super::limits_panel::panel(deck, cx)

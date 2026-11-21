@@ -2,8 +2,9 @@
 //! the selected task, its project and the agent's status; on the right it
 //! holds the publication and error chips and the window's actions.
 //!
-//! The design choice: the header is one row that stays put; the sidebar is the
-//! only navigation, so the header carries no project or session controls.
+//! The design choice: the header stays put and wraps controls in narrow
+//! windows; the sidebar is the only navigation, so the header carries no
+//! project or session controls.
 
 use super::glyph::glyph;
 use super::header_title::HeaderTitle;
@@ -32,6 +33,7 @@ pub fn header(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> impl Into
         .min_h(px(40.))
         .flex_none()
         .flex()
+        .when(f32::from(window.viewport_size().width) - deck.rail.reserved() < 950., |row| row.flex_wrap())
         .items_center()
         .gap(px(space::STACK))
         .children(title_block(deck, window, cx))
@@ -160,6 +162,10 @@ fn new_session_label(deck: &Deck) -> Option<(String, bool)> {
 
 fn agent_pill(deck: &Deck, dot: Hsla) -> Div {
     div()
+        .debug_selector(|| "hdr-agent".into())
+        .max_w(px(240.))
+        .min_w(px(44.))
+        .flex_shrink()
         .min_h(px(30.))
         .pl(px(space::DETAIL))
         .pr(px(space::INSET))
@@ -173,6 +179,7 @@ fn agent_pill(deck: &Deck, dot: Hsla) -> Div {
         .text_color(Tokens::text_dim())
         .child(
             div()
+                .flex_none()
                 .size(px(22.))
                 .flex()
                 .items_center()
@@ -182,7 +189,14 @@ fn agent_pill(deck: &Deck, dot: Hsla) -> Div {
                 .text_color(dot)
                 .child(glyph(icon::AGENTS, 12.)),
         )
-        .child(div().font_family(MONO).text_size(size::scaled(size::SMALL)).child(agent_label(&deck.agent_cmd)))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_family(MONO)
+                .text_size(size::scaled(size::SMALL))
+                .child(agent_label(&deck.agent_cmd)),
+        )
 }
 
 /// A header notice: one line in the colour of what it reports.
@@ -216,7 +230,9 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
             div()
                 .id("hdr-project")
                 .debug_selector(|| "hdr-project".into())
-                .flex_none()
+                .min_w_0()
+                .max_w(px(100.))
+                .truncate()
                 .min_h(px(18.))
                 .px(px(space::TIGHT))
                 .flex()
@@ -235,7 +251,7 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
         return Some(
             div()
                 .flex_shrink()
-                .min_w_0()
+                .min_w(px(220.))
                 .max_w(px(TITLE_MAX))
                 .flex()
                 .flex_col()
@@ -251,7 +267,7 @@ fn title_block(deck: &Deck, window: &Window, cx: &mut Context<Deck>) -> Option<A
                                 .debug_selector(|| "hdr-title".into())
                                 .w(width)
                                 .flex_shrink()
-                                .min_w_0()
+                                .min_w(width.min(px(160.)))
                                 .truncate()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_size(size::scaled(size::TITLE))
