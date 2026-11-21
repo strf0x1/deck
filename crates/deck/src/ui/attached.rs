@@ -5,9 +5,11 @@
 //! The design choice: all of it lives in one `Attached`, keyed by task id in
 //! `Deck::attached`, so selecting another task only moves the selection and
 //! never drops a live connection (ADR 0010 §8). The transcript list, the
-//! composer and the status row stay on `Deck` because they show the selection.
+//! composer layout and the status row stay on `Deck`; each task keeps its
+//! editor, including its draft, selection and prompt recall.
 
 use super::boundary::Boundary;
+use super::editor::Editor;
 use super::session::Session;
 use crate::task::WindowTask;
 use deck_acp::{Client, TurnState};
@@ -23,6 +25,7 @@ pub struct Attached {
     /// The approval-queue lease; dropping it ends this window's attachment.
     pub(super) watch: Option<Watch>,
     pub(super) session: Session,
+    pub(super) editor: Editor,
     pub(super) boundary: Boundary,
     /// Whether the agent advertised GitHub operations; `None` until ready.
     pub(super) agent_publishes: Option<bool>,
@@ -59,6 +62,7 @@ impl Attached {
             client: None,
             watch: None,
             session: Session::new(),
+            editor: Editor::new(),
             boundary: Boundary::new(),
             agent_publishes: None,
             generation: 0,

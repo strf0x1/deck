@@ -93,7 +93,7 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
     // A project with no task takes a prompt: it creates the task (ADR 0010 §5).
     let starting = deck.awaiting_task();
     let ready = deck.session().can_prompt() || starting;
-    let has_draft = !deck.editor.is_empty();
+    let has_draft = !deck.current().editor.is_empty();
     // Keys go to an open card first, so the hint says where they go.
     let hint = if deck.session().ask.is_some() || deck.boundary().pending().is_some() {
         "Answer the question above first".to_string()
@@ -132,9 +132,9 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
                 this.clear_selection(cx);
                 let at = this.composer.index_at(ev.position);
                 if ev.click_count >= 2 {
-                    this.editor.select_word(at);
+                    this.current_mut().editor.select_word(at);
                 } else {
-                    this.editor.move_to(at, ev.modifiers.shift);
+                    this.current_mut().editor.move_to(at, ev.modifiers.shift);
                     this.selecting = true;
                 }
                 cx.stop_propagation();
@@ -143,7 +143,8 @@ pub fn prompt(deck: &Deck, cx: &mut Context<Deck>) -> impl IntoElement {
         )
         .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
             if this.selecting && ev.dragging() {
-                this.editor.move_to(this.composer.index_at(ev.position), true);
+                let at = this.composer.index_at(ev.position);
+                this.current_mut().editor.move_to(at, true);
                 cx.notify();
             }
         }))
@@ -225,7 +226,8 @@ fn status_row(deck: &Deck) -> impl IntoElement {
     let next_backend = deck.awaiting_task().then(|| deck.next_backend());
     let sandbox_note = w.map(|w| w.backend.as_str()).or(next_backend.as_deref()) == Some("local") && coordinator;
     let project_dir = deck.project_checkout();
-    let enter = if deck.editor.text().contains('\n') { "enter send · shift-enter newline" } else { "enter send" };
+    let enter =
+        if deck.current().editor.text().contains('\n') { "enter send · shift-enter newline" } else { "enter send" };
     div()
         .min_h(px(30.))
         .px(px(16.))

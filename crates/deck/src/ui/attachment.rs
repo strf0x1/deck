@@ -340,7 +340,7 @@ impl Deck {
         self.expanded.clear();
         self.row_sigs.clear();
         self.transcript = super::transcript_list::following();
-        self.editor = super::editor::Editor::new();
+        self.idle.editor = super::editor::Editor::new();
         self.workspace = None;
         self.new_session = NewSession::Idle;
         let (tasks, published) = (self.tasks.clone(), std::mem::take(&mut self.published));
@@ -409,7 +409,6 @@ impl Deck {
         self.expanded.clear();
         self.row_sigs.clear();
         self.transcript = super::transcript_list::following();
-        self.editor = super::editor::Editor::new();
         self.workspace = self.tasks.iter().find(|t| t.id == id).map(super::prompt::Workspace::of);
         if self.access.is_open() {
             self.toggle_access(cx);

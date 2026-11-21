@@ -84,7 +84,7 @@ impl Deck {
         let project = self.projects.selected_id().map(str::to_owned);
         self.new_session = NewSession::Creating;
         self.pending_prompt = Some(text.clone());
-        self.editor.take();
+        self.current_mut().editor.take();
         cx.notify();
         let creating = daemon.clone();
         let created = cx.background_executor().spawn(async move {
@@ -100,8 +100,8 @@ impl Deck {
                 deck.new_session = NewSession::Idle;
                 let restore = |deck: &mut Deck| {
                     deck.pending_prompt = None;
-                    if deck.editor.is_empty() {
-                        deck.editor.insert(&text);
+                    if deck.current().editor.is_empty() {
+                        deck.current_mut().editor.insert(&text);
                     }
                 };
                 match created {
