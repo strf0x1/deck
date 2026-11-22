@@ -175,6 +175,11 @@ A worker's `created_by` must name a coordinator, and a coordinator cannot have
 one (depth one). Destroying a coordinator does not touch its workers; they
 keep running and keep `created_by`.
 
+`{"op":"set_coordinator_command", project, argv}` sets an open project's
+coordinator command without creating a task. `argv: null` restores
+`construct acp`. Existing coordinators retain their recorded command.
+This is a window operation; the coordinator's control surface does not offer it.
+
 `{"op":"coordinator_policy", task, set?}` reads `{ policy, coordinator_argv }`
 or replaces both: caps between 1 and 1000, budgets at least 1 or `null`, the
 project set unchanged, a coordinator command that names a program. Everything

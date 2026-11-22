@@ -1907,6 +1907,42 @@ fn strategy_stub(out: &std::path::Path) -> Vec<String> {
 }
 
 #[test]
+fn a_projects_coordinator_command_is_configurable_before_any_task_and_survives_restart() {
+    let (mut daemon, client) = Daemon::new("first-coordinator-command");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let workers = vec!["sleep".to_string(), "30".into()];
+    let project = client.open_project(&repo, workers.clone()).unwrap();
+    assert!(client.tasks().unwrap().is_empty());
+    assert!(client.set_coordinator_argv(&project.id, Some(vec![])).is_err());
+    assert!(client.set_coordinator_argv(&project.id, Some(vec![" ".into()])).is_err());
+    assert!(client.set_coordinator_argv("git:unknown", None).is_err());
+    assert_eq!(client.projects().unwrap()[0].coordinator_argv, None);
+    let out = daemon.data.join("strategy");
+    let command = strategy_stub(&out);
+    client.set_coordinator_argv(&project.id, Some(command.clone())).unwrap();
+    assert!(client.tasks().unwrap().is_empty(), "saving the command creates no task");
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    let client = daemon.restart();
+    let recorded = client.projects().unwrap().remove(0);
+    assert_eq!(recorded.coordinator_argv, Some(command.clone()));
+    assert_eq!(recorded.argv, workers);
+    let lead = client.run(coordinator_spec(&repo, &project.id)).unwrap().task;
+    assert_eq!(lead.spec.argv, command);
+    eventually(|| std::fs::read_to_string(&out).is_ok_and(|s| s == "optchat"));
+    client.set_coordinator_argv(&project.id, None).unwrap();
+    assert_eq!(client.task(&lead.id).unwrap().spec.argv, command, "the existing coordinator keeps its command");
+    client.stop(&lead.id).unwrap();
+    client.destroy(&lead.id).unwrap();
+    let next = client.create(coordinator_spec(&repo, &project.id)).unwrap();
+    assert_eq!(next.spec.argv, vec!["construct".to_string(), "acp".into()]);
+    client.destroy(&next.id).unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
 fn a_coordinator_runs_its_projects_coordinator_command_and_a_worker_the_agent_command() {
     let (mut daemon, client) = Daemon::new("coordinator-command");
     let repo = daemon.data.join("repo");
