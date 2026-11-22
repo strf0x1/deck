@@ -29,7 +29,13 @@ pub enum Inbound {
     ToolUpdate(ToolUpdate),
     /// The agent asks before running a tool. Answer with
     /// [`crate::conn::Conn::answer`] using the same `request`.
-    Permission { request: Value, title: String, options: Vec<PermissionOption> },
+    Permission {
+        request: Value,
+        title: String,
+        /// The agent's explanation or frozen execution plan from `rawInput.detail`.
+        detail: Option<String>,
+        options: Vec<PermissionOption>,
+    },
     /// The prompt's turn finished, with ACP's stop reason.
     TurnEnded(String),
     /// The agent answered the prompt sent with this idempotency key (contract
@@ -88,6 +94,8 @@ pub(crate) fn update(u: &Value) -> Option<Inbound> {
 
 pub(crate) fn permission(request: Value, params: &Value) -> Inbound {
     let title = params["toolCall"]["title"].as_str().unwrap_or("a tool").to_string();
+    let detail =
+        params["toolCall"]["rawInput"]["detail"].as_str().filter(|text| !text.trim().is_empty()).map(str::to_string);
     let options = params["options"]
         .as_array()
         .map(|a| {
@@ -102,5 +110,5 @@ pub(crate) fn permission(request: Value, params: &Value) -> Inbound {
                 .collect()
         })
         .unwrap_or_default();
-    Inbound::Permission { request, title, options }
+    Inbound::Permission { request, title, detail, options }
 }

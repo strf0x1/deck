@@ -60,8 +60,12 @@ fn turn(client: &Client, rx: &mut UnboundedReceiver<Inbound>) {
                     call.apply(update);
                 }
             }
-            Inbound::Permission { request, title, options } => {
+            Inbound::Permission { request, title, detail, options } => {
                 assert_eq!(title, "shell git push origin deck/spike");
+                assert_eq!(
+                    detail.as_deref(),
+                    Some("Branch: deck/spike\nDestination: origin\nCommand: git push origin deck/spike")
+                );
                 assert_eq!(options.iter().filter(|o| o.allows()).count(), 2);
                 break request;
             }
