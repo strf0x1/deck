@@ -89,6 +89,9 @@ pub fn summary(task: &Task, facts: &Facts) -> Value {
     if facts.message.as_ref().is_some_and(|m| m.truncated) {
         value["last_message_truncated"] = json!(true);
     }
+    if let Some(permissions) = &task.permissions {
+        value["permissions"] = json!(permissions);
+    }
     if let Some(plan) = &task.integration {
         value["integration"] = plan.summary(&task.id);
     }
@@ -155,6 +158,7 @@ pub struct Snapshot {
     pub turn: Option<crate::Turn>,
     pub pending_approvals: usize,
     pub waiting_for_inputs: bool,
+    pub permission_cursor: Option<String>,
 }
 
 impl Snapshot {
@@ -163,6 +167,11 @@ impl Snapshot {
             state: task.state.clone(),
             turn: task.turn.clone(),
             pending_approvals,
+            permission_cursor: task
+                .permissions
+                .as_ref()
+                .filter(|p| p.pending_count > 0 || !p.resolved.is_empty())
+                .map(|p| p.cursor.clone()),
             waiting_for_inputs: task.integration.as_deref().and_then(crate::integration::Plan::reason).is_some(),
         }
     }
@@ -182,7 +191,7 @@ pub fn woke(start: &Snapshot, now: &Snapshot, after_turn: u64) -> bool {
     let waiting = |s: &Snapshot| s.turn.as_ref().is_some_and(|t| t.state == Phase::Waiting);
     let new_question = waiting(now)
         && (!waiting(start) || now.turn.as_ref().map(|t| t.number) != start.turn.as_ref().map(|t| t.number));
-    new_question || now.pending_approvals > start.pending_approvals
+    new_question || now.pending_approvals > start.pending_approvals || now.permission_cursor != start.permission_cursor
 }
 
 #[cfg(test)]

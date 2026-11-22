@@ -23,7 +23,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write as _;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -173,7 +173,28 @@ impl Store {
             let line = line?;
             task.apply(line.at_ms, &line.event)?;
         }
-        task.turn = self.turn(id);
+        let observation = self.tasks.join(id).join("observation.json");
+        match fs::read(&observation) {
+            Ok(bytes) => {
+                if let Ok(observed) = serde_json::from_slice::<crate::permission::Observation>(&bytes)
+                    && observed.run == task.launches
+                {
+                    task.turn = observed.turn;
+                    let mut permissions = observed.permissions;
+                    if task.state != crate::State::Running {
+                        // A crash does not prove a human response. Never expose
+                        // stale pending subjects from a terminated process.
+                        permissions.pending.clear();
+                        permissions.pending_count = 0;
+                    }
+                    if task.state != crate::State::Destroyed {
+                        task.permissions = Some(permissions);
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => task.turn = self.legacy_turn(id),
+            Err(_) => {}
+        }
         Ok(task)
     }
 
@@ -228,16 +249,23 @@ impl Store {
     /// unreadable file is no turn: the holder rewrites it whole on the next
     /// change, and a turn is never a reason to refuse a record.
     pub fn turn(&self, id: &str) -> Option<crate::Turn> {
+        self.observe(id).ok()?.turn
+    }
+
+    fn legacy_turn(&self, id: &str) -> Option<crate::Turn> {
         let bytes = fs::read(self.tasks.join(id).join(TURN)).ok()?;
         serde_json::from_slice(&bytes).ok()
     }
 
-    /// Replace `id`'s turn file atomically. Only the task's holder calls this.
-    pub(crate) fn write_turn(&self, id: &str, turn: &crate::Turn) -> Result<()> {
+    /// One holder is the only writer. Rename publishes turn and permission
+    /// state together; the liveness lock fences writers across launches.
+    pub(crate) fn write_observation(&self, id: &str, observation: &crate::permission::Observation) -> Result<()> {
         let dir = self.tasks.join(id);
-        let tmp = dir.join(format!("{TURN}.tmp"));
-        fs::write(&tmp, serde_json::to_vec(turn)?)?;
-        fs::rename(&tmp, dir.join(TURN))?;
+        let tmp = dir.join("observation.json.tmp");
+        let mut file = OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&tmp)?;
+        file.write_all(&serde_json::to_vec(observation)?)?;
+        file.sync_data()?;
+        fs::rename(&tmp, dir.join("observation.json"))?;
         Ok(())
     }
 
@@ -349,6 +377,48 @@ mod tests {
             model: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn observations_are_atomic_launch_fenced_and_do_not_resurrect_legacy_turns() {
+        let dir = scratch("observations");
+        let store = Store::open(&dir).unwrap();
+        let mut task = store.create("local", spec()).unwrap();
+        store.append(&mut task, Event::Started { pid: Some(9), holder: None }).unwrap();
+        let observation = crate::permission::Observation {
+            run: 1,
+            turn: Some(crate::Turn { number: 4, state: crate::Phase::Waiting, stop_reason: None }),
+            permissions: crate::permission::View {
+                cursor: "run1:1".into(),
+                pending_count: 1,
+                pending: vec![crate::permission::Pending {
+                    observation_id: "run1:q".into(),
+                    turn: Some(4),
+                    subject: "Private pending title".into(),
+                    kind: crate::permission::Kind::Execute,
+                    truncated: false,
+                }],
+                resolved: vec![],
+            },
+        };
+        store.write_observation(&task.id, &observation).unwrap();
+        let loaded = store.observe(&task.id).unwrap();
+        assert_eq!(loaded.turn, observation.turn);
+        assert_eq!(loaded.permissions, Some(observation.permissions.clone()));
+        store.append(&mut task, Event::Stopped { clean: true, reason: "test".into() }).unwrap();
+        assert!(store.observe(&task.id).unwrap().permissions.unwrap().pending.is_empty());
+        store.append(&mut task, Event::Started { pid: Some(9), holder: None }).unwrap();
+        let loaded = store.observe(&task.id).unwrap();
+        assert_eq!(loaded.launches, 2, "PID reuse does not reuse observations");
+        assert!(loaded.turn.is_none() && loaded.permissions.is_none());
+        fs::write(
+            dir.join("tasks").join(&task.id).join(TURN),
+            serde_json::to_vec(observation.turn.as_ref().unwrap()).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join("tasks").join(&task.id).join("observation.json"), "broken").unwrap();
+        assert!(store.observe(&task.id).unwrap().turn.is_none(), "corrupt current data cannot fall back to old turn");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

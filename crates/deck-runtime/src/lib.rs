@@ -39,6 +39,7 @@ pub mod local_guard;
 pub mod message;
 pub mod observer;
 pub mod paths;
+pub mod permission;
 pub mod project;
 pub mod pull_request;
 mod reconcile;
