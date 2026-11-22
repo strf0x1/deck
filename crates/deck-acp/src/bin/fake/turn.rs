@@ -32,7 +32,7 @@ pub fn question(id: Value, session: &str, number: u32) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": {
         "sessionId": session,
         "toolCall": {
-            "toolCallId": format!("t{number}"), "title": "shell git push origin deck/spike",
+            "toolCallId": format!("t{number}"), "title": "shell git push origin deck/spike", "kind": "execute",
             "rawInput": {
                 "type": "operation", "operation": "push", "scope": "origin",
                 "detail": "Branch: deck/spike\nDestination: origin\nCommand: git push origin deck/spike"

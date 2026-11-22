@@ -215,9 +215,16 @@ fn prompt(cx: &Context, coordinator: &str, policy: &Policy, id: &str, text: &str
     match crate::daemon_turns::prompt(&cx.runtime, id, text, Some(coordinator)) {
         Ok(PromptReply::Started { turn }) => Ok(json!({ "turn": turn })),
         Ok(PromptReply::Busy) => {
-            let state = cx.runtime.task(id).ok().and_then(|task| task.turn).map_or(Phase::Working, |t| t.state);
+            let task = cx.runtime.task(id).map_err(internal)?;
+            let state = task.turn.as_ref().map_or(Phase::Working, |t| t.state);
             let state = if state == Phase::Waiting { "waiting" } else { "working" };
-            Err(Refusal::new(Code::Busy, format!("the task's turn is {state}")))
+            let question = task
+                .permissions
+                .as_ref()
+                .and_then(|p| p.pending.first())
+                .map(|p| format!("; pending user permission: {:?}", p.subject))
+                .unwrap_or_default();
+            Err(Refusal::new(Code::Busy, format!("the task's turn is {state}{question}")))
         }
         Err(error) => {
             let task = cx.runtime.task(id).map_err(internal)?;

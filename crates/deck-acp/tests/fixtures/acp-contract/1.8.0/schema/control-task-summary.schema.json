@@ -236,6 +236,128 @@
         "base_commit"
       ],
       "additionalProperties": true
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "pending_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "properties": {
+              "observation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "turn": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "kind": {
+                "enum": [
+                  "read",
+                  "edit",
+                  "delete",
+                  "move",
+                  "search",
+                  "execute",
+                  "think",
+                  "fetch",
+                  "other"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "observation_id",
+              "subject",
+              "kind",
+              "truncated"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resolved": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "properties": {
+              "observation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "turn": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "verdict": {
+                "enum": [
+                  "allowed",
+                  "denied",
+                  "cancelled",
+                  "unknown"
+                ]
+              },
+              "source": {
+                "enum": [
+                  "response",
+                  "retired"
+                ]
+              }
+            },
+            "required": [
+              "observation_id",
+              "verdict",
+              "source"
+            ],
+            "additionalProperties": false,
+            "if": {
+              "properties": {
+                "source": {
+                  "const": "retired"
+                }
+              },
+              "required": [
+                "source"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verdict": {
+                  "const": "unknown"
+                }
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "cursor",
+        "pending_count",
+        "pending",
+        "resolved"
+      ],
+      "additionalProperties": true
     }
   },
   "required": [

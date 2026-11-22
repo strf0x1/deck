@@ -321,8 +321,13 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     let prompts = client.prompts(&worker).unwrap();
     assert_eq!((prompts[0].turn, prompts[0].from.as_deref()), (1, Some(coordinator.as_str())));
     assert_eq!(prompts[0].text, brief);
+    eventually(|| client.task(&worker).unwrap().permissions.is_some_and(|p| p.pending_count == 1));
+    let (_, detail) = post(&url, t, &json!({ "operation": "task", "id": worker }));
+    assert_eq!(detail["task"]["permissions"]["pending"][0]["subject"], "shell git push origin deck/spike");
     let busy = json!({ "operation": "prompt", "id": worker, "text": "and the docs" });
-    assert_eq!(code(&post(&url, t, &busy)), (409, "deck_control_busy"));
+    let refused = post(&url, t, &busy);
+    assert_eq!(code(&refused), (409, "deck_control_busy"));
+    assert!(refused.1["error"]["message"].as_str().unwrap().contains("shell git push origin deck/spike"));
     let (status, timed) = post(&url, t, &json!({ "operation": "wait", "id": worker, "after_turn": 1, "wait_ms": 300 }));
     assert_eq!((status, timed["timed_out"].clone()), (200, json!(true)), "an open question does not wake it again");
     let (_, listed) = post(&url, t, &tasks);

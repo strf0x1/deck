@@ -109,3 +109,34 @@ fn a_wait_ends_on_a_terminal_state_a_later_idle_turn_or_new_attention() {
     assert!(woke(&created, &at(&failed, 0), 0), "a failed start wakes it");
     assert!(woke(&working, &at(&task(State::Destroyed, None), 0), 5));
 }
+
+#[test]
+fn same_turn_answers_and_transient_questions_wake_a_wait() {
+    let mut task = task(State::Running, Some((4, Phase::Waiting)));
+    task.permissions =
+        Some(crate::permission::View { cursor: "run:4".into(), pending_count: 2, pending: vec![], resolved: vec![] });
+    let start = Snapshot::of(&task, 0);
+    assert!(!woke(&start, &start, 4));
+    task.permissions.as_mut().unwrap().cursor = "run:5".into();
+    task.permissions.as_mut().unwrap().pending_count = 1;
+    assert!(woke(&start, &Snapshot::of(&task, 0), 4), "an answer wakes while another question stays open");
+    task.turn.as_mut().unwrap().state = Phase::Working;
+    let start = Snapshot::of(&task, 0);
+    task.permissions.as_mut().unwrap().cursor = "run:7".into();
+    assert!(woke(&start, &Snapshot::of(&task, 0), 4), "ask and answer between polls still wake");
+    let value = summary(&task, &Facts::default());
+    assert_eq!(value["permissions"]["cursor"], "run:7");
+    assert!(validator().is_valid(&value), "{value}");
+}
+
+#[test]
+fn an_empty_observation_becoming_available_is_not_attention() {
+    let mut task = task(State::Running, Some((1, Phase::Working)));
+    let start = Snapshot::of(&task, 0);
+    task.permissions =
+        Some(crate::permission::View { cursor: "run:0".into(), pending_count: 0, pending: vec![], resolved: vec![] });
+    assert!(!woke(&start, &Snapshot::of(&task, 0), 0));
+    let start = Snapshot::of(&task, 0);
+    task.permissions.as_mut().unwrap().cursor = "session:0".into();
+    assert!(!woke(&start, &Snapshot::of(&task, 0), 0));
+}

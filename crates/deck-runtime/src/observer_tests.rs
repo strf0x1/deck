@@ -34,7 +34,10 @@ fn window_setup(o: &mut Observer) {
     let step = o.agent(&line(json!({ "jsonrpc": "2.0", "id": "deck-2", "result": {
         "_meta": { CONSTRUCT_META: { "turn": { "sessionId": "s1", "turn": 3, "state": "idle" } } } } })));
     assert!(step.forward);
-    assert_eq!(step.events, vec![Event::Turn(Turn { number: 3, state: Phase::Idle, stop_reason: None })]);
+    assert_eq!(
+        step.events,
+        vec![Event::Turn(Turn { number: 3, state: Phase::Idle, stop_reason: None }), Event::Permissions]
+    );
 }
 
 #[test]
@@ -71,7 +74,7 @@ fn with_no_window_the_holder_initializes_and_creates_a_session() {
     assert_eq!(new["params"]["cwd"], "/w");
     let step = o.agent(&line(json!({ "jsonrpc": "2.0", "id": new["id"], "result": { "sessionId": "s1" } })));
     assert!(!step.forward);
-    assert_eq!(step.events, vec![Event::Session("s1".into())]);
+    assert_eq!(step.events, vec![Event::Session("s1".into()), Event::Permissions]);
     let prompt = parsed(&step.write[0]);
     assert_eq!(prompt["method"], "session/prompt");
     assert_eq!(prompt["params"]["prompt"][0]["text"], "brief");
@@ -89,7 +92,7 @@ fn a_recorded_session_is_loaded_and_its_replay_still_reaches_a_window() {
         "params": { "sessionId": "s1", "update": { "sessionUpdate": "agent_message_chunk" } } }));
     assert!(o.agent(&replay).forward);
     let step = o.agent(&line(json!({ "jsonrpc": "2.0", "id": load["id"], "result": {} })));
-    assert_eq!(step.events, vec![Event::Session("s1".into())]);
+    assert_eq!(step.events, vec![Event::Session("s1".into()), Event::Permissions]);
     assert_eq!(parsed(&step.write[0])["method"], "session/prompt");
 }
 
@@ -134,6 +137,7 @@ fn an_agent_without_turn_notifications_ends_a_turn_with_its_response() {
             Event::Session("s1".into()),
             Event::Turn(Turn { number: 1, state: Phase::Working, stop_reason: None }),
             Event::Prompted(1),
+            Event::Permissions,
         ]
     );
     let prompt = parsed(&step.write[0]);
@@ -180,4 +184,222 @@ fn another_sessions_turn_and_stray_output_are_forwarded_and_ignored() {
     let step = o.agent(&foreign);
     assert!(step.forward && step.events.is_empty());
     assert!(o.agent(b"not json\n").forward);
+}
+
+fn permission(o: &mut Observer, id: Value, session: &str, title: &str, options: Value) -> Step {
+    o.agent(&line(json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{
+        "sessionId":session,"toolCall":{"title":title,"kind":"execute","toolCallId":"private-tool","rawInput":{"secret":"private-plan"}},
+        "options":options}})))
+}
+
+fn choices() -> Value {
+    json!([{"optionId":"yes","kind":"allow_once","name":"private allow label"},
+        {"optionId":"no","kind":"reject_always"}])
+}
+
+fn answer(o: &mut Observer, id: Value, outcome: Value) -> Vec<Event> {
+    o.client(&line(json!({"jsonrpc":"2.0","id":id,"result":{"outcome":outcome}})))
+}
+
+#[test]
+fn simultaneous_questions_publish_subject_free_observed_verdicts_within_one_turn() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    for id in 1..=3 {
+        permission(&mut o, json!(id), "s1", &format!("private-subject-{id}"), choices());
+    }
+    let before = o.permissions();
+    let events = answer(&mut o, json!(2), json!({"outcome":"selected","optionId":"yes"}));
+    assert_eq!(events, vec![Event::Permissions]);
+    assert_eq!(o.turn().unwrap().state, Phase::Waiting);
+    assert_eq!(o.permissions().pending_count, 2);
+    assert_ne!(o.permissions().cursor, before.cursor);
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"no"}));
+    answer(&mut o, json!(3), json!({"outcome":"cancelled"}));
+    let view = serde_json::to_value(o.permissions()).unwrap();
+    assert_eq!(
+        view["resolved"].as_array().unwrap().iter().map(|v| v["verdict"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["allowed", "denied", "cancelled"]
+    );
+    let text = view.to_string();
+    for forbidden in
+        ["private-subject", "private-plan", "private-tool", "private allow label", "optionId", "subject", "kind"]
+    {
+        assert!(!text.contains(forbidden), "{text}");
+    }
+    assert!(answer(&mut o, json!(2), json!({"outcome":"selected","optionId":"no"})).is_empty());
+}
+
+#[test]
+fn unknown_ambiguous_and_error_answers_never_imply_permission() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    for (id, options) in [
+        (1, json!([{"optionId":"x","kind":"allow_custom"}])),
+        (2, json!([{"optionId":"x","kind":"allow_once"},{"optionId":"x","kind":"reject_once"}])),
+        (3, choices()),
+        (4, choices()),
+    ] {
+        permission(&mut o, json!(id), "s1", "Run it", options);
+        if id == 4 {
+            o.client(&line(json!({"jsonrpc":"2.0","id":id,"error":{"code":-1,"message":"error"}})));
+        } else {
+            answer(&mut o, json!(id), json!({"outcome":"selected","optionId":"x"}));
+        }
+    }
+    assert!(o.permissions().resolved.iter().all(|r| r.verdict == crate::permission::Verdict::Unknown));
+    assert_eq!(o.permissions().resolved.len(), 4);
+}
+
+#[test]
+fn replay_preserves_new_questions_and_reused_wire_ids_cannot_consume_them() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Old title", choices());
+    o.client(&line(json!({"jsonrpc":"2.0","id":"attach","method":"initialize","params":{}})));
+    assert_eq!(o.permissions().resolved[0].source, crate::permission::Source::Retired);
+    o.agent(&init_reply(json!("attach"), true));
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load","method":"session/load","params":{"sessionId":"s1"}})));
+    permission(&mut o, json!(1), "s1", "Reused identity", choices());
+    permission(&mut o, json!(2), "s1", "Fresh identity", choices());
+    o.agent(&line(
+        json!({"jsonrpc":"2.0","id":"load","result":{"_meta":{CONSTRUCT_META:{"turn":{"turn":4,"state":"waiting"}}}}}),
+    ));
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"yes"}));
+    assert_eq!(o.permissions().pending_count, 2, "ambiguous old bytes cannot consume replay");
+    answer(&mut o, json!(2), json!({"outcome":"selected","optionId":"yes"}));
+    assert_eq!(o.permissions().pending_count, 1);
+    assert_eq!(o.permissions().resolved.last().unwrap().verdict, crate::permission::Verdict::Allowed);
+    o.agent(&turn(3, "idle"));
+    assert_eq!(o.permissions().pending_count, 1, "old turn cannot retire current question");
+    o.agent(&turn(4, "working"));
+    assert_eq!(o.permissions().pending_count, 0);
+    assert_eq!(o.permissions().resolved.last().unwrap().source, crate::permission::Source::Retired);
+}
+
+#[test]
+fn foreign_sessions_failed_loads_and_superseded_loads_do_not_replace_current_observations() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Current", choices());
+    permission(&mut o, json!(2), "foreign", "Foreign", choices());
+    assert_eq!(o.permissions().pending_count, 1);
+    let before = o.permissions();
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load2","method":"session/load","params":{"sessionId":"s2"}})));
+    permission(&mut o, json!(3), "s2", "Staged", choices());
+    assert_eq!(o.permissions(), before, "target session stays private until load succeeds");
+    o.agent(&line(json!({"jsonrpc":"2.0","id":"load2","error":{"code":-1,"message":"no session"}})));
+    assert_eq!(o.permissions(), before);
+    for (id, session) in [("load3", "s3"), ("load4", "s4")] {
+        o.client(&line(json!({"jsonrpc":"2.0","id":id,"method":"session/load","params":{"sessionId":session}})));
+    }
+    o.agent(&line(json!({"jsonrpc":"2.0","id":"load3","result":{}})));
+    assert_eq!(o.session(), Some("s1"));
+    permission(&mut o, json!(4), "s4", "Selected", choices());
+    o.agent(&line(
+        json!({"jsonrpc":"2.0","id":"load4","result":{"_meta":{CONSTRUCT_META:{"turn":{"turn":1,"state":"waiting"}}}}}),
+    ));
+    assert_eq!(o.session(), Some("s4"));
+    assert_eq!(o.permissions().pending[0].subject, "Selected");
+    assert!(o.permissions().resolved.is_empty());
+    assert_eq!(o.turn().unwrap().number, 1);
+}
+
+#[test]
+fn preview_and_result_retention_are_bounded_and_unicode_safe() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    for id in 0..20 {
+        permission(&mut o, json!(id), "s1", &format!("{}\n", "é".repeat(200)), choices());
+    }
+    let view = o.permissions();
+    assert_eq!((view.pending_count, view.pending.len()), (20, 16));
+    assert_eq!(view.pending[0].subject.len(), 256);
+    assert!(view.pending[0].truncated);
+    assert!(!view.pending[0].subject.contains('\n'));
+    for id in 0..20 {
+        answer(&mut o, json!(id), json!({"outcome":"selected","optionId":"yes"}));
+    }
+    assert_eq!(o.permissions().resolved.len(), 16);
+    assert_eq!(o.permissions().pending_count, 0);
+}
+
+#[test]
+fn conflicting_duplicate_requests_and_failed_same_session_replays_are_conservative() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Current", choices());
+    permission(&mut o, json!(1), "s1", "Changed", json!([{"optionId":"yes","kind":"reject_once"}]));
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"yes"}));
+    assert_eq!(o.permissions().pending_count, 1);
+    assert!(o.permissions().resolved.is_empty());
+    let before = o.permissions();
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load2","method":"session/load","params":{"sessionId":"s1"}})));
+    permission(&mut o, json!(2), "s1", "Failed replay", choices());
+    assert_eq!(o.permissions(), before);
+    o.agent(&line(json!({"jsonrpc":"2.0","id":"load2","error":{"code":-1,"message":"no"}})));
+    assert_eq!(o.permissions(), before);
+}
+
+#[test]
+fn authoritative_retirement_during_load_cannot_be_resurrected_by_replay_or_late_answers() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Original", choices());
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load2","method":"session/load","params":{"sessionId":"s1"}})));
+    permission(&mut o, json!(2), "s1", "Replay", choices());
+    o.agent(&turn(4, "working"));
+    let retired = o.permissions().cursor;
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"yes"}));
+    answer(&mut o, json!(2), json!({"outcome":"selected","optionId":"yes"}));
+    o.agent(&line(
+        json!({"jsonrpc":"2.0","id":"load2","result":{"_meta":{CONSTRUCT_META:{"turn":{"turn":4,"state":"waiting"}}}}}),
+    ));
+    let view = o.permissions();
+    assert_eq!(view.pending_count, 0);
+    assert!(view.resolved.iter().all(|r| r.verdict == crate::permission::Verdict::Unknown));
+    assert_ne!(view.cursor, retired, "stage commit has a fresh cursor");
+}
+
+#[test]
+fn a_replay_reusing_an_active_id_cannot_classify_either_questions_answer() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Original", choices());
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load2","method":"session/load","params":{"sessionId":"s1"}})));
+    permission(&mut o, json!(1), "s1", "Replayed", json!([{"optionId":"yes","kind":"reject_once"}]));
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"yes"}));
+    assert!(o.permissions().resolved.is_empty());
+    o.agent(&line(
+        json!({"jsonrpc":"2.0","id":"load2","result":{"_meta":{CONSTRUCT_META:{"turn":{"turn":4,"state":"waiting"}}}}}),
+    ));
+    assert_eq!(o.permissions().pending_count, 1);
+    assert!(o.permissions().resolved.iter().all(|r| r.verdict == crate::permission::Verdict::Unknown));
+}
+
+#[test]
+fn replay_and_current_answers_keep_their_observed_resolution_order() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Original", choices());
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load2","method":"session/load","params":{"sessionId":"s1"}})));
+    permission(&mut o, json!(2), "s1", "Replayed", choices());
+    answer(&mut o, json!(2), json!({"outcome":"selected","optionId":"yes"}));
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"no"}));
+    o.agent(&line(
+        json!({"jsonrpc":"2.0","id":"load2","result":{"_meta":{CONSTRUCT_META:{"turn":{"turn":4,"state":"waiting"}}}}}),
+    ));
+    assert_eq!(
+        o.permissions().resolved.iter().map(|r| r.verdict).collect::<Vec<_>>(),
+        [crate::permission::Verdict::Allowed, crate::permission::Verdict::Denied]
+    );
 }
