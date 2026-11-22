@@ -2073,6 +2073,77 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     cleanup_daemon(&data);
 }
 
+#[cfg(unix)]
+#[gpui::test]
+fn the_project_sets_its_coordinator_command_before_the_first_prompt(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-first-command-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let workers = vec!["sleep".to_string(), "30".to_string()];
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, workers.clone(), repo, cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    vcx.simulate_input("Plan the release");
+    draw(&mut vcx);
+    assert!(daemon.tasks().unwrap().is_empty());
+    click_control(&mut vcx, "hdr-command");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused() == Some(deck::ui::limits::Field::Command)));
+    vcx.simulate_resize(gpui::size(px(760.), px(480.)));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("limits-field-running").is_none());
+    assert!(vcx.debug_bounds("limits-save").unwrap().bottom() <= px(480.));
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let command = vec!["env".to_string(), "DECK_FAKE_DELAY_MS=1".into(), fake.display().to_string()];
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input(&command.join(" "));
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().notice().is_some()));
+    let project = daemon.projects().unwrap().remove(0);
+    assert_eq!(project.coordinator_argv, Some(command.clone()));
+    assert_eq!(project.argv, workers);
+    assert!(daemon.tasks().unwrap().is_empty(), "configuration never creates a coordinator");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "Plan the release");
+    vcx.simulate_keystrokes("escape");
+    click_control(&mut vcx, "hdr-command");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused().is_some()));
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| d.limits().value(deck::ui::limits::Field::Command).to_string()),
+        command.join(" ")
+    );
+    // Another window's edit is reloaded instead of overwritten.
+    daemon.set_coordinator_argv(&project.id, Some(vec!["sleep".into(), "40".into()])).unwrap();
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.limits().notice().is_some_and(|text| text.contains("Save again")))
+    });
+    assert_eq!(daemon.projects().unwrap()[0].coordinator_argv, Some(vec!["sleep".into(), "40".into()]));
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input(&command.join(" "));
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.limits().notice().is_some_and(|text| text.starts_with("Saved.")))
+    });
+    vcx.simulate_keystrokes("escape enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    let coordinator = deck.read_with(&vcx, |d, _| d.coordinator().unwrap().id.clone());
+    assert_eq!(daemon.task(&coordinator).unwrap().spec.argv, command);
+    assert_eq!(said(&deck, &vcx), vec!["Plan the release".to_string()]);
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&coordinator));
+    cx.quit();
+    daemon.stop(&coordinator).unwrap();
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
 /// Record `argv` as the project's coordinator command. `coordinator_policy`
 /// needs a coordinator, so one is created for the edit and destroyed: the
 /// command applies to the next (ADR 0011 §2).

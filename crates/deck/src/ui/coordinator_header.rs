@@ -76,6 +76,13 @@ pub fn actions(deck: &Deck, cx: &mut Context<Deck>) -> Vec<AnyElement> {
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_limits(None, cx)))
                 .into_any_element(),
         );
+    } else if deck.project().is_some() {
+        out.push(
+            button("hdr-command", icon::TERMINAL, "Coordinator command", Tokens::amber())
+                .when(deck.limits_open(), |d| d.bg(Tokens::raised_hover()).text_color(Tokens::text()))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_limits(None, cx)))
+                .into_any_element(),
+        );
     }
     out
 }

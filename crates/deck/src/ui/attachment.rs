@@ -334,6 +334,7 @@ impl Deck {
     /// Keep the project open with no task: the main area shows its project
     /// view (ADR 0010 §1). The tasks' attachments stay (ADR 0010 §8).
     pub(super) fn clear_task(&mut self, cx: &mut Context<Self>) {
+        self.limits.close();
         self.close_worktree(cx);
         self.selected = None;
         self.pending_prompt = None;
@@ -391,6 +392,7 @@ impl Deck {
     /// Make `record` the selection and reset what belongs to the previous
     /// one. Connect it only if it has no attachment yet.
     pub(super) fn select_task(&mut self, current: &WindowTask, record: Task, cx: &mut Context<Self>) {
+        self.limits.close();
         self.close_worktree(cx);
         let id = record.id.clone();
         // The selected task's row becomes the live card; the previous one

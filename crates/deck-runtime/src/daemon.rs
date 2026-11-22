@@ -726,6 +726,10 @@ impl Service {
                 self.projects.forget(&id)?;
                 Ok(json!(null))
             }
+            Request::SetCoordinatorCommand { project, argv } => {
+                self.projects.set_coordinator_argv(&project, argv)?;
+                Ok(json!(null))
+            }
             Request::Run { spec } if spec.kind == crate::TaskKind::Coordinator => {
                 Ok(serde_json::to_value(self.run_coordinator(spec)?)?)
             }

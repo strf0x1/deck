@@ -17,7 +17,7 @@ pub const WAIT_LIMIT_MS: u64 = 300_000;
 /// The control grammar's protocol. Bump it whenever a [`Request`] variant or
 /// its meaning changes: a window then refuses a daemon from another build with
 /// an instruction instead of failing in the middle of a conversation.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 /// What a daemon answers to [`Request::Hello`]. A daemon predating the
 /// handshake answers `unknown variant`, which the client reports as
@@ -83,6 +83,11 @@ pub(crate) enum Request {
     /// Hide a project; its tasks stay.
     ForgetProject {
         id: String,
+    },
+    /// A window sets the project's command before a coordinator exists.
+    SetCoordinatorCommand {
+        project: String,
+        argv: Option<Vec<String>>,
     },
     Run {
         spec: Spec,

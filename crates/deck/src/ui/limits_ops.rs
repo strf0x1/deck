@@ -1,5 +1,5 @@
 //! What the Limits panel asks of `deckd` (deck#151 R7): read the
-//! coordinator's policy, and save it unless it changed meanwhile, both off
+//! coordinator's policy or a project's initial command, and save unless it changed meanwhile, both off
 //! the UI thread; and the panel's keys.
 //!
 //! The design choice: `coordinator_policy` has no revision, so a save reads
@@ -7,15 +7,42 @@
 //! panel loaded; otherwise it reloads them and says so. A refusal from
 //! `deckd` is shown in the panel, which stays open with the user's values.
 
-use super::limits::Field;
+use super::limits::{Field, Target, Values};
 use super::root::Deck;
-use deck_runtime::coordinator::Settings;
+use anyhow::Context as _;
+use deck_runtime::DaemonClient;
 use gpui::{Context, KeyDownEvent};
 
 /// What a save came back with.
 enum Saved {
-    Done(Settings),
-    Stale(Settings),
+    Done(Values),
+    Stale(Values),
+}
+
+impl Target {
+    fn load(&self, daemon: &DaemonClient) -> anyhow::Result<Values> {
+        match self {
+            Target::Coordinator(id) => daemon.coordinator_policy(id, None).map(Values::Policy),
+            Target::Project(id) => {
+                let project =
+                    daemon.projects()?.into_iter().find(|p| &p.id == id).context("the project is no longer open")?;
+                Ok(Values::Command(project.coordinator_argv))
+            }
+        }
+    }
+
+    fn save(&self, daemon: &DaemonClient, values: Values) -> anyhow::Result<Values> {
+        match (self, values) {
+            (Target::Coordinator(id), Values::Policy(settings)) => {
+                daemon.coordinator_policy(id, Some(settings)).map(Values::Policy)
+            }
+            (Target::Project(id), Values::Command(argv)) => {
+                daemon.set_coordinator_argv(id, argv.clone())?;
+                Ok(Values::Command(argv))
+            }
+            _ => anyhow::bail!("the form does not match its destination"),
+        }
+    }
 }
 
 impl Deck {
@@ -34,7 +61,13 @@ impl Deck {
             self.limits.close();
             return cx.notify();
         }
-        let Some(id) = self.coordinator().map(|c| c.id.clone()) else { return };
+        let target = match self.coordinator() {
+            Some(coordinator) => Target::Coordinator(coordinator.id.clone()),
+            None => match self.project() {
+                Some(project) => Target::Project(project.to_string()),
+                None => return,
+            },
+        };
         if self.settings.is_open() {
             self.settings.toggle();
         }
@@ -42,15 +75,15 @@ impl Deck {
             self.toggle_access(cx);
         }
         self.publication_open = None;
-        self.limits.open(&id, field);
+        self.limits.open(target.clone(), field);
         cx.notify();
         let Some(daemon) = self.daemon.clone() else { return };
-        let asked = id.clone();
-        let read = cx.background_executor().spawn(async move { daemon.coordinator_policy(&asked, None) });
+        let asked = target.clone();
+        let read = cx.background_executor().spawn(async move { asked.load(&daemon) });
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |deck, cx| {
-                if deck.limits.coordinator() != Some(id.as_str()) {
+                if deck.limits.target() != Some(&target) {
                     return;
                 }
                 match result {
@@ -69,7 +102,7 @@ impl Deck {
         if self.limits.busy() {
             return;
         }
-        let Some(id) = self.limits.coordinator().map(str::to_owned) else { return };
+        let Some(target) = self.limits.target().cloned() else { return };
         let Some(base) = self.limits.base().cloned() else { return };
         let set = match self.limits.read() {
             Ok(set) => set,
@@ -81,26 +114,29 @@ impl Deck {
         let Some(daemon) = self.daemon.clone() else { return };
         self.limits.saving();
         cx.notify();
-        let asked = id.clone();
+        let asked = target.clone();
         let written = cx.background_executor().spawn(async move {
-            let current = daemon.coordinator_policy(&asked, None)?;
+            let current = asked.load(&daemon)?;
             if current != base {
                 return anyhow::Ok(Saved::Stale(current));
             }
-            daemon.coordinator_policy(&asked, Some(set)).map(Saved::Done)
+            asked.save(&daemon, set).map(Saved::Done)
         });
         cx.spawn(async move |this, cx| {
             let result = written.await;
             let _ = this.update(cx, |deck, cx| {
-                if deck.limits.coordinator() != Some(id.as_str()) {
+                if deck.limits.target() != Some(&target) {
                     return;
                 }
                 match result {
                     Ok(Saved::Done(settings)) => {
-                        let raised = deck.limit.as_ref().map(|cap| match cap.cap.as_str() {
-                            "creates_per_hour" => settings.policy.creates_per_hour,
-                            _ => settings.policy.max_concurrent,
-                        });
+                        let raised = match &settings {
+                            Values::Policy(settings) => deck.limit.as_ref().map(|cap| match cap.cap.as_str() {
+                                "creates_per_hour" => settings.policy.creates_per_hour,
+                                _ => settings.policy.max_concurrent,
+                            }),
+                            Values::Command(_) => None,
+                        };
                         deck.limits.saved(settings);
                         deck.settle_limit(raised);
                     }
