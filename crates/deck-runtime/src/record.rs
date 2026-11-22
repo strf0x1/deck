@@ -340,7 +340,11 @@ impl Store {
         // the line above is the record.
         let tmp = dir.join(format!("{SNAPSHOT}.tmp"));
         let mut snap = File::create(&tmp)?;
-        snap.write_all(serde_json::to_string_pretty(task)?.as_bytes())?;
+        // Permission subjects belong only to the holder's replaceable
+        // observation, so they cannot outlive resolution in this cache.
+        let mut snapshot = task.clone();
+        snapshot.permissions = None;
+        snap.write_all(serde_json::to_string_pretty(&snapshot)?.as_bytes())?;
         fs::rename(&tmp, dir.join(SNAPSHOT))?;
         Ok(())
     }
@@ -402,9 +406,15 @@ mod tests {
             },
         };
         store.write_observation(&task.id, &observation).unwrap();
-        let loaded = store.observe(&task.id).unwrap();
+        let mut loaded = store.observe(&task.id).unwrap();
         assert_eq!(loaded.turn, observation.turn);
         assert_eq!(loaded.permissions, Some(observation.permissions.clone()));
+        store.append(&mut loaded, Event::Seen { turn: 4 }).unwrap();
+        let cached = fs::read_to_string(dir.join("tasks").join(&task.id).join(SNAPSHOT)).unwrap();
+        assert!(
+            !cached.contains("Private pending title") && !cached.contains("permissions"),
+            "the derived cache must not retain permission subjects: {cached}"
+        );
         store.append(&mut task, Event::Stopped { clean: true, reason: "test".into() }).unwrap();
         assert!(store.observe(&task.id).unwrap().permissions.unwrap().pending.is_empty());
         store.append(&mut task, Event::Started { pid: Some(9), holder: None }).unwrap();
