@@ -4491,6 +4491,9 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
     let coordinator = worker.spec.created_by.clone().unwrap();
     assert_eq!(daemon.task(&coordinator).unwrap().spec.kind, deck_runtime::TaskKind::Coordinator);
     eventually(|| daemon.prompts(&worker.id).unwrap().len() == 1, "deckd never prompted the worker");
+    let brief = daemon.prompts(&worker.id).unwrap()[0].text.clone();
+    assert!(brief.starts_with(&format!("You are on branch deck/{} ", worker.id)));
+    assert!(brief.ends_with("\n\nfix the rail"));
     let chip: &'static str = Box::leak(format!("deck-chip-{}", worker.id).into_boxed_str());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -4512,7 +4515,7 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
     // After a later attach the replayed brief is labelled from prompts.jsonl.
     click_control(&mut vcx, chip);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(worker.id.as_str())));
-    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["fix the rail".to_string()]);
+    wait_view(&mut vcx, |cx| said(&deck, cx) == vec![brief.clone()]);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.from_coordinator() == vec![0]));
     assert!(deck.read_with(&vcx, |d, _| d.header_title().provenance.as_deref() == Some("started by coordinator")));
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
@@ -4559,7 +4562,7 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
             .filter_map(|i| if let Entry::You(t) = &d.session().entries[i] { Some(t.clone()) } else { None })
             .collect()
     });
-    assert_eq!(labelled, vec!["fix the rail".to_string(), "and the docs".to_string()]);
+    assert_eq!(labelled, vec![brief, "and the docs".to_string()]);
 
     cx.quit();
     let _ = daemon.stop(&worker.id);
