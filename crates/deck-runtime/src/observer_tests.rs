@@ -384,3 +384,22 @@ fn a_replay_reusing_an_active_id_cannot_classify_either_questions_answer() {
     assert_eq!(o.permissions().pending_count, 1);
     assert!(o.permissions().resolved.iter().all(|r| r.verdict == crate::permission::Verdict::Unknown));
 }
+
+#[test]
+fn replay_and_current_answers_keep_their_observed_resolution_order() {
+    let mut o = Observer::new("run");
+    window_setup(&mut o);
+    o.agent(&turn(4, "waiting"));
+    permission(&mut o, json!(1), "s1", "Original", choices());
+    o.client(&line(json!({"jsonrpc":"2.0","id":"load2","method":"session/load","params":{"sessionId":"s1"}})));
+    permission(&mut o, json!(2), "s1", "Replayed", choices());
+    answer(&mut o, json!(2), json!({"outcome":"selected","optionId":"yes"}));
+    answer(&mut o, json!(1), json!({"outcome":"selected","optionId":"no"}));
+    o.agent(&line(
+        json!({"jsonrpc":"2.0","id":"load2","result":{"_meta":{CONSTRUCT_META:{"turn":{"turn":4,"state":"waiting"}}}}}),
+    ));
+    assert_eq!(
+        o.permissions().resolved.iter().map(|r| r.verdict).collect::<Vec<_>>(),
+        [crate::permission::Verdict::Allowed, crate::permission::Verdict::Denied]
+    );
+}

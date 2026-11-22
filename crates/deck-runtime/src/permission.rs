@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 const LIMIT: usize = 16;
 const SUBJECT_BYTES: usize = 256;
@@ -86,12 +90,33 @@ pub(crate) struct Questions {
     revision: u64,
     sequence: u64,
     open: HashMap<Value, Question>,
-    resolved: VecDeque<Resolved>,
+    resolved: VecDeque<(u64, Resolved)>,
+    clock: Arc<AtomicU64>,
 }
 
 impl Questions {
     pub fn new(namespace: String) -> Self {
-        Self { namespace, revision: 0, sequence: 0, open: HashMap::new(), resolved: VecDeque::new() }
+        Self {
+            namespace,
+            revision: 0,
+            sequence: 0,
+            open: HashMap::new(),
+            resolved: VecDeque::new(),
+            clock: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// The observer serializes selected and staged sessions. Share their
+    /// resolution order so committing a replay cannot reorder recent answers.
+    pub fn stage(&self, namespace: String) -> Self {
+        Self {
+            namespace,
+            revision: 0,
+            sequence: 0,
+            open: HashMap::new(),
+            resolved: VecDeque::new(),
+            clock: self.clock.clone(),
+        }
     }
 
     /// A successful same-session load replaces wire questions but retains
@@ -99,6 +124,7 @@ impl Questions {
     pub fn retain_history(&mut self, mut previous: Questions) {
         previous.retire();
         previous.resolved.append(&mut self.resolved);
+        previous.resolved.make_contiguous().sort_by_key(|(order, _)| *order);
         while previous.resolved.len() > LIMIT {
             previous.resolved.pop_front();
         }
@@ -125,7 +151,7 @@ impl Questions {
             cursor: format!("{}:{}", self.namespace, self.revision),
             pending_count: self.open.len(),
             pending: pending.into_iter().take(LIMIT).map(|(_, q)| q.preview.clone()).collect(),
-            resolved: self.resolved.iter().cloned().collect(),
+            resolved: self.resolved.iter().map(|(_, resolution)| resolution.clone()).collect(),
         }
     }
 
@@ -222,12 +248,11 @@ impl Questions {
 
     fn resolve(&mut self, question: Pending, verdict: Verdict, source: Source) {
         self.revision += 1;
-        self.resolved.push_back(Resolved {
-            observation_id: question.observation_id,
-            turn: question.turn,
-            verdict,
-            source,
-        });
+        let order = self.clock.fetch_add(1, Ordering::Relaxed);
+        self.resolved.push_back((
+            order,
+            Resolved { observation_id: question.observation_id, turn: question.turn, verdict, source },
+        ));
         if self.resolved.len() > LIMIT {
             self.resolved.pop_front();
         }

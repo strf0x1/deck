@@ -443,7 +443,7 @@ impl Observer {
             _ => return,
         };
         self.session_epoch += 1;
-        self.staged = Some(Questions::new(format!("{}-{}", self.tag, self.session_epoch)));
+        self.staged = Some(self.questions.stage(format!("{}-{}", self.tag, self.session_epoch)));
         self.setup_request = Some((id.clone(), target));
     }
 
