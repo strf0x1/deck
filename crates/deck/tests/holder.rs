@@ -48,6 +48,13 @@ fn wait_for(f: &Fixture, id: &str, after: u64) -> Task {
     waited.task
 }
 
+/// The window consumes ACP directly; the holder records it on another thread.
+#[expect(clippy::unwrap_used, reason = "test process observations must succeed")]
+fn wait_idle(f: &Fixture, id: &str) -> Task {
+    eventually(|| f.daemon.task(id).unwrap().turn.is_some_and(|turn| turn.state == Phase::Idle));
+    f.daemon.task(id).unwrap()
+}
+
 #[test]
 fn with_no_window_a_prompt_runs_a_turn_that_the_record_follows() {
     let mut f = fixture("holder-alone");
@@ -99,7 +106,7 @@ fn a_window_attaching_mid_turn_is_re_asked_and_the_holder_records_the_end() {
     window.until(|a| a.session.ask.is_some());
     window.answer();
     window.idle();
-    let turn = wait_for(&f, &id, 0).turn.unwrap();
+    let turn = wait_idle(&f, &id).turn.unwrap();
     assert_eq!((turn.number, turn.state, turn.stop_reason.as_deref()), (1, Phase::Idle, Some("end_turn")));
 
     let permissions = f.daemon.task(&id).unwrap().permissions.unwrap();
@@ -203,6 +210,7 @@ fn a_coordinator_reads_the_question_and_observed_answer_through_control() {
     window.until(|a| a.session.ask.is_some());
     window.answer();
     window.idle();
+    wait_idle(&f, &id);
     let finished = call(json!({"operation":"wait","id":id,"after_turn":0,"wait_ms":1000}));
     let permissions = &finished["reply"]["task"]["permissions"];
     assert_eq!(permissions["pending_count"], 0, "{finished}");
