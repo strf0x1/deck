@@ -1817,7 +1817,10 @@ fn pull_request_state_is_read_through_the_tasks_gateway_and_kept_after_stop() {
 fn a_daemon_reports_itself_stale_after_its_binary_is_rebuilt() {
     let data = Daemon::data("stale");
     let exe = data.join("deckd");
-    std::fs::copy(env!("CARGO_BIN_EXE_deckd"), &exe).unwrap();
+    // Keep the copy's writable descriptor out of this multithreaded process:
+    // another test's fork could otherwise inherit it and cause ETXTBSY.
+    let copied = Command::new("cp").arg(env!("CARGO_BIN_EXE_deckd")).arg(&exe).status().unwrap();
+    assert!(copied.success(), "copy the daemon fixture before executing it");
     let paths = Paths::for_data(&data).unwrap();
     let mut daemon = Daemon {
         data: data.clone(),
