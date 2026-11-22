@@ -46,14 +46,79 @@ fn typing_a_prompt_and_answering_a_permission_by_key(cx: &mut TestAppContext) {
         .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
         .to_vec();
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell rm -rf x".into(), options }, cx)
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "shell rm -rf x".into(), options },
+            cx,
+        )
     });
+    draw(&mut cx);
+    assert!(cx.debug_bounds("permission-detail").is_none(), "title-only requests keep the compact card");
     // While a question is open, typing doesn't reach the prompt; digits answer.
     cx.simulate_keystrokes("z 2");
     deck.read_with(&cx, |d, _| {
         assert!(d.session().ask.is_none(), "the answer closes the question");
         assert_eq!(d.draft(), "");
     });
+}
+
+#[gpui::test]
+fn permission_details_survive_the_wire_and_scroll_above_the_answers(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+
+    let (deck, mut cx) = open(cx);
+    let (mut conn, _) = deck_acp::conn::Conn::start("/workspace".into());
+    conn.read(r#"{"id":1,"result":{"agentInfo":{"name":"construct"}}}"#);
+    let ready = conn.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+    for event in ready.events {
+        deck.update(&mut cx, |d, cx| d.on_inbound(event, cx));
+    }
+    let detail = format!(
+        "Branch: deck/worker\nMessage: Fix the parser\nStaged files:\n{}",
+        (0..100).map(|i| format!("src/file_{i}.rs\n")).collect::<String>()
+    );
+    let question = json!({
+        "jsonrpc": "2.0", "id": "commit-ask", "method": "session/request_permission",
+        "params": {
+            "sessionId": "s1",
+            "toolCall": {
+                "title": "commit (/workspace)",
+                "rawInput": { "type": "operation", "operation": "commit", "scope": "/workspace", "detail": detail }
+            },
+            "options": [
+                { "optionId": "once", "name": "Allow once", "kind": "allow_once" },
+                { "optionId": "deny", "name": "Deny", "kind": "reject_once" }
+            ]
+        }
+    });
+    for event in conn.read(&question.to_string()).events {
+        deck.update(&mut cx, |d, cx| d.on_inbound(event, cx));
+    }
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.session().ask.as_ref().unwrap().detail.as_deref(), Some(detail.as_str()));
+    });
+    draw(&mut cx);
+    let viewport = cx.debug_bounds("permission-detail").expect("the approval shows the supplied detail");
+    let before = cx.debug_bounds("permission-detail-text").unwrap();
+    let answers = cx.debug_bounds("permission-answers").unwrap();
+    assert!(before.size.height > viewport.size.height, "long detail has a bounded viewport");
+    assert!(answers.top() >= viewport.bottom(), "answers remain outside the scrolling detail");
+    cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-10000.))),
+        ..ScrollWheelEvent::default()
+    });
+    draw(&mut cx);
+    let after = cx.debug_bounds("permission-detail-text").unwrap();
+    assert!(after.top() < before.top(), "scrolling reveals the rest of the request");
+    assert!(after.bottom() <= viewport.bottom() + px(1.), "the final lines are reachable");
+    assert_eq!(cx.debug_bounds("permission-answers").unwrap(), answers);
+    cx.simulate_resize(gpui::size(px(760.), px(560.)));
+    draw(&mut cx);
+    assert!(cx.debug_bounds("permission-detail").unwrap().size.height <= px(168.));
+    let answers = cx.debug_bounds("permission-answers").unwrap();
+    assert!(answers.bottom() < px(560.), "answers fit a shorter window: {answers:?}");
+    cx.simulate_keystrokes("2");
+    deck.read_with(&cx, |d, _| assert!(d.session().ask.is_none(), "deny still answers the question"));
 }
 
 #[gpui::test]
@@ -377,6 +442,7 @@ fn reattached_turn_state_controls_typing_and_permission_keys(cx: &mut TestAppCon
     deck.update(&mut cx, |d, cx| {
         d.on_inbound(
             Inbound::Permission {
+                detail: None,
                 request: json!(902),
                 title: "read outside".into(),
                 options: vec![PermissionOption { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() }],
@@ -515,6 +581,7 @@ fn reviewing_external_access_does_not_answer_a_different_agent_permission(cx: &m
     deck.update(&mut cx, |d, cx| {
         d.on_inbound(
             Inbound::Permission {
+                detail: None,
                 request: json!(19),
                 title: "different agent permission".into(),
                 options: vec![PermissionOption {
@@ -853,7 +920,10 @@ fn the_exhale_fires_when_a_turn_ends_right_after_a_permission_answer(cx: &mut Te
         .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
         .to_vec();
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell git push".into(), options }, cx)
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "shell git push".into(), options },
+            cx,
+        )
     });
     cx.update(|window, _| window.refresh());
     let live = deck.read_with(&cx, |d, _| d.live_lane());
@@ -1064,7 +1134,10 @@ fn the_ask_card_springs_in_with_one_amber_pass(cx: &mut TestAppContext) {
         .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
         .to_vec();
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell git push".into(), options }, cx)
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "shell git push".into(), options },
+            cx,
+        )
     });
     cx.update(|window, _| window.refresh());
     deck.read_with(&cx, |d, _| {
@@ -1698,7 +1771,10 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert!(deck.read_with(&vcx, |d, _| d.can_stop()), "the detached task is stoppable");
     deck.update(&mut vcx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(42), title: "run a command".into(), options: vec![] }, cx)
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(42), title: "run a command".into(), options: vec![] },
+            cx,
+        )
     });
     draw(&mut vcx);
     let stop = vcx.debug_bounds("hdr-stop").expect("the stop button is shown").center();
@@ -2956,7 +3032,10 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     daemon.title(&a, "Review the worker output and summarize its changes").unwrap();
     deck.update(&mut vcx, |d, cx| {
         d.on_tasks(daemon.tasks().unwrap(), Default::default(), cx);
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "run a command".into(), options: vec![] }, cx);
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "run a command".into(), options: vec![] },
+            cx,
+        );
     });
     vcx.simulate_resize(gpui::size(px(1050.), px(800.)));
     draw(&mut vcx);
@@ -4182,6 +4261,7 @@ fn text_resize_keys_work_before_permissions_and_preserve_the_draft(cx: &mut Test
     deck.update(&mut cx, |d, cx| {
         d.on_inbound(
             Inbound::Permission {
+                detail: None,
                 request: json!(83),
                 title: "Read files".into(),
                 options: vec![PermissionOption { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() }],

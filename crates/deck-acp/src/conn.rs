@@ -644,10 +644,11 @@ mod tests {
         let mut c = handshake();
         let req = r#"{"jsonrpc":"2.0","id":"p9","method":"session/request_permission","params":{"toolCall":{"title":"shell rm"},"options":[{"optionId":"y","name":"Allow","kind":"allow_once"},{"optionId":"n","name":"Reject","kind":"reject_once"}]}}"#;
         let events = c.read(req).events;
-        let [Inbound::Permission { request, title, options }] = events.as_slice() else {
+        let [Inbound::Permission { request, title, detail, options }] = events.as_slice() else {
             panic!("expected one permission event");
         };
         assert_eq!(title, "shell rm");
+        assert_eq!(detail, &None);
         assert!(options[0].allows() && !options[1].allows());
         let reply = c.answer(request, Some("y")).unwrap();
         assert_eq!(
@@ -657,6 +658,49 @@ mod tests {
                 result: Ok(json!({"outcome":{"outcome":"selected","optionId":"y"}}))
             })
         );
+    }
+
+    #[test]
+    fn permission_requests_keep_the_agents_complete_detail() {
+        let detail = "Branch: deck/worker\nMessage: Fix the parser\nStaged files:\n  src/parser.rs\n";
+        for kind in ["operation", "path"] {
+            let mut c = handshake();
+            let req = rpc::request(
+                "ask-detail",
+                "session/request_permission",
+                json!({ "sessionId": "s1", "toolCall": {
+                    "title": "commit (/workspace)",
+                    "rawInput": { "type": kind, "detail": detail }
+                }}),
+            );
+            let events = c.read(&req).events;
+            let [Inbound::Permission { detail: actual, .. }] = events.as_slice() else {
+                panic!("expected one permission event");
+            };
+            assert_eq!(actual.as_deref(), Some(detail));
+        }
+    }
+
+    #[test]
+    fn permission_requests_without_text_detail_still_offer_their_answers() {
+        for input in [json!(null), json!({}), json!({"detail": 42}), json!({"detail": " \n\t"})] {
+            let mut c = handshake();
+            let req = rpc::request(
+                "ask-plain",
+                "session/request_permission",
+                json!({ "sessionId": "s1", "toolCall": { "title": "read a file", "rawInput": input },
+                    "options": [{ "optionId": "no", "name": "Deny", "kind": "reject_once" }] }),
+            );
+            let events = c.read(&req).events;
+            let [Inbound::Permission { request, title, detail, options }] = events.as_slice() else {
+                panic!("expected one permission event");
+            };
+            assert_eq!(title, "read a file");
+            assert_eq!(detail, &None);
+            assert_eq!(options[0].name, "Deny");
+            assert!(!options[0].allows());
+            assert!(c.answer(request, Some("no")).is_some());
+        }
     }
 
     #[test]

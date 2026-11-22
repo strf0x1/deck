@@ -124,6 +124,8 @@ pub fn transcript(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         return div()
             .debug_selector(|| "transcript-empty".into())
             .flex_1()
+            .min_h_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .items_center()

@@ -85,7 +85,7 @@ fn typing_and_answering_through_the_control_channel(cx: &mut TestAppContext) {
         .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
         .to_vec();
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell ls".into(), options }, cx)
+        d.on_inbound(Inbound::Permission { detail: None, request: json!(9), title: "shell ls".into(), options }, cx)
     });
     assert_eq!(send(&mut cx, &d, json!({ "cmd": "state" }))["session"]["ask"]["title"], json!("shell ls"));
     send(&mut cx, &d, json!({ "cmd": "key", "key": "1" }));

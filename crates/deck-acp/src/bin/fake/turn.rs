@@ -31,7 +31,13 @@ impl Turn {
 pub fn question(id: Value, session: &str, number: u32) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": {
         "sessionId": session,
-        "toolCall": { "toolCallId": format!("t{number}"), "title": "shell git push origin deck/spike" },
+        "toolCall": {
+            "toolCallId": format!("t{number}"), "title": "shell git push origin deck/spike",
+            "rawInput": {
+                "type": "operation", "operation": "push", "scope": "origin",
+                "detail": "Branch: deck/spike\nDestination: origin\nCommand: git push origin deck/spike"
+            }
+        },
         "options": [
             { "optionId": "allow", "name": "Allow once", "kind": "allow_once" },
             { "optionId": "always", "name": "Always allow", "kind": "allow_always" },

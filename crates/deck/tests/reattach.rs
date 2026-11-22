@@ -177,6 +177,53 @@ fn construct_waiting_reopen_continues_the_original_tool() {
 }
 
 #[test]
+fn construct_commit_permission_keeps_its_plan_across_reattach_and_honors_the_answer() {
+    fn git(cwd: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git").current_dir(cwd).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    for allow in [false, true] {
+        let Some(mut f) = Fixture::construct(
+            if allow { "commit-allow" } else { "commit-deny" },
+            json!({ "steps": [
+                { "call": "enable_tools", "args": { "groups": ["developer"] } },
+                { "call": "developer", "args": { "operation": "commit", "message": "Fix the parser" } },
+                { "text": "done" }
+            ] }),
+        ) else {
+            return;
+        };
+        git(&f.cwd, &["init", "-b", "main"]);
+        git(&f.cwd, &["config", "user.name", "Deck Test"]);
+        git(&f.cwd, &["config", "user.email", "deck@example.invalid"]);
+        std::fs::write(f.cwd.join("notes.txt"), "baseline\n").unwrap();
+        git(&f.cwd, &["add", "notes.txt"]);
+        git(&f.cwd, &["commit", "-m", "baseline"]);
+        std::fs::write(f.cwd.join("notes.txt"), "the staged fix\n").unwrap();
+        git(&f.cwd, &["add", "notes.txt"]);
+
+        let mut first = f.open();
+        first.prompt("Commit the staged parser fix");
+        first.until(|a| a.session.ask.is_some());
+        let detail = first.session.ask.as_ref().unwrap().detail.clone().expect("the commit plan reaches Deck");
+        for expected in ["Fix the parser", "main", "notes.txt"] {
+            assert!(detail.contains(expected), "missing {expected}: {detail}");
+        }
+        first.detach();
+        let mut next = f.open();
+        let ask = next.session.answered().expect("reattachment restores the pending commit");
+        assert_eq!(ask.detail.as_deref(), Some(detail.as_str()));
+        let option = ask.options.iter().find(|o| o.allows() == allow).unwrap();
+        next.client.as_ref().unwrap().answer(&ask.request, Some(&option.id)).unwrap();
+        next.idle();
+        assert_eq!(git(&f.cwd, &["log", "-1", "--format=%s"]), if allow { "Fix the parser" } else { "baseline" });
+        assert_eq!(git(&f.cwd, &["diff", "--cached", "--name-only"]), if allow { "" } else { "notes.txt" });
+    }
+}
+
+#[test]
 fn construct_finishes_while_detached_and_reopens_idle() {
     let Some(mut f) = Fixture::construct("real-complete", json!({ "steps": [{ "text": "finished while detached" }] }))
     else {

@@ -128,7 +128,7 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 .p(px(space::PAD))
                 .pt(px(space::DETAIL))
                 .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
-                .children(s.ask.as_ref().map(|_| ask(deck, cx)))
+                .children(s.ask.as_ref().map(|_| ask(deck, window, cx)))
                 // Access takes the keyboard, so the field it would block is not shown.
                 .children(
                     (!deck.access.is_open()
@@ -296,7 +296,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .into_any_element()
 }
 
-fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+fn ask(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> AnyElement {
     let Some(ask) = &deck.session().ask else { return div().into_any_element() };
     let first_allow = ask.options.iter().position(|o| o.allows());
     let buttons = ask.options.iter().enumerate().map(|(i, o)| {
@@ -342,7 +342,25 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .text_size(size::scaled(size::LABEL))
                 .child(ask.title.clone()),
         )
-        .child(div().flex().gap(px(space::LINE)).children(buttons))
+        .children(ask.detail.as_ref().map(|detail| {
+            div()
+                .id(gpui::SharedString::from(format!("permission-detail-{}", ask.request)))
+                .debug_selector(|| "permission-detail".into())
+                .max_h(px(240.).min(window.viewport_size().height * 0.3))
+                .overflow_y_scroll()
+                .text_size(size::scaled(size::SMALL))
+                .text_color(Tokens::text_dim())
+                .font_family(MONO)
+                .child(div().debug_selector(|| "permission-detail-text".into()).child(detail.clone()))
+        }))
+        .child(
+            div()
+                .debug_selector(|| "permission-answers".into())
+                .flex()
+                .flex_wrap()
+                .gap(px(space::LINE))
+                .children(buttons),
+        )
         // The entrance: the card springs in on opacity alone (never height),
         // and one amber pass crosses its outline — the waiting hue, spent
         // once on the moment that blocks on a human (`arrival.rs`).
