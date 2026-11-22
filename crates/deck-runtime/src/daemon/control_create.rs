@@ -111,12 +111,32 @@ fn in_checkout(runtime: &crate::Runtime, checkout: Option<&std::path::PathBuf>) 
 /// Start the worker, then send the brief once its holder can take it. A
 /// failed start is already on the worker's record.
 fn start_and_brief(cx: &Context, id: &str, from: &str, brief: &str) {
-    let launched = cx.service.lock().unwrap_or_else(|e| e.into_inner()).launch(id, false);
-    if let Err(error) = launched {
-        eprintln!("deckd: worker {id} did not start: {error:#}");
-        return;
-    }
-    deliver_brief(cx, id, from, brief);
+    let launched = {
+        let mut service = cx.service.lock().unwrap_or_else(|e| e.into_inner());
+        service.launch(id, false).and_then(|()| service.runtime.task(id))
+    };
+    let task = match launched {
+        Ok(task) => task,
+        Err(error) => {
+            eprintln!("deckd: worker {id} did not start: {error:#}");
+            return;
+        }
+    };
+    let brief = task.workspace.as_ref().map_or_else(
+        || brief.to_owned(),
+        |workspace| {
+            format!(
+                "You are on branch {} in a Git worktree Deck made for this task, starting at commit {}. \
+                 In Construct's workspace sandbox, shell Git cannot reach the repository metadata outside this worktree. \
+                 If needed, use enable_tools to enable the developer group, then use developer status, \
+                 developer stage with exact relative file paths, and developer commit. \
+                 Do not request access outside this worktree to run Git.\n\n{brief}",
+                crate::github::task_branch(id),
+                workspace.start
+            )
+        },
+    );
+    deliver_brief(cx, id, from, &brief);
 }
 
 pub(super) fn deliver_brief(cx: &Context, id: &str, from: &str, brief: &str) {
