@@ -77,6 +77,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
     let store = Store::open(data)?;
     let task = store.observe(id)?;
     let (exited, exit) = mpsc::channel();
+    let (mut exit_signal, exit_wake) = UnixStream::pair()?;
     // A coordinator's control surface on host loopback (ADR 0011 §4): its
     // gateway lives as long as this holder, and the agent gets its URL and
     // per-run token. Without it a coordinator would start with no authority.
@@ -95,6 +96,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
         &task.spec,
         Box::new(move |reason| {
             let _ = exited.send(reason);
+            let _ = exit_signal.write_all(&[1]);
         }),
         |agent| {
             remember(
@@ -142,8 +144,9 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
         std::thread::sleep(POLL);
     }
     loop {
-        if exit.try_recv().is_ok() {
-            return Ok(());
+        match exit.try_recv() {
+            Ok(_) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            Err(mpsc::TryRecvError::Empty) => {}
         }
         match listener.accept() {
             Ok((socket, _)) => {
@@ -176,7 +179,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                crate::wait::readable(listener.as_raw_fd(), POLL)?;
+                crate::wait::readable_or_shutdown(listener.as_raw_fd(), exit_wake.as_raw_fd())?;
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting holder control"),

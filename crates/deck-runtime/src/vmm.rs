@@ -553,6 +553,7 @@ fn accept_within(listener: &UnixListener, within: Duration) -> Result<UnixStream
 }
 
 fn control_loop(config: &Config, listener: UnixListener, shutdown: i32, acp: &Arc<HolderAcp>) -> Result<()> {
+    listener.set_nonblocking(false)?;
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
@@ -562,13 +563,6 @@ fn control_loop(config: &Config, listener: UnixListener, shutdown: i32, acp: &Ar
                 if EXITED.load(Ordering::Acquire) {
                     break;
                 }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if EXITED.load(Ordering::Acquire) {
-                    break;
-                }
-                crate::wait::readable(listener.as_raw_fd(), Duration::from_millis(20))
-                    .context("waiting for VMM control")?;
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting VMM control"),

@@ -137,6 +137,7 @@ impl Proxy {
         let identity = proxy.identity.clone();
         let done = proxy.done.clone();
         std::thread::spawn(move || {
+            let mut notification = crate::wait::process_exit(identity.holder.pid);
             while !done.load(Ordering::Acquire) {
                 if let Ok(Some(lock)) = stopped(&data, &id, &identity) {
                     // Cancellation is checked while holding the task lock, so
@@ -149,7 +150,7 @@ impl Proxy {
                     exited("detached holder exited".into());
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                crate::wait::exit_or_timeout(&mut notification);
             }
         });
         proxy

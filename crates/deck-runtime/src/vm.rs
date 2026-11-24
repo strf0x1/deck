@@ -558,11 +558,12 @@ fn watch(paths: Paths, id: String, holder: Holder, done: Arc<AtomicBool>, mut ch
         if let Some(child) = child.as_mut() {
             let _ = child.wait();
         } else {
+            let mut notification = crate::wait::process_exit(holder.pid);
             while reconcile::group_running(holder.pid).unwrap_or(false) {
                 if done.load(Ordering::Acquire) {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                crate::wait::exit_or_timeout(&mut notification);
             }
         }
         if done.load(Ordering::Acquire) {
