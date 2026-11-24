@@ -414,6 +414,21 @@ impl Runtime {
         inner.launch(task, Arc::downgrade(&self.inner))
     }
 
+    /// Find a running task, resuming a stopped one for a prompt. Concurrent
+    /// prompts share the same launch under the runtime lock.
+    pub(crate) fn running_for_prompt(&self, id: &str) -> Result<Task> {
+        let mut inner = self.lock();
+        let task = inner.store.load(id)?;
+        match task.state {
+            State::Stopped { .. } => {
+                inner.launch(task, Arc::downgrade(&self.inner))?;
+                inner.store.load(id)
+            }
+            State::Running if inner.live.contains_key(id) => Ok(task),
+            _ => bail!("task {id} is not running or is stopping"),
+        }
+    }
+
     /// The running task's ACP stream.
     pub fn attach(&self, id: &str) -> Result<Stream> {
         let mut inner = self.lock();

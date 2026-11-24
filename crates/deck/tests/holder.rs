@@ -10,7 +10,6 @@ mod support;
 
 use deck::ui::session::Status;
 use deck_runtime::{Phase, PromptReply, Spec, Task};
-use std::time::Duration;
 use support::{Fixture, eventually};
 
 /// A fake-agent fixture whose agent logs each `initialize` by client name.
@@ -137,13 +136,49 @@ fn a_restarted_deckd_keeps_the_last_turn() {
 }
 
 #[test]
-fn a_wait_times_out_cleanly_and_a_stopped_task_cannot_be_prompted() {
+fn a_prompt_resumes_a_stopped_task_and_its_session() {
     let mut f = fixture("holder-wait");
     let id = start(&mut f);
     let waited = f.daemon.wait(&id, None, 100).unwrap();
     assert!(waited.timed_out);
+    assert_eq!(f.daemon.prompt(&id, "first", None).unwrap(), PromptReply::Started { turn: 1 });
+    wait_for(&f, &id, 0);
+    let mut window = f.open();
+    window.until(|a| a.session.ask.is_some());
+    window.answer();
+    window.idle();
+    window.detach();
+    let session = f.daemon.task(&id).unwrap().session_id.unwrap();
     f.daemon.stop(&id).unwrap();
-    let refused = f.daemon.prompt(&id, "hello", None).unwrap_err();
-    assert!(format!("{refused:#}").contains("not running"), "{refused:#}");
-    std::thread::sleep(Duration::from_millis(10));
+    assert_eq!(f.daemon.prompt(&id, "second", None).unwrap(), PromptReply::Started { turn: 2 });
+    let task = wait_for(&f, &id, 1);
+    assert_eq!(task.session_id.as_deref(), Some(session.as_str()));
+    assert_eq!(task.turn.unwrap().state, Phase::Waiting);
+    let prompts = f.daemon.prompts(&id).unwrap();
+    assert_eq!(prompts.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+}
+
+#[test]
+fn concurrent_prompts_share_one_resume() {
+    let mut f = fixture("holder-concurrent-resume");
+    let id = start(&mut f);
+    f.daemon.stop(&id).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let threads: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|text| {
+            let client = deck_runtime::DaemonClient::connect(&f.root.join("data")).unwrap();
+            let id = id.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                client.prompt(&id, text, None).unwrap()
+            })
+        })
+        .collect();
+    barrier.wait();
+    let replies: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+    assert_eq!(replies.iter().filter(|reply| **reply == PromptReply::Started { turn: 1 }).count(), 1);
+    assert_eq!(replies.iter().filter(|reply| **reply == PromptReply::Busy).count(), 1);
+    assert_eq!(f.daemon.prompts(&id).unwrap().len(), 1);
 }

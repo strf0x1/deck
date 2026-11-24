@@ -239,8 +239,10 @@ policy, or a task that is not a coordinator, is `refused`):
   fails to start is `failed` in its summary, which wakes a `wait`.
 - **`prompt`** waits up to 60 s for a just-created worker to run and its
   brief to be sent, then prompts through the holder: `{ turn }`, or `busy`
-  while a turn is working or waiting. A stopped, failed or destroyed task is
-  `refused`; this surface does not resume.
+  while a turn is working or waiting. A stopped worker is resumed before the
+  prompt if the concurrent-worker and shared-checkout limits allow it. Resume
+  does not count against the creation rate. A failed or destroyed task is
+  `refused`.
 - **`wait`** (`wait_ms` at most 300000, larger is `bad_request`, never
   shortened; `after_turn` defaults to 0) ends when the task stops, fails or
   is destroyed, when a turn after `after_turn` is idle, or when a pending

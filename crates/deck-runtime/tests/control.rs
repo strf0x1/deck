@@ -29,6 +29,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        self._holders.stop();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -368,9 +369,39 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     let third = json!({ "operation": "create", "project": project.id, "brief": "Third" });
     assert_eq!(code(&post(&url, t, &third)), (403, "deck_control_cap"));
 
-    // No refusal made an approval.
+    // A stopped worker cannot resume past the concurrent cap or into an
+    // occupied checkout, even though the creation rate cap is separate.
     let prompt_stopped = json!({ "operation": "prompt", "id": worker, "text": "more" });
-    assert_eq!(code(&post(&url, t, &prompt_stopped)), (403, "deck_control_refused"));
+    let mut limits = client.coordinator_policy(&coordinator, None).unwrap();
+    limits.policy.max_concurrent = 1;
+    client.coordinator_policy(&coordinator, Some(limits.clone())).unwrap();
+    let capped = post(&url, t, &prompt_stopped);
+    assert_eq!(code(&capped), (403, "deck_control_cap"));
+    assert!(capped.1["error"]["message"].as_str().unwrap().contains("live workers"));
+    limits.policy.max_concurrent = 4;
+    client.coordinator_policy(&coordinator, Some(limits)).unwrap();
+    assert_eq!(code(&post(&url, t, &prompt_stopped)), (403, "deck_control_cap"));
+    let second_id = again["id"].as_str().unwrap();
+    eventually(|| client.task(second_id).is_ok_and(|task| task.state == deck_runtime::State::Running));
+    client.stop(second_id).unwrap();
+
+    // A previously started worker without a session can be resumed and
+    // prompted even when the creation rate cap has been reached.
+    let resumable = client
+        .create(Spec {
+            argv: agent.clone(),
+            cwd: repo.clone(),
+            project: Some(project.id.clone()),
+            created_by: Some(coordinator.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+    client.start(&resumable.id).unwrap();
+    client.stop(&resumable.id).unwrap();
+    let (status, resumed) = post(&url, t, &json!({ "operation": "prompt", "id": resumable.id, "text": "Resume" }));
+    assert_eq!((status, resumed["turn"].clone()), (200, json!(1)), "{resumed}");
+    assert_eq!(client.prompts(&resumable.id).unwrap()[0].from.as_deref(), Some(coordinator.as_str()));
+    assert!(client.approvals(&resumable.id).unwrap().is_empty());
     assert!(client.approvals(&worker).unwrap().is_empty());
     assert!(client.approvals(&coordinator).unwrap().is_empty());
 
@@ -390,7 +421,7 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     std::fs::rename(&policy, policy.with_extension("moved")).unwrap();
     assert_eq!(code(&post(&url, t, &tasks)), (403, "deck_control_refused"));
 
-    for id in [coordinator.as_str(), mine.id.as_str(), again["id"].as_str().unwrap()] {
+    for id in [coordinator.as_str(), mine.id.as_str(), again["id"].as_str().unwrap(), resumable.id.as_str()] {
         let _ = client.stop(id);
     }
 }

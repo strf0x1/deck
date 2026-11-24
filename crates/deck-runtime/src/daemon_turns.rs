@@ -20,10 +20,22 @@ const POLL: Duration = Duration::from_millis(20);
 /// Prompt `id` through its holder, recording the session the holder set up
 /// and the prompt itself.
 pub(crate) fn prompt(runtime: &Runtime, id: &str, text: &str, from: Option<&str>) -> Result<PromptReply> {
+    let task = runtime.running_for_prompt(id)?;
+    prompt_task(runtime, task, text, from)
+}
+
+/// A new worker's initial brief must not restart it if it was stopped while
+/// its launch was in progress.
+pub(crate) fn prompt_running(runtime: &Runtime, id: &str, text: &str, from: Option<&str>) -> Result<PromptReply> {
     let task = runtime.task(id)?;
     if task.state != State::Running {
         bail!("task {id} is not running");
     }
+    prompt_task(runtime, task, text, from)
+}
+
+fn prompt_task(runtime: &Runtime, task: Task, text: &str, from: Option<&str>) -> Result<PromptReply> {
+    let id = &task.id;
     let holder = task.holder.as_ref().context("the task has no holder to prompt through")?;
     // The agent's directory as the window would name it (`deck/src/task.rs`).
     let cwd = if task.backend == "vm" { "/workspace".into() } else { task.spec.cwd.display().to_string() };

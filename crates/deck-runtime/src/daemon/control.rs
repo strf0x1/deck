@@ -204,6 +204,10 @@ fn prompt(cx: &Context, coordinator: &str, policy: &Policy, id: &str, text: &str
             return Err(Refusal::new(Code::Busy, reason));
         }
         let briefing = cx.briefs.lock().unwrap_or_else(|e| e.into_inner()).contains(id);
+        if matches!(task.state, State::Stopped { .. }) && !briefing {
+            resume_worker(cx, coordinator, id)?;
+            break;
+        }
         if task.state == State::Running && !briefing {
             break;
         }
@@ -212,7 +216,7 @@ fn prompt(cx: &Context, coordinator: &str, policy: &Policy, id: &str, text: &str
         }
         std::thread::sleep(POLL);
     }
-    match crate::daemon_turns::prompt(&cx.runtime, id, text, Some(coordinator)) {
+    match crate::daemon_turns::prompt_running(&cx.runtime, id, text, Some(coordinator)) {
         Ok(PromptReply::Started { turn }) => Ok(json!({ "turn": turn })),
         Ok(PromptReply::Busy) => {
             let state = cx.runtime.task(id).ok().and_then(|task| task.turn).map_or(Phase::Working, |t| t.state);
@@ -225,6 +229,31 @@ fn prompt(cx: &Context, coordinator: &str, policy: &Policy, id: &str, text: &str
             Err(internal(error))
         }
     }
+}
+
+/// Serialize admission and launch with worker creation, so two control
+/// operations cannot consume the same concurrent or checkout slot.
+fn resume_worker(cx: &Context, coordinator: &str, id: &str) -> Result<(), Refusal> {
+    let service = cx.service.lock().unwrap_or_else(|e| e.into_inner());
+    let task = service.runtime.task(id).map_err(internal)?;
+    control::promptable(&task)?;
+    if !matches!(task.state, State::Stopped { .. }) {
+        return Ok(());
+    }
+    let policy = service.runtime.policy(coordinator).map_err(internal)?;
+    let live = service
+        .runtime
+        .tasks()
+        .map_err(internal)?
+        .into_iter()
+        .filter(|worker| worker.spec.created_by.as_deref() == Some(coordinator))
+        .filter(|worker| matches!(worker.state, State::Created | State::Running))
+        .count();
+    let in_place = (task.backend == "local" && task.workspace.is_none())
+        .then(|| super::control_create::in_checkout(&service.runtime, Some(&task.spec.cwd)));
+    control::admit_resume(&policy, live, in_place)?;
+    service.runtime.running_for_prompt(id).map_err(internal)?;
+    Ok(())
 }
 
 fn wait(cx: &Context, coordinator: &str, policy: &Policy, id: &str, after_turn: u64, wait_ms: u64) -> Decided {

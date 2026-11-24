@@ -134,11 +134,29 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        self._holders.stop();
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.data);
         let _ = std::fs::remove_dir_all(&self.paths.directory);
     }
+}
+
+#[test]
+fn fixture_stops_live_tasks_before_removing_their_data() {
+    let (daemon, client) = Daemon::new("fixture-cleanup");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    let started = client.start(&task.id).unwrap();
+    let holder = started.holder.unwrap().pid;
+    let agent = started.pid.unwrap();
+    let data = daemon.data.clone();
+    assert!(running(holder));
+    assert!(running(agent));
+    drop(client);
+    drop(daemon);
+    assert!(!running(holder));
+    assert!(!running(agent));
+    assert!(!data.exists());
 }
 
 fn eventually(mut check: impl FnMut() -> bool) {
