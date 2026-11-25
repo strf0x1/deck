@@ -281,6 +281,65 @@ fn idle_exit_waits_for_control_clients_and_idle_subscriptions() {
 }
 
 #[test]
+fn idle_grace_starts_when_the_last_client_disconnects() {
+    let (mut daemon, client) = Daemon::new("idle-grace");
+    std::thread::sleep(IDLE * 2);
+    drop(client);
+    std::thread::sleep(IDLE / 2);
+    assert!(daemon.child.try_wait().unwrap().is_none(), "the full idle grace follows the last disconnect");
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn last_holder_exit_allows_daemon_to_exit_without_another_client() {
+    let (mut daemon, client) = Daemon::new("last-holder-idle");
+    let run = client.run(daemon.spec(&["sleep", "60"])).unwrap();
+    let holder = run.task.holder.unwrap();
+    drop(client);
+    // SAFETY: this fixture owns the holder it just launched.
+    assert_eq!(unsafe { libc::kill(holder.pid as i32, libc::SIGKILL) }, 0);
+    assert!(daemon.wait_exit().success());
+    let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
+    assert!(matches!(store.load(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }));
+}
+
+#[test]
+fn holder_exit_is_recorded_without_a_client_request() {
+    let (daemon, client) = Daemon::new("holder-exit-notice");
+    let run = client.run(daemon.spec(&["sleep", "60"])).unwrap();
+    let holder = run.task.holder.unwrap();
+    let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    // SAFETY: this fixture owns the holder it just launched.
+    assert_eq!(unsafe { libc::kill(holder.pid as i32, libc::SIGKILL) }, 0);
+    loop {
+        if matches!(store.load(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "holder exit was not recorded promptly");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn local_stop_delivers_sigterm_before_the_helper_cleans_up() {
+    let (daemon, client) = Daemon::new("local-term");
+    let ready = daemon.data.join("ready");
+    let stopped = daemon.data.join("stopped");
+    let script = "trap 'echo term > \"$1\"; exit 0' TERM; echo ready > \"$2\"; while :; do sleep 0.1; done";
+    let run = client
+        .run(daemon.spec(&["sh", "-c", script, "sh", stopped.to_str().unwrap(), ready.to_str().unwrap()]))
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "agent did not install its signal handler");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    client.stop(&run.task.id).unwrap();
+    assert_eq!(std::fs::read_to_string(stopped).unwrap().trim(), "term");
+}
+
+#[test]
 fn control_and_acp_disconnect_leave_the_task_running() {
     let (mut daemon, client) = Daemon::new("detach");
     let spec = daemon.spec(&["cat"]);

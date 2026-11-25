@@ -13,7 +13,7 @@ use crate::{Runtime, Spec, State, Task};
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use std::fs::OpenOptions;
-use std::io::{BufReader, Read as _};
+use std::io::{BufReader, Read as _, Write as _};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -103,6 +103,17 @@ pub fn serve(options: Options) -> Result<()> {
         backends.insert(0, Box::new(crate::vm::Vm::from_env(&options.data, options.paths.clone())?));
     }
     let runtime = Runtime::open_with(&options.data, backends)?;
+    let (wake, mut events) = UnixStream::pair()?;
+    wake.set_nonblocking(true)?;
+    events.set_nonblocking(true)?;
+    let wake = Arc::new(wake);
+    let mut notices = runtime.subscribe();
+    let notice_wake = wake.clone();
+    std::thread::spawn(move || {
+        while futures::executor::block_on(notices.recv()).is_ok() {
+            wake_loop(&notice_wake);
+        }
+    });
     let projects = crate::project::Projects::open(&options.data)?;
     let boundary = Boundary::open(&options.data)?;
     let broker = Arc::new(Broker::open(&options.data, store)?);
@@ -128,6 +139,7 @@ pub fn serve(options: Options) -> Result<()> {
     });
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut idle_since = Instant::now();
+    let mut was_busy = false;
     loop {
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -142,9 +154,10 @@ pub fn serve(options: Options) -> Result<()> {
                 let reader = reader.clone();
                 let host = host.clone();
                 let shutdown = shutdown.clone();
+                let wake = wake.clone();
                 std::thread::spawn(move || {
-                    let _connected = Connected(client_count);
-                    if let Err(e) = connection(socket, service, boundary, broker, reader, host, shutdown) {
+                    let _connected = Connected(client_count, wake.clone());
+                    if let Err(e) = connection(socket, service, boundary, broker, reader, host, (shutdown, wake)) {
                         eprintln!("deckd: client: {e:#}");
                     }
                 });
@@ -159,13 +172,21 @@ pub fn serve(options: Options) -> Result<()> {
             let service = service.lock().unwrap_or_else(|e| e.into_inner());
             service.runtime.has_live_tasks() || !service.briefs.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
         };
-        if running || clients.load(Ordering::Acquire) != 0 {
+        let busy = running || clients.load(Ordering::Acquire) != 0;
+        if busy || was_busy {
             idle_since = Instant::now();
         } else if idle_since.elapsed() >= options.idle {
             break;
         }
-        // A client wakes this wait; the timeout keeps the idle check alive.
-        crate::wait::readable(listener.as_raw_fd(), POLL).context("waiting for a daemon client")?;
+        was_busy = busy;
+        let timeout = if busy {
+            Duration::from_secs(1)
+        } else {
+            options.idle.saturating_sub(idle_since.elapsed()).min(Duration::from_secs(1))
+        };
+        wait_for_activity(&listener, &events, timeout)?;
+        let mut bytes = [0; 256];
+        let _ = events.read(&mut bytes);
     }
     Ok(())
 }
@@ -177,7 +198,7 @@ fn connection(
     broker: Arc<Broker>,
     reader: Arc<crate::pull_request::Reader>,
     host: Arc<Host>,
-    shutdown: Arc<std::sync::atomic::AtomicBool>,
+    shutdown: (Arc<std::sync::atomic::AtomicBool>, Arc<UnixStream>),
 ) -> Result<()> {
     socket.set_nonblocking(false)?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -190,7 +211,8 @@ fn connection(
                 // Tasks live in their holders, so exiting ends no agent; the
                 // next daemon adopts them (docs/deckd.md).
                 wire::write(&mut socket, &reply(Ok(json!(null))))?;
-                shutdown.store(true, Ordering::Release);
+                shutdown.0.store(true, Ordering::Release);
+                wake_loop(&shutdown.1);
             }
             Ok(Request::Subscribe) => {
                 let rx = service.lock().unwrap_or_else(|e| e.into_inner()).runtime.subscribe();
@@ -869,10 +891,29 @@ impl Service {
     }
 }
 
-struct Connected(Arc<AtomicUsize>);
+fn wake_loop(mut wake: &UnixStream) {
+    let _ = wake.write(&[1]);
+}
+
+fn wait_for_activity(listener: &UnixListener, wake: &UnixStream, timeout: Duration) -> Result<()> {
+    let mut fds = [
+        libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
+    let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: both borrowed descriptors and the poll array remain live.
+    let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, millis) };
+    if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+        return Err(std::io::Error::last_os_error()).context("waiting for daemon activity");
+    }
+    Ok(())
+}
+
+struct Connected(Arc<AtomicUsize>, Arc<UnixStream>);
 impl Drop for Connected {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
+        wake_loop(&self.1);
     }
 }
 struct SocketPath(PathBuf);
