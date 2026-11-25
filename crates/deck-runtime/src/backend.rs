@@ -20,6 +20,12 @@ pub struct Stream {
     pub writer: Box<dyn Writer>,
 }
 
+/// A confirmed process exit and the evidence available about its shutdown.
+pub struct StopOutcome {
+    pub clean: bool,
+    pub reason: String,
+}
+
 /// Called once, from any thread, when a task's process ends without being
 /// stopped. The argument says how it ended.
 pub type Exited = Box<dyn FnOnce(String) + Send>;
@@ -73,4 +79,10 @@ pub trait Instance: Send {
     /// Ask the process to end, wait up to `grace`, then force it. Returns how
     /// it ended once it is confirmed gone; an error means it may still run.
     fn stop(&mut self, grace: Duration) -> Result<String>;
+
+    /// Classify a confirmed exit. Local backends preserve the existing
+    /// requested-stop meaning; VM backends must also confirm guest unmount.
+    fn stop_outcome(&mut self, grace: Duration) -> Result<StopOutcome> {
+        self.stop(grace).map(|reason| StopOutcome { clean: true, reason })
+    }
 }

@@ -448,11 +448,11 @@ impl Runtime {
             (live, inner.grace)
         };
         // Not under the lock: a stop can take the whole grace period.
-        let outcome = live.instance.stop(grace);
+        let outcome = live.instance.stop_outcome(grace);
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
         match outcome {
-            Ok(reason) => inner.record(&mut task, Event::Stopped { clean: true, reason }),
+            Ok(outcome) => inner.record(&mut task, Event::Stopped { clean: outcome.clean, reason: outcome.reason }),
             Err(e) => {
                 let failure = Failure::ShutdownUnconfirmed(format!("{e:#}"));
                 inner.live.insert(id.into(), live);

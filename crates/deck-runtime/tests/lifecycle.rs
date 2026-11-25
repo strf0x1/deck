@@ -409,6 +409,31 @@ mod supervision {
             }
             Ok("confirmed stop".into())
         }
+        fn stop_outcome(&mut self, grace: Duration) -> anyhow::Result<deck_runtime::backend::StopOutcome> {
+            self.stop(grace)?;
+            Ok(deck_runtime::backend::StopOutcome { clean: false, reason: "unmount unconfirmed".into() })
+        }
+    }
+
+    #[test]
+    fn confirmed_exit_can_record_an_unclean_stop() {
+        let dir = Scratch::new("unclean-stop");
+        let backend = Deferred { callbacks: Arc::new(Mutex::new(vec![])), fail_stop: false };
+        let runtime = Runtime::open(&dir.0, backend).unwrap();
+        let id = runtime.create(spec(&["cat"])).unwrap();
+        runtime.start(&id).unwrap();
+        runtime.stop(&id).unwrap();
+        assert_eq!(
+            runtime.task(&id).unwrap().state,
+            State::Stopped { clean: false, reason: "unmount unconfirmed".into() }
+        );
+        drop(runtime);
+        let reopened =
+            Runtime::open(&dir.0, Deferred { callbacks: Arc::new(Mutex::new(vec![])), fail_stop: false }).unwrap();
+        assert_eq!(
+            reopened.task(&id).unwrap().state,
+            State::Stopped { clean: false, reason: "unmount unconfirmed".into() }
+        );
     }
 
     #[test]

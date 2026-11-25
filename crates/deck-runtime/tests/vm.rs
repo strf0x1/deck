@@ -88,7 +88,9 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     ready(&runtime, &id, true);
 
     runtime.stop(&id).unwrap();
-    assert!(matches!(runtime.task(&id).unwrap().state, State::Stopped { clean: true, .. }));
+    assert!(
+        matches!(runtime.task(&id).unwrap().state, State::Stopped { clean: false, reason } if reason.contains("guest did not confirm unmount"))
+    );
 
     // Resume reuses the same disks; the journal survives the stop.
     runtime.resume(&id).unwrap();

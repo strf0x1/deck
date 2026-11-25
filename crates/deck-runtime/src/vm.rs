@@ -545,6 +545,11 @@ impl Instance for VmInstance {
         cleanup(&self.paths, &self.id);
         Ok(reason)
     }
+
+    fn stop_outcome(&mut self, grace: Duration) -> Result<crate::backend::StopOutcome> {
+        let reason = self.stop(grace)?;
+        Ok(crate::backend::StopOutcome { clean: false, reason: format!("guest did not confirm unmount ({reason})") })
+    }
 }
 
 impl Drop for VmInstance {

@@ -130,7 +130,7 @@ pub enum Failure {
 pub enum State {
     Created,
     Running,
-    /// `clean` is false when the process ended without being asked to.
+    /// `clean` is false after an unexpected exit or an unconfirmed guest unmount.
     Stopped {
         clean: bool,
         reason: String,
