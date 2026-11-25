@@ -27,7 +27,12 @@ fn a_failed_write_reconnects_even_for_a_mutation() {
     // the request never reached a peer and a mutation may be retried.
     let (dead, peer) = UnixStream::pair().unwrap();
     drop(peer);
-    let client = DaemonClient { socket: Arc::new(Mutex::new(Some(BufReader::new(dead)))), paths, start: None };
+    let client = DaemonClient {
+        socket: Arc::new(Mutex::new(Some(BufReader::new(dead)))),
+        paths,
+        start: None,
+        inherit_stderr: true,
+    };
     client.stop("t").unwrap();
     server.join().unwrap();
 }
