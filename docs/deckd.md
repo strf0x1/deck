@@ -626,6 +626,7 @@ request the old daemon cannot parse. A daemon predating the handshake answers
 deck daemon status     # pid, version, protocol, executable, staleness, tasks
 deck daemon stop       # ask deckd to exit; its task holders keep their agents
 deck daemon restart    # stop, then start the deckd beside this deck binary
+deck task list         # tasks, state, phase and process memory
 deck task resume <id>  # restart a stopped task in the selected data root
 ```
 
@@ -641,6 +642,11 @@ Deck is open; `stop` is for when it is closed.
 `deck task resume <id>` starts the daemon if needed and resumes the named
 task through its normal backend. Use `deck -- task ...` to run an agent named
 `task` instead of the task subcommand.
+
+`deck task list` reports the VMM's memory for VM tasks, as physical footprint
+on macOS and RSS on Linux. Local task memory is unavailable: the recorded PID
+identifies the supervisor, not the agent. A dash means the value is unavailable.
+Idle deadlines and keep-running settings are not implemented yet.
 
 ## Paths and lifetime
 

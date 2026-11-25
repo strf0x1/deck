@@ -53,6 +53,16 @@ fn task_resume_runs_through_the_cli_and_rejects_invalid_requests() {
     let spec = Spec { argv: vec!["cat".into()], cwd: fixture.data.clone(), ..Default::default() };
     let task = client.run(spec).unwrap().task;
     client.stop(&task.id).unwrap();
+    let list = Command::new(env!("CARGO_BIN_EXE_deck"))
+        .args(["task", "list"])
+        .env("DECK_DATA", &fixture.data)
+        .output()
+        .unwrap();
+    assert!(list.status.success(), "{}", String::from_utf8_lossy(&list.stderr));
+    let listing = String::from_utf8(list.stdout).unwrap();
+    let row = listing.lines().find(|line| line.starts_with(&task.id)).unwrap();
+    let fields: Vec<_> = row.split('\t').collect();
+    assert_eq!(&fields[2..], &["task", "local", "stopped", "-", "-"]);
     client.shutdown().unwrap();
     drop(client);
     assert!(fixture.daemon.wait().unwrap().success());
@@ -73,10 +83,19 @@ fn task_resume_runs_through_the_cli_and_rejects_invalid_requests() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), format!("resumed task {}", task.id));
     assert_eq!(DaemonClient::connect(&fixture.data).unwrap().task(&task.id).unwrap().state, State::Running);
 
+    let output = run(&["task", "list"]);
+    assert!(output.status.success());
+    let listing = String::from_utf8(output.stdout).unwrap();
+    let row = listing.lines().find(|line| line.starts_with(&task.id)).unwrap();
+    let fields: Vec<_> = row.split('\t').collect();
+    assert_eq!(&fields[2..5], &["task", "local", "running"]);
+    assert_eq!(fields[6], "-", "the local PID names its supervisor, not its agent");
+    assert!(listing.contains("Idle deadlines and keep-running settings are not available yet."));
+
     let output = run(&["task", "resume", &task.id]);
     assert!(!output.status.success(), "a running task cannot be resumed");
     assert!(!run(&["task", "resume", "missing-task"]).status.success());
     let output = run(&["task", "resume"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: deck task resume <id>"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: deck task list | resume <id>"));
 }
