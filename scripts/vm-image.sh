@@ -80,6 +80,8 @@ cp "$scratch/construct" "$scratch/rootfs/usr/local/bin/construct"
 chmod 755 "$scratch/rootfs/usr/local/bin/construct"
 cp "$scratch/deck-egress" "$scratch/rootfs/usr/local/bin/deck-egress"
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-egress"
+cp "$deck_src/scripts/vm-shutdown-probe.sh" "$scratch/rootfs/usr/local/bin/deck-shutdown-probe"
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-shutdown-probe"
 cat > "$scratch/rootfs/usr/local/bin/deck-guest" <<'GUEST'
 #!/bin/sh
 # deck's guest entry: provision the workspace once, prepare the checkout for

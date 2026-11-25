@@ -1,5 +1,58 @@
 # libkrun VM spike (#16)
 
+## What happens when a guest workload exits
+
+On 2026-11-24, an Apple Silicon Mac running libkrun 1.19.7 and
+libkrunfw 5.6.2 booted a copy of `target/vm/base.img` with `/bin/echo`
+as its guest workload. The guest console contained `DECK_EXIT_PROBE`.
+The VMM process exited with status 0 after 0.23 seconds, but the line
+after `krun_start_enter` did not execute. In this libkrun version,
+`Vmm::stop` calls `libc::_exit` after notifying its exit observers. A
+shutdown protocol cannot rely on code after `krun_start_enter` to record
+confirmation. This measurement does not establish that the guest disks
+were unmounted cleanly. Linux has not been measured here.
+
+To repeat the macOS measurement, build the pinned libkrun as described
+below, then run the probe against a copy of the image:
+
+```sh
+clang -I /tmp/libkrun/include scripts/vm-exit-probe.c \
+  -L /tmp/libkrun/target/release -lkrun -o /tmp/deck-vm-exit-probe
+scripts/vm-sign.sh /tmp/deck-vm-exit-probe
+cp -c target/vm/base.img /tmp/deck-vm-exit-probe.img
+time env DYLD_LIBRARY_PATH=/tmp/libkrun/target/release:/opt/homebrew/opt/libkrunfw/lib \
+  /tmp/deck-vm-exit-probe /tmp/deck-vm-exit-probe.img /tmp/deck-vm-exit-probe.console
+cat /tmp/deck-vm-exit-probe.console
+```
+
+The library's install name is `libkrun.1.dylib`. If the build did not
+create that symlink, add it in `/tmp/libkrun/target/release` before running
+the probe. Use a fresh console path on each run.
+
+## Guest unmount and disk recovery probe
+
+On 2026-11-24, the same Mac booted a disposable image built by
+`scripts/vm-image.sh` with OrbStack. The guest wrote a file on the root disk
+and another on the journal disk, synced both, unmounted the journal,
+remounted the root read-only, and requested poweroff. The console showed
+`DECK_UNMOUNT_CONFIRMED` and the kernel's `reboot: Power down` message. A
+second boot read both files and reported the same unmount and poweroff
+markers. Both VMM processes exited with status 0. This verifies those disk
+operations in the probe, not an agent session or Deck's stop path.
+
+The probe copies the images into a temporary directory and leaves the
+templates unchanged. Build the image and run it with the pinned libkrun
+source and release build:
+
+```sh
+scripts/vm-image.sh ../construct /tmp/deck-vm-probe-image
+python3 scripts/vm-shutdown-probe.py /tmp/libkrun /tmp/deck-vm-probe-image
+```
+
+The host script requires both the guest unmount marker and the kernel
+poweroff message on each boot. The second boot must also report
+`DECK_DISKS_VERIFIED`. The probe has not been run on Linux.
+
 Status: spike complete on macOS 27 / Apple M4 Pro, 2026-11-02, and verified
 on Linux/x86_64 (KVM) the same day. Decisions are in
 [ADR 0003](adr/0003-vm-backend.md); this file is the recipe and the numbers.
