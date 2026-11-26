@@ -114,6 +114,10 @@ pub struct Deck {
     pub(super) needs_you: Vec<super::attention::Item>,
     pub(super) attention_since: HashMap<String, Instant>,
     pub(super) approvals: HashMap<String, Vec<Approval>>,
+    pub(super) recoveries: HashMap<String, Vec<deck_runtime::recovery::Item>>,
+    pub(super) recovery_busy: HashSet<String>,
+    pub(super) recovery_errors: HashMap<String, String>,
+    pub(super) recovery_revision: u64,
     /// The highest turn number this window already reported as seen.
     pub(super) seen_sent: HashMap<String, u64>,
     /// The titles this window already asked `deckd` to record, by task
@@ -208,6 +212,10 @@ impl Deck {
             needs_you: Vec::new(),
             attention_since: HashMap::new(),
             approvals: HashMap::new(),
+            recoveries: HashMap::new(),
+            recovery_busy: HashSet::new(),
+            recovery_errors: HashMap::new(),
+            recovery_revision: 0,
             seen_sent: HashMap::new(),
             titled: HashMap::new(),
             settled: Vec::new(),
@@ -762,6 +770,21 @@ impl Deck {
         if self.worktree_pane().is_some() && k.key == "escape" {
             cx.stop_propagation();
             return self.close_worktree(cx);
+        }
+        if self.interrupted().is_some() {
+            cx.stop_propagation();
+            if k.modifiers.control || k.modifiers.platform || k.modifiers.alt {
+                return;
+            }
+            match k.key.as_str() {
+                "escape" => self.choose_interrupted(None, cx),
+                d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) && d != "0" => {
+                    let i = d.parse::<usize>().unwrap_or(1) - 1;
+                    self.choose_interrupted(Some(i), cx);
+                }
+                _ => {}
+            }
+            return;
         }
         if self.current().session.ask.is_some() && !self.current().boundary.is_reviewing() {
             cx.stop_propagation();

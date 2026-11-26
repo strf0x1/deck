@@ -27,6 +27,7 @@ mod control;
 mod control_create;
 mod control_integrate;
 mod coordinator;
+mod recovery;
 
 pub const IDLE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
@@ -75,6 +76,8 @@ struct Service {
     settings: crate::settings::file::Store,
     /// Workers whose coordinator brief is not delivered yet (deck#152).
     briefs: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Recovery deliveries currently waiting for a holder reply.
+    recovery_in_flight: std::collections::HashSet<(String, String)>,
 }
 
 /// Run until there are no running tasks and no control clients for `idle`.
@@ -130,6 +133,7 @@ pub fn serve(options: Options) -> Result<()> {
         broker: broker.clone(),
         settings,
         briefs: Arc::default(),
+        recovery_in_flight: std::collections::HashSet::new(),
     }));
     let reader = Arc::new(crate::pull_request::Reader::default());
     let clients = Arc::new(AtomicUsize::new(0));
@@ -265,6 +269,26 @@ fn connection(
                         Ok(serde_json::to_value(crate::daemon_turns::wait(&runtime, &task, after_turn, wait_ms)?)?)
                     }
                     _ => unreachable!("matched a turn request"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
+            // Answer delivery can wait for a resumed agent; never hold the
+            // service lock across that wait.
+            Ok(request @ Request::RecoveryAnswer { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::RecoveryAnswer { task, id, answer } => {
+                        Ok(serde_json::to_value(recovery::answer(&service, &task, &id, answer)?)?)
+                    }
+                    _ => unreachable!("matched a recovery answer"),
+                });
+                wire::write(&mut socket, &reply(result))?;
+            }
+            Ok(request @ Request::RecoveryRetry { .. }) => {
+                let result = request.validate().and_then(|()| match request {
+                    Request::RecoveryRetry { task, id } => {
+                        Ok(serde_json::to_value(recovery::retry(&service, &task, &id)?)?)
+                    }
+                    _ => unreachable!("matched a recovery retry"),
                 });
                 wire::write(&mut socket, &reply(result))?;
             }
@@ -738,6 +762,8 @@ impl Service {
                 Ok(serde_json::to_value(preview)?)
             }
             Request::Tasks => Ok(serde_json::to_value(self.runtime.tasks()?)?),
+            Request::RecoveryItems { task } => Ok(serde_json::to_value(recovery::items(self, &task)?)?),
+            Request::RecoveryReview { task, id } => Ok(serde_json::to_value(recovery::review(self, &task, &id)?)?),
             Request::Projects => Ok(serde_json::to_value(self.projects.list())?),
             Request::OpenProject { path, argv } => {
                 let task = self.managed_workspace_at(&path)?;
@@ -780,7 +806,11 @@ impl Service {
                 Ok(json!(null))
             }
             Request::Prompts { task } => Ok(serde_json::to_value(self.runtime.prompts(&task)?)?),
-            Request::Prompt { .. } | Request::Wait { .. } | Request::Control { .. } => {
+            Request::Prompt { .. }
+            | Request::Wait { .. }
+            | Request::Control { .. }
+            | Request::RecoveryRetry { .. }
+            | Request::RecoveryAnswer { .. } => {
                 unreachable!("handled before service dispatch")
             }
             Request::Seen { id, turn } => {
@@ -878,11 +908,20 @@ impl Service {
     }
 
     fn launch(&mut self, id: &str, resume: bool) -> Result<()> {
+        if resume {
+            self.runtime.ensure_no_recovery(id)?;
+        }
+        self.launch_with_recovery(id, resume, false)
+    }
+
+    fn launch_with_recovery(&mut self, id: &str, resume: bool, recovery: bool) -> Result<()> {
         // A run starts with no items or grants from an earlier one; project
         // rules are the user's and live outside the task.
         self.boundary.clear_task(id)?;
         self.broker.forget_task(id);
-        if resume {
+        if resume && recovery {
+            self.runtime.resume_for_recovery(id)?;
+        } else if resume {
             self.runtime.resume(id)?;
         } else {
             self.runtime.start(id)?;

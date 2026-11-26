@@ -23,12 +23,13 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::ffi::c_int;
 use std::io::{BufRead, BufReader, Read, Write as _};
+use std::net::Shutdown;
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicI32, Ordering},
     mpsc,
 };
@@ -53,6 +54,9 @@ pub struct Config {
     /// it before boot; libkrun connects it when the guest opens the stream.
     pub forward: PathBuf,
     pub console: PathBuf,
+    /// Unique to this run, so an old console marker cannot confirm a stop.
+    #[serde(default)]
+    pub shutdown_marker: String,
     /// The project to copy into the guest's workspace on first boot.
     #[serde(default)]
     pub import: Option<PathBuf>,
@@ -182,7 +186,7 @@ fn default_port() -> u32 {
 }
 
 const START: Duration = Duration::from_secs(30);
-const GUEST_DEATH: Duration = Duration::from_secs(2);
+const GUEST_DEATH: Duration = Duration::from_secs(12);
 /// The gateway binds two sockets and prints one line; this is generous for a
 /// cold exec on macOS and still fails a wedged binary.
 const GATEWAY_START: Duration = Duration::from_secs(10);
@@ -266,12 +270,14 @@ pub fn run(config: &Path) -> Result<()> {
 
     let config = Arc::new(config);
     let (acp, lines) = HolderAcp::new(config.data.clone(), config.task.clone());
+    let input = Arc::new(Mutex::new(None::<UnixStream>));
     let (eof_tx, eof_rx) = mpsc::channel();
     std::thread::Builder::new().name("vmm-relay".into()).spawn({
         let config = config.clone();
         let acp = acp.clone();
+        let input = input.clone();
         move || {
-            if let Err(error) = serve(&config, forward, eof_tx, started, acp, lines) {
+            if let Err(error) = serve(&config, forward, eof_tx, started, acp, lines, input) {
                 // The runtime waits for one startup line; an error is better
                 // than the 30 s silence a dead serve thread would leave.
                 let _ = report(Err(format!("{error:#}")));
@@ -280,7 +286,7 @@ pub fn run(config: &Path) -> Result<()> {
     })?;
     std::thread::Builder::new().name("vmm-control".into()).spawn({
         let config = config.clone();
-        move || control_loop(&config, listener, shutdown, &acp)
+        move || control_loop(&config, listener, shutdown, &acp, &input)
     })?;
     std::thread::Builder::new().name("vmm-signal".into()).spawn(move || {
         // A signal asks the guest to power off; the guest may have no power-key
@@ -354,8 +360,10 @@ fn serve(
     started: Instant,
     acp: Arc<HolderAcp>,
     lines: mpsc::Receiver<String>,
+    input: Arc<Mutex<Option<UnixStream>>>,
 ) -> Result<()> {
     let stream = accept_within(&forward, START)?;
+    *input.lock().unwrap_or_else(|e| e.into_inner()) = Some(stream.try_clone()?);
     eprintln!("vmm: guest connected at {} ms", started.elapsed().as_millis());
     let reader = BufReader::new(stream.try_clone()?);
     let relay = Relay::tapped(
@@ -552,12 +560,18 @@ fn accept_within(listener: &UnixListener, within: Duration) -> Result<UnixStream
     }
 }
 
-fn control_loop(config: &Config, listener: UnixListener, shutdown: i32, acp: &Arc<HolderAcp>) -> Result<()> {
+fn control_loop(
+    config: &Config,
+    listener: UnixListener,
+    shutdown: i32,
+    acp: &Arc<HolderAcp>,
+    input: &Arc<Mutex<Option<UnixStream>>>,
+) -> Result<()> {
     listener.set_nonblocking(false)?;
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
-                if request(socket, config, shutdown, acp).is_err() {
+                if request(socket, config, shutdown, acp, input).is_err() {
                     break;
                 }
                 if EXITED.load(Ordering::Acquire) {
@@ -571,7 +585,13 @@ fn control_loop(config: &Config, listener: UnixListener, shutdown: i32, acp: &Ar
     Ok(())
 }
 
-fn request(mut socket: UnixStream, config: &Config, shutdown: i32, acp: &Arc<HolderAcp>) -> Result<()> {
+fn request(
+    mut socket: UnixStream,
+    config: &Config,
+    shutdown: i32,
+    acp: &Arc<HolderAcp>,
+    input: &Arc<Mutex<Option<UnixStream>>>,
+) -> Result<()> {
     // The accepted socket inherits the listener's O_NONBLOCK on macOS; the
     // timeouts below only bound a blocking read (see `holder::request`).
     socket.set_nonblocking(false)?;
@@ -586,8 +606,12 @@ fn request(mut socket: UnixStream, config: &Config, shutdown: i32, acp: &Arc<Hol
             let _ = wire::write(&mut socket, &reply);
         }
         Request::Stop { grace_ms } => {
-            let grace = Duration::from_millis(grace_ms.min(30_000));
-            request_shutdown(shutdown);
+            let grace = Duration::from_millis(grace_ms.min(30_000)).max(Duration::from_secs(10));
+            if let Some(stream) = input.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                let _ = stream.shutdown(Shutdown::Write);
+            } else {
+                request_shutdown(shutdown);
+            }
             let reason = if wait_exit(grace) { "guest powered off" } else { "VMM exited after grace" };
             let reply: std::result::Result<Reply, String> = Ok(Reply::Stopped(reason.into()));
             let _ = wire::write(&mut socket, &reply);
@@ -596,7 +620,10 @@ fn request(mut socket: UnixStream, config: &Config, shutdown: i32, acp: &Arc<Hol
             std::process::exit(0);
         }
         Request::Prompt { text, cwd, session } => {
-            crate::holder::prompt(socket, acp.clone(), text, crate::observer::Setup { cwd, session });
+            crate::holder::prompt(socket, acp.clone(), text, crate::observer::Setup { cwd, session }, None);
+        }
+        Request::PromptKeyed { text, cwd, session, key } => {
+            crate::holder::prompt(socket, acp.clone(), text, crate::observer::Setup { cwd, session }, Some(key));
         }
     }
     Ok(())
@@ -680,6 +707,9 @@ fn guest_env(config: &Config) -> Vec<String> {
         "TERM=dumb".into(),
     ];
     env.extend(config.env.iter().cloned());
+    if !config.shutdown_marker.is_empty() {
+        env.push(format!("DECK_SHUTDOWN_MARKER={}", config.shutdown_marker));
+    }
     env
 }
 

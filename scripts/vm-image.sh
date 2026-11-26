@@ -239,10 +239,44 @@ cd /workspace || cd /
 # so no socat process sits between them. The agent's diagnostics inherit the
 # guest console, so the stream only ever carries protocol frames.
 mark "connecting port=$port"
-exec /usr/local/bin/deck-egress --acp --vsock "2:${port}" \
+shutdown_marker=${DECK_SHUTDOWN_MARKER:-}
+unset DECK_SHUTDOWN_MARKER
+/usr/local/bin/deck-egress --acp --vsock "2:${port}" \
   -- /bin/sh -c "exec ${DECK_AGENT} ${DECK_ARGS}"
+if sync && umount /root/.construct && mount -o remount,ro /; then
+  [ -n "$shutdown_marker" ] && echo "DECK_UNMOUNT_CONFIRMED:$shutdown_marker"
+fi
+echo o > /proc/sysrq-trigger
+sleep 5
+echo 'deck-guest: poweroff failed' >&2
+exit 1
 GUEST
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest"
+# Test-only: write a workspace sentinel on the first boot, then verify it on
+# resume. The regular guest owns ACP and performs the shutdown sequence.
+cat > "$scratch/rootfs/usr/local/bin/deck-guest-shutdown-test" <<'SHUTDOWN_TEST'
+#!/bin/sh
+/usr/local/bin/deck-guest "$@" &
+guest=$!
+i=0
+while [ ! -e /workspace/.deck-provisioned ] && [ "$i" -lt 300 ]; do
+  sleep 0.1
+  i=$((i+1))
+done
+if [ -e /workspace/.deck-shutdown-probe ]; then
+  if [ "$(cat /workspace/.deck-shutdown-probe)" = 'workspace survives' ]; then
+    echo DECK_WORKSPACE_VERIFIED
+  else
+    echo DECK_WORKSPACE_CORRUPT
+  fi
+else
+  printf 'workspace survives\n' > /workspace/.deck-shutdown-probe
+  sync
+  echo DECK_WORKSPACE_WRITTEN
+fi
+wait "$guest"
+SHUTDOWN_TEST
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest-shutdown-test"
 # Test-only guest entry for crates/deck-runtime/tests/vm.rs: start the real
 # entry, wait for the checkout, run the publication checks, then keep the
 # guest alive for as long as the agent runs.

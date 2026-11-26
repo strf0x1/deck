@@ -150,7 +150,9 @@ impl Deck {
 
     /// A detached or failed connection can be rebuilt by restarting its task.
     pub fn can_restart(&self) -> bool {
-        self.current().task.is_some() && matches!(self.current().session.status, Status::Detached | Status::Down(_))
+        self.interrupted().is_none()
+            && self.current().task.is_some()
+            && matches!(self.current().session.status, Status::Detached | Status::Down(_))
     }
 
     /// Explicitly interrupt the selected task and load its recorded history.
@@ -430,6 +432,7 @@ impl Deck {
             self.sync_live_lane();
             return;
         }
+        let stopped = matches!(record.state, State::Stopped { .. });
         let opened = cx.background_executor().spawn(async move { next.open() });
         cx.spawn(async move |this, cx| {
             let connection = opened.await;
@@ -443,7 +446,8 @@ impl Deck {
                     Ok(Some(connection)) => deck.connect(&id, connection, cx),
                     Ok(None) => {
                         if let Some(attached) = deck.attached.get_mut(&id) {
-                            attached.session.status = Status::Detached;
+                            attached.session.status =
+                                if stopped { Status::Down("stopped".into()) } else { Status::Detached };
                         }
                     }
                     Err(e) => {
@@ -604,7 +608,7 @@ impl Deck {
 
     /// Start pumping a connection into task `id`'s attachment. The event is
     /// applied only while this is still the connection's generation.
-    fn connect(&mut self, id: &str, (client, mut rx): Connection, cx: &mut Context<Self>) {
+    pub(super) fn connect(&mut self, id: &str, (client, mut rx): Connection, cx: &mut Context<Self>) {
         let generation = self.replace_connection(id);
         let Some(attached) = self.attached.get_mut(id) else { return };
         attached.session = Session::new();

@@ -406,19 +406,50 @@ impl Runtime {
 
     /// Run a task again after it stopped or failed to start.
     pub fn resume(&self, id: &str) -> Result<()> {
+        self.resume_with_recovery(id, false)
+    }
+
+    /// Recovery delivery is the sole operation allowed to resume a task
+    /// while its interrupted questions still need the user's attention.
+    pub(crate) fn resume_for_recovery(&self, id: &str) -> Result<()> {
+        self.resume_with_recovery(id, true)
+    }
+
+    fn resume_with_recovery(&self, id: &str, recovery: bool) -> Result<()> {
         let mut inner = self.lock();
         let task = inner.store.load(id)?;
         if !task.resumable() {
             bail!("task {id} cannot be resumed while {:?}", task.state);
         }
+        if !recovery {
+            inner.ensure_no_recovery(id)?;
+        }
         inner.launch(task, Arc::downgrade(&self.inner))
+    }
+
+    /// A normal resume must not clear other task state before this check.
+    pub(crate) fn ensure_no_recovery(&self, id: &str) -> Result<()> {
+        let inner = self.lock();
+        inner.store.load(id)?;
+        inner.ensure_no_recovery(id)
     }
 
     /// Find a running task, resuming a stopped one for a prompt. Concurrent
     /// prompts share the same launch under the runtime lock.
     pub(crate) fn running_for_prompt(&self, id: &str) -> Result<Task> {
+        self.running_for_prompt_with_recovery(id, false)
+    }
+
+    pub(crate) fn running_for_recovery(&self, id: &str) -> Result<Task> {
+        self.running_for_prompt_with_recovery(id, true)
+    }
+
+    fn running_for_prompt_with_recovery(&self, id: &str, recovery: bool) -> Result<Task> {
         let mut inner = self.lock();
         let task = inner.store.load(id)?;
+        if !recovery {
+            inner.ensure_no_recovery(id)?;
+        }
         match task.state {
             State::Stopped { .. } => {
                 inner.launch(task, Arc::downgrade(&self.inner))?;
@@ -568,6 +599,15 @@ impl Runtime {
 }
 
 impl Inner {
+    fn ensure_no_recovery(&self, id: &str) -> Result<()> {
+        let dir = self.store.data().join("tasks").join(id);
+        let recovery = crate::recovery::Store::open(&dir)?;
+        if recovery.items().iter().any(|item| !crate::recovery::resolved(&item.delivery)) {
+            bail!("task {id} has an interrupted decision that must be resolved first");
+        }
+        Ok(())
+    }
+
     fn launch(&mut self, mut task: Task, me: Weak<Mutex<Inner>>) -> Result<()> {
         if let Some(plan) = &task.integration {
             if plan.phase != crate::integration::Phase::Ready {

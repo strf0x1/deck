@@ -17,17 +17,38 @@ use std::time::Instant;
 impl Deck {
     /// Fold every task's current reason into the strip, oldest first.
     pub(super) fn refresh_attention(&mut self) {
+        let recovery_wait = TurnState::Waiting;
         let watched: HashMap<String, Watched<'_>> = self
-            .attached
+            .tasks
             .iter()
-            .map(|(id, attached)| {
+            .map(|task| {
+                let attached = self.attached.get(&task.id);
+                let interrupted = self
+                    .recoveries
+                    .get(&task.id)
+                    .and_then(|items| items.iter().find(|item| super::recovery::unresolved(item)));
+                let interrupted_question = interrupted.and_then(|item| match &item.question {
+                    deck_runtime::recovery::Question::Agent { title, .. } => Some(title.as_str()),
+                    _ => None,
+                });
+                let interrupted_approval = interrupted.and_then(|item| match &item.question {
+                    deck_runtime::recovery::Question::Boundary { approval } => Some(approval.as_ref()),
+                    _ => None,
+                });
                 let watched = Watched {
-                    turn: attached.turn.as_ref().map(|(number, state)| (*number, state)),
-                    question: attached.session.ask.as_ref().map(|ask| ask.title.as_str()),
-                    approval: attached.boundary.pending(),
-                    files: attention::changed_files(&attached.session.entries),
+                    turn: if interrupted_question.is_some() {
+                        Some((0, &recovery_wait))
+                    } else {
+                        attached.and_then(|attached| attached.turn.as_ref().map(|(number, state)| (*number, state)))
+                    },
+                    question: interrupted_question.or_else(|| {
+                        attached.and_then(|attached| attached.session.ask.as_ref().map(|ask| ask.title.as_str()))
+                    }),
+                    approval: interrupted_approval
+                        .or_else(|| attached.and_then(|attached| attached.boundary.pending())),
+                    files: attached.and_then(|attached| attention::changed_files(&attached.session.entries)),
                 };
-                (id.clone(), watched)
+                (task.id.clone(), watched)
             })
             .collect();
         self.needs_you =

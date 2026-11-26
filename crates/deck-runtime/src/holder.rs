@@ -46,6 +46,13 @@ pub(crate) enum Request {
         cwd: String,
         session: Option<String>,
     },
+    /// A separate variant prevents old holders silently ignoring a key.
+    PromptKeyed {
+        text: String,
+        cwd: String,
+        session: Option<String>,
+        key: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -218,7 +225,10 @@ fn request(
             let _ = wire::write(&mut socket, &reply);
         }
         Ok(Request::Stop { grace_ms }) => return Ok(Some((socket, Duration::from_millis(grace_ms.min(30_000))))),
-        Ok(Request::Prompt { text, cwd, session }) => prompt(socket, acp.clone(), text, Setup { cwd, session }),
+        Ok(Request::Prompt { text, cwd, session }) => prompt(socket, acp.clone(), text, Setup { cwd, session }, None),
+        Ok(Request::PromptKeyed { text, cwd, session, key }) => {
+            prompt(socket, acp.clone(), text, Setup { cwd, session }, Some(key))
+        }
         Err(_) => {}
     }
     Ok(None)
@@ -226,11 +236,13 @@ fn request(
 
 /// Answer a prompt on its own thread: starting a turn can take seconds, and
 /// the control loop must stay free for a stop meanwhile.
-pub(crate) fn prompt(mut socket: UnixStream, acp: Arc<HolderAcp>, text: String, setup: Setup) {
+pub(crate) fn prompt(mut socket: UnixStream, acp: Arc<HolderAcp>, text: String, setup: Setup, key: Option<String>) {
     let _ = std::thread::Builder::new().name("holder-prompt".into()).spawn(move || {
         let _ = socket.set_write_timeout(Some(Duration::from_secs(1)));
-        let reply: std::result::Result<Reply, String> =
-            acp.prompt(&text, setup, crate::holder_acp::START).map(Reply::Prompted).map_err(|e| format!("{e:#}"));
+        let reply: std::result::Result<Reply, String> = acp
+            .prompt(&text, setup, key.as_deref(), crate::holder_acp::START)
+            .map(Reply::Prompted)
+            .map_err(|e| format!("{e:#}"));
         let _ = wire::write(&mut socket, &reply);
     });
 }

@@ -42,6 +42,7 @@ pub mod project;
 pub mod pull_request;
 mod reconcile;
 pub mod record;
+pub mod recovery;
 pub mod relay;
 pub mod runtime;
 pub mod settings;

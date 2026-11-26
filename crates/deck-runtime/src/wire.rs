@@ -17,7 +17,7 @@ pub const WAIT_LIMIT_MS: u64 = 300_000;
 /// The control grammar's protocol. Bump it whenever a [`Request`] variant or
 /// its meaning changes: a window then refuses a daemon from another build with
 /// an instruction instead of failing in the middle of a conversation.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 9;
 
 /// What a daemon answers to [`Request::Hello`]. A daemon predating the
 /// handshake answers `unknown variant`, which the client reports as
@@ -73,6 +73,26 @@ pub(crate) enum Request {
         path: PathBuf,
     },
     Tasks,
+    /// Interrupted questions belonging to a task, including delivery state.
+    RecoveryItems {
+        task: String,
+    },
+    /// Record the first answer and attempt to deliver it to the resumed agent.
+    RecoveryAnswer {
+        task: String,
+        id: String,
+        answer: crate::recovery::Answer,
+    },
+    /// Retry a saved answer with the same idempotency key.
+    RecoveryRetry {
+        task: String,
+        id: String,
+    },
+    /// Accept that an uncertain answer was not confirmed delivered.
+    RecoveryReview {
+        task: String,
+        id: String,
+    },
     /// The projects a window may show.
     Projects,
     /// Resolve a path into its project, adding the checkout.
@@ -327,6 +347,7 @@ impl Request {
             self,
             Self::Hello
                 | Self::Tasks
+                | Self::RecoveryItems { .. }
                 | Self::Task { .. }
                 | Self::WorktreeStatus { .. }
                 | Self::WorktreeDiff { .. }
@@ -363,6 +384,9 @@ impl Request {
             | Self::Session { id, .. }
             | Self::Approval { task: id, .. }
             | Self::Approvals { task: id }
+            | Self::RecoveryItems { task: id }
+            | Self::RecoveryRetry { task: id, .. }
+            | Self::RecoveryReview { task: id, .. }
             | Self::ApprovalStatus { task: id, .. }
             | Self::ApprovalWait { task: id, .. }
             | Self::WithdrawApproval { task: id, .. }
@@ -377,7 +401,6 @@ impl Request {
             | Self::Prompts { task: id }
             | Self::Control { task: id, .. }
             | Self::Mark { id, .. }
-            | Self::Title { id, .. }
             | Self::PullState { task: id, .. }
             | Self::WebProfile { task: id, .. }
             | Self::GitHubProfile { task: id, .. }
@@ -411,6 +434,16 @@ impl Request {
             && !valid(id)
         {
             bail!("invalid approval id");
+        }
+        if let Self::RecoveryRetry { id, .. } | Self::RecoveryReview { id, .. } = self
+            && (id.is_empty() || id.len() > 256)
+        {
+            bail!("invalid interrupted question id");
+        }
+        if let Self::RecoveryAnswer { id, .. } = self
+            && (id.is_empty() || id.len() > 256)
+        {
+            bail!("invalid interrupted question id");
         }
         if let Self::Credential { name, .. }
         | Self::RevokeCredential { name }

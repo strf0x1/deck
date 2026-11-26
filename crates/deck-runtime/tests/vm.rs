@@ -79,6 +79,9 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     assert_eq!(runtime.task(&id).unwrap().state, State::Running);
     let session = ready(&runtime, &id, false).1;
     runtime.session(&id, &session).unwrap();
+    if std::env::var_os("DECK_VM_CHECK_DISKS").is_some() {
+        console_has(&data, &id, "DECK_WORKSPACE_WRITTEN");
+    }
 
     // Drop the runtime without stopping: the VMM is the holder and must
     // survive, and the next runtime adopts it from the record.
@@ -88,14 +91,23 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     ready(&runtime, &id, true);
 
     runtime.stop(&id).unwrap();
-    assert!(
-        matches!(runtime.task(&id).unwrap().state, State::Stopped { clean: false, reason } if reason.contains("guest did not confirm unmount"))
-    );
+    let stopped = runtime.task(&id).unwrap().state;
+    if std::env::var_os("DECK_VM_EXPECT_CLEAN").is_some() {
+        assert!(matches!(stopped, State::Stopped { clean: true, .. }), "{stopped:?}");
+    } else {
+        assert!(matches!(stopped, State::Stopped { .. }), "{stopped:?}");
+    }
 
-    // Resume reuses the same disks; the journal survives the stop.
+    // Resume reuses the same disks; load the same session from its journal.
     runtime.resume(&id).unwrap();
-    ready(&runtime, &id, false);
+    assert_eq!(load_session(&runtime, &id, &session), session);
+    if std::env::var_os("DECK_VM_CHECK_DISKS").is_some() {
+        console_has(&data, &id, "DECK_WORKSPACE_VERIFIED");
+    }
     runtime.stop(&id).unwrap();
+    if std::env::var_os("DECK_VM_EXPECT_CLEAN").is_some() {
+        assert!(matches!(runtime.task(&id).unwrap().state, State::Stopped { clean: true, .. }));
+    }
     runtime.destroy(&id).unwrap();
     cleanup.armed = false;
     assert_eq!(runtime.task(&id).unwrap().state, State::Destroyed);
@@ -564,6 +576,37 @@ impl Drop for Cleanup {
 fn ready(runtime: &Runtime, id: &str, attach: bool) -> (String, String) {
     let (agent, session, _) = ready_timed(runtime, id, attach, Instant::now());
     (agent, session)
+}
+
+fn load_session(runtime: &Runtime, id: &str, session: &str) -> String {
+    let stream = runtime.attach(id).unwrap();
+    let (client, mut events) =
+        Client::load(PathBuf::from("/workspace"), stream.reader, stream.writer, session.into()).unwrap();
+    let deadline = Instant::now() + READY;
+    loop {
+        match next(&mut events, deadline) {
+            Some(Inbound::Ready { session_id, .. }) => {
+                drop(client);
+                return session_id;
+            }
+            Some(Inbound::Failed(reason)) => panic!("session load failed: {reason}"),
+            Some(_) => {}
+            None => panic!("session load did not finish"),
+        }
+    }
+}
+
+fn console_has(data: &Path, id: &str, marker: &str) {
+    let console = data.join("tasks").join(id).join("console.log");
+    let deadline = Instant::now() + READY;
+    loop {
+        let output = std::fs::read_to_string(&console).unwrap_or_default();
+        if output.lines().any(|line| line.trim() == marker) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "missing {marker} in {}: {output}", console.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// [`ready`] with the time from `launched` to ACP `Ready`.

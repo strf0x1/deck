@@ -3064,6 +3064,147 @@ fn launching_attaches_every_running_task_that_recorded_a_session(cx: &mut TestAp
 
 #[cfg(unix)]
 #[gpui::test]
+fn an_interrupted_question_waits_for_an_answer_before_resuming(cx: &mut TestAppContext) {
+    use deck_runtime::recovery::{Delivery, OptionItem, Question, Store};
+    use deck_runtime::{DaemonClient, State};
+    cx.background_executor.allow_parking();
+    let (data, fake, alpha, beta) = two_fake_tasks("interrupted-question");
+    let _holders = holders::Holders::new(&data);
+    let argv = vec!["env".into(), format!("DECK_FAKE_STATE={}", data.join("fake-state").display()), fake[0].clone()];
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    daemon.stop(&b).unwrap();
+    let mut recovery = Store::open(&data.join("tasks").join(&b)).unwrap();
+    recovery
+        .capture(
+            "question-1",
+            Question::Agent {
+                title: "Run the command?".into(),
+                options: vec![OptionItem { id: "yes".into(), name: "Allow once".into(), kind: "allow_once".into() }],
+            },
+        )
+        .unwrap();
+    let mut boundary = approval("approval-1");
+    boundary.task = b.clone();
+    recovery.capture("question-2", Question::Boundary { approval: Box::new(boundary) }).unwrap();
+    drop(recovery);
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().any(|item| item.task == b)));
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.interrupted().is_some()));
+    assert!(
+        matches!(daemon.task(&b).unwrap().state, State::Stopped { .. }),
+        "selecting an interrupted question must not resume the task"
+    );
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("interrupted-card").is_some());
+    vcx.simulate_keystrokes("1");
+    wait_view(&mut vcx, |_cx| {
+        daemon.recovery_items(&b).unwrap().iter().any(|item| matches!(item.delivery, Delivery::Delivered { .. }))
+    });
+    assert_eq!(daemon.task(&b).unwrap().state, State::Running);
+    let prompts = daemon.prompts(&b).unwrap();
+    assert!(
+        prompts.iter().any(|prompt| prompt.text.contains("Run the command?") && prompt.text.contains("Allow once"))
+    );
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.interrupted().is_some_and(|item| item.id == "question-2") && !d.interrupted_busy())
+    });
+    vcx.simulate_keystrokes("1");
+    wait_view(&mut vcx, |_cx| {
+        daemon.recovery_items(&b).unwrap().iter().any(|item| {
+            item.id == "question-2" && matches!(item.delivery, Delivery::Answered { .. } | Delivery::Delivered { .. })
+        })
+    });
+    assert!(daemon.access_grants(&b).unwrap().is_empty(), "contextual boundary answer grants no access");
+    cx.quit();
+    for id in [&a, &b] {
+        if daemon.task(id).unwrap().state == State::Running {
+            daemon.stop(id).unwrap();
+        }
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn an_uncertain_interrupted_answer_can_be_retried_or_reviewed(cx: &mut TestAppContext) {
+    use deck_runtime::recovery::{Delivery, OptionItem, Question, Store};
+    use deck_runtime::{DaemonClient, State};
+    cx.background_executor.allow_parking();
+    let (data, fake, alpha, beta) = two_fake_tasks("interrupted-legacy");
+    let _holders = holders::Holders::new(&data);
+    let argv = vec![
+        "env".into(),
+        format!("DECK_FAKE_STATE={}", data.join("fake-state").display()),
+        "DECK_FAKE_NAMES=legacy".into(),
+        fake[0].clone(),
+    ];
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    daemon.stop(&b).unwrap();
+    let mut recovery = Store::open(&data.join("tasks").join(&b)).unwrap();
+    recovery
+        .capture(
+            "question-1",
+            Question::Agent {
+                title: "Run the command?".into(),
+                options: vec![OptionItem { id: "yes".into(), name: "Allow once".into(), kind: "allow_once".into() }],
+            },
+        )
+        .unwrap();
+    drop(recovery);
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.needs_you().iter().any(|item| item.task == b)));
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.interrupted().is_some()));
+    vcx.simulate_keystrokes("1");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| {
+            d.interrupted().is_some_and(|item| matches!(item.delivery, Delivery::Uncertain { .. }))
+                && !d.interrupted_busy()
+        })
+    });
+    let before = daemon.recovery_items(&b).unwrap().remove(0);
+    let Delivery::Uncertain { key, .. } = before.delivery else { panic!("expected uncertain delivery") };
+    assert!(daemon.prompts(&b).unwrap().is_empty(), "an agent without idempotency must receive no recovery prompt");
+    vcx.simulate_keystrokes("1");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| !d.interrupted_busy()));
+    let retried = daemon.recovery_items(&b).unwrap().remove(0);
+    assert!(matches!(retried.delivery, Delivery::Uncertain { key: ref saved, .. } if saved == &key));
+    assert!(daemon.prompts(&b).unwrap().is_empty());
+    vcx.simulate_keystrokes("2");
+    wait_view(&mut vcx, |_cx| {
+        daemon.recovery_items(&b).unwrap().iter().any(|item| matches!(item.delivery, Delivery::Reviewed { .. }))
+    });
+    cx.quit();
+    for id in [&a, &b] {
+        if daemon.task(id).unwrap().state == State::Running {
+            daemon.stop(id).unwrap();
+        }
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppContext) {
     use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
     use deck_runtime::{DaemonClient, State};

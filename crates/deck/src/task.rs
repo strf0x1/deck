@@ -54,6 +54,9 @@ impl WindowTask {
         if record.state == State::Running {
             return self.connection(false, record.session_id);
         }
+        if self.daemon.recovery_items(&self.id)?.iter().any(|item| !deck_runtime::recovery::resolved(&item.delivery)) {
+            return Ok(None);
+        }
         let record = if record.resumable() {
             self.daemon.resume(&self.id)?
         } else if record.startable() {
@@ -167,6 +170,9 @@ impl WindowTask {
     /// Stop and start the agent, then rebuild its conversation by loading
     /// the recorded session. It never asks an existing process to reattach.
     pub fn restart(&self) -> Result<Connection> {
+        if self.daemon.recovery_items(&self.id)?.iter().any(|item| !deck_runtime::recovery::resolved(&item.delivery)) {
+            bail!("answer the interrupted decision before restarting this task");
+        }
         if self.daemon.task(&self.id)?.state == State::Running
             && let Err(error) = self.daemon.stop(&self.id)
         {

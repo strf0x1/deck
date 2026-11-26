@@ -46,7 +46,6 @@ pub(crate) fn readable_or_shutdown(listener: RawFd, shutdown: RawFd) -> io::Resu
         }
     }
 }
-
 /// Subscribe before checking liveness so an exit cannot slip between the
 /// check and registration. Failure leaves the caller's timed fallback intact.
 #[cfg(target_os = "macos")]

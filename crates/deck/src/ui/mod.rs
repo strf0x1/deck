@@ -65,6 +65,7 @@ pub mod publication;
 mod publication_panel;
 mod publishing;
 pub mod rail;
+mod recovery;
 pub mod ripple;
 pub mod root;
 mod runs;

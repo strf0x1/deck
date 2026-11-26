@@ -190,6 +190,27 @@ impl DaemonClient {
     pub fn tasks(&self) -> Result<Vec<Task>> {
         self.request(Request::Tasks)
     }
+    /// Interrupted decisions and their delivery states for this task.
+    pub fn recovery_items(&self, task: &str) -> Result<Vec<crate::recovery::Item>> {
+        self.request(Request::RecoveryItems { task: task.into() })
+    }
+    /// Persist the first answer, then attempt to deliver its recovery context.
+    pub fn answer_recovery(
+        &self,
+        task: &str,
+        id: &str,
+        answer: crate::recovery::Answer,
+    ) -> Result<crate::recovery::Item> {
+        self.request(Request::RecoveryAnswer { task: task.into(), id: id.into(), answer })
+    }
+    /// Retry a saved answer with its original key, if the agent supports it.
+    pub fn retry_recovery(&self, task: &str, id: &str) -> Result<crate::recovery::Item> {
+        self.request(Request::RecoveryRetry { task: task.into(), id: id.into() })
+    }
+    /// Mark an uncertain answer reviewed so the task can resume.
+    pub fn review_recovery(&self, task: &str, id: &str) -> Result<crate::recovery::Item> {
+        self.request(Request::RecoveryReview { task: task.into(), id: id.into() })
+    }
     pub fn projects(&self) -> Result<Vec<crate::project::Project>> {
         self.request(Request::Projects)
     }

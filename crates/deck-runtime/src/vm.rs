@@ -288,6 +288,7 @@ impl Backend for Vm {
             socket: socket.clone(),
             forward,
             console: self.console(&task.id),
+            shutdown_marker: deck_acp::key::new_key(),
             import: staged.clone(),
             import_required: task.integration.is_some() || task.spec.cwd.is_dir(),
             checkout: github.map(|policy| vmm::Checkout {
@@ -518,10 +519,38 @@ impl Instance for VmInstance {
     }
 
     fn stop(&mut self, grace: Duration) -> Result<String> {
+        self.stop_process(grace).map(|(reason, _)| reason)
+    }
+
+    fn stop_outcome(&mut self, grace: Duration) -> Result<crate::backend::StopOutcome> {
+        let (reason, forced) = self.stop_process(grace)?;
+        let dir = self.data.join("tasks").join(&self.id);
+        let confirmed = !forced
+            && std::fs::read(dir.join("vmm.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<vmm::Config>(&bytes).ok())
+                .and_then(|config| {
+                    let console = std::fs::read_to_string(config.console).ok()?;
+                    Some(clean_guest_shutdown(&console, &config.shutdown_marker))
+                })
+                .unwrap_or(false);
+        if confirmed {
+            Ok(crate::backend::StopOutcome { clean: true, reason: "guest unmounted disks and powered off".into() })
+        } else {
+            Ok(crate::backend::StopOutcome {
+                clean: false,
+                reason: format!("guest did not confirm unmount ({reason})"),
+            })
+        }
+    }
+}
+
+impl VmInstance {
+    fn stop_process(&mut self, grace: Duration) -> Result<(String, bool)> {
         if !reconcile::group_running(self.holder.pid)? {
             released(&self.data, &self.id, RELEASE)?;
             cleanup(&self.paths, &self.id);
-            return Ok("VMM already exited".into());
+            return Ok(("VMM already exited".into(), true));
         }
         if let Some(session) = Store::open(&self.data)?.observe(&self.id)?.session_id
             && let Ok(socket) = UnixStream::connect(&self.holder.socket)
@@ -530,26 +559,38 @@ impl Instance for VmInstance {
             let _ = deck_acp::shutdown::close_session(&socket, &session, Duration::from_millis(500));
         }
         let request = Request::Stop { grace_ms: grace.as_millis().min(30_000) as u64 };
-        let reason = match exchange(&self.holder, &request, grace + WAIT) {
-            Ok(Reply::Stopped(reason)) => reason,
+        let (reason, forced) = match exchange(&self.holder, &request, grace.max(Duration::from_secs(10)) + WAIT) {
+            Ok(Reply::Stopped(reason)) => {
+                let forced = reason != "guest powered off";
+                (reason, forced)
+            }
             Ok(_) => bail!("VMM did not confirm its stop"),
             Err(e) => {
-                // The control socket is gone or wedged. The VMM is still
-                // identified by the record; force it and confirm below.
-                kill_group(self.holder.pid, libc::SIGKILL).ok();
-                format!("force-stopped VMM ({e:#})")
+                // libkrun can exit the process without replying. Allow its
+                // process group to settle before deciding whether to force it.
+                if reconcile::wait_for_group(self.holder.pid).is_ok() {
+                    ("VMM exited without a control reply".into(), false)
+                } else {
+                    kill_group(self.holder.pid, libc::SIGKILL).ok();
+                    (format!("force-stopped VMM ({e:#})"), true)
+                }
             }
         };
         reconcile::wait_for_group(self.holder.pid)?;
         released(&self.data, &self.id, RELEASE)?;
         cleanup(&self.paths, &self.id);
-        Ok(reason)
+        Ok((reason, forced))
     }
+}
 
-    fn stop_outcome(&mut self, grace: Duration) -> Result<crate::backend::StopOutcome> {
-        let reason = self.stop(grace)?;
-        Ok(crate::backend::StopOutcome { clean: false, reason: format!("guest did not confirm unmount ({reason})") })
+fn clean_guest_shutdown(console: &str, marker: &str) -> bool {
+    if marker.is_empty() {
+        return false;
     }
+    let line = format!("DECK_UNMOUNT_CONFIRMED:{marker}");
+    let mut lines = console.split_inclusive('\n').filter_map(|line| line.strip_suffix('\n'));
+    lines.any(|found| found.trim_end_matches('\r') == line)
+        && lines.any(|found| found.trim_end().ends_with("reboot: Power down"))
 }
 
 impl Drop for VmInstance {
@@ -813,6 +854,18 @@ fn library_path(library: &Path) -> Option<std::ffi::OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_shutdown_requires_this_runs_unmount_marker_before_poweroff() {
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new"));
+        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nreboot: Power down\n", "new"));
+        assert!(!clean_guest_shutdown("reboot: Power down\nDECK_UNMOUNT_CONFIRMED:new\n", "new"));
+        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\n", "new"));
+        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new-fake\nreboot: Power down\n", "new"));
+        assert!(!clean_guest_shutdown("prefix DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new"));
+        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down", "new"));
+        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:\nreboot: Power down\n", ""));
+    }
     use crate::lifecycle::{Spec, State};
 
     #[test]

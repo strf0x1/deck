@@ -1,5 +1,24 @@
 # libkrun VM spike (#16)
 
+## Deck's guest shutdown path
+
+The guest entry runs the ACP transport as a child. When it exits, the entry
+syncs, unmounts the Construct journal and remounts the root read-only before
+emitting a per-run marker and asking the kernel to power off. Deck's VMM
+stop closes the host-to-guest ACP stream's write half and allows ten seconds
+for that sequence. The runtime records a clean stop only after the VMM is
+gone and the console contains that run's marker followed by the kernel's
+poweroff message. Older guest images do not emit the marker, so their stops
+remain unclean. Automatic idle stopping is not enabled.
+
+The standalone probe below predates this path. Completed-turn Construct
+session recovery and Linux still require independent verification. A macOS
+real-VM lifecycle test with a disposable image containing the revised guest
+entry confirmed clean stop, preserved a workspace sentinel, and loaded the
+same empty Construct session from the journal after resume. It did not run a
+completed model turn. The kernel poweroff line confirms that the guest reached
+its poweroff request after the unmount marker; it is not a disk integrity scan.
+
 ## What happens when a guest workload exits
 
 On 2026-11-24, an Apple Silicon Mac running libkrun 1.19.7 and

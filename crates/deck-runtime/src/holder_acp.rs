@@ -31,6 +31,8 @@ pub enum Prompted {
     /// The prompt started `turn`; `session` is set when the holder set the
     /// session up itself, so `deckd` records it.
     Started { turn: u64, session: Option<String> },
+    /// A keyed prompt received its final response without a new turn event.
+    Settled { session: Option<String> },
     /// The task is not idle.
     Busy,
 }
@@ -44,8 +46,13 @@ pub(crate) struct HolderAcp {
 
 struct State {
     observer: Observer,
-    outcome: Option<std::result::Result<u64, String>>,
+    outcome: Option<std::result::Result<Outcome, String>>,
     session: Option<String>,
+}
+
+enum Outcome {
+    Started(u64),
+    Settled,
 }
 
 impl HolderAcp {
@@ -54,12 +61,11 @@ impl HolderAcp {
     pub(crate) fn new(data: PathBuf, id: String) -> (Arc<Self>, mpsc::Receiver<String>) {
         let (out, lines) = mpsc::channel();
         let (turns, recorded) = mpsc::channel::<(Turn, Option<LastMessage>)>();
-        std::thread::Builder::new().name("holder-turns".into()).spawn(move || record_turns(&data, &id, recorded)).ok();
         let tag = std::process::id().to_string();
+        std::thread::Builder::new().name("holder-turns".into()).spawn(move || record_turns(&data, &id, recorded)).ok();
         let state = State { observer: Observer::new(&tag), outcome: None, session: None };
         (Arc::new(Self { state: Mutex::new(state), changed: Condvar::new(), out, turns }), lines)
     }
-
     /// Write the holder's queued lines to the agent, one whole line per lock.
     pub(crate) fn connect(lines: mpsc::Receiver<String>, writer: Arc<Mutex<Box<dyn deck_acp::Writer>>>) {
         std::thread::Builder::new()
@@ -76,11 +82,11 @@ impl HolderAcp {
     }
 
     /// Prompt the agent and wait, bounded, for the turn to start.
-    pub(crate) fn prompt(&self, text: &str, setup: Setup, within: Duration) -> Result<Prompted> {
+    pub(crate) fn prompt(&self, text: &str, setup: Setup, key: Option<&str>, within: Duration) -> Result<Prompted> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.outcome = None;
         state.session = None;
-        let step = match state.observer.prompt(text, setup) {
+        let step = match state.observer.prompt_with_key(text, setup, key) {
             Ok(step) => step,
             Err(Refused::Busy) => return Ok(Prompted::Busy),
         };
@@ -89,7 +95,8 @@ impl HolderAcp {
         loop {
             if let Some(outcome) = state.outcome.take() {
                 return match outcome {
-                    Ok(turn) => Ok(Prompted::Started { turn, session: state.session.take() }),
+                    Ok(Outcome::Started(turn)) => Ok(Prompted::Started { turn, session: state.session.take() }),
+                    Ok(Outcome::Settled) => Ok(Prompted::Settled { session: state.session.take() }),
                     Err(error) => anyhow::bail!(error),
                 };
             }
@@ -116,7 +123,11 @@ impl HolderAcp {
                 }
                 Event::Session(session) => state.session = Some(session),
                 Event::Prompted(turn) => {
-                    state.outcome = Some(Ok(turn));
+                    state.outcome = Some(Ok(Outcome::Started(turn)));
+                    wake = true;
+                }
+                Event::Settled => {
+                    state.outcome = Some(Ok(Outcome::Settled));
                     wake = true;
                 }
                 Event::Failed(error) => {
