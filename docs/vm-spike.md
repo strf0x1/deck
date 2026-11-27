@@ -15,8 +15,14 @@ The standalone probe below predates this path. A macOS real-VM lifecycle test
 with a disposable image containing the revised guest entry confirmed clean
 stop, preserved a workspace sentinel, and loaded the same Construct session
 after resume. A separate scripted-model run completed a turn, stopped cleanly,
-and reloaded the same answer without a second model request. Linux remains
-untested. The kernel poweroff line confirms that the guest reached its
+and reloaded the same answer without a second model request. On Linux x86_64,
+the stock libkrunfw 5.6.2 kernel lacks SysRq, so the original image confirmed
+unmount but did not power off; a firmware build with SysRq enabled passed the
+same clean-stop and resume check. The guest now tries BusyBox's direct
+poweroff first and retains SysRq as a fallback. The revised guest passed the
+macOS disk probe and completed-turn test; it still needs a real Linux run
+against stock firmware. See [the Linux report](https://github.com/strf0x1/deck/issues/243#issuecomment-7211535641).
+The kernel poweroff line confirms that the guest reached its
 poweroff request after the unmount marker; it is not a disk integrity scan.
 
 ## What happens when a guest workload exits

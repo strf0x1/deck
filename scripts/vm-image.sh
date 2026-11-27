@@ -67,7 +67,7 @@ echo "collecting the Debian root for $platform"
 cid=$(docker create --platform "$platform" debian:bookworm-slim bash -c '
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        bash ca-certificates coreutils socat util-linux procps git grep sed gawk \
+        bash busybox-static ca-certificates coreutils socat util-linux procps git grep sed gawk \
         findutils tar gzip xz-utils less file >/dev/null
     rm -rf /var/lib/apt/lists/*')
 docker start -a "$cid" >/dev/null
@@ -246,7 +246,8 @@ unset DECK_SHUTDOWN_MARKER
 if sync && umount /root/.construct && mount -o remount,ro /; then
   [ -n "$shutdown_marker" ] && echo "DECK_UNMOUNT_CONFIRMED:$shutdown_marker"
 fi
-echo o > /proc/sysrq-trigger
+/bin/busybox poweroff -f || true
+if [ -w /proc/sysrq-trigger ]; then echo o > /proc/sysrq-trigger; fi
 sleep 5
 echo 'deck-guest: poweroff failed' >&2
 exit 1

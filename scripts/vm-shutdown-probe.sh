@@ -20,7 +20,8 @@ sync
 umount /root/.construct
 mount -o remount,ro /
 echo DECK_UNMOUNT_CONFIRMED
-echo o > /proc/sysrq-trigger
+/bin/busybox poweroff -f || true
+if [ -w /proc/sysrq-trigger ]; then echo o > /proc/sysrq-trigger; fi
 sleep 5
 echo DECK_POWEROFF_FAILED >&2
 exit 1
