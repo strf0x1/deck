@@ -613,7 +613,11 @@ fn clean_guest_shutdown(console: &str, marker: &str) -> Option<GuestShutdown> {
     if after.iter().any(|found| found.trim_end().ends_with("reboot: Power down")) {
         return Some(GuestShutdown::PoweredOff);
     }
-    if after.iter().any(|found| found.trim_end_matches('\r') == halt.as_str()) {
+    if let Some(halt_marker) = after.iter().position(|found| found.trim_end_matches('\r') == halt.as_str())
+        && after[halt_marker + 1..]
+            .iter()
+            .any(|found| found.trim_end().ends_with("reboot: Power off not available: System halted instead"))
+    {
         return Some(GuestShutdown::Halted);
     }
     None
@@ -888,7 +892,10 @@ mod tests {
             Some(GuestShutdown::PoweredOff)
         ));
         assert!(matches!(
-            clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new\n", "new"),
+            clean_guest_shutdown(
+                "DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new\nreboot: Power off not available: System halted instead\n",
+                "new"
+            ),
             Some(GuestShutdown::Halted)
         ));
         assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nreboot: Power down\n", "new").is_none());
@@ -896,6 +903,8 @@ mod tests {
         assert!(clean_guest_shutdown("reboot: Power down\nDECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
         assert!(clean_guest_shutdown("DECK_HALT_CONFIRMED:new\nDECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
         assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power off not available: System halted instead\nDECK_HALT_CONFIRMED:new\n", "new").is_none());
         assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new-fake\nreboot: Power down\n", "new").is_none());
         assert!(clean_guest_shutdown("prefix DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new").is_none());
         assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down", "new").is_none());
