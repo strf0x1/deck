@@ -11,13 +11,13 @@ gone and the console contains that run's marker followed by the kernel's
 poweroff message. Older guest images do not emit the marker, so their stops
 remain unclean. Automatic idle stopping is not enabled.
 
-The standalone probe below predates this path. Completed-turn Construct
-session recovery and Linux still require independent verification. A macOS
-real-VM lifecycle test with a disposable image containing the revised guest
-entry confirmed clean stop, preserved a workspace sentinel, and loaded the
-same empty Construct session from the journal after resume. It did not run a
-completed model turn. The kernel poweroff line confirms that the guest reached
-its poweroff request after the unmount marker; it is not a disk integrity scan.
+The standalone probe below predates this path. A macOS real-VM lifecycle test
+with a disposable image containing the revised guest entry confirmed clean
+stop, preserved a workspace sentinel, and loaded the same Construct session
+after resume. A separate scripted-model run completed a turn, stopped cleanly,
+and reloaded the same answer without a second model request. Linux remains
+untested. The kernel poweroff line confirms that the guest reached its
+poweroff request after the unmount marker; it is not a disk integrity scan.
 
 ## What happens when a guest workload exits
 

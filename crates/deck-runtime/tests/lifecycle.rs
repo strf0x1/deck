@@ -77,6 +77,82 @@ fn open(dir: &Scratch) -> Runtime {
 }
 
 #[test]
+fn each_launch_has_a_durable_identity_that_is_not_replaced_while_running() {
+    hang_guard();
+    let dir = Scratch::new("run-identity");
+    let runtime = open(&dir);
+    let id = runtime.create(spec(&["cat"])).unwrap();
+    let store = deck_runtime::record::Store::open(&dir.0).unwrap();
+    assert_eq!(store.run_identity(&id).unwrap(), None);
+
+    runtime.start(&id).unwrap();
+    let first = store.run_identity(&id).unwrap().unwrap();
+    assert_eq!(first.task, id);
+    assert!(!first.run.is_empty());
+    let other = open(&dir);
+    assert!(other.start(&id).is_err());
+    assert!(other.resume(&id).is_err());
+    assert_eq!(store.run_identity(&id).unwrap(), Some(first.clone()));
+    drop(other);
+
+    runtime.stop(&id).unwrap();
+    assert_eq!(store.run_identity(&id).unwrap(), Some(first.clone()));
+    runtime.resume(&id).unwrap();
+    let second = store.run_identity(&id).unwrap().unwrap();
+    assert_eq!(second.task, id);
+    assert_ne!(first.run, second.run);
+    runtime.stop(&id).unwrap();
+    drop(runtime);
+    let reopened = open(&dir);
+    assert_eq!(store.run_identity(&id).unwrap(), Some(second));
+    reopened.resume(&id).unwrap();
+    assert_ne!(store.run_identity(&id).unwrap().unwrap().run, first.run);
+    reopened.stop(&id).unwrap();
+}
+
+#[test]
+fn a_staged_stop_blocks_task_operations_until_reconciled() {
+    use deck_runtime::recovery::{ConfirmedExit, RunIdentity, Store};
+
+    let dir = Scratch::new("staged-stop");
+    let runtime = open(&dir);
+    let id = runtime.create(spec(&["cat"])).unwrap();
+    let task_dir = dir.0.join("tasks").join(&id);
+    let prelaunch = RunIdentity { task: id.clone(), run: "prelaunch".into() };
+    std::fs::write(task_dir.join("run.json"), serde_json::to_vec(&prelaunch).unwrap()).unwrap();
+    Store::open(&task_dir).unwrap().prepare_stop("prelaunch", prelaunch.clone(), vec![]).unwrap();
+    assert!(runtime.start(&id).is_err());
+    assert_eq!(deck_runtime::record::Store::open(&dir.0).unwrap().run_identity(&id).unwrap(), Some(prelaunch.clone()));
+    Store::open(&task_dir).unwrap().abort_prepared_stop("prelaunch", &prelaunch).unwrap();
+    runtime.start(&id).unwrap();
+    let recorded_run = deck_runtime::record::Store::open(&dir.0).unwrap().run_identity(&id).unwrap().unwrap();
+    let run = recorded_run.clone();
+    {
+        let mut store = Store::open(&task_dir).unwrap();
+        store.prepare_stop("first", run.clone(), vec![]).unwrap();
+    }
+    assert!(runtime.attach(&id).is_err());
+    assert!(runtime.stop(&id).is_err());
+    assert!(runtime.destroy(&id).is_err());
+    Store::open(&task_dir).unwrap().abort_prepared_stop("first", &run).unwrap();
+    runtime.stop(&id).unwrap();
+    {
+        let mut store = Store::open(&task_dir).unwrap();
+        store.prepare_stop("second", run.clone(), vec![]).unwrap();
+        store.begin_stop("second", &run).unwrap();
+    }
+    drop(runtime);
+    let runtime = open(&dir);
+    assert!(runtime.resume(&id).is_err(), "an unresolved stop must survive daemon restart");
+    assert_eq!(deck_runtime::record::Store::open(&dir.0).unwrap().run_identity(&id).unwrap(), Some(recorded_run));
+    assert!(runtime.destroy(&id).is_err());
+    Store::open(&task_dir).unwrap().promote_stop("second", &ConfirmedExit { run }).unwrap();
+    runtime.resume(&id).unwrap();
+    runtime.stop(&id).unwrap();
+    runtime.destroy(&id).unwrap();
+}
+
+#[test]
 fn a_task_records_the_root_commit_of_its_checkout() {
     hang_guard();
     let dir = Scratch::new("project");
@@ -278,7 +354,11 @@ fn a_failed_start_is_recorded_and_retried_in_place() {
     let rt = open(&dir);
     let bad = spec(&["/nonexistent/agent"]);
     assert!(rt.run(bad.clone()).is_err());
+    let store = deck_runtime::record::Store::open(&dir.0).unwrap();
+    let first_id = rt.tasks().unwrap()[0].id.clone();
+    let first_run = store.run_identity(&first_id).unwrap().unwrap();
     assert!(rt.run(bad).is_err());
+    assert_ne!(store.run_identity(&first_id).unwrap().unwrap().run, first_run.run);
     let tasks = rt.tasks().unwrap();
     assert_eq!(tasks.len(), 1, "a retry reuses the failed task");
     let State::Failed { failure: Failure::StartFailed(why) } = &tasks[0].state else { panic!("{:?}", tasks[0].state) };
@@ -494,5 +574,148 @@ mod supervision {
         rt.destroy(&id).unwrap();
         assert_eq!(rt.task(&id).unwrap().state, State::Destroyed);
         assert!(deck_runtime::record::Store::open(&dir.0).unwrap().lock(&id).unwrap().is_some());
+    }
+}
+
+mod recovery_fencing {
+    use super::*;
+    use deck_runtime::record::RecordLock;
+    use deck_runtime::{Backend, Exited, Instance, Stream, Task};
+    use std::sync::mpsc;
+
+    struct Block {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl Block {
+        fn wait(self) -> anyhow::Result<()> {
+            self.entered.send(())?;
+            self.release.recv_timeout(Duration::from_secs(5))?;
+            Ok(())
+        }
+    }
+
+    struct Blocking {
+        stop: Option<Block>,
+        reconcile: Option<Block>,
+    }
+
+    struct BlockingInstance {
+        stop: Option<Block>,
+        _lock: RecordLock,
+    }
+
+    impl Backend for Blocking {
+        fn name(&self) -> &'static str {
+            "blocking-recovery-test"
+        }
+
+        fn start(&mut self, _task: &Task, lock: RecordLock, _exited: Exited) -> anyhow::Result<Box<dyn Instance>> {
+            Ok(Box::new(BlockingInstance { stop: self.stop.take(), _lock: lock }))
+        }
+
+        fn reconcile(&mut self, _task: &Task) -> anyhow::Result<()> {
+            if let Some(block) = self.reconcile.take() {
+                block.wait()?;
+            }
+            Ok(())
+        }
+
+        fn destroy(&mut self, _task: &Task) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Instance for BlockingInstance {
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+
+        fn attach(&mut self) -> anyhow::Result<Stream> {
+            anyhow::bail!("not used by this test")
+        }
+
+        fn stop(&mut self, _grace: Duration) -> anyhow::Result<String> {
+            if let Some(block) = self.stop.take() {
+                block.wait()?;
+            }
+            Ok("stopped".into())
+        }
+    }
+
+    fn block() -> (Block, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered, reached) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        (Block { entered, release: released }, reached, release)
+    }
+
+    #[expect(clippy::unwrap_used, reason = "the test needs the active run identity")]
+    fn stage_is_blocked(dir: &Scratch, id: &str) {
+        let task_dir = dir.0.join("tasks").join(id);
+        let run = deck_runtime::record::Store::open(&dir.0).unwrap().run_identity(id).unwrap().unwrap();
+        let staged = deck_runtime::recovery::Store::open(&task_dir).and_then(|mut store| {
+            store.prepare_stop(
+                "race",
+                run,
+                vec![deck_runtime::recovery::Captured {
+                    id: "question".into(),
+                    question: deck_runtime::recovery::Question::Agent {
+                        title: "May I continue?".into(),
+                        options: vec![deck_runtime::recovery::OptionItem {
+                            id: "yes".into(),
+                            name: "Allow".into(),
+                            kind: "allow_once".into(),
+                        }],
+                    },
+                }],
+            )
+        });
+        let error = match staged {
+            Ok(_) => panic!("a stop snapshot cannot start during another lifecycle operation"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("already have a writer"), "{error:#}");
+    }
+
+    #[test]
+    fn recovery_stage_cannot_begin_during_a_blocked_stop() {
+        let dir = Scratch::new("stop-recovery-fence");
+        let (stop, reached, release) = block();
+        let runtime = Runtime::open(&dir.0, Blocking { stop: Some(stop), reconcile: None }).unwrap();
+        let id = runtime.create(spec(&["fake"])).unwrap();
+        runtime.start(&id).unwrap();
+        let worker = {
+            let runtime = runtime.clone();
+            let id = id.clone();
+            std::thread::spawn(move || runtime.stop(&id))
+        };
+        reached.recv_timeout(Duration::from_secs(5)).unwrap();
+        stage_is_blocked(&dir, &id);
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert!(matches!(runtime.task(&id).unwrap().state, State::Stopped { .. }));
+        assert!(deck_runtime::recovery::Store::open(&dir.0.join("tasks").join(&id)).unwrap().staged_stop().is_none());
+    }
+
+    #[test]
+    fn recovery_stage_cannot_begin_during_a_blocked_destroy() {
+        let dir = Scratch::new("destroy-recovery-fence");
+        let (reconcile, reached, release) = block();
+        let runtime = Runtime::open(&dir.0, Blocking { stop: None, reconcile: Some(reconcile) }).unwrap();
+        let id = runtime.create(spec(&["fake"])).unwrap();
+        runtime.start(&id).unwrap();
+        runtime.stop(&id).unwrap();
+        let worker = {
+            let runtime = runtime.clone();
+            let id = id.clone();
+            std::thread::spawn(move || runtime.destroy(&id))
+        };
+        reached.recv_timeout(Duration::from_secs(5)).unwrap();
+        stage_is_blocked(&dir, &id);
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(runtime.task(&id).unwrap().state, State::Destroyed);
+        assert!(deck_runtime::recovery::Store::open(&dir.0.join("tasks").join(&id)).unwrap().staged_stop().is_none());
     }
 }

@@ -359,7 +359,7 @@ fn serve(
     eof: mpsc::Sender<()>,
     started: Instant,
     acp: Arc<HolderAcp>,
-    lines: mpsc::Receiver<String>,
+    lines: crate::holder_acp::Outbound,
     input: Arc<Mutex<Option<UnixStream>>>,
 ) -> Result<()> {
     let stream = accept_within(&forward, START)?;

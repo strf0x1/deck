@@ -173,6 +173,20 @@ fn a_running_turn_or_open_question_is_busy() {
 }
 
 #[test]
+fn a_second_admitted_prompt_invalidates_a_waiting_snapshot() {
+    let mut o = Observer::new("t");
+    window_setup(&mut o);
+    o.client(&line(json!({ "jsonrpc": "2.0", "id": "first", "method": "session/prompt", "params": {} })));
+    o.agent(&turn(4, "waiting"));
+    o.agent(&line(json!({ "jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {
+        "sessionId": "s1", "toolCall": { "title": "Read" }, "options": []
+    } })));
+    assert!(o.fence_snapshot().is_some());
+    o.client(&line(json!({ "jsonrpc": "2.0", "id": "second", "method": "session/prompt", "params": {} })));
+    assert!(o.fence_snapshot().is_none(), "a later prompt may not belong to the observed question");
+}
+
+#[test]
 fn pending_permissions_keep_the_offered_choices_until_each_answer() {
     let mut o = Observer::new("t");
     window_setup(&mut o);

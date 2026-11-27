@@ -1,8 +1,9 @@
 # 0017 — Idle stop and interrupted decisions
 
 Status: accepted for opt-in use, 2026-11-25. Amends ADR 0001 and ADR 0003.
-Automatic stopping stays disabled until a policy is configured; the suggested
-defaults below are documentation, not the shipped setting.
+Automatic stopping stays disabled until the safe stop protocol is implemented
+and a policy is configured; the suggested defaults below are documentation,
+not the shipped setting.
 
 ## Context
 
@@ -84,14 +85,13 @@ tool call. The agent may need to inspect the workspace before retrying work
 whose outcome is uncertain. An allow-once answer does not silently become
 a broader host or tool grant.
 
-Automatic stopping is opt-in. The holder now fences new agent input with the
-relay writer, rechecks its turn and saved answers, and leaves a durable stop
-note with the reason and shutdown evidence. `deckd` records that note whether
-it sees the exit live or reconciles it on restart. An uncertain delivery can
-be retried with its saved key or explicitly reviewed; review does not grant
-authority or claim that the agent received the answer. The clean VM stop is
-implemented but Linux and Construct recovery after a completed turn remain
-unverified, so automatic stopping is not enabled by default.
+Automatic stopping remains disabled while the stop transaction, holder input
+fence, and gateway admission fence are connected and crash reconciliation is
+implemented. The recovery queue can record an answer before delivery. An
+uncertain delivery can be retried with its saved key or explicitly reviewed;
+review does not grant authority or claim that the agent received the answer.
+The clean VM stop and completed-turn Construct recovery have been exercised on
+macOS. The equivalent real-VM check on Linux remains outstanding.
 
 ## Evidence
 
@@ -103,5 +103,6 @@ unverified, so automatic stopping is not enabled by default.
 - `docs/vm-spike.md`: the disposable guest shutdown probe and libkrun exit.
 - `crates/deck-runtime/src/idle.rs`: policy, stop note and per-task override.
 - `crates/deck-runtime/src/recovery.rs`: durable decisions and their keys.
-- `crates/deck-runtime/tests/daemon.rs`: idle capture, restart, race and
-  legacy-agent delivery tests.
+- `crates/deck-runtime/src/holder_acp.rs` and
+  `crates/deck-gateway/src/admission.rs`: fences awaiting stop integration.
+- `crates/deck-runtime/tests/vm.rs`: clean stop and completed-turn recovery.

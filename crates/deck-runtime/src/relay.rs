@@ -14,7 +14,7 @@ use std::net::Shutdown;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
 
 /// Maximum bytes in a whole line. Oversized lines are drained and dropped;
@@ -30,6 +30,8 @@ type Shared = Arc<Mutex<Box<dyn deck_acp::Writer>>>;
 pub trait Tap: Send + Sync {
     /// A line a peer wrote, just before it reaches the agent.
     fn client(&self, line: &[u8]);
+    /// The input line may have been partially or completely written.
+    fn client_failed(&self) {}
     /// A line the agent wrote; `false` keeps it from the peer.
     fn agent(&self, line: &[u8]) -> bool;
 }
@@ -122,6 +124,14 @@ impl Relay {
     pub(crate) fn writer(&self) -> Shared {
         self.writer.clone()
     }
+
+    /// Reserve only the writer whose input and output the given tap observes.
+    pub(crate) fn try_writer_for(&self, tap: &dyn Tap) -> Option<MutexGuard<'_, Box<dyn deck_acp::Writer>>> {
+        if !self.tap.as_ref().is_some_and(|observed| std::ptr::addr_eq(observed.as_ref(), tap)) {
+            return None;
+        }
+        self.writer.try_lock().ok()
+    }
     /// Reserve the transport for runtime shutdown, evicting the window. No
     /// listener peer can enter until this private stream is dropped.
     pub(crate) fn take_over(&self) -> Result<UnixStream> {
@@ -203,6 +213,9 @@ fn serve_peer(
                 tap.client(&line);
             }
             if out.write_all(&line).and_then(|_| out.flush()).is_err() {
+                if let Some(tap) = &tap {
+                    tap.client_failed();
+                }
                 detach(&input_current, &peer);
                 failed = true;
             }

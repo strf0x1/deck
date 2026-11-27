@@ -173,6 +173,37 @@ impl Observer {
         self.questions.iter().map(|question| question.details.as_ref()).collect()
     }
 
+    /// ACP evidence only. Host approvals and agent output not yet observed
+    /// must be handled by the caller before any task can be stopped.
+    pub(crate) fn fence_snapshot(&self) -> Option<(Turn, Vec<PermissionQuestion>)> {
+        if !self.initialized || !self.ready || self.queued.is_some() || self.starting.is_some() {
+            return None;
+        }
+        let turn = self.turn.as_ref()?;
+        match turn.state {
+            Phase::Idle => {
+                if !self.questions.is_empty()
+                    || self.client.values().any(|request| *request == Request::Prompt)
+                    || self.own.values().any(|request| *request == Request::Prompt)
+                {
+                    return None;
+                }
+            }
+            Phase::Waiting if !self.questions.is_empty() => {
+                // The original turn may still have its prompt request open.
+                // A second admitted prompt has an uncertain relationship to
+                // the observed question and must not be snapshotted.
+                let pending = self.client.values().filter(|request| **request == Request::Prompt).count()
+                    + self.own.values().filter(|request| **request == Request::Prompt).count();
+                if pending > 1 {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+        Some((turn.clone(), self.pending_questions()?.into_iter().cloned().collect()))
+    }
+
     /// Whether work is in flight, so an idle stop must wait.
     pub fn busy(&self) -> bool {
         self.turn.as_ref().is_some_and(|turn| !turn.idle())

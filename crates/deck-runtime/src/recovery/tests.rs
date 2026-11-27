@@ -134,3 +134,207 @@ fn an_uncertain_answer_can_be_retried_with_its_key_or_reviewed() {
     assert!(matches!(reviewed.delivery, Delivery::Reviewed { key: ref saved, .. } if saved == key));
     assert!(store.review("q1").is_err(), "a reviewed answer is terminal");
 }
+
+fn run(dir: &Path) -> RunIdentity {
+    let identity = RunIdentity { task: dir.file_name().unwrap().to_str().unwrap().into(), run: "launch-uuid-1".into() };
+    std::fs::write(dir.join("run.json"), serde_json::to_vec(&identity).unwrap()).unwrap();
+    identity
+}
+
+#[test]
+fn staged_stop_requires_current_durable_run_through_promotion() {
+    let dir = Scratch::new();
+    let current = run(&dir.0);
+    let wrong = RunIdentity { task: current.task.clone(), run: "different".into() };
+    std::fs::remove_file(dir.0.join("run.json")).unwrap();
+    let mut store = Store::open(&dir.0).unwrap();
+    assert!(store.prepare_stop("missing", current.clone(), vec![]).is_err());
+    std::fs::write(dir.0.join("run.json"), serde_json::to_vec(&wrong).unwrap()).unwrap();
+    assert!(store.prepare_stop("wrong", current.clone(), vec![]).is_err());
+    std::fs::write(dir.0.join("run.json"), serde_json::to_vec(&current).unwrap()).unwrap();
+    store.prepare_stop("matched", current.clone(), vec![]).unwrap();
+    std::fs::write(dir.0.join("run.json"), serde_json::to_vec(&wrong).unwrap()).unwrap();
+    assert!(store.begin_stop("matched", &current).is_err());
+    std::fs::write(dir.0.join("run.json"), serde_json::to_vec(&current).unwrap()).unwrap();
+    store.begin_stop("matched", &current).unwrap();
+    std::fs::write(dir.0.join("run.json"), serde_json::to_vec(&wrong).unwrap()).unwrap();
+    assert!(store.promote_stop("matched", &ConfirmedExit { run: current }).is_err());
+    assert!(store.items().is_empty());
+}
+
+fn captured(id: &str) -> Captured {
+    Captured { id: id.into(), question: question() }
+}
+
+#[test]
+fn staged_stop_stays_hidden_until_matching_confirmed_exit_and_commits_atomically() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let other = RunIdentity { task: run.task.clone(), run: "another-launch".into() };
+    let questions = vec![captured("q1"), captured("q2")];
+    let mut store = Store::open(&dir.0).unwrap();
+    let prepared = store.prepare_stop("txn-1", run.clone(), questions.clone()).unwrap();
+    assert_eq!(prepared.phase, StopPhase::Prepared);
+    assert_eq!(store.prepare_stop("txn-1", run.clone(), questions.clone()).unwrap(), prepared);
+    assert!(store.prepare_stop("another", run.clone(), questions.clone()).is_err());
+    assert!(store.prepare_stop("txn-1", run.clone(), vec![captured("different")]).is_err());
+    assert!(store.items().is_empty(), "a prepared snapshot is not visible");
+    assert!(store.answer("q1", Answer::AgentCancelled).is_err());
+    assert!(store.promote_stop("txn-1", &ConfirmedExit { run: run.clone() }).is_err());
+    drop(store);
+
+    let mut store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.staged_stop().unwrap(), &prepared);
+    assert!(store.begin_stop("txn-1", &other).is_err());
+    let stopping = store.begin_stop("txn-1", &run).unwrap();
+    assert_eq!(stopping.phase, StopPhase::Stopping);
+    assert_eq!(store.begin_stop("txn-1", &run).unwrap(), stopping);
+    assert!(store.items().is_empty(), "recording stop intent does not publish a question");
+    assert!(store.abort_prepared_stop("txn-1", &run).is_err());
+    assert!(store.promote_stop("txn-1", &ConfirmedExit { run: other }).is_err());
+    drop(store);
+
+    let mut store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.staged_stop().unwrap(), &stopping);
+    assert!(store.items().is_empty());
+    let committed = store.promote_stop("txn-1", &ConfirmedExit { run: run.clone() }).unwrap();
+    assert_eq!(committed.len(), 2);
+    assert_eq!(store.items(), committed.as_slice());
+    assert_eq!(store.staged_stop().unwrap().phase, StopPhase::Committed);
+    let first = store.answer("q1", Answer::Agent { option_id: "yes".into() }).unwrap();
+    drop(store);
+
+    let mut store = Store::open(&dir.0).unwrap();
+    let again = store.promote_stop("txn-1", &ConfirmedExit { run }).unwrap();
+    assert_eq!(again[0], first, "retry preserves the already recorded answer and key");
+    assert_eq!(store.items().len(), 2, "retry cannot duplicate a question");
+}
+
+#[test]
+fn abort_requires_the_right_evidence_and_never_publishes_the_snapshot() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let other = RunIdentity { task: run.task.clone(), run: "other".into() };
+    let mut store = Store::open(&dir.0).unwrap();
+    store.prepare_stop("txn-prepared", run.clone(), vec![captured("old")]).unwrap();
+    let abort = store.abort_prepared_stop("txn-prepared", &run).unwrap();
+    assert_eq!(abort.phase, StopPhase::Aborted);
+    assert_eq!(store.abort_prepared_stop("txn-prepared", &run).unwrap(), abort);
+    assert!(store.items().is_empty());
+    assert!(store.capture("old", question()).is_err(), "aborted IDs cannot become unrelated captures");
+    store.prepare_stop("txn-stopping", run.clone(), vec![captured("new")]).unwrap();
+    store.begin_stop("txn-stopping", &run).unwrap();
+    assert!(store.abort_stopping("txn-stopping", &ConfirmedAbort { run: other }).is_err());
+    assert!(store.abort_prepared_stop("txn-stopping", &run).is_err());
+    let stopped = store.abort_stopping("txn-stopping", &ConfirmedAbort { run: run.clone() }).unwrap();
+    assert_eq!(stopped.phase, StopPhase::Aborted);
+    assert_eq!(store.abort_stopping("txn-stopping", &ConfirmedAbort { run: run.clone() }).unwrap(), stopped);
+    assert!(store.promote_stop("txn-stopping", &ConfirmedExit { run }).is_err());
+    drop(store);
+    let store = Store::open(&dir.0).unwrap();
+    assert!(store.items().is_empty());
+    assert_eq!(store.staged_stop().unwrap().phase, StopPhase::Aborted);
+}
+
+#[test]
+fn stage_rejects_foreign_duplicate_and_expired_questions() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let mut store = Store::open(&dir.0).unwrap();
+    assert!(store.prepare_stop("txn", run.clone(), vec![captured("q"), captured("q")]).is_err());
+    let foreign = RunIdentity { task: "other".into(), run: "launch".into() };
+    assert!(store.prepare_stop("txn", foreign, vec![]).is_err());
+    let approval: Approval = serde_json::from_value(serde_json::json!({
+        "id": "approval-1", "task": run.task, "project": "project-1", "gateway": "web",
+        "operation": "connect", "destination": "example.com:443", "created_ms": 1,
+        "expires_ms": 2, "policy": 1, "state": "pending"
+    }))
+    .unwrap();
+    assert!(
+        store
+            .prepare_stop(
+                "txn",
+                run,
+                vec![Captured { id: "boundary".into(), question: Question::Boundary { approval: Box::new(approval) } }]
+            )
+            .is_err()
+    );
+    assert!(store.staged_stop().is_none());
+    assert!(store.items().is_empty());
+}
+
+#[test]
+fn expiring_approval_cannot_pass_from_prepared_to_stop_intent() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let approval: Approval = serde_json::from_value(serde_json::json!({
+        "id": "approval-1", "task": run.task, "project": "project-1", "gateway": "web",
+        "operation": "connect", "destination": "example.com:443", "created_ms": now,
+        "expires_ms": now + 300, "policy": 1, "state": "pending"
+    }))
+    .unwrap();
+    let mut store = Store::open(&dir.0).unwrap();
+    store
+        .prepare_stop(
+            "txn",
+            run.clone(),
+            vec![Captured { id: "boundary".into(), question: Question::Boundary { approval: Box::new(approval) } }],
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    assert!(store.begin_stop("txn", &run).is_err());
+    assert_eq!(store.staged_stop().unwrap().phase, StopPhase::Prepared);
+    assert!(store.items().is_empty());
+    store.abort_prepared_stop("txn", &run).unwrap();
+}
+
+#[test]
+fn stage_keeps_existing_answers_and_rejects_reusing_their_ids() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let mut store = Store::open(&dir.0).unwrap();
+    store.capture("existing", question()).unwrap();
+    let old = store.answer("existing", Answer::AgentCancelled).unwrap();
+    assert!(store.prepare_stop("bad", run.clone(), vec![captured("existing")]).is_err());
+    store.prepare_stop("txn", run.clone(), vec![captured("new")]).unwrap();
+    assert!(store.start_delivery("existing").is_err(), "answers cannot change while the stop is staged");
+    assert_eq!(store.items(), std::slice::from_ref(&old));
+    store.begin_stop("txn", &run).unwrap();
+    store.promote_stop("txn", &ConfirmedExit { run }).unwrap();
+    assert_eq!(store.items()[0], old);
+    assert_eq!(store.items().len(), 2);
+    drop(store);
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.items()[0], old);
+    assert_eq!(store.items().len(), 2);
+}
+
+#[test]
+fn an_inconsistent_committed_snapshot_is_refused_on_restart() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let mut store = Store::open(&dir.0).unwrap();
+    store.prepare_stop("txn", run.clone(), vec![captured("q")]).unwrap();
+    store.begin_stop("txn", &run).unwrap();
+    drop(store);
+    let file = dir.0.join(FILE);
+    let mut snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    snapshot["stop"]["phase"] = serde_json::json!("committed");
+    std::fs::write(file, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    assert!(Store::open(&dir.0).is_err(), "a committed question cannot be missing");
+}
+
+#[test]
+fn an_empty_stop_still_requires_matching_exit_and_keeps_its_receipt() {
+    let dir = Scratch::new();
+    let run = run(&dir.0);
+    let mut store = Store::open(&dir.0).unwrap();
+    store.prepare_stop("empty", run.clone(), vec![]).unwrap();
+    store.begin_stop("empty", &run).unwrap();
+    assert!(store.promote_stop("empty", &ConfirmedExit { run: run.clone() }).unwrap().is_empty());
+    drop(store);
+    let mut store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.staged_stop().unwrap().phase, StopPhase::Committed);
+    assert!(store.promote_stop("empty", &ConfirmedExit { run }).unwrap().is_empty());
+}

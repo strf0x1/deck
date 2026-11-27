@@ -14,16 +14,16 @@
 //! release explicitly unlocks before close: an unrelated concurrent fork
 //! can retain the descriptor until exec and must not extend its lifetime.
 //!
-//! Two files sit beside the log and are not lifecycle: `turn.json`, the
-//! holder's latest turn, replaced whole on each change; and `prompts.jsonl`,
-//! the prompts `deckd` sent through the holder, appended (ADR 0011 §3).
+//! Files beside the log include `turn.json`, the holder's latest turn;
+//! `prompts.jsonl`, the prompts `deckd` sent through the holder (ADR 0011 §3);
+//! and `run.json`, the durable identity of the latest launch attempt.
 
 use crate::lifecycle::{Event, Spec, Task};
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write as _;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +33,7 @@ const SNAPSHOT: &str = "task.json";
 const TURN: &str = "turn.json";
 const PROMPTS: &str = "prompts.jsonl";
 const MESSAGE: &str = "message.json";
+const RUN: &str = "run.json";
 /// The most of a prompt's text the record keeps (deck#150 R8).
 pub const PROMPT_TEXT_LIMIT: usize = 32 * 1024;
 
@@ -65,22 +66,25 @@ pub struct Store {
 
 /// A held record lock. The holder releases it explicitly, even if a
 /// concurrently forked child has not yet closed its inherited descriptor.
-pub struct RecordLock(Option<File>);
+pub struct RecordLock {
+    file: Option<File>,
+    task: Option<String>,
+}
 
 impl RecordLock {
     /// Transfer ownership through fork/exec without explicitly unlocking it.
     pub(crate) fn transfer(mut self) -> Option<File> {
-        self.0.take()
+        self.file.take()
     }
 
     pub(crate) fn held(file: File) -> Self {
-        Self(Some(file))
+        Self { file: Some(file), task: None }
     }
 }
 
 impl Drop for RecordLock {
     fn drop(&mut self) {
-        if let Some(file) = &self.0 {
+        if let Some(file) = &self.file {
             let _ = file.unlock();
         }
     }
@@ -96,6 +100,36 @@ impl Store {
     /// The data root the records live under.
     pub fn data(&self) -> &Path {
         &self.data
+    }
+
+    /// The identity recorded for the latest launch attempt, if one exists.
+    /// This is not a liveness check: the launch may have failed or exited.
+    pub fn run_identity(&self, id: &str) -> Result<Option<crate::recovery::RunIdentity>> {
+        read_run_identity(&self.tasks.join(id), id)
+    }
+
+    /// Assign a fresh identity before starting a holder. The matching task
+    /// lock prevents overwriting the identity of an already running holder.
+    pub(crate) fn begin_run(&self, id: &str, lock: &RecordLock) -> Result<crate::recovery::RunIdentity> {
+        if lock.task.as_deref() != Some(id) || lock.file.is_none() {
+            bail!("task {id} needs its own held record lock to begin a run");
+        }
+        let dir = self.tasks.join(id);
+        let identity = crate::recovery::RunIdentity { task: id.into(), run: deck_acp::key::new_key() };
+        let temp = dir.join(format!(".{RUN}.{}.tmp", identity.run));
+        let result = (|| -> Result<()> {
+            let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+            file.write_all(&serde_json::to_vec(&identity)?)?;
+            file.sync_all()?;
+            fs::rename(&temp, dir.join(RUN))?;
+            File::open(&dir)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result.with_context(|| format!("recording task {id}'s run identity"))?;
+        Ok(identity)
     }
 
     /// A new task, recorded as created.
@@ -294,7 +328,7 @@ impl Store {
         let path = self.tasks.join(id).join("lock");
         let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path)?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(RecordLock::held(file))),
+            Ok(()) => Ok(Some(RecordLock { file: Some(file), task: Some(id.into()) })),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(e)) => Err(e).with_context(|| format!("locking {}", path.display())),
         }
@@ -316,6 +350,21 @@ impl Store {
         fs::rename(&tmp, dir.join(SNAPSHOT))?;
         Ok(())
     }
+}
+
+pub(crate) fn read_run_identity(dir: &Path, id: &str) -> Result<Option<crate::recovery::RunIdentity>> {
+    let path = dir.join(RUN);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let identity: crate::recovery::RunIdentity =
+        serde_json::from_slice(&bytes).with_context(|| format!("reading {}", path.display()))?;
+    if identity.task != id || identity.run.is_empty() {
+        bail!("{} has an invalid run identity", path.display());
+    }
+    Ok(Some(identity))
 }
 
 fn now_ms() -> u64 {
@@ -349,6 +398,24 @@ mod tests {
             model: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_run_needs_its_own_task_lock_and_rejects_corrupt_identity() {
+        let dir = scratch("run-identity");
+        let store = Store::open(&dir).unwrap();
+        let first = store.create("local", spec()).unwrap();
+        let second = store.create("local", spec()).unwrap();
+        let lock = store.lock(&first.id).unwrap().unwrap();
+        assert!(store.begin_run(&second.id, &lock).is_err());
+        let identity = store.begin_run(&first.id, &lock).unwrap();
+        assert_eq!(store.run_identity(&first.id).unwrap(), Some(identity));
+        let path = dir.join("tasks").join(&first.id).join(RUN);
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::write(&path, br#"{"task":"other","run":"old"}"#).unwrap();
+        assert!(store.run_identity(&first.id).is_err());
+        drop(lock);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

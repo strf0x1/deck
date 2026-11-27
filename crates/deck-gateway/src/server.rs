@@ -17,6 +17,7 @@
 //! The process fails closed: any listener that stops returns an error, and the
 //! VMM treats the gateway's exit as the task's failure.
 
+use crate::admission::Gate;
 use crate::control::Control;
 use crate::credential::Broker;
 use crate::github::GitHub;
@@ -204,16 +205,18 @@ pub fn serve(config: Config) -> Result<()> {
         budget_file: config.budget_file,
     }));
     let limits = Arc::new(Limit::new(CONNECTIONS));
+    let gate = Arc::new(Gate::default());
     let (failed, failure) = mpsc::channel();
 
     std::thread::Builder::new().name("gateway-extension".into()).spawn({
         let failed = failed.clone();
         let limits = limits.clone();
+        let gate = gate.clone();
         let web = web.clone();
         let github = github.clone();
         move || {
             let kinds = Kinds { status, web, events, github, control };
-            let reason = accept(extension_listener, limits, move |stream| kinds.extension(stream))
+            let reason = accept(extension_listener, limits, gate, move |stream| kinds.extension(stream))
                 .err()
                 .map(|error| format!("{error:#}"));
             let _ = failed.send(("extension", reason));
@@ -222,9 +225,10 @@ pub fn serve(config: Config) -> Result<()> {
     if let (Some(listener), Some(connector)) = (web_listener, web.clone()) {
         std::thread::Builder::new().name("gateway-web".into()).spawn({
             let limits = limits.clone();
+            let gate = gate.clone();
             let failed = failed.clone();
             move || {
-                let reason = accept(listener, limits, move |stream| Kinds::web(stream, connector.clone()))
+                let reason = accept(listener, limits, gate, move |stream| Kinds::web(stream, connector.clone()))
                     .err()
                     .map(|error| format!("{error:#}"));
                 let _ = failed.send(("web", reason));
@@ -234,9 +238,10 @@ pub fn serve(config: Config) -> Result<()> {
     if let (Some(listener), Some(gateway)) = (github_listener, github.clone()) {
         std::thread::Builder::new().name("gateway-github".into()).spawn({
             let limits = limits.clone();
+            let gate = gate.clone();
             let failed = failed.clone();
             move || {
-                let reason = accept(listener, limits, move |stream| gateway.handle(stream))
+                let reason = accept(listener, limits, gate, move |stream| gateway.handle(stream))
                     .err()
                     .map(|error| format!("{error:#}"));
                 let _ = failed.send(("github", reason));
@@ -245,8 +250,9 @@ pub fn serve(config: Config) -> Result<()> {
     }
     std::thread::Builder::new().name("gateway-model".into()).spawn({
         let limits = limits.clone();
+        let gate = gate.clone();
         move || {
-            let reason = accept(model_listener, limits, move |stream| model.handle(stream))
+            let reason = accept(model_listener, limits, gate, move |stream| model.handle(stream))
                 .err()
                 .map(|error| format!("{error:#}"));
             let _ = failed.send(("model", reason));
@@ -330,28 +336,38 @@ fn bind(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn accept<F>(listener: UnixListener, limits: Arc<Limit>, handle: F) -> Result<()>
+fn accept<F>(listener: UnixListener, limits: Arc<Limit>, gate: Arc<Gate>, handle: F) -> Result<()>
 where
     F: Fn(UnixStream) -> io::Result<()> + Send + Sync + 'static,
 {
     let handle = Arc::new(handle);
     loop {
-        // A slot is taken before accept, so the backlog provides backpressure
-        // instead of an unbounded thread per connection.
-        let slot = limits.acquire();
-        let (stream, _) = listener.accept()?;
-        let handle = handle.clone();
-        std::thread::Builder::new().name("gateway-connection".into()).spawn(move || {
-            let _slot = slot;
-            if let Err(error) = handle(stream) {
-                // A client that goes away mid-request is normal; a handler
-                // refusal is answered inside the handler and is not an error.
-                if error.kind() != io::ErrorKind::BrokenPipe && error.kind() != io::ErrorKind::ConnectionReset {
-                    eprintln!("deck-gateway: connection ended: {error}");
-                }
-            }
-        })?;
+        accept_one(&listener, &limits, &gate, &handle)?;
     }
+}
+
+fn accept_one<F>(listener: &UnixListener, limits: &Arc<Limit>, gate: &Arc<Gate>, handle: &Arc<F>) -> Result<()>
+where
+    F: Fn(UnixStream) -> io::Result<()> + Send + Sync + 'static,
+{
+    // A slot is taken before accept, so the backlog bounds the threads. Gate
+    // admission occurs before spawning, so every accepted handler is counted.
+    let slot = limits.acquire();
+    let (stream, _) = listener.accept()?;
+    let Some(admission) = gate.admit() else { return Ok(()) };
+    let handle = handle.clone();
+    std::thread::Builder::new().name("gateway-connection".into()).spawn(move || {
+        let _slot = slot;
+        let _admission = admission;
+        if let Err(error) = handle(stream) {
+            // A client that goes away mid-request is normal; a handler
+            // refusal is answered inside the handler and is not an error.
+            if error.kind() != io::ErrorKind::BrokenPipe && error.kind() != io::ErrorKind::ConnectionReset {
+                eprintln!("deck-gateway: connection ended: {error}");
+            }
+        }
+    })?;
+    Ok(())
 }
 
 /// The handlers a framed connection may reach, with the state they share.
@@ -521,6 +537,7 @@ impl Drop for Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admission::FreezeError;
 
     #[test]
     fn a_slot_is_released_when_its_connection_ends() {
@@ -529,6 +546,154 @@ mod tests {
         drop(first);
         let second = limit.acquire();
         drop(second);
+    }
+
+    #[test]
+    fn partial_extension_header_is_counted_until_dispatch_ends() {
+        let path = std::env::temp_dir().join(format!("deck-gate-extension-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let limits = Arc::new(Limit::new(2));
+        let gate = Arc::new(Gate::default());
+        let (started, start) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let handler = Arc::new(move |stream| {
+            started.send(()).unwrap();
+            let kinds = Kinds {
+                status: Status::new(None),
+                web: None,
+                events: Arc::new(WebEvents::new()),
+                github: None,
+                control: None,
+            };
+            let result = kinds.extension(stream);
+            done.send(()).unwrap();
+            result
+        });
+        let worker = {
+            let listener = listener.try_clone().unwrap();
+            let gate = gate.clone();
+            let limits = limits.clone();
+            std::thread::spawn(move || accept_one(&listener, &limits, &gate, &handler).unwrap())
+        };
+        let mut guest = UnixStream::connect(&path).unwrap();
+        guest.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        guest.write_all(&[0, 0]).unwrap();
+        start.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(gate.freeze(Duration::ZERO), Err(FreezeError::TimedOut)));
+        guest.write_all(&[0, 4, b't', b'e', b's', b't']).unwrap();
+        let mut length = [0u8; 4];
+        guest.read_exact(&mut length).unwrap();
+        let mut answer = vec![0; u32::from_be_bytes(length) as usize];
+        guest.read_exact(&mut answer).unwrap();
+        assert!(String::from_utf8(answer).unwrap().contains("unsupported kind"));
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        let frozen = gate.freeze(Duration::from_secs(2)).unwrap();
+        drop(frozen);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn frozen_gate_closes_accepted_connections_before_dispatch() {
+        let path = std::env::temp_dir().join(format!("deck-gate-refusal-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let limits = Arc::new(Limit::new(2));
+        let gate = Arc::new(Gate::default());
+        let frozen = gate.freeze(Duration::ZERO).unwrap();
+        let (called, calls) = mpsc::channel();
+        let handler = Arc::new(move |_: UnixStream| {
+            called.send(()).unwrap();
+            Ok(())
+        });
+        let worker = {
+            let listener = listener.try_clone().unwrap();
+            let limits = limits.clone();
+            let gate = gate.clone();
+            std::thread::spawn(move || accept_one(&listener, &limits, &gate, &handler).unwrap())
+        };
+        let mut guest = UnixStream::connect(&path).unwrap();
+        guest.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        worker.join().unwrap();
+        let mut byte = [0u8; 1];
+        let outcome = guest.read(&mut byte);
+        assert!(matches!(outcome, Ok(0)) || outcome.is_err_and(|error| error.kind() == io::ErrorKind::ConnectionReset));
+        assert!(calls.try_recv().is_err(), "a frozen connection cannot reach any handler");
+        drop(frozen);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn shared_gate_drains_all_listener_kinds_and_refuses_new_connections() {
+        let gate = Arc::new(Gate::default());
+        let limits = Arc::new(Limit::new(16));
+        let (started, starts) = mpsc::channel();
+        let mut paths = Vec::new();
+        let mut listeners = Vec::new();
+        let mut guests = Vec::new();
+        let mut accepts = Vec::new();
+        for kind in ["model", "web", "github", "extension"] {
+            let path = std::env::temp_dir().join(format!("deck-gate-shared-{kind}-{}.sock", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let listener = UnixListener::bind(&path).unwrap();
+            let accept_listener = listener.try_clone().unwrap();
+            let handler = Arc::new({
+                let started = started.clone();
+                move |mut stream: UnixStream| {
+                    started.send(kind).unwrap();
+                    let mut byte = [0u8; 1];
+                    let _ = stream.read(&mut byte);
+                    Ok(())
+                }
+            });
+            let accept_gate = gate.clone();
+            let accept_limits = limits.clone();
+            accepts.push(std::thread::spawn(move || {
+                accept_one(&accept_listener, &accept_limits, &accept_gate, &handler).unwrap();
+            }));
+            guests.push(UnixStream::connect(&path).unwrap());
+            listeners.push(listener);
+            paths.push(path);
+        }
+        for _ in 0..4 {
+            starts.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let (ready, frozen) = mpsc::channel();
+        let freeze_gate = gate.clone();
+        let freezer = std::thread::spawn(move || ready.send(freeze_gate.freeze(Duration::from_secs(5))).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while gate.admit().is_some() {
+            assert!(Instant::now() < deadline, "freeze never closed admission");
+            std::thread::yield_now();
+        }
+        for (listener, path) in listeners.iter().zip(&paths) {
+            let listener = listener.try_clone().unwrap();
+            let gate = gate.clone();
+            let limits = limits.clone();
+            let handler = Arc::new(|_: UnixStream| -> io::Result<()> { panic!("frozen dispatch ran") });
+            let accept = std::thread::spawn(move || accept_one(&listener, &limits, &gate, &handler).unwrap());
+            let mut guest = UnixStream::connect(path).unwrap();
+            guest.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            accept.join().unwrap();
+            let mut byte = [0u8; 1];
+            let outcome = guest.read(&mut byte);
+            assert!(
+                matches!(outcome, Ok(0)) || outcome.is_err_and(|error| error.kind() == io::ErrorKind::ConnectionReset)
+            );
+        }
+        assert!(frozen.recv_timeout(Duration::from_millis(50)).is_err(), "admitted handlers have not drained");
+        drop(guests);
+        let lease = frozen.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        drop(lease);
+        for worker in accepts {
+            worker.join().unwrap();
+        }
+        freezer.join().unwrap();
+        drop(listeners);
+        for path in paths {
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]
