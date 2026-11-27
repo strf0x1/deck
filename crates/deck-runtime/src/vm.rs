@@ -525,17 +525,15 @@ impl Instance for VmInstance {
     fn stop_outcome(&mut self, grace: Duration) -> Result<crate::backend::StopOutcome> {
         let (reason, forced) = self.stop_process(grace)?;
         let dir = self.data.join("tasks").join(&self.id);
-        let confirmed = !forced
-            && std::fs::read(dir.join("vmm.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<vmm::Config>(&bytes).ok())
-                .and_then(|config| {
-                    let console = std::fs::read_to_string(config.console).ok()?;
-                    Some(clean_guest_shutdown(&console, &config.shutdown_marker))
-                })
-                .unwrap_or(false);
-        if confirmed {
-            Ok(crate::backend::StopOutcome { clean: true, reason: "guest unmounted disks and powered off".into() })
+        let shutdown = std::fs::read(dir.join("vmm.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<vmm::Config>(&bytes).ok())
+            .and_then(|config| {
+                let console = std::fs::read_to_string(config.console).ok()?;
+                clean_guest_shutdown(&console, &config.shutdown_marker)
+            });
+        if !forced && let Some(shutdown) = shutdown {
+            Ok(crate::backend::StopOutcome { clean: true, reason: shutdown.reason().into() })
         } else {
             Ok(crate::backend::StopOutcome {
                 clean: false,
@@ -561,8 +559,10 @@ impl VmInstance {
         let request = Request::Stop { grace_ms: grace.as_millis().min(30_000) as u64 };
         let (reason, forced) = match exchange(&self.holder, &request, grace.max(Duration::from_secs(10)) + WAIT) {
             Ok(Reply::Stopped(reason)) => {
-                let forced = reason != "guest powered off";
-                (reason, forced)
+                // The VMM left on its own: the guest powered off, or it
+                // confirmed a clean halt and the grace elapsed. Only a
+                // SIGKILL below is a forced stop.
+                (reason, false)
             }
             Ok(_) => bail!("VMM did not confirm its stop"),
             Err(e) => {
@@ -583,14 +583,40 @@ impl VmInstance {
     }
 }
 
-fn clean_guest_shutdown(console: &str, marker: &str) -> bool {
-    if marker.is_empty() {
-        return false;
+/// What the console proves after this run's unmount marker. A guest that
+/// cannot ask its kernel to power off can still leave both disks cleanly
+/// unmounted, then halt.
+#[derive(Clone, Copy)]
+enum GuestShutdown {
+    PoweredOff,
+    Halted,
+}
+
+impl GuestShutdown {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::PoweredOff => "guest unmounted disks and powered off",
+            Self::Halted => "guest unmounted disks and halted",
+        }
     }
-    let line = format!("DECK_UNMOUNT_CONFIRMED:{marker}");
-    let mut lines = console.split_inclusive('\n').filter_map(|line| line.strip_suffix('\n'));
-    lines.any(|found| found.trim_end_matches('\r') == line)
-        && lines.any(|found| found.trim_end().ends_with("reboot: Power down"))
+}
+
+fn clean_guest_shutdown(console: &str, marker: &str) -> Option<GuestShutdown> {
+    if marker.is_empty() {
+        return None;
+    }
+    let unmount = format!("DECK_UNMOUNT_CONFIRMED:{marker}");
+    let halt = format!("DECK_HALT_CONFIRMED:{marker}");
+    let lines: Vec<&str> = console.split_inclusive('\n').filter_map(|line| line.strip_suffix('\n')).collect();
+    let unmounted = lines.iter().position(|found| found.trim_end_matches('\r') == unmount.as_str())?;
+    let after = &lines[unmounted + 1..];
+    if after.iter().any(|found| found.trim_end().ends_with("reboot: Power down")) {
+        return Some(GuestShutdown::PoweredOff);
+    }
+    if after.iter().any(|found| found.trim_end_matches('\r') == halt.as_str()) {
+        return Some(GuestShutdown::Halted);
+    }
+    None
 }
 
 impl Drop for VmInstance {
@@ -856,15 +882,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clean_shutdown_requires_this_runs_unmount_marker_before_poweroff() {
-        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new"));
-        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nreboot: Power down\n", "new"));
-        assert!(!clean_guest_shutdown("reboot: Power down\nDECK_UNMOUNT_CONFIRMED:new\n", "new"));
-        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\n", "new"));
-        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new-fake\nreboot: Power down\n", "new"));
-        assert!(!clean_guest_shutdown("prefix DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new"));
-        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down", "new"));
-        assert!(!clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:\nreboot: Power down\n", ""));
+    fn clean_shutdown_requires_this_runs_unmount_marker_before_poweroff_or_halt() {
+        assert!(matches!(
+            clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new"),
+            Some(GuestShutdown::PoweredOff)
+        ));
+        assert!(matches!(
+            clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new\n", "new"),
+            Some(GuestShutdown::Halted)
+        ));
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nreboot: Power down\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nDECK_HALT_CONFIRMED:old\n", "new").is_none());
+        assert!(clean_guest_shutdown("reboot: Power down\nDECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_HALT_CONFIRMED:new\nDECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new-fake\nreboot: Power down\n", "new").is_none());
+        assert!(clean_guest_shutdown("prefix DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:\nreboot: Power down\n", "").is_none());
     }
     use crate::lifecycle::{Spec, State};
 

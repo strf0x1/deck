@@ -3,27 +3,28 @@
 ## Deck's guest shutdown path
 
 The guest entry runs the ACP transport as a child. When it exits, the entry
-syncs, unmounts the Construct journal and remounts the root read-only before
-emitting a per-run marker and asking the kernel to power off. Deck's VMM
-stop closes the host-to-guest ACP stream's write half and allows ten seconds
-for that sequence. The runtime records a clean stop only after the VMM is
-gone and the console contains that run's marker followed by the kernel's
-poweroff message. Older guest images do not emit the marker, so their stops
-remain unclean. Automatic idle stopping is not enabled.
+syncs, unmounts the Construct journal, remounts the root read-only and emits
+two per-run markers: the unmount confirmation and a halt confirmation. It then
+asks the kernel to power off, using SysRq when available and BusyBox poweroff
+otherwise. Deck's VMM stop closes the host-to-guest ACP stream's write half
+and allows ten seconds for that sequence. The runtime records a clean stop
+only when the VMM left on its own and the console contains this run's unmount
+marker followed by either the kernel's poweroff message or the halt marker.
+Stock libkrunfw 5.6.2 on x86_64 has neither SysRq nor a poweroff driver, so
+the guest halts; the stop is clean and the reason says why. Older guest images
+emit no halt marker and remain unclean on those kernels. Automatic idle
+stopping is not enabled.
 
 The standalone probe below predates this path. A macOS real-VM lifecycle test
 with a disposable image containing the revised guest entry confirmed clean
 stop, preserved a workspace sentinel, and loaded the same Construct session
 after resume. A separate scripted-model run completed a turn, stopped cleanly,
-and reloaded the same answer without a second model request. On Linux x86_64,
-the stock libkrunfw 5.6.2 kernel lacks SysRq, so the original image confirmed
-unmount but did not power off; a firmware build with SysRq enabled passed the
-same clean-stop and resume check. The guest now tries BusyBox's direct
-poweroff first and retains SysRq as a fallback. The revised guest passed the
-macOS disk probe and completed-turn test; it still needs a real Linux run
-against stock firmware. See [the Linux report](https://github.com/strf0x1/deck/issues/243#issuecomment-7211535641).
-The kernel poweroff line confirms that the guest reached its
-poweroff request after the unmount marker; it is not a disk integrity scan.
+and reloaded the same answer without a second model request. That completed-
+turn check now also passes on Linux x86_64 against stock libkrunfw 5.6.2
+(halt confirmation) and against a firmware build with SysRq (poweroff
+confirmation). See [the Linux report](https://github.com/strf0x1/deck/issues/243#issuecomment-7211535641).
+The kernel's poweroff or halt line confirms that the guest reached its stop
+request after the unmount marker; it is not a disk integrity scan.
 
 ## What happens when a guest workload exits
 

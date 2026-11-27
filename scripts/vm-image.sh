@@ -245,9 +245,12 @@ unset DECK_SHUTDOWN_MARKER
   -- /bin/sh -c "exec ${DECK_AGENT} ${DECK_ARGS}"
 if sync && umount /root/.construct && mount -o remount,ro /; then
   [ -n "$shutdown_marker" ] && echo "DECK_UNMOUNT_CONFIRMED:$shutdown_marker"
+  # Some kernels cannot power off and halt instead; the unmount is still
+  # clean, so record that before asking the kernel to stop.
+  [ -n "$shutdown_marker" ] && echo "DECK_HALT_CONFIRMED:$shutdown_marker"
 fi
-/bin/busybox poweroff -f || true
 if [ -w /proc/sysrq-trigger ]; then echo o > /proc/sysrq-trigger; fi
+/bin/busybox poweroff -f || true
 sleep 5
 echo 'deck-guest: poweroff failed' >&2
 exit 1
