@@ -284,10 +284,10 @@ fn idle_exit_waits_for_control_clients_and_idle_subscriptions() {
 fn idle_grace_starts_when_the_last_client_disconnects() {
     let (mut daemon, client) = Daemon::new("idle-grace");
     std::thread::sleep(IDLE * 2);
+    let disconnected = Instant::now();
     drop(client);
-    std::thread::sleep(IDLE / 2);
-    assert!(daemon.child.try_wait().unwrap().is_none(), "the full idle grace follows the last disconnect");
     assert!(daemon.wait_exit().success());
+    assert!(disconnected.elapsed() >= IDLE, "the full idle grace follows the last disconnect");
 }
 
 #[test]
@@ -2199,6 +2199,7 @@ fn interrupted_answer_is_durable_delivered_once_and_busy_is_retained() {
         .run(daemon.spec(&[
             "env",
             "DECK_FAKE_NAMES=reverse",
+            "DECK_FAKE_DELAY_MS=1",
             &format!("DECK_FAKE_PROMPT_LOG={}", log.display()),
             fake.to_str().unwrap(),
         ]))
