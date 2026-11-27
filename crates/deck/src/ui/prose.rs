@@ -15,7 +15,7 @@ use super::theme::{Tokens, radius, size, space, tint};
 use super::typography::{CodeFont, Typography};
 use gpui::{
     AnyElement, FontStyle, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    StrikethroughStyle, Styled as _, TextRun, UnderlineStyle, div, font, px, relative,
+    StatefulInteractiveElement as _, StrikethroughStyle, Styled as _, TextRun, UnderlineStyle, div, font, px, relative,
 };
 
 /// An agent message; each paragraph, heading and code block is the next of
@@ -68,7 +68,36 @@ fn block(b: &Block, typography: &Typography, runs: &RowRuns) -> AnyElement {
             }))
             .into_any_element(),
         Block::Rule => div().h(px(1.)).my(px(space::DETAIL)).bg(Tokens::edge()).into_any_element(),
+        Block::Table { rows } => table(rows, typography, runs),
     }
+}
+
+/// Intrinsic column widths keep cells aligned; the viewport owns overflow.
+fn table(rows: &[Vec<Inline>], typography: &Typography, runs: &RowRuns) -> AnyElement {
+    let columns = rows.first().map_or(0, Vec::len);
+    div()
+        .id(runs.element_id("table"))
+        .debug_selector(|| "agent-table".into())
+        .flex()
+        .w_full()
+        .min_w_0()
+        .overflow_x_scroll()
+        .child(div().flex_none().grid().grid_cols_max_content(u16::try_from(columns).unwrap_or(u16::MAX)).children(
+            rows.iter().enumerate().flat_map(|(r, row)| {
+                row.iter().map(move |cell| {
+                    let base = if r == 0 { Tokens::text() } else { Tokens::text_dim() };
+                    div()
+                        .debug_selector(move || if r == 0 { "table-header".into() } else { "table-cell".into() })
+                        .px(px(space::INSET))
+                        .py(px(space::LINE))
+                        .border_1()
+                        .border_color(Tokens::edge())
+                        .whitespace_nowrap()
+                        .child(runs.text(styled_with_base(cell, typography, base.into())))
+                })
+            }),
+        ))
+        .into_any_element()
 }
 
 /// A fenced block: a faint language label, then the code, unwrapped lines kept.
@@ -132,6 +161,10 @@ pub fn code_text(text: &str, lines: &[highlight::Line], base: Hsla, typography: 
 
 /// One run per styled range, and plain runs between them.
 fn styled(i: &Inline, typography: &Typography) -> Text {
+    styled_with_base(i, typography, Tokens::text().into())
+}
+
+fn styled_with_base(i: &Inline, typography: &Typography, base: Hsla) -> Text {
     let run = |len: usize, mark: Mark| {
         let mut f = font(if mark.code { typography.code.value_family() } else { typography.interface.family() });
         if mark.bold {
@@ -147,7 +180,7 @@ fn styled(i: &Inline, typography: &Typography) -> Text {
         } else if mark.bold {
             Tokens::emphasis()
         } else {
-            Tokens::text().into()
+            base
         };
         TextRun {
             len,

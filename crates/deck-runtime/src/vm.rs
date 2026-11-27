@@ -942,6 +942,8 @@ mod tests {
             state: State::Created,
             pid: None,
             holder: None,
+            launches: 0,
+            permissions: None,
             session_id: None,
             usage: Default::default(),
             publication: None,

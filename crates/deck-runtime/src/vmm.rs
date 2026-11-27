@@ -269,7 +269,7 @@ pub fn run(config: &Path) -> Result<()> {
     eprintln!("vmm: configured at {} ms", started.elapsed().as_millis());
 
     let config = Arc::new(config);
-    let (acp, lines) = HolderAcp::new(config.data.clone(), config.task.clone());
+    let (acp, lines) = HolderAcp::new(config.data.clone(), config.task.clone())?;
     let input = Arc::new(Mutex::new(None::<UnixStream>));
     let (eof_tx, eof_rx) = mpsc::channel();
     std::thread::Builder::new().name("vmm-relay".into()).spawn({

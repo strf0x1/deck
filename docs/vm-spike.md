@@ -4,12 +4,13 @@
 
 The guest entry runs the ACP transport as a child. When it exits, the entry
 syncs, unmounts the Construct journal, remounts the root read-only and emits
-two per-run markers: the unmount confirmation and a halt confirmation. It then
+two per-run markers: the unmount confirmation and the intent to halt. It then
 asks the kernel to power off, using SysRq when available and BusyBox poweroff
 otherwise. Deck's VMM stop closes the host-to-guest ACP stream's write half
 and allows ten seconds for that sequence. The runtime records a clean stop
-only when the VMM left on its own and the console contains this run's unmount
-marker followed by either the kernel's poweroff message or the halt marker.
+only when the VMM exited without SIGKILL and the console contains this run's unmount
+marker followed by either the kernel's poweroff message or the halt marker
+and the kernel's message that it halted instead of powering off.
 Stock libkrunfw 5.6.2 on x86_64 has neither SysRq nor a poweroff driver, so
 the guest halts; the stop is clean and the reason says why. Older guest images
 emit no halt marker and remain unclean on those kernels. Automatic idle

@@ -23,7 +23,7 @@ impl Deck {
         }
         match self.settings.is_open().then(|| self.settings.editor()).flatten() {
             Some(editor) => editor,
-            None => &self.editor,
+            None => &self.current().editor,
         }
     }
 
@@ -40,7 +40,8 @@ impl Deck {
         {
             return editor;
         }
-        &mut self.editor
+        let attached = self.selected.as_deref().and_then(|id| self.attached.get_mut(id)).unwrap_or(&mut self.idle);
+        &mut attached.editor
     }
 
     /// A composer key that is not text: moves, deletes, clipboard, send.
@@ -68,7 +69,12 @@ impl Deck {
             }
             _ => {}
         }
-        let e = &mut self.editor;
+        let vertical = if matches!(ev.keystroke.key.as_str(), "up" | "down") {
+            self.composer.vertical(self.current().editor.cursor(), ev.keystroke.key == "up")
+        } else {
+            None
+        };
+        let e = &mut self.current_mut().editor;
         match ev.keystroke.key.as_str() {
             "enter" if shift || m.alt => e.insert("\n"),
             "enter" => self.submit(cx),
@@ -82,7 +88,7 @@ impl Deck {
             "end" => e.line_end(shift),
             "up" | "down" => {
                 let up = ev.keystroke.key == "up";
-                match self.composer.vertical(e.cursor(), up) {
+                match vertical {
                     Some(at) => e.move_to(at, shift),
                     // Past the first or last row: earlier prompts, or the line's end.
                     None if shift => {

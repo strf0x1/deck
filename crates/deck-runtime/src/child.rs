@@ -15,6 +15,7 @@ extern "C" fn keep_supervising(_: libc::c_int) {}
 /// Run only as the process-group leader started by `Local`.
 pub fn run(argv: &[String]) -> Result<()> {
     let (program, args) = argv.split_first().context("no agent command")?;
+    let mut status_report = crate::child_status::writer()?;
     // SAFETY: these functions take no pointers and only query this process.
     if unsafe { libc::getpgrp() != libc::getpid() } {
         bail!("deckd child helper must lead its own process group");
@@ -35,6 +36,7 @@ pub fn run(argv: &[String]) -> Result<()> {
     }
     let mut command = Command::new(program);
     command.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    command.env_remove(crate::child_status::FD_ENV);
     // SAFETY: the hook calls only async-signal-safe signal(2), then returns.
     // The real agent inherits this helper's process group, but gets TERM's
     // normal disposition rather than the supervisor's handler.
@@ -84,7 +86,9 @@ pub fn run(argv: &[String]) -> Result<()> {
     if report(Ok(())).is_err() || ready.send(()).is_err() {
         kill_group();
     }
-    let _ = agent.wait();
+    if let Ok(status) = agent.wait() {
+        let _ = status_report.write_all(crate::local::describe(status).as_bytes());
+    }
     // Let final stdout reach the relay before terminating lingering tools.
     // A tool that inherited stdout cannot hold supervision open forever.
     let _ = output_drained.recv_timeout(Duration::from_millis(100));

@@ -60,8 +60,8 @@ impl Deck {
         s.press = Some(Press { at, origin: ev.position, unit });
         s.on_text = true;
         s.task = self.selected.clone();
-        let cursor = self.editor.cursor();
-        self.editor.move_to(cursor, false);
+        let cursor = self.current().editor.cursor();
+        self.current_mut().editor.move_to(cursor, false);
         cx.notify();
     }
 
@@ -124,7 +124,7 @@ impl Deck {
         let k = &ev.keystroke;
         let command = k.modifiers.control || k.modifiers.platform;
         match k.key.as_str() {
-            "c" if command && self.editor.selection().is_empty() => {
+            "c" if command && self.current().editor.selection().is_empty() => {
                 let Some(text) = self.transcript_selection() else { return false };
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 true

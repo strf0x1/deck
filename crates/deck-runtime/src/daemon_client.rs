@@ -220,6 +220,11 @@ impl DaemonClient {
     pub fn forget_project(&self, id: &str) -> Result<()> {
         self.request(Request::ForgetProject { id: id.into() })
     }
+    /// Set a project's coordinator command without creating a task; `None`
+    /// restores `construct acp`. Existing coordinators retain their command.
+    pub fn set_coordinator_argv(&self, project: &str, argv: Option<Vec<String>>) -> Result<()> {
+        self.request(Request::SetCoordinatorCommand { project: project.into(), argv })
+    }
     pub fn run(&self, spec: Spec) -> Result<RunResult> {
         self.request(Request::Run { spec })
     }

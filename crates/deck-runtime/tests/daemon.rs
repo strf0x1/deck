@@ -783,6 +783,54 @@ for line in sys.stdin:
 }
 
 #[test]
+fn a_user_stop_records_the_agents_exit_before_group_cleanup() {
+    let script = r#"
+import os,signal,subprocess,sys,time
+from pathlib import Path
+assert 'DECK_CHILD_STATUS_FD' not in os.environ
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+tool = subprocess.Popen(['sleep', '30'])
+Path(sys.argv[1]).write_text(str(tool.pid))
+while True: time.sleep(1)
+"#;
+    let (mut daemon, client) = Daemon::new("exit-stop");
+    let ready = daemon.data.join("ready");
+    let run = client.run(daemon.spec(&["python3", "-u", "-c", script, ready.to_str().unwrap()])).unwrap();
+    let mut tool = None;
+    eventually(|| {
+        tool = std::fs::read_to_string(&ready).ok().and_then(|text| text.parse::<u32>().ok()).filter(|pid| *pid > 0);
+        tool.is_some()
+    });
+    let tool = tool.unwrap();
+    client.stop(&run.task.id).unwrap();
+    assert_eq!(
+        client.task(&run.task.id).unwrap().state,
+        State::Stopped { clean: true, reason: "exited with code 0".into() }
+    );
+    eventually(|| !running(tool));
+    assert!(!running(run.task.pid.unwrap()));
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn a_forced_supervisor_stop_keeps_the_sigkill_reason() {
+    let (mut daemon, client) = Daemon::new("exit-forced");
+    let marker = daemon.data.join("ready");
+    let script = "import signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).touch(); time.sleep(30)";
+    let run = client.run(daemon.spec(&["python3", "-u", "-c", script, marker.to_str().unwrap()])).unwrap();
+    eventually(|| marker.exists());
+    client.stop(&run.task.id).unwrap();
+    let State::Stopped { clean: true, reason } = client.task(&run.task.id).unwrap().state else {
+        panic!("not stopped")
+    };
+    assert!(reason.starts_with("killed by signal 9, after"), "{reason}");
+    assert!(!running(run.task.pid.unwrap()));
+    drop(client);
+    assert!(daemon.wait_exit().success());
+}
+
+#[test]
 fn an_unresponsive_close_does_not_prevent_confirmed_stop() {
     let (mut daemon, client) = Daemon::new("close-timeout");
     let run = client.run(daemon.spec(&["sleep", "30"])).unwrap();
@@ -1846,7 +1894,10 @@ fn pull_request_state_is_read_through_the_tasks_gateway_and_kept_after_stop() {
 fn a_daemon_reports_itself_stale_after_its_binary_is_rebuilt() {
     let data = Daemon::data("stale");
     let exe = data.join("deckd");
-    std::fs::copy(env!("CARGO_BIN_EXE_deckd"), &exe).unwrap();
+    // Keep the copy's writable descriptor out of this multithreaded process:
+    // another test's fork could otherwise inherit it and cause ETXTBSY.
+    let copied = Command::new("cp").arg(env!("CARGO_BIN_EXE_deckd")).arg(&exe).status().unwrap();
+    assert!(copied.success(), "copy the daemon fixture before executing it");
     let paths = Paths::for_data(&data).unwrap();
     let mut daemon = Daemon {
         data: data.clone(),
@@ -1933,6 +1984,42 @@ fn coordinator_spec(dir: &std::path::Path, project: &str) -> Spec {
 fn strategy_stub(out: &std::path::Path) -> Vec<String> {
     let script = format!("printf %s \"$CONSTRUCT_CONTEXT_STRATEGY\" > '{}'; exec cat", out.display());
     vec!["sh".into(), "-c".into(), script]
+}
+
+#[test]
+fn a_projects_coordinator_command_is_configurable_before_any_task_and_survives_restart() {
+    let (mut daemon, client) = Daemon::new("first-coordinator-command");
+    let repo = daemon.data.join("repo");
+    git_repo(&repo);
+    let workers = vec!["sleep".to_string(), "30".into()];
+    let project = client.open_project(&repo, workers.clone()).unwrap();
+    assert!(client.tasks().unwrap().is_empty());
+    assert!(client.set_coordinator_argv(&project.id, Some(vec![])).is_err());
+    assert!(client.set_coordinator_argv(&project.id, Some(vec![" ".into()])).is_err());
+    assert!(client.set_coordinator_argv("git:unknown", None).is_err());
+    assert_eq!(client.projects().unwrap()[0].coordinator_argv, None);
+    let out = daemon.data.join("strategy");
+    let command = strategy_stub(&out);
+    client.set_coordinator_argv(&project.id, Some(command.clone())).unwrap();
+    assert!(client.tasks().unwrap().is_empty(), "saving the command creates no task");
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    let client = daemon.restart();
+    let recorded = client.projects().unwrap().remove(0);
+    assert_eq!(recorded.coordinator_argv, Some(command.clone()));
+    assert_eq!(recorded.argv, workers);
+    let lead = client.run(coordinator_spec(&repo, &project.id)).unwrap().task;
+    assert_eq!(lead.spec.argv, command);
+    eventually(|| std::fs::read_to_string(&out).is_ok_and(|s| s == "optchat"));
+    client.set_coordinator_argv(&project.id, None).unwrap();
+    assert_eq!(client.task(&lead.id).unwrap().spec.argv, command, "the existing coordinator keeps its command");
+    client.stop(&lead.id).unwrap();
+    client.destroy(&lead.id).unwrap();
+    let next = client.create(coordinator_spec(&repo, &project.id)).unwrap();
+    assert_eq!(next.spec.argv, vec!["construct".to_string(), "acp".into()]);
+    client.destroy(&next.id).unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
 }
 
 #[test]

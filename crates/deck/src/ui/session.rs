@@ -70,6 +70,7 @@ pub enum Status {
 pub struct Ask {
     pub request: Value,
     pub title: String,
+    pub detail: Option<String>,
     pub options: Vec<PermissionOption>,
 }
 
@@ -98,6 +99,13 @@ impl Session {
 
     pub fn can_prompt(&self) -> bool {
         self.status == Status::Ready
+    }
+
+    /// A confirmed user stop retires every permission from that process.
+    pub(super) fn stopped(&mut self) {
+        self.status = Status::Down("stopped".into());
+        self.ask = None;
+        self.questions.clear();
     }
 
     /// No turn is running: the last turn is finished.
@@ -181,8 +189,8 @@ impl Session {
                     tool.update(update, now);
                 }
             }
-            Inbound::Permission { request, title, options } => {
-                let ask = Ask { request, title, options };
+            Inbound::Permission { request, title, detail, options } => {
+                let ask = Ask { request, title, detail, options };
                 if self.ask.is_none() {
                     self.ask = Some(ask);
                 } else {
@@ -317,14 +325,23 @@ mod tests {
     fn replayed_questions_are_answered_in_order_and_idle_retires_the_rest() {
         let mut s = Session::new();
         for id in [901, 902, 903] {
-            s.apply(Inbound::Permission { request: serde_json::json!(id), title: "read".into(), options: vec![] });
+            s.apply(Inbound::Permission {
+                detail: Some(format!("command for {id}")),
+                request: serde_json::json!(id),
+                title: "read".into(),
+                options: vec![],
+            });
         }
         s.apply(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: Some(TurnState::Waiting) });
         assert_eq!(s.status, Status::Waiting);
         assert!(!s.can_prompt());
-        assert_eq!(s.answered().unwrap().request, serde_json::json!(901));
+        let first = s.answered().unwrap();
+        assert_eq!(first.request, serde_json::json!(901));
+        assert_eq!(first.detail.as_deref(), Some("command for 901"));
         assert_eq!(s.status, Status::Waiting);
-        assert_eq!(s.answered().unwrap().request, serde_json::json!(902));
+        let second = s.answered().unwrap();
+        assert_eq!(second.request, serde_json::json!(902));
+        assert_eq!(second.detail.as_deref(), Some("command for 902"));
         s.apply(Inbound::Turn { number: 1, state: TurnState::Idle { stop_reason: None } });
         assert!(s.answered().is_none());
         assert!(s.can_prompt());

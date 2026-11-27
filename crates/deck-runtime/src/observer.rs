@@ -11,6 +11,7 @@
 //! answers an agent request: permission questions stay for a window.
 
 use crate::lifecycle::{Phase, Turn};
+use crate::permission::{Questions, View};
 use deck_acp::TurnState;
 use deck_acp::names::{
     CONSTRUCT_META, IDEMPOTENCY_KEY, IDEMPOTENT_PROMPTS, LEGACY_CONSTRUCT_META, LEGACY_TURN_METHOD, TURN_METHOD,
@@ -18,7 +19,6 @@ use deck_acp::names::{
 use deck_acp::rpc::{self, Incoming};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 
 /// A snapshot must be small enough to persist and display in full. A question
 /// outside these bounds remains open but cannot be snapshotted for idle stop.
@@ -54,6 +54,8 @@ struct QueuedPrompt {
     text: String,
     key: Option<String>,
 }
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 /// The request id prefix the holder writes with; a window's ids start `deck-`.
 pub const PREFIX: &str = "holder";
@@ -81,6 +83,8 @@ pub struct Step {
 pub enum Event {
     /// The turn changed; the holder records it.
     Turn(Turn),
+    /// Permission observations changed, including within the same turn.
+    Permissions,
     /// The holder set up this session itself (`session/new` or `session/load`).
     Session(String),
     /// The holder's prompt started this turn.
@@ -119,7 +123,13 @@ pub struct Observer {
     idempotent: bool,
     session: Option<String>,
     turn: Option<Turn>,
-    questions: Vec<Question>,
+    questions: Questions,
+    setup_request: Option<(Value, Option<String>)>,
+    staged: Option<Questions>,
+    session_epoch: u64,
+    seen_questions: HashSet<u64>,
+    identities_exhausted: bool,
+    recovery_questions: Vec<Question>,
     /// A prompt waiting for the session the holder is setting up.
     queued: Option<QueuedPrompt>,
     /// The holder's prompt, written, until its turn is seen to start.
@@ -143,7 +153,13 @@ impl Observer {
             idempotent: false,
             session: None,
             turn: None,
-            questions: Vec::new(),
+            questions: Questions::new(format!("{tag}-0")),
+            setup_request: None,
+            staged: None,
+            session_epoch: 0,
+            seen_questions: HashSet::new(),
+            identities_exhausted: false,
+            recovery_questions: Vec::new(),
             queued: None,
             starting: None,
             setup: None,
@@ -167,16 +183,24 @@ impl Observer {
     /// Pending questions in arrival order. `None` means at least one cannot
     /// be preserved in full, so the caller must not stop and lose it.
     pub fn pending_questions(&self) -> Option<Vec<&PermissionQuestion>> {
-        if self.questions.len() > MAX_QUESTIONS {
+        if self.recovery_questions.len() > MAX_QUESTIONS
+            || self.recovery_questions.len() != self.questions.view().pending_count
+        {
             return None;
         }
-        self.questions.iter().map(|question| question.details.as_ref()).collect()
+        self.recovery_questions.iter().map(|question| question.details.as_ref()).collect()
     }
 
     /// ACP evidence only. Host approvals and agent output not yet observed
     /// must be handled by the caller before any task can be stopped.
     pub(crate) fn fence_snapshot(&self) -> Option<(Turn, Vec<PermissionQuestion>)> {
-        if !self.initialized || !self.ready || self.queued.is_some() || self.starting.is_some() {
+        if !self.initialized
+            || !self.ready
+            || self.queued.is_some()
+            || self.starting.is_some()
+            || self.setup_request.is_some()
+            || self.staged.is_some()
+        {
             return None;
         }
         let turn = self.turn.as_ref()?;
@@ -220,7 +244,20 @@ impl Observer {
     }
 
     /// One line a window wrote to the agent.
+    pub fn permissions(&self) -> View {
+        self.questions.view()
+    }
+
     pub fn client(&mut self, line: &[u8]) -> Vec<Event> {
+        let before = self.permissions();
+        let mut events = self.client_line(line);
+        if before != self.permissions() {
+            events.push(Event::Permissions);
+        }
+        events
+    }
+
+    fn client_line(&mut self, line: &[u8]) -> Vec<Event> {
         let Some(message) = std::str::from_utf8(line).ok().and_then(rpc::parse) else { return vec![] };
         match message {
             Incoming::Request { id, method, params } => {
@@ -230,7 +267,10 @@ impl Observer {
                         // on it, and the agent retires its open questions.
                         self.ready = false;
                         self.idempotent = false;
-                        self.questions.clear();
+                        self.retire_questions();
+                        self.client.clear();
+                        self.setup_request = None;
+                        self.staged = None;
                         Request::Initialize
                     }
                     "session/new" => Request::New,
@@ -239,6 +279,7 @@ impl Observer {
                     _ => return vec![],
                 };
                 let started = request == Request::Prompt && !self.live;
+                self.begin_setup(&id, &request);
                 self.client.insert(id, request);
                 if started {
                     // An agent without turn notifications: the prompt is the
@@ -248,13 +289,13 @@ impl Observer {
                 }
                 vec![]
             }
-            Incoming::Response { id, .. } => {
-                // The window answered a permission question.
-                let matched = self.questions.iter().position(|question| question.id == id);
-                if let Some(index) = matched {
-                    self.questions.remove(index);
+            Incoming::Response { id, result } => {
+                // This is an observed response, not proof of delivery.
+                self.recovery_questions.retain(|question| question.id != id);
+                if let Some(staged) = self.staged.as_mut() {
+                    staged.answer(&id, &result);
                 }
-                if matched.is_some() && self.questions.is_empty() && !self.live {
+                if self.questions.answer(&id, &result) && self.questions.is_empty() && !self.live {
                     return self.phase(Phase::Working);
                 }
                 vec![]
@@ -265,6 +306,15 @@ impl Observer {
 
     /// One line the agent wrote.
     pub fn agent(&mut self, line: &[u8]) -> Step {
+        let before = self.permissions();
+        let mut step = self.agent_line(line);
+        if before != self.permissions() {
+            step.events.push(Event::Permissions);
+        }
+        step
+    }
+
+    fn agent_line(&mut self, line: &[u8]) -> Step {
         let Some(message) = std::str::from_utf8(line).ok().and_then(rpc::parse) else {
             return Step { forward: true, ..Step::default() };
         };
@@ -276,7 +326,7 @@ impl Observer {
                     return step;
                 }
                 let events = match self.client.remove(&id) {
-                    Some(request) => self.client_response(request, result),
+                    Some(request) => self.client_response(&id, request, result),
                     None => vec![],
                 };
                 Step { forward: true, write: vec![], events }
@@ -293,16 +343,18 @@ impl Observer {
                 Step { forward: true, ..Step::default() }
             }
             Incoming::Request { id, method, params } if method == "session/request_permission" => {
-                if let Some(index) = self.questions.iter().position(|question| question.id == id) {
-                    if self.questions[index].details.is_some() || self.questions.len() <= MAX_QUESTIONS {
-                        self.questions[index].details = permission_question(&id, &params);
+                let accepted = self.question(id.clone(), &params);
+                if accepted {
+                    if let Some(question) = self.recovery_questions.iter_mut().find(|question| question.id == id) {
+                        question.details = None;
+                    } else {
+                        let details = (self.recovery_questions.len() < MAX_QUESTIONS)
+                            .then(|| permission_question(&id, &params))
+                            .flatten();
+                        self.recovery_questions.push(Question { id, details });
                     }
-                } else {
-                    let details =
-                        (self.questions.len() < MAX_QUESTIONS).then(|| permission_question(&id, &params)).flatten();
-                    self.questions.push(Question { id, details });
                 }
-                let events = if self.live { vec![] } else { self.phase(Phase::Waiting) };
+                let events = if self.live || !accepted { vec![] } else { self.phase(Phase::Waiting) };
                 Step { forward: true, write: vec![], events }
             }
             _ => Step { forward: true, ..Step::default() },
@@ -350,6 +402,7 @@ impl Observer {
     fn id(&mut self, request: Request) -> Value {
         self.next += 1;
         let id = json!(format!("{PREFIX}-{}-{}", self.tag, self.next));
+        self.begin_setup(&id, &request);
         self.own.insert(id.clone(), request);
         id
     }
@@ -426,8 +479,9 @@ impl Observer {
             }
             (Request::New, Ok(value)) => match value["sessionId"].as_str() {
                 Some(session) => {
-                    self.ready = true;
-                    self.session = Some(session.to_owned());
+                    if !self.select_session(id, session) {
+                        return Step::default();
+                    }
                     let mut step = self.release();
                     step.events.insert(0, Event::Session(session.to_owned()));
                     step
@@ -435,8 +489,9 @@ impl Observer {
                 None => fail(self, "session/new named no session".into()),
             },
             (Request::Load(session), Ok(value)) => {
-                self.ready = true;
-                self.session = Some(session.clone());
+                if !self.select_session(id, &session) {
+                    return Step::default();
+                }
                 let mut events = vec![Event::Session(session)];
                 events.extend(self.snapshot(&value));
                 let mut step = self.release();
@@ -473,7 +528,10 @@ impl Observer {
                 }
                 step
             }
-            (request, Err(error)) => fail(self, format!("{}: {error}", name(&request))),
+            (request, Err(error)) => {
+                self.failed_setup(id);
+                fail(self, format!("{}: {error}", name(&request)))
+            }
         }
     }
 
@@ -485,8 +543,11 @@ impl Observer {
         }
     }
 
-    fn client_response(&mut self, request: Request, result: Result<Value, String>) -> Vec<Event> {
-        let Ok(value) = result else { return vec![] };
+    fn client_response(&mut self, id: &Value, request: Request, result: Result<Value, String>) -> Vec<Event> {
+        let Ok(value) = result else {
+            self.failed_setup(id);
+            return vec![];
+        };
         match request {
             Request::Initialize => {
                 self.initialized(&value);
@@ -494,14 +555,14 @@ impl Observer {
             }
             Request::New => {
                 if let Some(session) = value["sessionId"].as_str() {
-                    self.ready = true;
-                    self.session = Some(session.to_owned());
+                    self.select_session(id, session);
                 }
                 vec![]
             }
             Request::Load(session) => {
-                self.ready = true;
-                self.session = Some(session);
+                if !self.select_session(id, &session) {
+                    return vec![];
+                }
                 self.snapshot(&value)
             }
             Request::Prompt if !self.live => {
@@ -511,6 +572,96 @@ impl Observer {
             }
             Request::Prompt => vec![],
         }
+    }
+
+    fn retire_questions(&mut self) {
+        self.recovery_questions.clear();
+        self.questions.retire();
+        if self.setup_request.as_ref().is_some_and(|(_, target)| *target == self.session)
+            && let Some(staged) = self.staged.as_mut()
+        {
+            staged.retire();
+        }
+    }
+
+    fn begin_setup(&mut self, id: &Value, request: &Request) {
+        let target = match request {
+            Request::Load(session) => Some(session.clone()),
+            Request::New => None,
+            _ => return,
+        };
+        self.session_epoch += 1;
+        self.staged = Some(self.questions.stage(format!("{}-{}", self.tag, self.session_epoch)));
+        self.setup_request = Some((id.clone(), target));
+    }
+
+    fn failed_setup(&mut self, id: &Value) {
+        if self.setup_request.as_ref().is_some_and(|(request, _)| request == id) {
+            self.setup_request = None;
+            self.staged = None;
+        }
+    }
+
+    fn select_session(&mut self, id: &Value, session: &str) -> bool {
+        if !self.setup_request.as_ref().is_some_and(|(request, _)| request == id) {
+            return false;
+        }
+        if let Some(mut staged) = self.staged.take() {
+            if self.session.as_deref() == Some(session) {
+                let previous = std::mem::replace(&mut self.questions, Questions::new(String::new()));
+                staged.retain_history(previous);
+            }
+            self.questions = staged;
+            // Replayed questions have separate wire identities. Until their
+            // full payloads can be captured, never reuse an older snapshot.
+            self.recovery_questions.clear();
+        }
+        if self.session.as_deref() != Some(session) {
+            self.turn = None;
+            self.message.reset();
+        }
+        self.setup_request = None;
+        self.staged = None;
+        self.session = Some(session.to_owned());
+        self.ready = true;
+        true
+    }
+
+    fn question(&mut self, id: Value, params: &Value) -> bool {
+        let session = params["sessionId"].as_str();
+        let current = (session.is_some() && session == self.session.as_deref()) || (session.is_none() && !self.live);
+        let staged = self.setup_request.as_ref().is_some_and(|(_, target)| {
+            (session.is_some() && session == target.as_deref()) || (session.is_none() && !self.live)
+        }) && self.staged.is_some();
+        if !current && !staged {
+            return false;
+        }
+        if staged && self.questions.contains(&id) {
+            self.questions.block(&id);
+        }
+        if !staged
+            && let Some(replay) = self.staged.as_mut()
+            && replay.contains(&id)
+        {
+            replay.block(&id);
+        }
+        let questions = match (staged, self.staged.as_mut()) {
+            (true, Some(questions)) => questions,
+            _ => &mut self.questions,
+        };
+        if questions.contains(&id) {
+            questions.ask(id, params, None, false);
+            return current && !staged;
+        }
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hash);
+        let fingerprint = hash.finish();
+        let reused = self.identities_exhausted || !self.seen_questions.insert(fingerprint);
+        if self.seen_questions.len() >= 4096 {
+            self.identities_exhausted = true;
+        }
+        questions.ask(id, params, if staged { None } else { self.turn.as_ref().map(|t| t.number) }, reused);
+        current && !staged
     }
 
     fn initialized(&mut self, value: &Value) {
@@ -544,7 +695,7 @@ impl Observer {
             TurnState::Idle { stop_reason } => Turn { number, state: Phase::Idle, stop_reason },
         };
         if turn.state != Phase::Waiting {
-            self.questions.clear();
+            self.retire_questions();
         }
         let mut events = self.set(turn);
         if let Some((_, before, _)) = &self.starting
@@ -564,6 +715,9 @@ impl Observer {
     fn set(&mut self, turn: Turn) -> Vec<Event> {
         if self.turn.as_ref() == Some(&turn) {
             return vec![];
+        }
+        if turn.state != Phase::Waiting {
+            self.retire_questions();
         }
         if turn.state == Phase::Working && self.turn.as_ref().is_none_or(|t| t.number < turn.number) {
             self.message.reset();

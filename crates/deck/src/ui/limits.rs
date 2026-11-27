@@ -1,6 +1,7 @@
 //! The coordinator's Limits panel as plain state (ADR 0011 §4, §9): its
 //! caps, the worker and model budgets, and the project's coordinator
-//! command, as `coordinator_policy` reads and writes them.
+//! command. Before a coordinator exists, the same editor changes only the
+//! project's command, without a task or policy to create.
 //!
 //! The design choice: each field is a composer [`Editor`], so typing and IME
 //! work as in the prompt, and a value is checked with the runtime's own
@@ -11,6 +12,28 @@
 
 use super::editor::Editor;
 use deck_runtime::coordinator::{Budget, Settings, default_argv};
+
+/// Before the first task, only the project's command can be edited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Coordinator(String),
+    Project(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Values {
+    Policy(Settings),
+    Command(Option<Vec<String>>),
+}
+
+impl Values {
+    fn command(&self) -> &Option<Vec<String>> {
+        match self {
+            Values::Policy(settings) => &settings.coordinator_argv,
+            Values::Command(argv) => argv,
+        }
+    }
+}
 
 /// A field of the panel, in its order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,9 +101,8 @@ impl Field {
 /// The open panel: whose limits, what was loaded, the fields being edited.
 #[derive(Default)]
 pub struct Limits {
-    /// The coordinator whose policy is open; `None` while closed.
-    coordinator: Option<String>,
-    loaded: Option<Settings>,
+    target: Option<Target>,
+    loaded: Option<Values>,
     editors: [Editor; 7],
     focus: Option<Field>,
     error: Option<String>,
@@ -90,18 +112,22 @@ pub struct Limits {
 
 impl Limits {
     pub fn is_open(&self) -> bool {
-        self.coordinator.is_some()
+        self.target.is_some()
     }
 
-    pub fn coordinator(&self) -> Option<&str> {
-        self.coordinator.as_deref()
+    pub fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
     }
 
-    /// Open for `coordinator` with the caret in `field`, or the first field;
+    pub fn command_only(&self) -> bool {
+        matches!(self.target, Some(Target::Project(_)))
+    }
+
+    /// Open for `target` with the caret in `field`, or the first field;
     /// the fields fill when its settings arrive.
-    pub fn open(&mut self, coordinator: &str, field: Option<Field>) {
-        *self = Limits { coordinator: Some(coordinator.to_string()), busy: true, ..Limits::default() };
-        self.focus = Some(field.unwrap_or(Field::Running));
+    pub fn open(&mut self, target: Target, field: Option<Field>) {
+        *self = Limits { target: Some(target), busy: true, ..Limits::default() };
+        self.focus = Some(if self.command_only() { Field::Command } else { field.unwrap_or(Field::Running) });
     }
 
     pub fn close(&mut self) {
@@ -109,28 +135,34 @@ impl Limits {
     }
 
     /// Fill the fields from `settings` as `deckd` holds them.
-    pub fn loaded(&mut self, settings: Settings) {
-        let number = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
-        let p = &settings.policy;
-        let values = [
-            p.max_concurrent.to_string(),
-            p.creates_per_hour.to_string(),
-            number(p.worker_budget.requests),
-            number(p.worker_budget.tokens),
-            number(p.model_budget.requests),
-            number(p.model_budget.tokens),
-            settings.coordinator_argv.as_ref().map(|argv| argv.join(" ")).unwrap_or_default(),
-        ];
-        for (editor, value) in self.editors.iter_mut().zip(values) {
+    pub fn loaded(&mut self, settings: Values) {
+        if let Values::Policy(settings) = &settings {
+            let number = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
+            let p = &settings.policy;
+            let values = [
+                p.max_concurrent.to_string(),
+                p.creates_per_hour.to_string(),
+                number(p.worker_budget.requests),
+                number(p.worker_budget.tokens),
+                number(p.model_budget.requests),
+                number(p.model_budget.tokens),
+                settings.coordinator_argv.as_ref().map(|argv| argv.join(" ")).unwrap_or_default(),
+            ];
+            for (editor, value) in self.editors.iter_mut().zip(values) {
+                *editor = Editor::new();
+                editor.insert(&value);
+            }
+        } else {
+            let editor = &mut self.editors[Field::Command.index()];
             *editor = Editor::new();
-            editor.insert(&value);
+            editor.insert(&settings.command().as_ref().map(|argv| argv.join(" ")).unwrap_or_default());
         }
         self.loaded = Some(settings);
         self.busy = false;
     }
 
     /// The settings the panel loaded, which a save compares with `deckd`'s.
-    pub fn base(&self) -> Option<&Settings> {
+    pub fn base(&self) -> Option<&Values> {
         self.loaded.as_ref()
     }
 
@@ -143,11 +175,14 @@ impl Limits {
     }
 
     pub fn focus(&mut self, field: Field) {
-        self.focus = Some(field);
+        self.focus = Some(if self.command_only() { Field::Command } else { field });
     }
 
     /// Move the caret to the next field, or the previous with `back`.
     pub fn next_field(&mut self, back: bool) {
+        if self.command_only() {
+            return;
+        }
         let at = self.focus.map_or(0, Field::index);
         let n = Field::ALL.len();
         self.focus = Some(Field::ALL[if back { (at + n - 1) % n } else { (at + 1) % n }]);
@@ -164,8 +199,12 @@ impl Limits {
 
     /// The fields as settings, checked as `deckd` will check them; the error
     /// says which field and why.
-    pub fn read(&self) -> Result<Settings, String> {
+    pub fn read(&self) -> Result<Values, String> {
         let base = self.loaded.as_ref().ok_or("the limits are still loading")?;
+        let words: Vec<String> = self.value(Field::Command).split_whitespace().map(str::to_owned).collect();
+        let coordinator_argv = (!words.is_empty() && words != default_argv()).then_some(words);
+        deck_runtime::coordinator::validate_argv(&coordinator_argv).map_err(|e| format!("{e:#}"))?;
+        let Values::Policy(base) = base else { return Ok(Values::Command(coordinator_argv)) };
         let cap = |field: Field| -> Result<u32, String> {
             self.value(field).trim().parse::<u32>().map_err(|_| format!("{}: a whole number", field.label()))
         };
@@ -184,10 +223,7 @@ impl Limits {
             Budget { requests: budget(Field::WorkerRequests)?, tokens: budget(Field::WorkerTokens)? };
         policy.model_budget = Budget { requests: budget(Field::ModelRequests)?, tokens: budget(Field::ModelTokens)? };
         policy.validate().map_err(|e| format!("{e:#}"))?;
-        let words: Vec<String> = self.value(Field::Command).split_whitespace().map(str::to_owned).collect();
-        // The default command is recorded as none, so it follows the default.
-        let coordinator_argv = (!words.is_empty() && words != default_argv()).then_some(words);
-        Ok(Settings { policy, coordinator_argv })
+        Ok(Values::Policy(Settings { policy, coordinator_argv }))
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -216,11 +252,13 @@ impl Limits {
     }
 
     /// The save landed: the panel shows what `deckd` now holds.
-    pub fn saved(&mut self, settings: Settings) {
-        let command_changed = self.loaded.as_ref().map(|l| &l.coordinator_argv) != Some(&settings.coordinator_argv);
+    pub fn saved(&mut self, settings: Values) {
+        let command_changed = self.loaded.as_ref().map(Values::command) != Some(settings.command());
         self.loaded(settings);
         self.error = None;
-        self.notice = Some(if command_changed {
+        self.notice = Some(if self.command_only() {
+            "Saved. This command applies when a new coordinator is created.".into()
+        } else if command_changed {
             "Saved. The new command applies to the next coordinator.".into()
         } else {
             "Saved.".into()
@@ -229,10 +267,14 @@ impl Limits {
 
     /// Someone changed the limits since they were loaded: show theirs and
     /// let the user decide again, rather than writing over them.
-    pub fn stale(&mut self, current: Settings) {
+    pub fn stale(&mut self, current: Values) {
         self.loaded(current);
         self.error = None;
-        self.notice = Some("These limits changed since you opened them; they are reloaded. Save again.".into());
+        self.notice = Some(if self.command_only() {
+            "The coordinator command changed since you opened it; it is reloaded. Save again.".into()
+        } else {
+            "These limits changed since you opened them; they are reloaded. Save again.".into()
+        });
     }
 }
 
@@ -255,28 +297,31 @@ mod tests {
     #[test]
     fn the_fields_read_back_as_the_policy_with_empty_budgets_unlimited() {
         let mut limits = Limits::default();
-        limits.open("c1", Some(Field::PerHour));
+        limits.open(Target::Coordinator("c1".into()), Some(Field::PerHour));
         assert!(limits.busy() && limits.focused().is_none(), "nothing to type in before the load");
-        limits.loaded(settings());
+        limits.loaded(Values::Policy(settings()));
         assert_eq!(limits.focused(), Some(Field::PerHour), "Raise puts the caret at its cap");
         assert_eq!(limits.value(Field::Running), "4");
-        assert_eq!(limits.read().unwrap(), settings(), "an untouched panel saves what it loaded");
+        assert_eq!(limits.read().unwrap(), Values::Policy(settings()), "an untouched panel saves what it loaded");
         set(&mut limits, Field::Running, "6");
         set(&mut limits, Field::WorkerTokens, "200000");
         set(&mut limits, Field::Command, "  construct   acp  --fast ");
-        let read = limits.read().unwrap();
+        let Values::Policy(read) = limits.read().unwrap() else { panic!("expected coordinator settings") };
         assert_eq!(read.policy.max_concurrent, 6);
         assert_eq!(read.policy.worker_budget, Budget { requests: None, tokens: Some(200_000) });
         assert_eq!(read.coordinator_argv, Some(vec!["construct".into(), "acp".into(), "--fast".into()]));
         set(&mut limits, Field::Command, "construct acp");
-        assert_eq!(limits.read().unwrap().coordinator_argv, None, "the default is recorded as none");
+        assert!(
+            matches!(limits.read().unwrap(), Values::Policy(Settings { coordinator_argv: None, .. })),
+            "the default is recorded as none"
+        );
     }
 
     #[test]
     fn an_invalid_value_is_refused_with_its_field_before_anything_is_sent() {
         let mut limits = Limits::default();
-        limits.open("c1", None);
-        limits.loaded(settings());
+        limits.open(Target::Coordinator("c1".into()), None);
+        limits.loaded(Values::Policy(settings()));
         set(&mut limits, Field::Running, "four");
         assert!(limits.read().unwrap_err().contains("Running sessions at once"));
         set(&mut limits, Field::Running, "0");
@@ -287,10 +332,34 @@ mod tests {
     }
 
     #[test]
+    fn a_project_edits_only_its_command_and_can_restore_the_default() {
+        let mut limits = Limits::default();
+        limits.open(Target::Project("git:a".into()), None);
+        limits.loaded(Values::Command(None));
+        assert_eq!(limits.focused(), Some(Field::Command));
+        limits.next_field(false);
+        limits.next_field(true);
+        assert_eq!(limits.focused(), Some(Field::Command));
+        assert_eq!(limits.read().unwrap(), Values::Command(None));
+        set(&mut limits, Field::Command, "construct --model provider/coordinator acp");
+        assert_eq!(
+            limits.read().unwrap(),
+            Values::Command(Some(vec![
+                "construct".into(),
+                "--model".into(),
+                "provider/coordinator".into(),
+                "acp".into()
+            ]))
+        );
+        set(&mut limits, Field::Command, "construct acp");
+        assert_eq!(limits.read().unwrap(), Values::Command(None));
+    }
+
+    #[test]
     fn tab_walks_the_fields_and_a_stale_save_reloads_theirs() {
         let mut limits = Limits::default();
-        limits.open("c1", Some(Field::Command));
-        limits.loaded(settings());
+        limits.open(Target::Coordinator("c1".into()), Some(Field::Command));
+        limits.loaded(Values::Policy(settings()));
         limits.next_field(false);
         assert_eq!(limits.focused(), Some(Field::Running), "tab wraps");
         limits.next_field(true);
@@ -298,11 +367,11 @@ mod tests {
         let mut theirs = settings();
         theirs.policy.max_concurrent = 9;
         limits.saving();
-        limits.stale(theirs.clone());
+        limits.stale(Values::Policy(theirs.clone()));
         assert_eq!(limits.value(Field::Running), "9");
-        assert_eq!(limits.base(), Some(&theirs));
+        assert_eq!(limits.base(), Some(&Values::Policy(theirs.clone())));
         assert!(limits.notice().unwrap().contains("Save again"));
-        limits.saved(Settings { coordinator_argv: Some(vec!["x".into()]), ..theirs });
+        limits.saved(Values::Policy(Settings { coordinator_argv: Some(vec!["x".into()]), ..theirs }));
         assert!(limits.notice().unwrap().contains("next coordinator"));
         limits.close();
         assert!(!limits.is_open());

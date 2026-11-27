@@ -8,7 +8,7 @@
 
 use super::chrome::kbd;
 use super::glyph::glyph;
-use super::panels::{icon_mark, pane, pill, primary};
+use super::panels::{band_border, icon_mark, pane, pill, primary};
 use super::root::Deck;
 use super::session::Status;
 use super::theme::{MONO, Tokens, glow, icon, radius, size, space, tint};
@@ -32,6 +32,7 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
         Status::Waiting => ("Waiting", Tokens::amber()),
         Status::Working => ("Working", Tokens::cyan()),
         Status::Detached => ("Running, detached", Tokens::cyan()),
+        Status::Down(reason) if reason == "stopped" => ("Stopped", Tokens::text_dim().into()),
         Status::Down(_) => ("Down", Tokens::red()),
     };
     // The pane's top edge takes the session's colour, so its state reads
@@ -97,7 +98,10 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 )
                 .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_faint()).child(subtitle))
                 .child(div().flex_1())
-                .children(has_task.then(|| pill(color, status))),
+                .children(
+                    has_task
+                        .then(|| pill(color, status).debug_selector(move || format!("conversation-status-{status}"))),
+                ),
         )
         .child(if deck.limits_open() {
             super::limits_panel::panel(deck, cx)
@@ -129,7 +133,9 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                         .then(|| deck.boundary().pending().map(|_| boundary(deck, cx)))
                         .flatten(),
                 )
-                .children((deck.interrupted().is_none()).then(|| s.ask.as_ref().map(|_| ask(deck, cx))).flatten())
+                .children(
+                    (deck.interrupted().is_none()).then(|| s.ask.as_ref().map(|_| ask(deck, window, cx))).flatten(),
+                )
                 // Access takes the keyboard, so the field it would block is not shown.
                 .children(
                     (!deck.access.is_open()
@@ -297,7 +303,7 @@ fn boundary(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
         .into_any_element()
 }
 
-fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+fn ask(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> AnyElement {
     let Some(ask) = &deck.session().ask else { return div().into_any_element() };
     let first_allow = ask.options.iter().position(|o| o.allows());
     let buttons = ask.options.iter().enumerate().map(|(i, o)| {
@@ -343,7 +349,31 @@ fn ask(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .text_size(size::scaled(size::LABEL))
                 .child(ask.title.clone()),
         )
-        .child(div().flex().gap(px(space::LINE)).children(buttons))
+        .children(ask.detail.as_ref().map(|detail| {
+            div()
+                .id(gpui::SharedString::from(format!("permission-detail-{}", ask.request)))
+                .debug_selector(|| "permission-detail".into())
+                .max_h(px(240.).min(window.viewport_size().height * 0.3))
+                .overflow_y_scroll()
+                .text_size(size::scaled(size::SMALL))
+                .text_color(Tokens::text_dim())
+                .font_family(MONO)
+                .child(div().debug_selector(|| "permission-detail-text".into()).child(detail.clone()))
+        }))
+        .child(
+            div()
+                .debug_selector(|| "permission-answers".into())
+                .flex()
+                .flex_wrap()
+                .gap(px(space::LINE))
+                .children(buttons),
+        )
+        // The entrance: the card springs in on opacity alone (never height),
+        // and one amber pass crosses its outline — the waiting hue, spent
+        // once on the moment that blocks on a human (`arrival.rs`).
+        .opacity(deck.arrival().opacity())
+        .relative()
+        .children(deck.arrival().flash().map(|center| band_border(center, [radius::BUBBLE; 4], Tokens::ask_peak(), 1.)))
         .into_any_element()
 }
 

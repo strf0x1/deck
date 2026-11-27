@@ -322,8 +322,13 @@ fn a_local_coordinator_drives_its_workers_through_the_token_guarded_surface() {
     let prompts = client.prompts(&worker).unwrap();
     assert_eq!((prompts[0].turn, prompts[0].from.as_deref()), (1, Some(coordinator.as_str())));
     assert_eq!(prompts[0].text, brief);
+    eventually(|| client.task(&worker).unwrap().permissions.is_some_and(|p| p.pending_count == 1));
+    let (_, detail) = post(&url, t, &json!({ "operation": "task", "id": worker }));
+    assert_eq!(detail["task"]["permissions"]["pending"][0]["subject"], "shell git push origin deck/spike");
     let busy = json!({ "operation": "prompt", "id": worker, "text": "and the docs" });
-    assert_eq!(code(&post(&url, t, &busy)), (409, "deck_control_busy"));
+    let refused = post(&url, t, &busy);
+    assert_eq!(code(&refused), (409, "deck_control_busy"));
+    assert!(refused.1["error"]["message"].as_str().unwrap().contains("shell git push origin deck/spike"));
     let (status, timed) = post(&url, t, &json!({ "operation": "wait", "id": worker, "after_turn": 1, "wait_ms": 300 }));
     assert_eq!((status, timed["timed_out"].clone()), (200, json!(true)), "an open question does not wake it again");
     let (_, listed) = post(&url, t, &tasks);
@@ -441,7 +446,13 @@ fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
     std::fs::write(repo.join("README.md"), "dirty project files\n").unwrap();
     std::fs::write(repo.join("private"), "untracked project files\n").unwrap();
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
-    let project = client.open_project(&repo, vec![fake.display().to_string()]).unwrap();
+    let prompt_log = daemon.data.join("worker-prompts.jsonl");
+    let project = client
+        .open_project(
+            &repo,
+            vec!["env".into(), format!("DECK_FAKE_PROMPT_LOG={}", prompt_log.display()), fake.display().to_string()],
+        )
+        .unwrap();
     let source = client.worktree_source(&project.id).unwrap().unwrap();
     assert_eq!(
         (source.path, source.branch.as_deref(), source.commit, source.dirty),
@@ -459,7 +470,7 @@ fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
     settings.coordinator_argv = Some(env_stub(&out));
     client.coordinator_policy(&first.id, Some(settings)).unwrap();
     client.destroy(&first.id).unwrap();
-    client.run(spec).unwrap();
+    let coordinator = client.run(spec).unwrap().task;
     eventually(|| out.exists());
     let env = std::fs::read_to_string(&out).unwrap();
     let mut lines = env.lines();
@@ -489,6 +500,27 @@ fn a_local_git_coordinator_runs_workers_in_separate_registered_worktrees() {
         assert_eq!(git(&worktree, &["rev-parse", "HEAD"]), base);
         assert_eq!(std::fs::read_to_string(worktree.join("README.md")).unwrap(), "one\n");
         assert!(!worktree.join("private").exists());
+        eventually(|| client.prompts(id).is_ok_and(|prompts| !prompts.is_empty()));
+        let prompts = client.prompts(id).unwrap();
+        let brief = if id == &a { "first worker" } else { "second worker" };
+        let expected = format!(
+            "You are on branch deck/{id} in a Git worktree Deck made for this task, starting at commit {base}. \
+             In Construct's workspace sandbox, shell Git cannot reach the repository metadata outside this worktree. \
+             If needed, use enable_tools to enable the developer group, then use developer status, \
+             developer stage with exact relative file paths, and developer commit. \
+             Do not request access outside this worktree to run Git.\n\n{brief}"
+        );
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].text, expected);
+        assert_eq!(prompts[0].from.as_deref(), Some(coordinator.id.as_str()));
+        assert_eq!(task.title.as_deref(), Some(brief));
+        eventually(|| {
+            std::fs::read_to_string(&prompt_log).is_ok_and(|log| {
+                log.lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .any(|row| row["text"] == expected)
+            })
+        });
         let reopened = client.open_project(&worktree, vec![]).unwrap();
         assert_eq!(reopened.checkouts, vec![repo.clone()]);
     }

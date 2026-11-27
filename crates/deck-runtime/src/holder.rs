@@ -130,7 +130,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
     let listener = UnixListener::bind(&endpoint)?;
     let _control = SocketPath(endpoint);
     listener.set_nonblocking(true)?;
-    let (acp, lines) = HolderAcp::new(data.to_owned(), id.to_owned());
+    let (acp, lines) = HolderAcp::new(data.to_owned(), id.to_owned())?;
     let relay = Relay::tapped(socket, instance.attach()?, Some(acp.clone()))?;
     HolderAcp::connect(lines, relay.writer());
     let identity =

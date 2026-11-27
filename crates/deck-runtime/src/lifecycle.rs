@@ -291,6 +291,11 @@ pub struct Task {
     pub pid: Option<u32>,
     #[serde(default)]
     pub holder: Option<Holder>,
+    /// Durable Started ordinal. Adoption does not advance it.
+    #[serde(default)]
+    pub launches: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<crate::permission::View>,
     /// The agent's session pointer, retained when its process stops.
     #[serde(default)]
     pub session_id: Option<String>,
@@ -316,8 +321,8 @@ pub struct Task {
     /// When the task was destroyed; the settled fold ages from here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destroyed_ms: Option<u64>,
-    /// The holder's latest turn (ADR 0011 §3), read from `turn.json` rather
-    /// than folded from the log; `None` until a holder has seen one.
+    /// The holder's latest turn (ADR 0011 §3), read from its observation
+    /// snapshot rather than folded from the log; `None` until it sees one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<Turn>,
 }
@@ -343,6 +348,8 @@ impl Task {
             state: State::Created,
             pid: None,
             holder: None,
+            launches: 0,
+            permissions: None,
             session_id: None,
             usage: Usage::default(),
             publication: None,
@@ -477,6 +484,9 @@ impl Task {
             _ if unconfirmed => self.holder.clone(),
             _ => None,
         };
+        if matches!(ev, Event::Started { .. }) {
+            self.launches += 1;
+        }
         self.state = next;
         if self.state == State::Destroyed {
             // The destroy arm only matches once, so this is when it happened.

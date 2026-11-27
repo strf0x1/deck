@@ -5,7 +5,7 @@
 //! keep inline styling as byte ranges over one string, which is the shape
 //! GPUI's `StyledText` draws. A streaming reply is re-parsed as it grows;
 //! an unclosed fence is a code block to the end, which is what a half-sent
-//! reply should look like. HTML and tables are shown as their text.
+//! reply should look like. Tables retain their cells and inline styles.
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
@@ -25,6 +25,9 @@ pub enum Block {
         items: Vec<Vec<Block>>,
     },
     Rule,
+    Table {
+        rows: Vec<Vec<Inline>>,
+    },
 }
 
 /// Text with styled ranges; ranges are ordered and do not overlap.
@@ -59,7 +62,7 @@ impl Inline {
 
 pub fn parse(src: &str) -> Vec<Block> {
     let mut b = Builder { frames: vec![Frame::Blocks(vec![])], ..Builder::default() };
-    for event in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH) {
+    for event in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES) {
         b.event(event);
     }
     b.flush();
@@ -90,6 +93,7 @@ struct Builder {
     italic: u8,
     strike: u8,
     link: u8,
+    table: Option<Vec<Vec<Inline>>>,
 }
 
 impl Builder {
@@ -185,6 +189,16 @@ impl Builder {
                 self.frames.push(Frame::List { start, items: vec![] });
             }
             Tag::Item => self.frames.push(Frame::Blocks(vec![])),
+            Tag::Table(_) => {
+                self.flush();
+                self.table = Some(vec![]);
+            }
+            Tag::TableHead | Tag::TableRow => {
+                if let Some(rows) = &mut self.table {
+                    rows.push(vec![]);
+                }
+            }
+            Tag::TableCell => self.inline = Some(Inline::default()),
             Tag::Strong => self.bold += 1,
             Tag::Emphasis => self.italic += 1,
             Tag::Strikethrough => self.strike += 1,
@@ -209,6 +223,16 @@ impl Builder {
             TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => self.link = self.link.saturating_sub(1),
+            TagEnd::TableCell => {
+                if let Some(row) = self.table.as_mut().and_then(|rows| rows.last_mut()) {
+                    row.push(self.inline.take().unwrap_or_default());
+                }
+            }
+            TagEnd::Table => {
+                if let Some(rows) = self.table.take() {
+                    self.block(Block::Table { rows });
+                }
+            }
             _ => {}
         }
     }
@@ -257,6 +281,24 @@ mod tests {
                 Block::Code { lang: "rust".into(), text: "fn x() {}".into() },
             ]
         );
+    }
+
+    #[test]
+    fn tables_keep_inline_styles_empty_cells_and_streaming_rows() {
+        let src = "Before\n\n| Feature | Result |\n|---|---|\n| **`--top N`** | passed |\n| empty | |\n\nAfter";
+        let blocks = parse(src);
+        let [before, Block::Table { rows }, after] = &blocks[..] else { panic!("{blocks:?}") };
+        assert_eq!(before, &para("Before"));
+        assert_eq!(after, &para("After"));
+        assert_eq!(
+            rows.iter().map(|r| r.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            [["Feature", "Result"], ["--top N", "passed"], ["empty", ""]]
+        );
+        assert_eq!(rows[1][0].marks, [(0..7, Mark { bold: true, code: true, ..Mark::default() })]);
+        let [Block::Quote(inner)] = &parse("> | A | B |\n> |---|---|\n> | streaming")[..] else { panic!() };
+        let [Block::Table { rows }] = &inner[..] else { panic!() };
+        assert_eq!(rows[1][0].text, "streaming");
+        assert_eq!(rows[1][1].text, "");
     }
 
     #[test]

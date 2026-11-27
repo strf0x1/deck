@@ -111,19 +111,15 @@ impl Deck {
         for record in visible {
             let at = super::attention::settled(&record, self.published.get(&record.id))
                 .or_else(|| self.local_merged_at(&record.id));
-            let is_own = own.as_deref() == Some(record.id.as_str());
             let retained_worktree = record.workspace.is_some()
                 && self
                     .worktree_status(&record.id)
                     .is_none_or(|fact| fact.state != deck_runtime::worktree::WorktreeState::Removed);
-            if !is_own
-                && let Some(at_ms) = at
+            if let Some(at_ms) = at
                 && (retained_worktree || now.saturating_sub(at_ms) < super::tasks::SETTLED_WINDOW_MS)
             {
                 settled.push(super::tasks::Settled { task: record, at_ms });
-            } else if is_own || at.is_none() {
-                // A settled selection stays the live card; a record settled
-                // longer ago than the window shows nowhere.
+            } else if at.is_none() {
                 shown.push(record);
             }
         }
@@ -142,7 +138,8 @@ impl Deck {
         let mut lanes: Vec<Lane> = Vec::new();
         let live_lane = self.lanes.live();
         let had_live = self.board.cards().iter().any(|c| c.lane.id == live_lane);
-        if own.is_some() {
+        let own_active = shown.iter().any(|task| own.as_deref() == Some(task.id.as_str()));
+        if own_active {
             let live = self
                 .board
                 .cards()
@@ -155,7 +152,7 @@ impl Deck {
         self.board.sync(lanes);
         // A new live card belongs at the top, where the selected task shows;
         // an existing one keeps the slot the user clicked.
-        if own.is_some() && !had_live {
+        if own_active && !had_live {
             self.board.to_front(live_lane);
         }
         // One small file read for the branch, every refresh, not every frame.

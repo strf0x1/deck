@@ -112,22 +112,25 @@ impl Span {
         }
         let a = if at == (self.start.0, self.start.1) { clip(text, self.start.2) } else { 0 };
         let b = if at == (self.end.0, self.end.1) { clip(text, self.end.2) } else { text.len() };
-        (a < b).then_some(a..b)
+        // Empty cells still carry their separator when a table is copied.
+        (a < b || text.is_empty()).then_some(a..b)
     }
 
     /// The covered text, rows joined by a blank line and runs by their
     /// joint; `runs(row)` lists a row's runs.
     pub fn text(&self, mut runs: impl FnMut(usize) -> Vec<Run>) -> String {
         let mut out = String::new();
+        let mut copied = false;
         for row in self.rows() {
             let mut first_in_row = true;
             for (n, run) in runs(row).iter().enumerate() {
                 let Some(range) = self.covers(row, n, &run.text) else { continue };
-                if !out.is_empty() {
+                if copied {
                     out.push_str(if first_in_row { ROW_JOINT } else { run.joint });
                 }
                 out.push_str(run.text.get(range).unwrap_or_default());
                 first_in_row = false;
+                copied = true;
             }
         }
         out

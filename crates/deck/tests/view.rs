@@ -46,14 +46,79 @@ fn typing_a_prompt_and_answering_a_permission_by_key(cx: &mut TestAppContext) {
         .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
         .to_vec();
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell rm -rf x".into(), options }, cx)
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "shell rm -rf x".into(), options },
+            cx,
+        )
     });
+    draw(&mut cx);
+    assert!(cx.debug_bounds("permission-detail").is_none(), "title-only requests keep the compact card");
     // While a question is open, typing doesn't reach the prompt; digits answer.
     cx.simulate_keystrokes("z 2");
     deck.read_with(&cx, |d, _| {
         assert!(d.session().ask.is_none(), "the answer closes the question");
         assert_eq!(d.draft(), "");
     });
+}
+
+#[gpui::test]
+fn permission_details_survive_the_wire_and_scroll_above_the_answers(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+
+    let (deck, mut cx) = open(cx);
+    let (mut conn, _) = deck_acp::conn::Conn::start("/workspace".into());
+    conn.read(r#"{"id":1,"result":{"agentInfo":{"name":"construct"}}}"#);
+    let ready = conn.read(r#"{"id":2,"result":{"sessionId":"s1"}}"#);
+    for event in ready.events {
+        deck.update(&mut cx, |d, cx| d.on_inbound(event, cx));
+    }
+    let detail = format!(
+        "Branch: deck/worker\nMessage: Fix the parser\nStaged files:\n{}",
+        (0..100).map(|i| format!("src/file_{i}.rs\n")).collect::<String>()
+    );
+    let question = json!({
+        "jsonrpc": "2.0", "id": "commit-ask", "method": "session/request_permission",
+        "params": {
+            "sessionId": "s1",
+            "toolCall": {
+                "title": "commit (/workspace)",
+                "rawInput": { "type": "operation", "operation": "commit", "scope": "/workspace", "detail": detail }
+            },
+            "options": [
+                { "optionId": "once", "name": "Allow once", "kind": "allow_once" },
+                { "optionId": "deny", "name": "Deny", "kind": "reject_once" }
+            ]
+        }
+    });
+    for event in conn.read(&question.to_string()).events {
+        deck.update(&mut cx, |d, cx| d.on_inbound(event, cx));
+    }
+    deck.read_with(&cx, |d, _| {
+        assert_eq!(d.session().ask.as_ref().unwrap().detail.as_deref(), Some(detail.as_str()));
+    });
+    draw(&mut cx);
+    let viewport = cx.debug_bounds("permission-detail").expect("the approval shows the supplied detail");
+    let before = cx.debug_bounds("permission-detail-text").unwrap();
+    let answers = cx.debug_bounds("permission-answers").unwrap();
+    assert!(before.size.height > viewport.size.height, "long detail has a bounded viewport");
+    assert!(answers.top() >= viewport.bottom(), "answers remain outside the scrolling detail");
+    cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-10000.))),
+        ..ScrollWheelEvent::default()
+    });
+    draw(&mut cx);
+    let after = cx.debug_bounds("permission-detail-text").unwrap();
+    assert!(after.top() < before.top(), "scrolling reveals the rest of the request");
+    assert!(after.bottom() <= viewport.bottom() + px(1.), "the final lines are reachable");
+    assert_eq!(cx.debug_bounds("permission-answers").unwrap(), answers);
+    cx.simulate_resize(gpui::size(px(760.), px(560.)));
+    draw(&mut cx);
+    assert!(cx.debug_bounds("permission-detail").unwrap().size.height <= px(168.));
+    let answers = cx.debug_bounds("permission-answers").unwrap();
+    assert!(answers.bottom() < px(560.), "answers fit a shorter window: {answers:?}");
+    cx.simulate_keystrokes("2");
+    deck.read_with(&cx, |d, _| assert!(d.session().ask.is_none(), "deny still answers the question"));
 }
 
 #[gpui::test]
@@ -377,6 +442,7 @@ fn reattached_turn_state_controls_typing_and_permission_keys(cx: &mut TestAppCon
     deck.update(&mut cx, |d, cx| {
         d.on_inbound(
             Inbound::Permission {
+                detail: None,
                 request: json!(902),
                 title: "read outside".into(),
                 options: vec![PermissionOption { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() }],
@@ -515,6 +581,7 @@ fn reviewing_external_access_does_not_answer_a_different_agent_permission(cx: &m
     deck.update(&mut cx, |d, cx| {
         d.on_inbound(
             Inbound::Permission {
+                detail: None,
                 request: json!(19),
                 title: "different agent permission".into(),
                 options: vec![PermissionOption {
@@ -627,6 +694,52 @@ fn every_drawn_run_is_one_runs_rs_lists(cx: &mut TestAppContext) {
         assert!(listed.iter().any(|(_, _, t)| t == "Check the callers first."), "an opened thought is a run");
         assert_eq!(d.drawn_runs(), listed, "the renderers draw exactly what runs.rs lists, in order");
     });
+}
+
+#[gpui::test]
+fn markdown_tables_align_cells_scroll_and_copy_in_reading_order(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Message("| Feature | Result |\n|---|---|\n| `--top N` | passed |\n| | four tests |".into()),
+            cx,
+        );
+    });
+    draw(&mut cx);
+    let header = run_bounds(&deck, &cx, "entry:0", 0);
+    let second = run_bounds(&deck, &cx, "entry:0", 1);
+    let feature = run_bounds(&deck, &cx, "entry:0", 2);
+    let last = run_bounds(&deck, &cx, "entry:0", 5);
+    assert_eq!(header.left(), feature.left(), "column starts align");
+    assert_eq!(header.top(), second.top(), "header cells share a row");
+    assert!(feature.top() > header.top());
+    assert!(second.left() > header.right());
+    deck.read_with(&cx, |d, _| assert_eq!(d.drawn_runs(), d.listed_runs()));
+    drag(&mut cx, point(header.left(), header.center().y), point(last.right() + px(2.), last.center().y));
+    cx.simulate_keystrokes("cmd-c");
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("Feature\tResult\n--top N\tpassed\n\tfour tests"));
+
+    // A wide value gets a horizontal viewport, keeping its text unwrapped.
+    cx.simulate_keystrokes("escape");
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Message(format!("\n\n| Long | Tail |\n|---|---|\n| {} | end |", "wide ".repeat(80))), cx);
+    });
+    draw(&mut cx);
+    let before = run_bounds(&deck, &cx, "entry:0", 8);
+    let viewport = cx.debug_bounds("agent-table").unwrap();
+    assert!(
+        before.size.width > viewport.size.width,
+        "the wide cell stays unwrapped: {before:?}, viewport {viewport:?}"
+    );
+    cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(-300.), px(0.))),
+        ..ScrollWheelEvent::default()
+    });
+    draw(&mut cx);
+    let after = run_bounds(&deck, &cx, "entry:0", 8);
+    assert!(after.left() < before.left(), "horizontal scrolling moves the cells");
 }
 
 #[gpui::test]
@@ -807,7 +920,10 @@ fn the_exhale_fires_when_a_turn_ends_right_after_a_permission_answer(cx: &mut Te
         .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
         .to_vec();
     deck.update(&mut cx, |d, cx| {
-        d.on_inbound(Inbound::Permission { request: json!(9), title: "shell git push".into(), options }, cx)
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "shell git push".into(), options },
+            cx,
+        )
     });
     cx.update(|window, _| window.refresh());
     let live = deck.read_with(&cx, |d, _| d.live_lane());
@@ -1002,6 +1118,51 @@ fn the_send_ripples_from_the_composer_to_the_new_turn(cx: &mut TestAppContext) {
     deck.update(&mut cx, |d, cx| d.on_inbound(Inbound::UserMessage("from the holder".into()), cx));
     cx.update(|window, _| window.refresh());
     deck.read_with(&cx, |d, _| assert!(d.ripple().at_rest(), "a holder's prompt does not ripple"));
+}
+
+#[gpui::test]
+fn the_ask_card_springs_in_with_one_amber_pass(cx: &mut TestAppContext) {
+    let (deck, mut cx) = open(cx);
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(Inbound::Ready { agent: "construct".into(), session_id: "s".into(), turn: None }, cx)
+    });
+    cx.simulate_keystrokes("h i enter");
+    cx.update(|window, _| window.refresh());
+
+    // The question arrives: the card springs in and the amber pass runs.
+    let options = ["allow", "reject"]
+        .map(|k| PermissionOption { id: k.into(), name: k.into(), kind: format!("{k}_once") })
+        .to_vec();
+    deck.update(&mut cx, |d, cx| {
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "shell git push".into(), options },
+            cx,
+        )
+    });
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.arrival().opacity() < 1., "the card is still arriving: {}", d.arrival().opacity());
+        assert!(d.arrival().flash().is_some(), "the amber pass runs");
+        assert!(d.animating(), "the entrance keeps the window drawing");
+    });
+
+    // The question is open and nothing else moves: the entrance finishes
+    // and the window rests with the card fully shown.
+    settle(&deck, &mut cx);
+    deck.read_with(&cx, |d, _| {
+        assert!(d.arrival().opacity() > 0.99, "the card is fully shown");
+        assert!(d.arrival().flash().is_none(), "one pass only");
+        assert!(d.session().ask.is_some(), "the question is still open");
+        assert!(!d.animating());
+    });
+
+    // The answer takes the card; the entrance resets with it.
+    cx.simulate_keystrokes("2");
+    cx.update(|window, _| window.refresh());
+    deck.read_with(&cx, |d, _| {
+        assert!(d.session().ask.is_none(), "answered");
+        assert!(d.arrival().at_rest(), "the entrance reset with the card");
+    });
 }
 
 fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
@@ -1609,14 +1770,23 @@ fn stopping_a_task_from_the_header_and_restarting_it(cx: &mut TestAppContext) {
     vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
     vcx.run_until_parked();
     assert!(deck.read_with(&vcx, |d, _| d.can_stop()), "the detached task is stoppable");
+    deck.update(&mut vcx, |d, cx| {
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(42), title: "run a command".into(), options: vec![] },
+            cx,
+        )
+    });
+    draw(&mut vcx);
     let stop = vcx.debug_bounds("hdr-stop").expect("the stop button is shown").center();
     vcx.simulate_click(stop, Modifiers::none());
     vcx.run_until_parked();
     assert!(matches!(daemon.task(&original.id).unwrap().state, State::Stopped { .. }));
     deck.read_with(&vcx, |d, _| {
         assert_eq!(d.session().status, Status::Down("stopped".into()));
+        assert!(d.session().ask.is_none(), "stopped agents have no pending permission");
         assert!(d.can_restart());
     });
+    assert!(vcx.debug_bounds("conversation-status-Stopped").is_some(), "a user stop has a neutral Stopped badge");
     assert!(vcx.debug_bounds("restart-task").is_some(), "the stopped task shows its restart card");
     vcx.simulate_keystrokes(deck::app::RESTART_KEY);
     vcx.run_until_parked();
@@ -1899,6 +2069,77 @@ fn selecting_a_project_shows_only_its_tasks(cx: &mut TestAppContext) {
     for id in [&t1.id, &t2.id] {
         daemon.stop(id).unwrap();
     }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn the_project_sets_its_coordinator_command_before_the_first_prompt(cx: &mut TestAppContext) {
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let data = std::env::temp_dir().join(format!("deck-view-first-command-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let _holders = holders::Holders::new(&data);
+    let repo = git_repo(&data, "repo");
+    let workers = vec!["sleep".to_string(), "30".to_string()];
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, workers.clone(), repo, cx)))
+            .unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    vcx.simulate_input("Plan the release");
+    draw(&mut vcx);
+    assert!(daemon.tasks().unwrap().is_empty());
+    click_control(&mut vcx, "hdr-command");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused() == Some(deck::ui::limits::Field::Command)));
+    vcx.simulate_resize(gpui::size(px(760.), px(480.)));
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("limits-field-running").is_none());
+    assert!(vcx.debug_bounds("limits-save").unwrap().bottom() <= px(480.));
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let command = vec!["env".to_string(), "DECK_FAKE_DELAY_MS=1".into(), fake.display().to_string()];
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input(&command.join(" "));
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().notice().is_some()));
+    let project = daemon.projects().unwrap().remove(0);
+    assert_eq!(project.coordinator_argv, Some(command.clone()));
+    assert_eq!(project.argv, workers);
+    assert!(daemon.tasks().unwrap().is_empty(), "configuration never creates a coordinator");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "Plan the release");
+    vcx.simulate_keystrokes("escape");
+    click_control(&mut vcx, "hdr-command");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.limits().focused().is_some()));
+    assert_eq!(
+        deck.read_with(&vcx, |d, _| d.limits().value(deck::ui::limits::Field::Command).to_string()),
+        command.join(" ")
+    );
+    // Another window's edit is reloaded instead of overwritten.
+    daemon.set_coordinator_argv(&project.id, Some(vec!["sleep".into(), "40".into()])).unwrap();
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.limits().notice().is_some_and(|text| text.contains("Save again")))
+    });
+    assert_eq!(daemon.projects().unwrap()[0].coordinator_argv, Some(vec!["sleep".into(), "40".into()]));
+    vcx.simulate_keystrokes("cmd-a");
+    vcx.simulate_input(&command.join(" "));
+    vcx.simulate_keystrokes("enter");
+    wait_view(&mut vcx, |cx| {
+        deck.read_with(cx, |d, _| d.limits().notice().is_some_and(|text| text.starts_with("Saved.")))
+    });
+    vcx.simulate_keystrokes("escape enter");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    let coordinator = deck.read_with(&vcx, |d, _| d.coordinator().unwrap().id.clone());
+    assert_eq!(daemon.task(&coordinator).unwrap().spec.argv, command);
+    assert_eq!(said(&deck, &vcx), vec!["Plan the release".to_string()]);
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&coordinator));
+    cx.quit();
+    daemon.stop(&coordinator).unwrap();
     drop(daemon);
     cleanup_daemon(&data);
 }
@@ -2458,8 +2699,7 @@ fn the_window_shows_its_own_tasks_publication_from_the_daemon(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) {
-    use deck::ui::board::LaneState;
+fn a_merged_selected_task_folds_without_closing_its_transcript(cx: &mut TestAppContext) {
     use deck_runtime::pull_request::{Live, State as Published};
     use deck_runtime::{DaemonClient, Spec};
     cx.background_executor.allow_parking();
@@ -2492,7 +2732,10 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     let merged = Published {
         publication: Some(serde_json::from_value(pull).unwrap()),
         live: Some(Live {
-            read_at_ms: 1,
+            read_at_ms: u64::try_from(
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            )
+            .unwrap(),
             pull_request: Some(json!({ "state": "closed", "merged": true })),
             ..Live::default()
         }),
@@ -2500,11 +2743,12 @@ fn a_merged_own_task_reads_done_in_the_sessions_column(cx: &mut TestAppContext) 
     };
     let record = daemon.task(&task.id).unwrap();
     deck.update(&mut vcx, |d, cx| d.on_tasks(vec![record], [(task.id.clone(), merged)].into(), cx));
-    let (state, detail) = deck.read_with(&vcx, |d, _| {
-        let card = d.board().cards().iter().find(|c| c.lane.id == d.live_lane()).unwrap();
-        (card.lane.state, card.lane.detail.clone())
+    deck.read_with(&vcx, |d, _| {
+        assert!(d.board().cards().is_empty(), "a settled selection has no active row");
+        assert_eq!(d.settled()[0].task.id, task.id);
+        assert_eq!(d.header_title().detail.as_deref(), Some("done · merged"));
+        assert_eq!(d.task_id(), Some(task.id.as_str()), "folding keeps the transcript open");
     });
-    assert_eq!((state, detail.as_str()), (LaneState::Review, "done · merged"));
     cx.quit();
     daemon.stop(&task.id).unwrap();
     drop(daemon);
@@ -2808,7 +3052,8 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     let _holders = holders::Holders::new(&data);
     let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
     assert!(fake.is_file(), "build the fake agent beside deck: {}", fake.display());
-    let argv = vec![fake.display().to_string()];
+    let argv =
+        vec!["sh".into(), "-c".into(), "exec \"$1\"".into(), "long-command-".repeat(25), fake.display().to_string()];
     let one = git_repo(&data, "one");
     let two = git_repo(&data, "two");
     let alpha = one.join("alpha");
@@ -2854,6 +3099,28 @@ fn the_header_names_the_selected_task_and_follows_a_switch(cx: &mut TestAppConte
     let chip = vcx.debug_bounds("hdr-project").expect("the chip renders");
     assert!(title.size.width > px(10.), "the title shows its text, not only an ellipsis: {title:?}");
     assert!(chip.left() <= title.right() + px(12.), "the chip sits beside the title: {title:?} {chip:?}");
+
+    daemon.title(&a, "Review the worker output and summarize its changes").unwrap();
+    deck.update(&mut vcx, |d, cx| {
+        d.on_tasks(daemon.tasks().unwrap(), Default::default(), cx);
+        d.on_inbound(
+            Inbound::Permission { detail: None, request: json!(9), title: "run a command".into(), options: vec![] },
+            cx,
+        );
+    });
+    vcx.simulate_resize(gpui::size(px(1050.), px(800.)));
+    draw(&mut vcx);
+    let title = vcx.debug_bounds("hdr-title").unwrap();
+    let agent = vcx.debug_bounds("hdr-agent").unwrap();
+    let detail = vcx.debug_bounds("hdr-detail").unwrap();
+    assert!(title.size.width >= px(160.), "the task title keeps its minimum width: {title:?}");
+    assert!(agent.size.width <= px(240.));
+    assert!(detail.size.width >= px(200.), "the status line keeps its space: {detail:?}");
+
+    vcx.simulate_resize(gpui::size(px(760.), px(600.)));
+    draw(&mut vcx);
+    let new_session = vcx.debug_bounds("hdr-new").unwrap();
+    assert!(new_session.right() <= px(760.), "the controls stay inside the minimum window: {new_session:?}");
 
     // Another project's task: both the title and the chip follow the selection.
     deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
@@ -3205,6 +3472,73 @@ fn an_uncertain_interrupted_answer_can_be_retried_or_reviewed(cx: &mut TestAppCo
 
 #[cfg(unix)]
 #[gpui::test]
+fn a_type_ahead_draft_and_its_selection_stay_with_the_task(cx: &mut TestAppContext) {
+    use deck_acp::TurnState;
+    use deck_runtime::DaemonClient;
+    cx.background_executor.allow_parking();
+    let (data, argv, alpha, beta) = two_fake_tasks("drafts");
+    let _holders = holders::Holders::new(&data);
+    let a = start_recorded(&data, &argv, alpha.clone());
+    let b = start_recorded(&data, &argv, beta);
+    let daemon = DaemonClient::connect_or_start(&data).unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| cx.new(|cx| Deck::launch_in(&data, argv, alpha, cx))).unwrap()
+    });
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let deck = window.root(&mut vcx).unwrap();
+    vcx.update(|window, cx| deck.focus_handle(cx).focus(window, cx));
+    ready_on(&deck, &mut vcx, Some(&a));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.attached_ids().contains(&b)));
+    // Hold A in a working turn without a timer race with the fake's question.
+    deck.update(&mut vcx, |d, cx| d.on_inbound(Inbound::Turn { number: 1, state: TurnState::Working }, cx));
+    vcx.simulate_input("follow up α\nnext");
+    vcx.simulate_keystrokes("enter shift-left shift-left");
+    let selection = deck.read_with(&vcx, |d, _| d.draft_selection());
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnext");
+    assert!(said(&deck, &vcx).is_empty(), "Enter while working keeps the draft unsent");
+
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    ready_on(&deck, &mut vcx, Some(&b));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "", "A's draft never appears on B");
+    vcx.simulate_input("beta draft");
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&a, cx));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.draft(), "follow up α\nnext");
+        assert_eq!(d.draft_selection(), selection);
+    });
+    vcx.simulate_input("w");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnew");
+
+    // Leaving for the project view also keeps the task's editor intact.
+    click_control(&mut vcx, "hdr-project");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id().is_none()));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "");
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&a, cx));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnew");
+    deck.update(&mut vcx, |d, cx| d.on_inbound(Inbound::TurnEnded("end_turn".into()), cx));
+    vcx.simulate_keystrokes("enter");
+    assert_eq!(said(&deck, &vcx), ["follow up α\nnew"]);
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
+    vcx.simulate_keystrokes("1");
+    ready_on(&deck, &mut vcx, Some(&a));
+    vcx.simulate_keystrokes("up");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "follow up α\nnew", "A recalls its own prompt");
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&b, cx));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "beta draft");
+    vcx.simulate_keystrokes("up");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.draft().to_string()), "beta draft", "B cannot recall A's prompts");
+
+    cx.quit();
+    for id in [&a, &b] {
+        daemon.stop(id).unwrap();
+    }
+    drop(daemon);
+    cleanup_daemon(&data);
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn switching_keeps_each_attachment_and_its_pending_question(cx: &mut TestAppContext) {
     use deck_runtime::approvals::{Ask, Scope, State as ApprovalState};
     use deck_runtime::{DaemonClient, State};
@@ -3548,6 +3882,34 @@ fn marking_a_task_done_folds_it_and_unmarking_restores_it(cx: &mut TestAppContex
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().is_empty() && d.board().cards().len() == 2));
     assert_eq!(daemon.task(&older.id).unwrap().done_ms, None);
     assert!(deck.read_with(&vcx, |d, _| d.board().order().contains(&lane)));
+
+    // Marking the selected, stopped task folds it immediately, too. Switching
+    // away and reloading the daemon's records cannot put it back in active.
+    daemon.stop(&newer.id).unwrap();
+    deck.update(&mut vcx, |d, cx| d.mark_task(&newer.id, true, cx));
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().len() == 1 && d.board().cards().len() == 1));
+    assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)), Some(newer.id.clone()));
+    deck.update(&mut vcx, |d, cx| d.select_task_id(&older.id, cx));
+    let before = daemon.hello().unwrap().pid;
+    daemon.shutdown().unwrap();
+    wait_view(&mut vcx, |_| daemon.hello().is_ok_and(|hello| hello.pid != before));
+    let records = daemon.tasks().unwrap();
+    deck.update(&mut vcx, |d, cx| d.on_tasks(records, Default::default(), cx));
+    deck.read_with(&vcx, |d, _| {
+        assert_eq!(d.settled()[0].task.id, newer.id);
+        assert_eq!(d.board().cards().len(), 1);
+    });
+    draw(&mut vcx);
+    let row = vcx.debug_bounds("settled-row-0").unwrap();
+    let title = vcx.debug_bounds("settled-title-0").unwrap();
+    let toggle = vcx.debug_bounds("settled-done-0").unwrap();
+    assert!(title.size.width > px(140.), "the title gets its own line: {title:?}");
+    assert!(toggle.top() >= title.bottom(), "controls sit below the title");
+    assert!(toggle.right() <= row.right() && toggle.bottom() <= row.bottom());
+    click_control(&mut vcx, "settled-title-0");
+    assert_eq!(deck.read_with(&vcx, |d, _| d.task_id().map(str::to_owned)), Some(newer.id.clone()));
+    click_control(&mut vcx, "settled-done-0");
+    wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.settled().is_empty() && d.board().cards().len() == 2));
 
     // A task destroyed longer ago than the column's window is absent; a
     // recent one is folded. Records keep the times.
@@ -4111,6 +4473,7 @@ fn text_resize_keys_work_before_permissions_and_preserve_the_draft(cx: &mut Test
     deck.update(&mut cx, |d, cx| {
         d.on_inbound(
             Inbound::Permission {
+                detail: None,
                 request: json!(83),
                 title: "Read files".into(),
                 options: vec![PermissionOption { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() }],
@@ -4340,6 +4703,9 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
     let coordinator = worker.spec.created_by.clone().unwrap();
     assert_eq!(daemon.task(&coordinator).unwrap().spec.kind, deck_runtime::TaskKind::Coordinator);
     eventually(|| daemon.prompts(&worker.id).unwrap().len() == 1, "deckd never prompted the worker");
+    let brief = daemon.prompts(&worker.id).unwrap()[0].text.clone();
+    assert!(brief.starts_with(&format!("You are on branch deck/{} ", worker.id)));
+    assert!(brief.ends_with("\n\nfix the rail"));
     let chip: &'static str = Box::leak(format!("deck-chip-{}", worker.id).into_boxed_str());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -4361,7 +4727,7 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
     // After a later attach the replayed brief is labelled from prompts.jsonl.
     click_control(&mut vcx, chip);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.task_id() == Some(worker.id.as_str())));
-    wait_view(&mut vcx, |cx| said(&deck, cx) == vec!["fix the rail".to_string()]);
+    wait_view(&mut vcx, |cx| said(&deck, cx) == vec![brief.clone()]);
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.from_coordinator() == vec![0]));
     assert!(deck.read_with(&vcx, |d, _| d.header_title().provenance.as_deref() == Some("started by coordinator")));
     wait_view(&mut vcx, |cx| deck.read_with(cx, |d, _| d.session().ask.is_some()));
@@ -4408,7 +4774,7 @@ fn a_coordinators_worker_shows_its_provenance_and_labels_the_coordinators_prompt
             .filter_map(|i| if let Entry::You(t) = &d.session().entries[i] { Some(t.clone()) } else { None })
             .collect()
     });
-    assert_eq!(labelled, vec!["fix the rail".to_string(), "and the docs".to_string()]);
+    assert_eq!(labelled, vec![brief, "and the docs".to_string()]);
 
     cx.quit();
     let _ = daemon.stop(&worker.id);
@@ -4670,6 +5036,15 @@ fn the_worktree_pane_reviews_and_removes_a_stopped_worker(cx: &mut TestAppContex
     click_control(&mut vcx, "settled-fold");
     draw(&mut vcx);
     let settled = deck.read_with(&vcx, |d, _| d.settled().iter().position(|entry| entry.task.id == id).unwrap());
+    let row = vcx.debug_bounds(Box::leak(format!("settled-row-{settled}").into_boxed_str())).unwrap();
+    let title = vcx.debug_bounds(Box::leak(format!("settled-title-{settled}").into_boxed_str())).unwrap();
+    let worktree_chip = vcx.debug_bounds(Box::leak(format!("settled-worktree-{settled}").into_boxed_str())).unwrap();
+    let toggle = vcx.debug_bounds(Box::leak(format!("settled-done-{settled}").into_boxed_str())).unwrap();
+    assert!(title.size.width > px(140.), "merged workers keep a readable title");
+    for control in [title, worktree_chip, toggle] {
+        assert!(control.left() >= row.left() && control.right() <= row.right());
+        assert!(control.top() >= row.top() && control.bottom() <= row.bottom());
+    }
     click_control(&mut vcx, Box::leak(format!("settled-worktree-{settled}").into_boxed_str()));
     click_control(&mut vcx, "worktree-remove");
     assert!(worktree.is_dir(), "confirmation must precede removal");

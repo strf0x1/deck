@@ -133,10 +133,13 @@ session the holder created, appends `{turn, from, text, at_ms}` to
 `tasks/<id>/prompts.jsonl` (text capped at 32 KiB), and announces it as a
 notice with `prompt` set, since ACP does not echo a live prompt to a window.
 
-On every turn change the holder replaces `tasks/<id>/turn.json` (number,
-`working`/`waiting`/`idle`, stop reason) and pings `{"op":"turn_changed"}`;
-`deckd` re-reads the file and announces the task with its `turn`. The file is
-the truth, so a missing `deckd` loses nothing and the next one reads it.
+On each turn or permission change the holder atomically replaces
+`tasks/<id>/observation.json`, pairing the turn with read-only permission
+observations, then pings `{"op":"turn_changed"}`. `deckd` rereads the snapshot
+and announces the task. The holder's launch ordinal fences earlier runs;
+adoption retains it. New holders write an empty snapshot before readiness.
+Old records without this file still read `turn.json`. A missing daemon does
+not lose the last committed snapshot.
 `{"op":"wait", task, after_turn?, wait_ms}` long-polls (capped at 300 s): with
 `after_turn` until a later turn stops working (idle, or waiting on a human)
 or the task stops running; without it, until the turn or state changes.
@@ -174,6 +177,11 @@ project's agent command. The runtime then:
 A worker's `created_by` must name a coordinator, and a coordinator cannot have
 one (depth one). Destroying a coordinator does not touch its workers; they
 keep running and keep `created_by`.
+
+`{"op":"set_coordinator_command", project, argv}` sets an open project's
+coordinator command without creating a task. `argv: null` restores
+`construct acp`. Existing coordinators retain their recorded command.
+This is a window operation; the coordinator's control surface does not offer it.
 
 `{"op":"coordinator_policy", task, set?}` reads `{ policy, coordinator_argv }`
 or replaces both: caps between 1 and 1000, budgets at least 1 or `null`, the
@@ -247,7 +255,9 @@ policy, or a task that is not a coordinator, is `refused`):
   shortened; `after_turn` defaults to 0) ends when the task stops, fails or
   is destroyed, when a turn after `after_turn` is idle, or when a pending
   approval or a waiting question appears after it began; otherwise it times
-  out with `timed_out: true`. Both reply with the summary.
+  out with `timed_out: true`. Permission cursor changes also wake it, including
+  an answer while another question remains open in the same turn. Both reply
+  with the summary.
 - **`stop`** stops a running worker and answers `{ id, state }`.
 - **Summaries** carry id, project, title, state, turn (`stopReason`
   camel-cased as in §5.2), attention, the pending approval count, the
@@ -256,6 +266,18 @@ policy, or a task that is not a coordinator, is `refused`):
   `last_message_truncated` when cut). The holder writes that message to
   `tasks/<id>/message.json` when a turn ends: the agent's text since its last
   tool call. `tasks` lists at most 200, most recently created first.
+- **Permission observations** (`contract@1.8.0 §13.4`) are optional in every
+  summary. `pending_count` counts all questions; `pending` shows the oldest
+  16 with display IDs, optional turn, ACP kind and agent-authored title cut
+  to 256 UTF-8 bytes. Titles may contain requested paths or commands; raw
+  input, detail and answer options stay private. `resolved` retains the
+  latest 16 subject-free verdicts, in resolution order, until a new session,
+  run or destroy. Exact offered options classify allowed or denied; explicit
+  cancellation is separate, and retirement is unknown. A response is only
+  observed, never proof of delivery or execution. The opaque `cursor`
+  changes independently of the turn. No control operation can answer a
+  question. Missing observations mean unavailable, not zero questions.
+  An in-scope busy message may quote one pending subject.
 
 Every operation appends `{"event":"control", op, target?, outcome}` to the
 coordinator's record (`ok` or the refusal code; no body, prompt or token).

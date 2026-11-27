@@ -1,5 +1,5 @@
 {
-  "contract": "1.7.0",
+  "contract": "1.8.0",
   "cases": [
     {
       "case": "canonical-boundary",
@@ -2905,6 +2905,1146 @@
           "reason": "Contributor 01JD3W0RKER0000000000000002 has no published task branch.",
           "repository": "acme/app",
           "base_branch": "main"
+        }
+      }
+    },
+    {
+      "case": "permissions-pending-and-observed",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-empty",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:4",
+          "pending_count": 0,
+          "pending": [],
+          "resolved": []
+        }
+      }
+    },
+    {
+      "case": "permissions-denied",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "denied",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-cancelled",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "cancelled",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-unknown",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "unknown",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-retired",
+      "schema": "control-task-summary.schema.json",
+      "valid": true,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "unknown",
+              "source": "retired"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-resolved-forbids-subject",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response",
+              "subject": "private title"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-resolved-forbids-kind",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response",
+              "kind": "execute"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-resolved-forbids-optionId",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response",
+              "optionId": "allow"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-resolved-forbids-request_id",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response",
+              "request_id": "rpc-1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-pending-forbids-options",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false,
+              "options": []
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-pending-forbids-detail",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false,
+              "detail": "raw execution plan"
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-pending-forbids-toolCallId",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false,
+              "toolCallId": "tool-1"
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-too-many-pending",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            },
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-too-many-resolved",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            },
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-subject-bound",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-unknown-producer-verdict",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allow_custom",
+              "source": "response"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-retired-forbids-allowed",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "allowed",
+              "source": "retired"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-retired-forbids-denied",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "denied",
+              "source": "retired"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "permissions-retired-forbids-cancelled",
+      "schema": "control-task-summary.schema.json",
+      "valid": false,
+      "payload": {
+        "id": "01JD3W0RKER0000000000000001",
+        "project": "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "title": "Fix the flaky login test",
+        "state": "running",
+        "turn": {
+          "number": 1,
+          "state": "idle",
+          "stopReason": "end_turn"
+        },
+        "attention": "finished",
+        "pending_approvals": 0,
+        "publication": {
+          "kind": "branch",
+          "branch": "deck/fix-login",
+          "commit": "3f786850e387550fdab836ed7e6dc881de23001b"
+        },
+        "pull_request": null,
+        "created_by": "01JD3C00RD1NAT0R0000000001",
+        "last_message": "The test raced the session cookie; it now waits for the login redirect.",
+        "permissions": {
+          "cursor": "run-a:3",
+          "pending_count": 1,
+          "pending": [
+            {
+              "observation_id": "run-a:2",
+              "turn": 4,
+              "subject": "Run project tests",
+              "kind": "execute",
+              "truncated": false
+            }
+          ],
+          "resolved": [
+            {
+              "observation_id": "run-a:1",
+              "turn": 4,
+              "verdict": "cancelled",
+              "source": "retired"
+            }
+          ]
         }
       }
     }

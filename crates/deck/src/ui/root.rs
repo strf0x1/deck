@@ -12,7 +12,6 @@ use super::attached::Attached;
 use super::board::{Board, Card, Lane, LaneState};
 use super::boundary::Boundary;
 use super::composer;
-use super::editor::Editor;
 use super::rail::Rail;
 use super::session::{Session, Status};
 use super::theme::{Tokens, size, tint};
@@ -54,7 +53,6 @@ pub struct Deck {
     pub(super) access_refresh: Option<gpui::Task<()>>,
     /// The settings panel and New session's model (ADR 0012 §4).
     pub(super) settings: super::settings::SettingsPanel,
-    pub(super) editor: Editor,
     /// What the composer drew last, for hit tests and up/down moves.
     pub(super) composer: composer::Layout,
     /// A mouse press in the composer is selecting text.
@@ -83,6 +81,8 @@ pub struct Deck {
     pub(super) marks: super::marks::Marks,
     /// The send ripple: composer to the new user turn (`ripple.rs`).
     pub(super) ripple: super::ripple::Ripple,
+    /// The ask card's entrance: a spring-in and one amber pass (`arrival.rs`).
+    pub(super) arrival: super::arrival::Arrival,
     pub(super) agent_cmd: String,
     /// The launch's agent command: a project opened from the picker uses it.
     pub(super) argv: Vec<String>,
@@ -179,7 +179,6 @@ impl Deck {
             access: Access::new(),
             access_refresh: None,
             settings: super::settings::SettingsPanel::default(),
-            editor: Editor::new(),
             composer: composer::Layout::default(),
             selecting: false,
             text_select: Default::default(),
@@ -195,6 +194,7 @@ impl Deck {
             exhale: Default::default(),
             marks: Default::default(),
             ripple: Default::default(),
+            arrival: Default::default(),
             agent_cmd: String::new(),
             argv: Vec::new(),
             data: None,
@@ -314,6 +314,11 @@ impl Deck {
         &self.ripple
     }
 
+    /// The ask card's entrance state: the card reads its opacity and flash.
+    pub fn arrival(&self) -> &super::arrival::Arrival {
+        &self.arrival
+    }
+
     /// Whether any attachment the window holds has a turn in progress: the
     /// sheen's licence to keep requesting frames. A task the window is not
     /// attached to reports only its process, never a turn, so it cannot light
@@ -394,12 +399,12 @@ impl Deck {
     }
 
     pub fn draft(&self) -> &str {
-        self.editor.text()
+        self.current().editor.text()
     }
 
     /// The composer's selection, as byte offsets into [`Deck::draft`].
     pub fn draft_selection(&self) -> std::ops::Range<usize> {
-        self.editor.selection()
+        self.current().editor.selection()
     }
 
     pub fn boundary(&self) -> &Boundary {
@@ -625,8 +630,8 @@ impl Deck {
             }
             Some((Err(e), _)) => {
                 self.current_mut().session.apply(Inbound::Failed(format!("sending the first prompt: {e:#}")));
-                if self.editor.is_empty() {
-                    self.editor.insert(&text);
+                if self.current().editor.is_empty() {
+                    self.current_mut().editor.insert(&text);
                 }
             }
             None => self.pending_prompt = Some(text),
@@ -666,7 +671,7 @@ impl Deck {
     /// (ADR 0010 §5); `coordinator_ops.rs` creates it, then
     /// [`Deck::send_pending`] sends the text once the connection is ready.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        let text = self.editor.text().trim().to_string();
+        let text = self.current().editor.text().trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -691,7 +696,7 @@ impl Deck {
                 self.current_mut().keyed(key, &text);
             }
         }
-        self.editor.take();
+        self.current_mut().editor.take();
         self.current_mut().session.sent(&text);
         self.ripple.send(self.selected.clone());
         if let Some(id) = self.selected.clone() {
@@ -824,7 +829,7 @@ impl Deck {
         }
         if self.edit(ev, cx) {
             // Selecting in the composer lets go of the transcript's selection.
-            if !self.editor.selection().is_empty() {
+            if !self.current().editor.selection().is_empty() {
                 self.clear_selection(cx);
             }
             cx.stop_propagation();
@@ -844,6 +849,7 @@ impl Deck {
             || !self.exhale.at_rest()
             || !self.marks.at_rest()
             || !self.ripple.at_rest()
+            || !self.arrival.at_rest()
     }
 
     /// The centre of the narrow glyph `index`, in window coordinates.
@@ -895,6 +901,7 @@ impl Deck {
             })
             .collect();
         self.motion.tools(tools.iter().map(|(id, s)| (id.as_str(), *s)));
+        self.arrival.observe(self.session().ask.is_some());
         let board = self.board.step(dt);
         let rail = self.rail.step(dt);
         let motion = self.motion.step(dt);
@@ -902,7 +909,8 @@ impl Deck {
         let exhale = self.exhale.step(dt);
         let marks = self.marks.step(dt);
         let ripple = self.ripple.step(dt);
-        if board || rail || motion || sheen || exhale || marks || ripple {
+        let arrival = self.arrival.step(dt);
+        if board || rail || motion || sheen || exhale || marks || ripple || arrival {
             self.last_frame = Some(now);
             window.request_animation_frame();
         } else {

@@ -30,7 +30,7 @@ impl Backend for Local {
     }
 
     fn start(&mut self, task: &Task, lock: RecordLock, exited: Exited) -> Result<Box<dyn Instance>> {
-        Self::spawn(&task.spec, &[], exited, Some(lock))
+        Self::spawn(&task.spec, &[], exited, Some(lock), false)
     }
 
     fn destroy(&mut self, _task: &Task) -> Result<()> {
@@ -46,6 +46,7 @@ impl Local {
         env: &[(String, String)],
         exited: Exited,
         record_lock: Option<RecordLock>,
+        supervised: bool,
     ) -> Result<Box<dyn Instance>> {
         let (prog, args) = spec.argv.split_first().context("no agent command")?;
         let mut cmd = Command::new(prog);
@@ -57,11 +58,13 @@ impl Local {
         cmd.envs(env.iter().map(|(name, value)| (name, value)));
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        let report = supervised.then(|| crate::child_status::channel(&mut cmd)).transpose()?;
         let mut child = cmd.spawn().with_context(|| format!("launching {prog}"))?;
+        let report = report.map(|(reader, _writer)| reader);
         let stdin = child.stdin.take().context("agent stdin")?;
         let stdout = child.stdout.take().context("agent stdout")?;
         let pid = child.id();
-        let proc = Arc::new(Mutex::new(Proc { child, exit: None, stopping: false }));
+        let proc = Arc::new(Mutex::new(Proc { child, exit: None, stopping: false, report }));
         watch(proc.clone(), exited);
         Ok(Box::new(Process { proc, pid, stdio: Some((stdout, stdin)), _lock: record_lock }))
     }
@@ -73,6 +76,13 @@ struct Proc {
     exit: Option<String>,
     /// A stop has begun: the watcher must not reap or report.
     stopping: bool,
+    report: Option<std::os::unix::net::UnixStream>,
+}
+
+impl Proc {
+    fn describe(&mut self, status: ExitStatus) -> String {
+        self.report.take().and_then(crate::child_status::read).unwrap_or_else(|| describe(status))
+    }
 }
 
 struct Process {
@@ -97,7 +107,7 @@ fn watch(proc: Arc<Mutex<Proc>>, exited: Exited) {
             }
             match p.child.try_wait() {
                 Ok(Some(status)) => {
-                    let how = describe(status);
+                    let how = p.describe(status);
                     p.exit = Some(how.clone());
                     drop(p);
                     exited(how);
@@ -123,7 +133,7 @@ impl Process {
                     return Ok(Some(how.clone()));
                 }
                 if let Some(status) = p.child.try_wait().context("waiting for the agent")? {
-                    let how = describe(status);
+                    let how = p.describe(status);
                     p.exit = Some(how.clone());
                     return Ok(Some(how));
                 }
@@ -222,7 +232,7 @@ fn kill(child: &mut Child) -> Result<()> {
     child.kill().context("killing the agent")
 }
 
-fn describe(status: ExitStatus) -> String {
+pub(crate) fn describe(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exited with code {code}");
     }

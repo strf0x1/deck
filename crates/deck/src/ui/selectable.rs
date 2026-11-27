@@ -108,6 +108,11 @@ pub struct RowRuns {
 }
 
 impl RowRuns {
+    /// A stable element id for a container starting at the next run.
+    pub fn element_id(&self, kind: &str) -> ElementId {
+        format!("{}:{kind}:{}", self.row, self.next.get()).into()
+    }
+
     pub fn new(row: String, ix: usize, span: Option<Span>, hits: Hits) -> Self {
         RowRuns { row, ix, next: Cell::new(0), span, hits }
     }

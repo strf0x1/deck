@@ -2,7 +2,7 @@
 //! project's name, and the status line the card's second line used to carry
 //! (ADR 0010 §1, §9).
 //!
-//! The design choice: one plain value built from the board's live lane and the
+//! The design choice: one plain value built from the selected attachment and the
 //! task list, so the view, the control socket and their tests read the same
 //! text instead of each deriving it.
 
@@ -38,13 +38,20 @@ impl Deck {
             return HeaderTitle { project, place, ..HeaderTitle::default() };
         }
         let Some(id) = self.task_id() else { return HeaderTitle::default() };
-        let lane = self.live_lane();
-        let detail = self.board().cards().iter().find(|card| card.lane.id == lane).map(|card| card.lane.detail.clone());
+        // Settling folds the row, but the selected conversation keeps its status.
+        let attached = self.current();
+        let view = self.publication_of(self.live_lane());
+        let (_, detail) = super::tasks::live(
+            &attached.session.status,
+            attached.session.ask.as_ref().map(|ask| ask.title.as_str()),
+            attached.boundary.pending().is_some(),
+            view.as_ref(),
+        );
         let provenance = self
             .tasks
             .iter()
             .find(|task| task.id == id)
             .and_then(|task| super::coordinator::provenance(task, &self.tasks));
-        HeaderTitle { title: Some(self.task_title(id)), project, detail, place: None, provenance }
+        HeaderTitle { title: Some(self.task_title(id)), project, detail: Some(detail), place: None, provenance }
     }
 }

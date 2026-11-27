@@ -17,11 +17,23 @@ use super::root::Deck;
 use super::theme::{MONO, Tokens, icon, radius, size, space, tint};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _, px,
 };
 
 pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
     let limits = deck.limits();
+    let command_only = limits.command_only();
+    let title = if command_only { "Coordinator command" } else { "Coordinator limits" };
+    let description = if command_only {
+        "Choose the coordinator's command and model before its first prompt. Workers keep the project's agent command."
+    } else {
+        "Only you change these; the coordinator has no way to. A refused create is reported, never queued."
+    };
+    let command_note = if command_only {
+        "Saving configures this project without starting a task. Leave the command empty to use construct acp."
+    } else {
+        "A command change applies to the next coordinator; this one keeps the command it started with."
+    };
     let row = |field: Field, cx: &mut Context<Deck>| field_row(deck, field, cx);
     let fields = div()
         .id("limits")
@@ -39,14 +51,9 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                 .gap(px(space::STACK))
                 .child(icon_mark(icon::GAUGE, Tokens::amber(), 26.))
                 .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child("Coordinator limits"))
-                        .child(div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(
-                            "Only you change these; the coordinator has no way to. A refused create is reported, never queued.",
-                        )),
+                    div().flex_1().flex().flex_col().child(div().font_weight(FontWeight::SEMIBOLD).child(title)).child(
+                        div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(description),
+                    ),
                 )
                 .child(
                     button("limits-close", "Close", Tokens::text_dim())
@@ -54,22 +61,20 @@ pub fn panel(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_limits(None, cx))),
                 ),
         )
-        .child(eyebrow("Caps"))
-        .child(row(Field::Running, cx))
-        .child(row(Field::PerHour, cx))
-        .child(eyebrow("Budgets · empty is unlimited"))
-        .child(row(Field::WorkerRequests, cx))
-        .child(row(Field::WorkerTokens, cx))
-        .child(row(Field::ModelRequests, cx))
-        .child(row(Field::ModelTokens, cx))
+        .when(!command_only, |fields| {
+            fields
+                .child(eyebrow("Caps"))
+                .child(row(Field::Running, cx))
+                .child(row(Field::PerHour, cx))
+                .child(eyebrow("Budgets · empty is unlimited"))
+                .child(row(Field::WorkerRequests, cx))
+                .child(row(Field::WorkerTokens, cx))
+                .child(row(Field::ModelRequests, cx))
+                .child(row(Field::ModelTokens, cx))
+        })
         .child(eyebrow("Command"))
         .child(row(Field::Command, cx))
-        .child(
-            div()
-                .text_size(size::scaled(size::SMALL))
-                .text_color(Tokens::text_faint())
-                .child("A command change applies to the next coordinator; this one keeps the command it started with."),
-        );
+        .child(div().text_size(size::scaled(size::SMALL)).text_color(Tokens::text_faint()).child(command_note));
     let footer = div()
         .flex_none()
         .flex()

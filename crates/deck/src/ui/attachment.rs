@@ -217,7 +217,7 @@ impl Deck {
                 match result {
                     Ok(()) => {
                         if let Some(attached) = deck.attached.get_mut(&id) {
-                            attached.session.status = Status::Down("stopped".into());
+                            attached.session.stopped();
                         }
                     }
                     Err(e) => {
@@ -336,13 +336,14 @@ impl Deck {
     /// Keep the project open with no task: the main area shows its project
     /// view (ADR 0010 §1). The tasks' attachments stay (ADR 0010 §8).
     pub(super) fn clear_task(&mut self, cx: &mut Context<Self>) {
+        self.limits.close();
         self.close_worktree(cx);
         self.selected = None;
         self.pending_prompt = None;
         self.expanded.clear();
         self.row_sigs.clear();
         self.transcript = super::transcript_list::following();
-        self.editor = super::editor::Editor::new();
+        self.idle.editor = super::editor::Editor::new();
         self.workspace = None;
         self.new_session = NewSession::Idle;
         let (tasks, published) = (self.tasks.clone(), std::mem::take(&mut self.published));
@@ -393,6 +394,7 @@ impl Deck {
     /// Make `record` the selection and reset what belongs to the previous
     /// one. Connect it only if it has no attachment yet.
     pub(super) fn select_task(&mut self, current: &WindowTask, record: Task, cx: &mut Context<Self>) {
+        self.limits.close();
         self.close_worktree(cx);
         let id = record.id.clone();
         // The selected task's row becomes the live card; the previous one
@@ -411,7 +413,6 @@ impl Deck {
         self.expanded.clear();
         self.row_sigs.clear();
         self.transcript = super::transcript_list::following();
-        self.editor = super::editor::Editor::new();
         self.workspace = self.tasks.iter().find(|t| t.id == id).map(super::prompt::Workspace::of);
         if self.access.is_open() {
             self.toggle_access(cx);
