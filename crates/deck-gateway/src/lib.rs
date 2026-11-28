@@ -19,6 +19,7 @@
 //! Unix-socket rule above, on host loopback behind a per-task bearer token
 //! for a local one. [`server`] binds the sockets and dispatches.
 
+pub mod admission;
 pub mod control;
 pub mod credential;
 pub mod github;

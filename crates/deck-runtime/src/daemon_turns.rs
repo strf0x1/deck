@@ -20,14 +20,56 @@ const POLL: Duration = Duration::from_millis(20);
 /// Prompt `id` through its holder, recording the session the holder set up
 /// and the prompt itself.
 pub(crate) fn prompt(runtime: &Runtime, id: &str, text: &str, from: Option<&str>) -> Result<PromptReply> {
+    ordinary(prompt_with_key(runtime, id, text, from, None)?)
+}
+
+/// The result of an explicitly keyed prompt can settle without a new turn:
+/// the agent may answer a retry from its journal.
+pub(crate) enum Delivery {
+    Started { turn: u64 },
+    Settled,
+    Busy,
+}
+
+pub(crate) fn prompt_with_key(
+    runtime: &Runtime,
+    id: &str,
+    text: &str,
+    from: Option<&str>,
+    key: Option<&str>,
+) -> Result<Delivery> {
+    let task = if key.is_some() { runtime.running_for_recovery(id)? } else { runtime.running_for_prompt(id)? };
+    prompt_task(runtime, task, text, from, key)
+}
+
+/// A new worker's initial brief must not restart it if it was stopped while
+/// its launch was in progress.
+pub(crate) fn prompt_running(runtime: &Runtime, id: &str, text: &str, from: Option<&str>) -> Result<PromptReply> {
+    runtime.ensure_no_recovery(id)?;
     let task = runtime.task(id)?;
     if task.state != State::Running {
         bail!("task {id} is not running");
     }
+    ordinary(prompt_task(runtime, task, text, from, None)?)
+}
+
+fn ordinary(delivery: Delivery) -> Result<PromptReply> {
+    match delivery {
+        Delivery::Started { turn } => Ok(PromptReply::Started { turn }),
+        Delivery::Busy => Ok(PromptReply::Busy),
+        Delivery::Settled => bail!("an unkeyed prompt unexpectedly settled without starting"),
+    }
+}
+
+fn prompt_task(runtime: &Runtime, task: Task, text: &str, from: Option<&str>, key: Option<&str>) -> Result<Delivery> {
+    let id = &task.id;
     let holder = task.holder.as_ref().context("the task has no holder to prompt through")?;
     // The agent's directory as the window would name it (`deck/src/task.rs`).
     let cwd = if task.backend == "vm" { "/workspace".into() } else { task.spec.cwd.display().to_string() };
-    let request = Request::Prompt { text: text.into(), cwd, session: task.session_id.clone() };
+    let request = match key {
+        Some(key) => Request::PromptKeyed { text: text.into(), cwd, session: task.session_id.clone(), key: key.into() },
+        None => Request::Prompt { text: text.into(), cwd, session: task.session_id.clone() },
+    };
     let reply = match crate::detached::exchange(holder, &request, START + Duration::from_secs(5)) {
         Ok(reply) => reply,
         Err(error) => {
@@ -46,9 +88,15 @@ pub(crate) fn prompt(runtime: &Runtime, id: &str, text: &str, from: Option<&str>
                 runtime.session(id, &session)?;
             }
             runtime.prompted(id, turn, from, text)?;
-            Ok(PromptReply::Started { turn })
+            Ok(Delivery::Started { turn })
         }
-        Reply::Prompted(Prompted::Busy) => Ok(PromptReply::Busy),
+        Reply::Prompted(Prompted::Settled { session }) => {
+            if let Some(session) = session {
+                runtime.session(id, &session)?;
+            }
+            Ok(Delivery::Settled)
+        }
+        Reply::Prompted(Prompted::Busy) => Ok(Delivery::Busy),
         _ => bail!("the holder did not answer the prompt"),
     }
 }
@@ -101,6 +149,26 @@ fn done(start: &Task, now: &Task, after_turn: Option<u64>) -> bool {
 mod tests {
     use super::done;
     use crate::{Phase, State, Task, Turn};
+
+    #[test]
+    fn keyed_holder_request_is_not_an_old_unkeyed_request() {
+        #[derive(serde::Deserialize)]
+        enum OldHolderRequest {
+            Prompt(serde_json::Value),
+        }
+        let old = super::Request::Prompt { text: "answer".into(), cwd: "/w".into(), session: Some("s".into()) };
+        let Ok(OldHolderRequest::Prompt(value)) = serde_json::from_value(serde_json::to_value(old).unwrap()) else {
+            panic!("an old holder must accept the existing prompt form");
+        };
+        assert_eq!(value["text"], "answer");
+        let keyed = super::Request::PromptKeyed {
+            text: "answer".into(),
+            cwd: "/w".into(),
+            session: Some("s".into()),
+            key: "saved-key".into(),
+        };
+        assert!(serde_json::from_value::<OldHolderRequest>(serde_json::to_value(keyed).unwrap()).is_err());
+    }
 
     fn task(state: State, turn: Option<(u64, Phase)>) -> Task {
         let mut task: Task = serde_json::from_value(serde_json::json!({

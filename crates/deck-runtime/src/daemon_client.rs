@@ -57,6 +57,8 @@ pub struct DaemonClient {
     /// The data root when this client may start deckd again, as a window's
     /// long-lived client may; `None` for a client that only observes.
     start: Option<PathBuf>,
+    /// A short-lived CLI must not leave its caller's stderr pipe open in deckd.
+    inherit_stderr: bool,
 }
 
 impl DaemonClient {
@@ -76,6 +78,12 @@ impl DaemonClient {
         Self::at(Paths::for_data(data)?, Some(data.to_path_buf()))
     }
 
+    /// Start a daemon without inheriting a short-lived command's stderr.
+    pub(crate) fn connect_or_start_for_cli(data: &Path) -> Result<Self> {
+        let paths = Paths::for_data(data)?;
+        Ok(Self::open_with_stderr(paths, Some(data.to_path_buf()), true, false)?.0)
+    }
+
     /// The daemon serving `data` and what it said, or `None` when none is
     /// running. A stale binary is not refused here: stopping it is how it is
     /// replaced.
@@ -89,7 +97,16 @@ impl DaemonClient {
     }
 
     fn open(paths: Paths, start: Option<PathBuf>, strict: bool) -> Result<(Self, Hello)> {
-        let client = Self { socket: Arc::new(Mutex::new(None)), paths, start };
+        Self::open_with_stderr(paths, start, strict, true)
+    }
+
+    fn open_with_stderr(
+        paths: Paths,
+        start: Option<PathBuf>,
+        strict: bool,
+        inherit_stderr: bool,
+    ) -> Result<(Self, Hello)> {
+        let client = Self { socket: Arc::new(Mutex::new(None)), paths, start, inherit_stderr };
         let hello = client.hello()?;
         check(&hello, strict)?;
         Ok((client, hello))
@@ -125,7 +142,7 @@ impl DaemonClient {
             Err(e) => e,
         };
         let Some(data) = self.start.as_deref() else { return Err(e) };
-        launch(data)?;
+        launch(data, self.inherit_stderr)?;
         // A cold first exec of a freshly built deckd can be slow on macOS.
         let deadline = Instant::now() + START;
         loop {
@@ -172,6 +189,27 @@ impl DaemonClient {
     }
     pub fn tasks(&self) -> Result<Vec<Task>> {
         self.request(Request::Tasks)
+    }
+    /// Interrupted decisions and their delivery states for this task.
+    pub fn recovery_items(&self, task: &str) -> Result<Vec<crate::recovery::Item>> {
+        self.request(Request::RecoveryItems { task: task.into() })
+    }
+    /// Persist the first answer, then attempt to deliver its recovery context.
+    pub fn answer_recovery(
+        &self,
+        task: &str,
+        id: &str,
+        answer: crate::recovery::Answer,
+    ) -> Result<crate::recovery::Item> {
+        self.request(Request::RecoveryAnswer { task: task.into(), id: id.into(), answer })
+    }
+    /// Retry a saved answer with its original key, if the agent supports it.
+    pub fn retry_recovery(&self, task: &str, id: &str) -> Result<crate::recovery::Item> {
+        self.request(Request::RecoveryRetry { task: task.into(), id: id.into() })
+    }
+    /// Mark an uncertain answer reviewed so the task can resume.
+    pub fn review_recovery(&self, task: &str, id: &str) -> Result<crate::recovery::Item> {
+        self.request(Request::RecoveryReview { task: task.into(), id: id.into() })
     }
     pub fn projects(&self) -> Result<Vec<crate::project::Project>> {
         self.request(Request::Projects)
@@ -625,11 +663,12 @@ fn open(paths: &Paths) -> Result<BufReader<UnixStream>> {
 }
 
 /// Start the sibling deckd binary in its own session and reap the launcher.
-fn launch(data: &Path) -> Result<()> {
+fn launch(data: &Path, inherit_stderr: bool) -> Result<()> {
     Paths::for_data(data)?.prepare()?;
     let executable = executable()?;
     let mut command = Command::new(&executable);
-    command.arg("--data").arg(data).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit());
+    command.arg("--data").arg(data).stdin(Stdio::null()).stdout(Stdio::null());
+    command.stderr(if inherit_stderr { Stdio::inherit() } else { Stdio::null() });
     // The window's control socket is the window's alone.
     command.env_remove(crate::agent_env::WINDOW_CONTROL);
     // SAFETY: setsid takes no pointers and is async-signal-safe between fork and exec.

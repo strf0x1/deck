@@ -247,8 +247,10 @@ policy, or a task that is not a coordinator, is `refused`):
   fails to start is `failed` in its summary, which wakes a `wait`.
 - **`prompt`** waits up to 60 s for a just-created worker to run and its
   brief to be sent, then prompts through the holder: `{ turn }`, or `busy`
-  while a turn is working or waiting. A stopped, failed or destroyed task is
-  `refused`; this surface does not resume.
+  while a turn is working or waiting. A stopped worker is resumed before the
+  prompt if the concurrent-worker and shared-checkout limits allow it. Resume
+  does not count against the creation rate. A failed or destroyed task is
+  `refused`.
 - **`wait`** (`wait_ms` at most 300000, larger is `bad_request`, never
   shortened; `after_turn` defaults to 0) ends when the task stops, fails or
   is destroyed, when a turn after `after_turn` is idle, or when a pending
@@ -646,6 +648,8 @@ request the old daemon cannot parse. A daemon predating the handshake answers
 deck daemon status     # pid, version, protocol, executable, staleness, tasks
 deck daemon stop       # ask deckd to exit; its task holders keep their agents
 deck daemon restart    # stop, then start the deckd beside this deck binary
+deck task list         # tasks, state, phase and process memory
+deck task resume <id>  # restart a stopped task in the selected data root
 ```
 
 The commands use the same data root as the window (`DECK_DATA` or the platform
@@ -656,6 +660,15 @@ signalling any holder; the next connection adopts the running tasks and records
 reports the `pkill -x deckd` recovery instead. A window's long-lived client
 starts deckd again on its next request, so `restart` is the command to use while
 Deck is open; `stop` is for when it is closed.
+
+`deck task resume <id>` starts the daemon if needed and resumes the named
+task through its normal backend. Use `deck -- task ...` to run an agent named
+`task` instead of the task subcommand.
+
+`deck task list` reports the VMM's memory for VM tasks, as physical footprint
+on macOS and RSS on Linux. Local task memory is unavailable: the recorded PID
+identifies the supervisor, not the agent. A dash means the value is unavailable.
+Idle deadlines and keep-running settings are not implemented yet.
 
 ## Paths and lifetime
 

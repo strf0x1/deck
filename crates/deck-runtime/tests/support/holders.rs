@@ -15,17 +15,39 @@ use std::time::{Duration, Instant};
 /// Kills the holders of `data` and their agents when dropped.
 pub struct Holders {
     data: PathBuf,
+    stopped: bool,
 }
 
 impl Holders {
     pub fn new(data: &Path) -> Self {
-        Self { data: data.to_path_buf() }
+        Self { data: data.to_path_buf(), stopped: false }
+    }
+
+    /// Stop tasks through the daemon before falling back to process cleanup.
+    pub fn stop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        self.stopped = true;
+        if self.data.exists()
+            && let Ok(client) = deck_runtime::DaemonClient::connect(&self.data)
+            && let Ok(tasks) = client.tasks()
+        {
+            for task in tasks {
+                if task.state == deck_runtime::State::Running
+                    && let Err(error) = client.stop(&task.id)
+                {
+                    eprintln!("could not stop test task {}: {error:#}", task.id);
+                }
+            }
+        }
+        kill(&self.data);
     }
 }
 
 impl Drop for Holders {
     fn drop(&mut self) {
-        kill(&self.data);
+        self.stop();
     }
 }
 

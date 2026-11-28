@@ -97,7 +97,7 @@ pub(super) fn create(
 
 /// Live workers, any coordinator's, running in `checkout` on the local
 /// backend: they would share it with the next one (deck#200).
-fn in_checkout(runtime: &crate::Runtime, checkout: Option<&std::path::PathBuf>) -> usize {
+pub(super) fn in_checkout(runtime: &crate::Runtime, checkout: Option<&std::path::PathBuf>) -> usize {
     let Some(checkout) = checkout else { return 0 };
     runtime.tasks().map_or(0, |tasks| {
         tasks
@@ -142,7 +142,7 @@ fn start_and_brief(cx: &Context, id: &str, from: &str, brief: &str) {
 pub(super) fn deliver_brief(cx: &Context, id: &str, from: &str, brief: &str) {
     let deadline = Instant::now() + BRIEF_WAIT;
     loop {
-        match crate::daemon_turns::prompt(&cx.runtime, id, brief, Some(from)) {
+        match crate::daemon_turns::prompt_running(&cx.runtime, id, brief, Some(from)) {
             Ok(PromptReply::Started { .. }) => return,
             Ok(PromptReply::Busy) => {}
             Err(error) => {

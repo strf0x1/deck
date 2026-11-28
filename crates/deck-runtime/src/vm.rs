@@ -288,6 +288,7 @@ impl Backend for Vm {
             socket: socket.clone(),
             forward,
             console: self.console(&task.id),
+            shutdown_marker: deck_acp::key::new_key(),
             import: staged.clone(),
             import_required: task.integration.is_some() || task.spec.cwd.is_dir(),
             checkout: github.map(|policy| vmm::Checkout {
@@ -518,10 +519,36 @@ impl Instance for VmInstance {
     }
 
     fn stop(&mut self, grace: Duration) -> Result<String> {
+        self.stop_process(grace).map(|(reason, _)| reason)
+    }
+
+    fn stop_outcome(&mut self, grace: Duration) -> Result<crate::backend::StopOutcome> {
+        let (reason, forced) = self.stop_process(grace)?;
+        let dir = self.data.join("tasks").join(&self.id);
+        let shutdown = std::fs::read(dir.join("vmm.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<vmm::Config>(&bytes).ok())
+            .and_then(|config| {
+                let console = std::fs::read_to_string(config.console).ok()?;
+                clean_guest_shutdown(&console, &config.shutdown_marker)
+            });
+        if !forced && let Some(shutdown) = shutdown {
+            Ok(crate::backend::StopOutcome { clean: true, reason: shutdown.reason().into() })
+        } else {
+            Ok(crate::backend::StopOutcome {
+                clean: false,
+                reason: format!("guest did not confirm unmount ({reason})"),
+            })
+        }
+    }
+}
+
+impl VmInstance {
+    fn stop_process(&mut self, grace: Duration) -> Result<(String, bool)> {
         if !reconcile::group_running(self.holder.pid)? {
             released(&self.data, &self.id, RELEASE)?;
             cleanup(&self.paths, &self.id);
-            return Ok("VMM already exited".into());
+            return Ok(("VMM already exited".into(), true));
         }
         if let Some(session) = Store::open(&self.data)?.observe(&self.id)?.session_id
             && let Ok(socket) = UnixStream::connect(&self.holder.socket)
@@ -530,21 +557,70 @@ impl Instance for VmInstance {
             let _ = deck_acp::shutdown::close_session(&socket, &session, Duration::from_millis(500));
         }
         let request = Request::Stop { grace_ms: grace.as_millis().min(30_000) as u64 };
-        let reason = match exchange(&self.holder, &request, grace + WAIT) {
-            Ok(Reply::Stopped(reason)) => reason,
+        let (reason, forced) = match exchange(&self.holder, &request, grace.max(Duration::from_secs(10)) + WAIT) {
+            Ok(Reply::Stopped(reason)) => {
+                // The VMM left on its own: the guest powered off, or it
+                // confirmed a clean halt and the grace elapsed. Only a
+                // SIGKILL below is a forced stop.
+                (reason, false)
+            }
             Ok(_) => bail!("VMM did not confirm its stop"),
             Err(e) => {
-                // The control socket is gone or wedged. The VMM is still
-                // identified by the record; force it and confirm below.
-                kill_group(self.holder.pid, libc::SIGKILL).ok();
-                format!("force-stopped VMM ({e:#})")
+                // libkrun can exit the process without replying. Allow its
+                // process group to settle before deciding whether to force it.
+                if reconcile::wait_for_group(self.holder.pid).is_ok() {
+                    ("VMM exited without a control reply".into(), false)
+                } else {
+                    kill_group(self.holder.pid, libc::SIGKILL).ok();
+                    (format!("force-stopped VMM ({e:#})"), true)
+                }
             }
         };
         reconcile::wait_for_group(self.holder.pid)?;
         released(&self.data, &self.id, RELEASE)?;
         cleanup(&self.paths, &self.id);
-        Ok(reason)
+        Ok((reason, forced))
     }
+}
+
+/// What the console proves after this run's unmount marker. A guest that
+/// cannot ask its kernel to power off can still leave both disks cleanly
+/// unmounted, then halt.
+#[derive(Clone, Copy)]
+enum GuestShutdown {
+    PoweredOff,
+    Halted,
+}
+
+impl GuestShutdown {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::PoweredOff => "guest unmounted disks and powered off",
+            Self::Halted => "guest unmounted disks and halted",
+        }
+    }
+}
+
+fn clean_guest_shutdown(console: &str, marker: &str) -> Option<GuestShutdown> {
+    if marker.is_empty() {
+        return None;
+    }
+    let unmount = format!("DECK_UNMOUNT_CONFIRMED:{marker}");
+    let halt = format!("DECK_HALT_CONFIRMED:{marker}");
+    let lines: Vec<&str> = console.split_inclusive('\n').filter_map(|line| line.strip_suffix('\n')).collect();
+    let unmounted = lines.iter().position(|found| found.trim_end_matches('\r') == unmount.as_str())?;
+    let after = &lines[unmounted + 1..];
+    if after.iter().any(|found| found.trim_end().ends_with("reboot: Power down")) {
+        return Some(GuestShutdown::PoweredOff);
+    }
+    if let Some(halt_marker) = after.iter().position(|found| found.trim_end_matches('\r') == halt.as_str())
+        && after[halt_marker + 1..]
+            .iter()
+            .any(|found| found.trim_end().ends_with("reboot: Power off not available: System halted instead"))
+    {
+        return Some(GuestShutdown::Halted);
+    }
+    None
 }
 
 impl Drop for VmInstance {
@@ -558,11 +634,12 @@ fn watch(paths: Paths, id: String, holder: Holder, done: Arc<AtomicBool>, mut ch
         if let Some(child) = child.as_mut() {
             let _ = child.wait();
         } else {
+            let mut notification = crate::wait::process_exit(holder.pid);
             while reconcile::group_running(holder.pid).unwrap_or(false) {
                 if done.load(Ordering::Acquire) {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                crate::wait::exit_or_timeout(&mut notification);
             }
         }
         if done.load(Ordering::Acquire) {
@@ -807,6 +884,33 @@ fn library_path(library: &Path) -> Option<std::ffi::OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_shutdown_requires_this_runs_unmount_marker_before_poweroff_or_halt() {
+        assert!(matches!(
+            clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new"),
+            Some(GuestShutdown::PoweredOff)
+        ));
+        assert!(matches!(
+            clean_guest_shutdown(
+                "DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new\nreboot: Power off not available: System halted instead\n",
+                "new"
+            ),
+            Some(GuestShutdown::Halted)
+        ));
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nreboot: Power down\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:old\nDECK_HALT_CONFIRMED:old\n", "new").is_none());
+        assert!(clean_guest_shutdown("reboot: Power down\nDECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_HALT_CONFIRMED:new\nDECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power off not available: System halted instead\nDECK_HALT_CONFIRMED:new\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new-fake\nreboot: Power down\n", "new").is_none());
+        assert!(clean_guest_shutdown("prefix DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down\n", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nreboot: Power down", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:new\nDECK_HALT_CONFIRMED:new", "new").is_none());
+        assert!(clean_guest_shutdown("DECK_UNMOUNT_CONFIRMED:\nreboot: Power down\n", "").is_none());
+    }
     use crate::lifecycle::{Spec, State};
 
     #[test]

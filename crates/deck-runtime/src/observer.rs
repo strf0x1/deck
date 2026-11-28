@@ -13,9 +13,47 @@
 use crate::lifecycle::{Phase, Turn};
 use crate::permission::{Questions, View};
 use deck_acp::TurnState;
-use deck_acp::names::{CONSTRUCT_META, LEGACY_CONSTRUCT_META, LEGACY_TURN_METHOD, TURN_METHOD};
+use deck_acp::names::{
+    CONSTRUCT_META, IDEMPOTENCY_KEY, IDEMPOTENT_PROMPTS, LEGACY_CONSTRUCT_META, LEGACY_TURN_METHOD, TURN_METHOD,
+};
 use deck_acp::rpc::{self, Incoming};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+/// A snapshot must be small enough to persist and display in full. A question
+/// outside these bounds remains open but cannot be snapshotted for idle stop.
+const MAX_QUESTIONS: usize = 64;
+const MAX_OPTIONS: usize = 32;
+const MAX_TITLE_BYTES: usize = 4096;
+const MAX_OPTION_BYTES: usize = 1024;
+const MAX_REQUEST_BYTES: usize = 1024;
+
+/// One option offered by the agent for a permission question.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionChoice {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+/// The question as displayed for its current ACP request. Its request ID is
+/// only valid while the current agent and attachment remain alive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionQuestion {
+    pub request: Value,
+    pub title: String,
+    pub options: Vec<PermissionChoice>,
+}
+
+struct Question {
+    id: Value,
+    details: Option<PermissionQuestion>,
+}
+
+struct QueuedPrompt {
+    text: String,
+    key: Option<String>,
+}
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
@@ -51,6 +89,8 @@ pub enum Event {
     Session(String),
     /// The holder's prompt started this turn.
     Prompted(u64),
+    /// A keyed prompt was answered without a new turn notification.
+    Settled,
     /// The holder's prompt cannot start.
     Failed(String),
 }
@@ -80,6 +120,7 @@ pub struct Observer {
     /// The agent sends turn notifications (its live-attach contract), so a
     /// prompt response is not the end of a turn.
     live: bool,
+    idempotent: bool,
     session: Option<String>,
     turn: Option<Turn>,
     questions: Questions,
@@ -88,10 +129,11 @@ pub struct Observer {
     session_epoch: u64,
     seen_questions: HashSet<u64>,
     identities_exhausted: bool,
+    recovery_questions: Vec<Question>,
     /// A prompt waiting for the session the holder is setting up.
-    queued: Option<String>,
+    queued: Option<QueuedPrompt>,
     /// The holder's prompt, written, until its turn is seen to start.
-    starting: Option<(Value, u64)>,
+    starting: Option<(Value, u64, bool)>,
     setup: Option<Setup>,
     message: crate::message::Reader,
 }
@@ -108,6 +150,7 @@ impl Observer {
             initialized: false,
             ready: false,
             live: false,
+            idempotent: false,
             session: None,
             turn: None,
             questions: Questions::new(format!("{tag}-0")),
@@ -116,6 +159,7 @@ impl Observer {
             session_epoch: 0,
             seen_questions: HashSet::new(),
             identities_exhausted: false,
+            recovery_questions: Vec::new(),
             queued: None,
             starting: None,
             setup: None,
@@ -134,6 +178,69 @@ impl Observer {
 
     pub fn session(&self) -> Option<&str> {
         self.session.as_deref()
+    }
+
+    /// Pending questions in arrival order. `None` means at least one cannot
+    /// be preserved in full, so the caller must not stop and lose it.
+    pub fn pending_questions(&self) -> Option<Vec<&PermissionQuestion>> {
+        if self.recovery_questions.len() > MAX_QUESTIONS
+            || self.recovery_questions.len() != self.questions.view().pending_count
+        {
+            return None;
+        }
+        self.recovery_questions.iter().map(|question| question.details.as_ref()).collect()
+    }
+
+    /// ACP evidence only. Host approvals and agent output not yet observed
+    /// must be handled by the caller before any task can be stopped.
+    pub(crate) fn fence_snapshot(&self) -> Option<(Turn, Vec<PermissionQuestion>)> {
+        if !self.initialized
+            || !self.ready
+            || self.queued.is_some()
+            || self.starting.is_some()
+            || self.setup_request.is_some()
+            || self.staged.is_some()
+        {
+            return None;
+        }
+        let turn = self.turn.as_ref()?;
+        match turn.state {
+            Phase::Idle => {
+                if !self.questions.is_empty()
+                    || self.client.values().any(|request| *request == Request::Prompt)
+                    || self.own.values().any(|request| *request == Request::Prompt)
+                {
+                    return None;
+                }
+            }
+            Phase::Waiting if !self.questions.is_empty() => {
+                // The original turn may still have its prompt request open.
+                // A second admitted prompt has an uncertain relationship to
+                // the observed question and must not be snapshotted.
+                let pending = self.client.values().filter(|request| **request == Request::Prompt).count()
+                    + self.own.values().filter(|request| **request == Request::Prompt).count();
+                if pending > 1 {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+        Some((turn.clone(), self.pending_questions()?.into_iter().cloned().collect()))
+    }
+
+    /// Whether work is in flight, so an idle stop must wait.
+    pub fn busy(&self) -> bool {
+        self.turn.as_ref().is_some_and(|turn| !turn.idle())
+            || !self.questions.is_empty()
+            || self.starting.is_some()
+            || self.queued.is_some()
+    }
+    /// Work that makes an idle stop unsafe. An open question is handled by
+    /// the waiting deadline, not by treating the task as busy forever.
+    pub fn in_flight(&self) -> bool {
+        self.turn.as_ref().is_some_and(|turn| turn.state == Phase::Working)
+            || self.starting.is_some()
+            || self.queued.is_some()
     }
 
     /// One line a window wrote to the agent.
@@ -159,6 +266,7 @@ impl Observer {
                         // A new attachment: the session must be set up again
                         // on it, and the agent retires its open questions.
                         self.ready = false;
+                        self.idempotent = false;
                         self.retire_questions();
                         self.client.clear();
                         self.setup_request = None;
@@ -183,6 +291,7 @@ impl Observer {
             }
             Incoming::Response { id, result } => {
                 // This is an observed response, not proof of delivery.
+                self.recovery_questions.retain(|question| question.id != id);
                 if let Some(staged) = self.staged.as_mut() {
                     staged.answer(&id, &result);
                 }
@@ -234,7 +343,17 @@ impl Observer {
                 Step { forward: true, ..Step::default() }
             }
             Incoming::Request { id, method, params } if method == "session/request_permission" => {
-                let accepted = self.question(id, &params);
+                let accepted = self.question(id.clone(), &params);
+                if accepted {
+                    if let Some(question) = self.recovery_questions.iter_mut().find(|question| question.id == id) {
+                        question.details = None;
+                    } else {
+                        let details = (self.recovery_questions.len() < MAX_QUESTIONS)
+                            .then(|| permission_question(&id, &params))
+                            .flatten();
+                        self.recovery_questions.push(Question { id, details });
+                    }
+                }
                 let events = if self.live || !accepted { vec![] } else { self.phase(Phase::Waiting) };
                 Step { forward: true, write: vec![], events }
             }
@@ -244,6 +363,12 @@ impl Observer {
 
     /// Start a prompt, setting the session up first if nobody has.
     pub fn prompt(&mut self, text: &str, setup: Setup) -> Result<Step, Refused> {
+        self.prompt_with_key(text, setup, None)
+    }
+
+    /// A supplied key is required: an agent without the capability is never
+    /// sent the prompt, so a retry cannot silently become non-idempotent.
+    pub fn prompt_with_key(&mut self, text: &str, setup: Setup, key: Option<&str>) -> Result<Step, Refused> {
         let busy = self.turn.as_ref().is_some_and(|t| !t.idle())
             || !self.questions.is_empty()
             || self.starting.is_some()
@@ -251,10 +376,17 @@ impl Observer {
         if busy {
             return Err(Refused::Busy);
         }
-        if self.ready {
-            return Ok(self.send_prompt(text));
+        if key == Some("") {
+            return Ok(Step {
+                forward: false,
+                write: vec![],
+                events: vec![Event::Failed("empty idempotency key".into())],
+            });
         }
-        self.queued = Some(text.to_owned());
+        if self.ready {
+            return Ok(self.send_prompt(text, key));
+        }
+        self.queued = Some(QueuedPrompt { text: text.to_owned(), key: key.map(str::to_owned) });
         self.setup = Some(setup);
         let line = if self.initialized { self.open_session() } else { self.initialize() };
         Ok(Step { forward: false, write: vec![line], events: vec![] })
@@ -307,16 +439,26 @@ impl Observer {
         }
     }
 
-    fn send_prompt(&mut self, text: &str) -> Step {
+    fn send_prompt(&mut self, text: &str, key: Option<&str>) -> Step {
+        if key.is_some() && !self.idempotent {
+            return Step {
+                forward: false,
+                write: vec![],
+                events: vec![Event::Failed("agent does not support idempotent prompts".into())],
+            };
+        }
         let Some(session) = self.session.clone() else {
             return Step { forward: false, write: vec![], events: vec![Event::Failed("no session to prompt".into())] };
         };
         let id = self.id(Request::Prompt);
-        let params = json!({ "sessionId": session, "prompt": [{ "type": "text", "text": text }] });
+        let mut params = json!({ "sessionId": session, "prompt": [{ "type": "text", "text": text }] });
+        if let Some(key) = key {
+            params["_meta"] = json!({ CONSTRUCT_META: { IDEMPOTENCY_KEY: key } });
+        }
         let line = rpc::request(id.clone(), "session/prompt", params);
         let before = self.turn.as_ref().map_or(0, |t| t.number);
-        if self.live {
-            self.starting = Some((id, before));
+        if self.live || key.is_some() {
+            self.starting = Some((id, before, key.is_some()));
             return Step { forward: false, write: vec![line], events: vec![] };
         }
         let mut events = self.set(Turn { number: before + 1, state: Phase::Working, stop_reason: None });
@@ -358,6 +500,11 @@ impl Observer {
                 step
             }
             (Request::Prompt, Ok(value)) => {
+                let keyed = self.starting.as_ref().is_some_and(|(pending, _, keyed)| pending == id && *keyed);
+                if keyed {
+                    self.starting = None;
+                    return Step { forward: false, write: vec![], events: vec![Event::Settled] };
+                }
                 if self.live {
                     return Step::default();
                 }
@@ -367,7 +514,7 @@ impl Observer {
                 Step { forward: false, write: vec![], events }
             }
             (Request::Prompt, Err(error)) => {
-                if self.starting.as_ref().is_some_and(|(pending, _)| pending == id) {
+                if self.starting.as_ref().is_some_and(|(pending, _, _)| pending == id) {
                     self.starting = None;
                 }
                 let mut step = fail(self, format!("session/prompt: {error}"));
@@ -391,7 +538,7 @@ impl Observer {
     /// The queued prompt, once the session is ready.
     fn release(&mut self) -> Step {
         match self.queued.take() {
-            Some(text) => self.send_prompt(&text),
+            Some(prompt) => self.send_prompt(&prompt.text, prompt.key.as_deref()),
             None => Step::default(),
         }
     }
@@ -428,6 +575,7 @@ impl Observer {
     }
 
     fn retire_questions(&mut self) {
+        self.recovery_questions.clear();
         self.questions.retire();
         if self.setup_request.as_ref().is_some_and(|(_, target)| *target == self.session)
             && let Some(staged) = self.staged.as_mut()
@@ -464,6 +612,9 @@ impl Observer {
                 staged.retain_history(previous);
             }
             self.questions = staged;
+            // Replayed questions have separate wire identities. Until their
+            // full payloads can be captured, never reuse an older snapshot.
+            self.recovery_questions.clear();
         }
         if self.session.as_deref() != Some(session) {
             self.turn = None;
@@ -518,6 +669,7 @@ impl Observer {
         self.ready = false;
         let meta = &value["agentCapabilities"]["_meta"];
         self.live = meta[CONSTRUCT_META]["liveAttach"] == true || meta[LEGACY_CONSTRUCT_META]["liveAttach"] == true;
+        self.idempotent = meta[CONSTRUCT_META][IDEMPOTENT_PROMPTS] == true;
     }
 
     /// The turn a `session/load` reply reports in its metadata.
@@ -546,7 +698,7 @@ impl Observer {
             self.retire_questions();
         }
         let mut events = self.set(turn);
-        if let Some((_, before)) = &self.starting
+        if let Some((_, before, _)) = &self.starting
             && number > *before
         {
             self.starting = None;
@@ -573,6 +725,29 @@ impl Observer {
         self.turn = Some(turn.clone());
         vec![Event::Turn(turn)]
     }
+}
+
+fn permission_question(request: &Value, params: &Value) -> Option<PermissionQuestion> {
+    if serde_json::to_vec(request).ok()?.len() > MAX_REQUEST_BYTES {
+        return None;
+    }
+    let title = params["toolCall"]["title"].as_str().unwrap_or("a tool");
+    if title.len() > MAX_TITLE_BYTES {
+        return None;
+    }
+    let mut options = Vec::new();
+    if let Some(offered) = params["options"].as_array() {
+        for option in offered {
+            let Some(id) = option["optionId"].as_str() else { continue };
+            let name = option["name"].as_str().unwrap_or_default();
+            let kind = option["kind"].as_str().unwrap_or_default();
+            if options.len() == MAX_OPTIONS || [id, name, kind].iter().any(|field| field.len() > MAX_OPTION_BYTES) {
+                return None;
+            }
+            options.push(PermissionChoice { id: id.into(), name: name.into(), kind: kind.into() });
+        }
+    }
+    Some(PermissionQuestion { request: request.clone(), title: title.into(), options })
 }
 
 fn name(request: &Request) -> &'static str {

@@ -79,7 +79,7 @@ fn restart(data: &Path) -> Result<()> {
         Ok(None) => {}
         Err(e) => return Err(e).context("the running deckd cannot be restarted cleanly"),
     }
-    let client = DaemonClient::connect_or_start(data)?;
+    let client = DaemonClient::connect_or_start_for_cli(data)?;
     let hello = client.hello()?;
     describe(data, &client, &hello)
 }

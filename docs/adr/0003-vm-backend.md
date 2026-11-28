@@ -4,6 +4,12 @@ Status: accepted, 2026-11-02. Answers ADR 0001's #16 follow-ups and records
 the contract change the spike forced. Measurements and the recipe are in
 `docs/vm-spike.md`.
 
+Amendment: a confirmed VMM exit permits disk reuse but does not establish a
+clean guest shutdown. A requested stop is clean only when the current run's
+guest confirms its unmount and the console reports kernel poweroff before
+the VMM exits. Other stops are recorded with `clean: false`. Automatic idle
+stopping remains off pending recovery and platform verification.
+
 ## Context
 
 ADR 0001 settled the task contract and said the VM backend would change the

@@ -79,6 +79,9 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     assert_eq!(runtime.task(&id).unwrap().state, State::Running);
     let session = ready(&runtime, &id, false).1;
     runtime.session(&id, &session).unwrap();
+    if std::env::var_os("DECK_VM_CHECK_DISKS").is_some() {
+        console_has(&data, &id, "DECK_WORKSPACE_WRITTEN");
+    }
 
     // Drop the runtime without stopping: the VMM is the holder and must
     // survive, and the next runtime adopts it from the record.
@@ -88,12 +91,23 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
     ready(&runtime, &id, true);
 
     runtime.stop(&id).unwrap();
-    assert!(matches!(runtime.task(&id).unwrap().state, State::Stopped { clean: true, .. }));
+    let stopped = runtime.task(&id).unwrap().state;
+    if std::env::var_os("DECK_VM_EXPECT_CLEAN").is_some() {
+        assert!(matches!(stopped, State::Stopped { clean: true, .. }), "{stopped:?}");
+    } else {
+        assert!(matches!(stopped, State::Stopped { .. }), "{stopped:?}");
+    }
 
-    // Resume reuses the same disks; the journal survives the stop.
+    // Resume reuses the same disks; load the same session from its journal.
     runtime.resume(&id).unwrap();
-    ready(&runtime, &id, false);
+    assert_eq!(load_session(&runtime, &id, &session), session);
+    if std::env::var_os("DECK_VM_CHECK_DISKS").is_some() {
+        console_has(&data, &id, "DECK_WORKSPACE_VERIFIED");
+    }
     runtime.stop(&id).unwrap();
+    if std::env::var_os("DECK_VM_EXPECT_CLEAN").is_some() {
+        assert!(matches!(runtime.task(&id).unwrap().state, State::Stopped { clean: true, .. }));
+    }
     runtime.destroy(&id).unwrap();
     cleanup.armed = false;
     assert_eq!(runtime.task(&id).unwrap().state, State::Destroyed);
@@ -107,7 +121,9 @@ fn vm_task_runs_attaches_reattaches_stops_and_destroys() {
 /// `CONSTRUCT_BASE_URL` names the provider the host gateway proxies for the
 /// task (construct-dev's scripted server in the test process), and
 /// `DECK_CREDENTIALS` names a 0600 file holding `OPENAI_API_KEY`, the host
-/// key the gateway fetches from `deckd` per request (ADR 0004 §4).
+/// key the gateway fetches from `deckd` per request (ADR 0004 §4). Set
+/// `DECK_VM_MODEL_LOG` to the dedicated server's JSONL request log to check
+/// that loading the completed session makes no second model request.
 ///
 /// The task runs under a real `deckd` (the signed `DECK_VM_EXECUTABLE`),
 /// because only the daemon hands out credentials. That daemon is started with
@@ -181,7 +197,7 @@ fn vm_prompt_and_permission_round_trip() {
     let attached = launched.elapsed();
     let (client, mut events) = Client::over(PathBuf::from("/workspace"), stream.reader, stream.writer).unwrap();
     let deadline = Instant::now() + READY;
-    loop {
+    let session = loop {
         let Some(event) = next(&mut events, deadline) else { panic!("no Ready within {READY:?}") };
         match event {
             Inbound::Ready { session_id, .. } => {
@@ -191,15 +207,16 @@ fn vm_prompt_and_permission_round_trip() {
                     launched.elapsed()
                 );
                 deckd.session(&id, &session_id).unwrap();
-                break;
+                break session_id;
             }
             Inbound::Failed(reason) => panic!("ACP failed: {reason}"),
             _ => {}
         }
-    }
+    };
     let prompted = Instant::now();
     let turn_deadline = prompted + Duration::from_secs(20);
     client.prompt("read /etc/hostname", None).unwrap();
+    let mut response = String::new();
     loop {
         let Some(event) = next(&mut events, turn_deadline) else { panic!("turn did not finish") };
         match event {
@@ -208,6 +225,7 @@ fn vm_prompt_and_permission_round_trip() {
                 client.answer(&request, Some(&allowed.id)).unwrap();
                 println!("permission asked and answered: {:?}", prompted.elapsed());
             }
+            Inbound::Message(text) => response.push_str(&text),
             // Construct advertises liveAttach, so the turn's end is the
             // authoritative turn notification, not a prompt response.
             Inbound::Turn { state: TurnState::Idle { stop_reason }, .. } => {
@@ -217,6 +235,38 @@ fn vm_prompt_and_permission_round_trip() {
             Inbound::Failed(reason) => panic!("ACP failed: {reason}"),
             _ => {}
         }
+    }
+    assert!(!response.is_empty(), "the completed turn must contain a response to verify on resume");
+    drop(client);
+    deckd.stop(&id).unwrap();
+    if std::env::var_os("DECK_VM_EXPECT_CLEAN").is_some() {
+        assert!(matches!(deckd.task(&id).unwrap().state, State::Stopped { clean: true, .. }));
+    }
+    let requests_before = std::env::var_os("DECK_VM_MODEL_LOG")
+        .map(PathBuf::from)
+        .map(|path| (path.clone(), std::fs::read_to_string(path).unwrap().lines().count()));
+    deckd.resume(&id).unwrap();
+    let stream = deckd.attach(&id).unwrap();
+    let (client, mut events) =
+        Client::load(PathBuf::from("/workspace"), stream.reader, stream.writer, session.clone()).unwrap();
+    let mut replayed = String::new();
+    let replay_deadline = Instant::now() + READY;
+    loop {
+        match next(&mut events, replay_deadline) {
+            Some(Inbound::Message(text)) => replayed.push_str(&text),
+            Some(Inbound::Ready { session_id, .. }) => {
+                assert_eq!(session_id, session);
+                break;
+            }
+            Some(Inbound::Failed(reason)) => panic!("session load failed: {reason}"),
+            Some(_) => {}
+            None => panic!("session load did not finish"),
+        }
+    }
+    assert_eq!(replayed, response, "the completed answer must survive a clean stop");
+    if let Some((path, before)) = requests_before {
+        assert!(before > 0, "the dedicated scripted model should receive a request");
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), before, "loading must not call the model");
     }
     drop(client);
     deckd.stop(&id).unwrap();
@@ -562,6 +612,37 @@ impl Drop for Cleanup {
 fn ready(runtime: &Runtime, id: &str, attach: bool) -> (String, String) {
     let (agent, session, _) = ready_timed(runtime, id, attach, Instant::now());
     (agent, session)
+}
+
+fn load_session(runtime: &Runtime, id: &str, session: &str) -> String {
+    let stream = runtime.attach(id).unwrap();
+    let (client, mut events) =
+        Client::load(PathBuf::from("/workspace"), stream.reader, stream.writer, session.into()).unwrap();
+    let deadline = Instant::now() + READY;
+    loop {
+        match next(&mut events, deadline) {
+            Some(Inbound::Ready { session_id, .. }) => {
+                drop(client);
+                return session_id;
+            }
+            Some(Inbound::Failed(reason)) => panic!("session load failed: {reason}"),
+            Some(_) => {}
+            None => panic!("session load did not finish"),
+        }
+    }
+}
+
+fn console_has(data: &Path, id: &str, marker: &str) {
+    let console = data.join("tasks").join(id).join("console.log");
+    let deadline = Instant::now() + READY;
+    loop {
+        let output = std::fs::read_to_string(&console).unwrap_or_default();
+        if output.lines().any(|line| line.trim() == marker) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "missing {marker} in {}: {output}", console.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// [`ready`] with the time from `launched` to ACP `Ready`.

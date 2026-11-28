@@ -99,8 +99,8 @@ fn lock(proc: &Mutex<Proc>) -> MutexGuard<'_, Proc> {
 
 fn watch(proc: Arc<Mutex<Proc>>, exited: Exited) {
     std::thread::spawn(move || {
+        let mut notification = crate::wait::process_exit(lock(&proc).child.id());
         loop {
-            std::thread::sleep(POLL);
             let mut p = lock(&proc);
             if p.stopping {
                 return;
@@ -116,6 +116,8 @@ fn watch(proc: Arc<Mutex<Proc>>, exited: Exited) {
                 Ok(None) => {}
                 Err(_) => return,
             }
+            drop(p);
+            crate::wait::exit_or_timeout(&mut notification);
         }
     });
 }

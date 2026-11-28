@@ -172,6 +172,7 @@ impl Drop for Fixture {
         if let Some(id) = &self.id {
             let _ = self.daemon.destroy(id);
         }
+        self._holders.stop();
         if let Some(server) = &mut self.server {
             let _ = server.kill();
             let _ = server.wait();

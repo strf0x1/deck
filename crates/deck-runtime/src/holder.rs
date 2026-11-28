@@ -46,6 +46,13 @@ pub(crate) enum Request {
         cwd: String,
         session: Option<String>,
     },
+    /// A separate variant prevents old holders silently ignoring a key.
+    PromptKeyed {
+        text: String,
+        cwd: String,
+        session: Option<String>,
+        key: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,6 +84,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
     let store = Store::open(data)?;
     let task = store.observe(id)?;
     let (exited, exit) = mpsc::channel();
+    let (mut exit_signal, exit_wake) = UnixStream::pair()?;
     // A coordinator's control surface on host loopback (ADR 0011 §4): its
     // gateway lives as long as this holder, and the agent gets its URL and
     // per-run token. Without it a coordinator would start with no authority.
@@ -95,6 +103,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
         &task.spec,
         Box::new(move |reason| {
             let _ = exited.send(reason);
+            let _ = exit_signal.write_all(&[1]);
         }),
         |agent| {
             remember(
@@ -142,8 +151,9 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
         std::thread::sleep(POLL);
     }
     loop {
-        if exit.try_recv().is_ok() {
-            return Ok(());
+        match exit.try_recv() {
+            Ok(_) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            Err(mpsc::TryRecvError::Empty) => {}
         }
         match listener.accept() {
             Ok((socket, _)) => {
@@ -176,7 +186,7 @@ pub fn run(data: &Path, id: &str, socket: &Path, fd: RawFd) -> Result<()> {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                crate::wait::readable(listener.as_raw_fd(), POLL)?;
+                crate::wait::readable_or_shutdown(listener.as_raw_fd(), exit_wake.as_raw_fd())?;
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted) => {}
             Err(e) => return Err(e).context("accepting holder control"),
@@ -215,7 +225,10 @@ fn request(
             let _ = wire::write(&mut socket, &reply);
         }
         Ok(Request::Stop { grace_ms }) => return Ok(Some((socket, Duration::from_millis(grace_ms.min(30_000))))),
-        Ok(Request::Prompt { text, cwd, session }) => prompt(socket, acp.clone(), text, Setup { cwd, session }),
+        Ok(Request::Prompt { text, cwd, session }) => prompt(socket, acp.clone(), text, Setup { cwd, session }, None),
+        Ok(Request::PromptKeyed { text, cwd, session, key }) => {
+            prompt(socket, acp.clone(), text, Setup { cwd, session }, Some(key))
+        }
         Err(_) => {}
     }
     Ok(None)
@@ -223,11 +236,13 @@ fn request(
 
 /// Answer a prompt on its own thread: starting a turn can take seconds, and
 /// the control loop must stay free for a stop meanwhile.
-pub(crate) fn prompt(mut socket: UnixStream, acp: Arc<HolderAcp>, text: String, setup: Setup) {
+pub(crate) fn prompt(mut socket: UnixStream, acp: Arc<HolderAcp>, text: String, setup: Setup, key: Option<String>) {
     let _ = std::thread::Builder::new().name("holder-prompt".into()).spawn(move || {
         let _ = socket.set_write_timeout(Some(Duration::from_secs(1)));
-        let reply: std::result::Result<Reply, String> =
-            acp.prompt(&text, setup, crate::holder_acp::START).map(Reply::Prompted).map_err(|e| format!("{e:#}"));
+        let reply: std::result::Result<Reply, String> = acp
+            .prompt(&text, setup, key.as_deref(), crate::holder_acp::START)
+            .map(Reply::Prompted)
+            .map_err(|e| format!("{e:#}"));
         let _ = wire::write(&mut socket, &reply);
     });
 }

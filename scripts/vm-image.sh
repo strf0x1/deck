@@ -67,7 +67,7 @@ echo "collecting the Debian root for $platform"
 cid=$(docker create --platform "$platform" debian:bookworm-slim bash -c '
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        bash ca-certificates coreutils socat util-linux procps git grep sed gawk \
+        bash busybox-static ca-certificates coreutils socat util-linux procps git grep sed gawk \
         findutils tar gzip xz-utils less file >/dev/null
     rm -rf /var/lib/apt/lists/*')
 docker start -a "$cid" >/dev/null
@@ -80,6 +80,8 @@ cp "$scratch/construct" "$scratch/rootfs/usr/local/bin/construct"
 chmod 755 "$scratch/rootfs/usr/local/bin/construct"
 cp "$scratch/deck-egress" "$scratch/rootfs/usr/local/bin/deck-egress"
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-egress"
+cp "$deck_src/scripts/vm-shutdown-probe.sh" "$scratch/rootfs/usr/local/bin/deck-shutdown-probe"
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-shutdown-probe"
 cat > "$scratch/rootfs/usr/local/bin/deck-guest" <<'GUEST'
 #!/bin/sh
 # deck's guest entry: provision the workspace once, prepare the checkout for
@@ -237,10 +239,48 @@ cd /workspace || cd /
 # so no socat process sits between them. The agent's diagnostics inherit the
 # guest console, so the stream only ever carries protocol frames.
 mark "connecting port=$port"
-exec /usr/local/bin/deck-egress --acp --vsock "2:${port}" \
+shutdown_marker=${DECK_SHUTDOWN_MARKER:-}
+unset DECK_SHUTDOWN_MARKER
+/usr/local/bin/deck-egress --acp --vsock "2:${port}" \
   -- /bin/sh -c "exec ${DECK_AGENT} ${DECK_ARGS}"
+if sync && umount /root/.construct && mount -o remount,ro /; then
+  [ -n "$shutdown_marker" ] && echo "DECK_UNMOUNT_CONFIRMED:$shutdown_marker"
+  # Some kernels cannot power off and halt instead; the unmount is still
+  # clean, so record that before asking the kernel to stop.
+  [ -n "$shutdown_marker" ] && echo "DECK_HALT_CONFIRMED:$shutdown_marker"
+fi
+if [ -w /proc/sysrq-trigger ]; then echo o > /proc/sysrq-trigger; fi
+/bin/busybox poweroff -f || true
+sleep 5
+echo 'deck-guest: poweroff failed' >&2
+exit 1
 GUEST
 chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest"
+# Test-only: write a workspace sentinel on the first boot, then verify it on
+# resume. The regular guest owns ACP and performs the shutdown sequence.
+cat > "$scratch/rootfs/usr/local/bin/deck-guest-shutdown-test" <<'SHUTDOWN_TEST'
+#!/bin/sh
+/usr/local/bin/deck-guest "$@" &
+guest=$!
+i=0
+while [ ! -e /workspace/.deck-provisioned ] && [ "$i" -lt 300 ]; do
+  sleep 0.1
+  i=$((i+1))
+done
+if [ -e /workspace/.deck-shutdown-probe ]; then
+  if [ "$(cat /workspace/.deck-shutdown-probe)" = 'workspace survives' ]; then
+    echo DECK_WORKSPACE_VERIFIED
+  else
+    echo DECK_WORKSPACE_CORRUPT
+  fi
+else
+  printf 'workspace survives\n' > /workspace/.deck-shutdown-probe
+  sync
+  echo DECK_WORKSPACE_WRITTEN
+fi
+wait "$guest"
+SHUTDOWN_TEST
+chmod 755 "$scratch/rootfs/usr/local/bin/deck-guest-shutdown-test"
 # Test-only guest entry for crates/deck-runtime/tests/vm.rs: start the real
 # entry, wait for the checkout, run the publication checks, then keep the
 # guest alive for as long as the agent runs.

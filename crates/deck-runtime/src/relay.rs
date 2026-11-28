@@ -14,18 +14,13 @@ use std::net::Shutdown;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
 
 /// Maximum bytes in a whole line. Oversized lines are drained and dropped;
 /// their attachment is disconnected so partial messages never reach a peer.
 pub const LINE_LIMIT: usize = 1024 * 1024;
 const QUEUE: usize = 8;
-const POLL: Duration = Duration::from_millis(10);
 
 type Current = Arc<Mutex<Option<Arc<Peer>>>>;
 type Shared = Arc<Mutex<Box<dyn deck_acp::Writer>>>;
@@ -35,6 +30,8 @@ type Shared = Arc<Mutex<Box<dyn deck_acp::Writer>>>;
 pub trait Tap: Send + Sync {
     /// A line a peer wrote, just before it reaches the agent.
     fn client(&self, line: &[u8]);
+    /// The input line may have been partially or completely written.
+    fn client_failed(&self) {}
     /// A line the agent wrote; `false` keeps it from the peer.
     fn agent(&self, line: &[u8]) -> bool;
 }
@@ -46,7 +43,7 @@ struct Peer {
 
 pub struct Relay {
     path: PathBuf,
-    done: Arc<AtomicBool>,
+    wake: UnixStream,
     current: Current,
     writer: Shared,
     tap: Option<Arc<dyn Tap>>,
@@ -61,7 +58,7 @@ impl Relay {
     pub fn tapped(path: &Path, stream: Stream, tap: Option<Arc<dyn Tap>>) -> Result<Self> {
         let listener = UnixListener::bind(path)?;
         listener.set_nonblocking(true)?;
-        let done = Arc::new(AtomicBool::new(false));
+        let (wake, stopped) = UnixStream::pair()?;
         let current: Current = Arc::new(Mutex::new(None));
         let output_peer = current.clone();
         let output_tap = tap.clone();
@@ -88,12 +85,11 @@ impl Relay {
             }
         })?;
         let input_peer = current.clone();
-        let quit = done.clone();
         let writer = Arc::new(Mutex::new(stream.writer));
         let accept_writer = writer.clone();
         let accept_tap = tap.clone();
         std::thread::Builder::new().name("holder-accept".into()).spawn(move || {
-            while !quit.load(Ordering::Acquire) {
+            loop {
                 match listener.accept() {
                     Ok((socket, _)) => {
                         if socket.set_nonblocking(false).is_err() {
@@ -107,9 +103,7 @@ impl Relay {
                         let _ = serve_peer(socket, slot, &input_peer, &accept_writer, accept_tap.clone());
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // Wake on the peer's connection, not on a poll tick:
-                        // the window attaches immediately after start.
-                        if crate::wait::readable(listener.as_raw_fd(), POLL).is_err() {
+                        if !wait_for_peer(&listener, &stopped) {
                             break;
                         }
                     }
@@ -122,13 +116,21 @@ impl Relay {
                 }
             }
         })?;
-        Ok(Self { path: path.to_owned(), done, current, writer, tap })
+        Ok(Self { path: path.to_owned(), wake, current, writer, tap })
     }
 
     /// The agent's input, for a writer that is not a peer (the holder's own
     /// requests). Take the lock per whole line, as peers do.
     pub(crate) fn writer(&self) -> Shared {
         self.writer.clone()
+    }
+
+    /// Reserve only the writer whose input and output the given tap observes.
+    pub(crate) fn try_writer_for(&self, tap: &dyn Tap) -> Option<MutexGuard<'_, Box<dyn deck_acp::Writer>>> {
+        if !self.tap.as_ref().is_some_and(|observed| std::ptr::addr_eq(observed.as_ref(), tap)) {
+            return None;
+        }
+        self.writer.try_lock().ok()
     }
     /// Reserve the transport for runtime shutdown, evicting the window. No
     /// listener peer can enter until this private stream is dropped.
@@ -139,6 +141,7 @@ impl Relay {
         let slot = self.current.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(peer) = slot.as_ref() {
             let _ = peer.socket.shutdown(Shutdown::Both);
+            let _ = peer.output.try_send(None);
         }
         serve_peer(held, slot, &self.current, &self.writer, self.tap.clone())?;
         Ok(client)
@@ -171,15 +174,14 @@ fn serve_peer(
             if !active {
                 break;
             }
-            match rx.recv_timeout(POLL) {
+            match rx.recv() {
                 Ok(Some(line)) => {
                     if write.write_all(&line).is_err() {
                         break;
                     }
                 }
                 Ok(None) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(_) => break,
             }
         }
         detach(&output_current, &output_identity);
@@ -211,6 +213,9 @@ fn serve_peer(
                 tap.client(&line);
             }
             if out.write_all(&line).and_then(|_| out.flush()).is_err() {
+                if let Some(tap) = &tap {
+                    tap.client_failed();
+                }
                 detach(&input_current, &peer);
                 failed = true;
             }
@@ -222,12 +227,29 @@ fn serve_peer(
 
 impl Drop for Relay {
     fn drop(&mut self) {
-        self.done.store(true, Ordering::Release);
+        let _ = self.wake.shutdown(Shutdown::Both);
         let peer = self.current.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(peer) = peer {
             detach(&self.current, &peer);
         }
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn wait_for_peer(listener: &UnixListener, stopped: &UnixStream) -> bool {
+    let mut fds = [
+        libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: stopped.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
+    loop {
+        // SAFETY: both descriptors remain open for the duration of poll.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        if ready >= 0 {
+            return fds[1].revents == 0;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
     }
 }
 
@@ -249,6 +271,7 @@ fn enqueue(peer: &Peer, mut line: Option<Vec<u8>>) -> bool {
 
 fn detach(current: &Current, peer: &Arc<Peer>) {
     let _ = peer.socket.shutdown(Shutdown::Both);
+    let _ = peer.output.try_send(None);
     let mut slot = current.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, peer)) {
         *slot = None;
@@ -286,8 +309,20 @@ fn lines(mut reader: impl BufRead, mut emit: impl FnMut(Option<Vec<u8>>)) -> std
 mod tests {
     use super::*;
     use std::io::Read as _;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     static N: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn listener_wait_wakes_for_shutdown_without_a_connection() {
+        let path = std::env::temp_dir().join(format!("deck-relay-wake-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let (wake, stopped) = UnixStream::pair().unwrap();
+        let waiter = std::thread::spawn(move || wait_for_peer(&listener, &stopped));
+        wake.shutdown(Shutdown::Both).unwrap();
+        assert!(!waiter.join().unwrap());
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn relay() -> (Relay, UnixStream, PathBuf) {
         let path = std::env::temp_dir().join(format!(

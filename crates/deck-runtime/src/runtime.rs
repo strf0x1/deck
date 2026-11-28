@@ -16,7 +16,7 @@ use futures::channel::mpsc;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod backends;
 mod coordinator;
@@ -391,6 +391,8 @@ impl Runtime {
             bail!("task {id} cannot prepare a workspace while {:?}", task.state);
         }
         let _lock = inner.store.lock(id)?.with_context(|| format!("task {id} is held by another process"))?;
+        let recovery = inner.recovery_store(id)?;
+        Inner::check_staged_stop(id, &recovery)?;
         inner.prepare_workspace(&mut task)
     }
 
@@ -401,71 +403,148 @@ impl Runtime {
         if !task.startable() {
             bail!("task {id} has run before; resume it instead");
         }
-        inner.launch(task, Arc::downgrade(&self.inner))
+        inner.ensure_no_staged_stop(id)?;
+        inner.launch(task, Arc::downgrade(&self.inner), false)
     }
 
     /// Run a task again after it stopped or failed to start.
     pub fn resume(&self, id: &str) -> Result<()> {
+        self.resume_with_recovery(id, false)
+    }
+
+    /// Recovery delivery is the sole operation allowed to resume a task
+    /// while its interrupted questions still need the user's attention.
+    pub(crate) fn resume_for_recovery(&self, id: &str) -> Result<()> {
+        self.resume_with_recovery(id, true)
+    }
+
+    fn resume_with_recovery(&self, id: &str, recovery: bool) -> Result<()> {
         let mut inner = self.lock();
         let task = inner.store.load(id)?;
         if !task.resumable() {
             bail!("task {id} cannot be resumed while {:?}", task.state);
         }
-        inner.launch(task, Arc::downgrade(&self.inner))
+        if recovery {
+            inner.ensure_no_staged_stop(id)?;
+        } else {
+            inner.ensure_no_recovery(id)?;
+        }
+        inner.launch(task, Arc::downgrade(&self.inner), recovery)
+    }
+
+    /// A normal resume must not clear other task state before this check.
+    pub(crate) fn ensure_no_recovery(&self, id: &str) -> Result<()> {
+        let inner = self.lock();
+        inner.store.load(id)?;
+        inner.ensure_no_recovery(id)
+    }
+
+    /// Find a running task, resuming a stopped one for a prompt. Concurrent
+    /// prompts share the same launch under the runtime lock.
+    pub(crate) fn running_for_prompt(&self, id: &str) -> Result<Task> {
+        self.running_for_prompt_with_recovery(id, false)
+    }
+
+    pub(crate) fn running_for_recovery(&self, id: &str) -> Result<Task> {
+        self.running_for_prompt_with_recovery(id, true)
+    }
+
+    fn running_for_prompt_with_recovery(&self, id: &str, recovery: bool) -> Result<Task> {
+        let mut inner = self.lock();
+        let task = inner.store.load(id)?;
+        if recovery {
+            inner.ensure_no_staged_stop(id)?;
+        } else {
+            inner.ensure_no_recovery(id)?;
+        }
+        match task.state {
+            State::Stopped { .. } => {
+                inner.launch(task, Arc::downgrade(&self.inner), recovery)?;
+                inner.store.load(id)
+            }
+            State::Running if inner.live.contains_key(id) => Ok(task),
+            _ => bail!("task {id} is not running or is stopping"),
+        }
     }
 
     /// The running task's ACP stream.
     pub fn attach(&self, id: &str) -> Result<Stream> {
-        let mut inner = self.lock();
-        let live = inner.live.get_mut(id).ok_or_else(|| anyhow!("task {id} is not running here"))?;
-        live.instance.attach()
+        // A reader may briefly hold the recovery lock. Never wait for it
+        // while holding `inner`: stop needs `inner` before it can release the
+        // recovery lock it holds through shutdown.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let mut inner = self.lock();
+            match inner.recovery_store(id) {
+                Ok(recovery) => {
+                    Inner::check_staged_stop(id, &recovery)?;
+                    let live = inner.live.get_mut(id).ok_or_else(|| anyhow!("task {id} is not running here"))?;
+                    return live.instance.attach();
+                }
+                Err(error) if error.downcast_ref::<crate::recovery::Busy>().is_some() && Instant::now() < deadline => {
+                    drop(inner);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Stop a running task and confirm it is gone. If that cannot be
     /// confirmed, the task is recorded as failed and the error returned.
     pub fn stop(&self, id: &str) -> Result<()> {
-        let (mut live, grace) = {
+        let (mut live, grace, recovery) = {
             let mut inner = self.lock();
             if inner.store.load(id)?.state != State::Running {
                 bail!("task {id} is not running; destroy it to retry an unconfirmed shutdown");
             }
+            let recovery = inner.recovery_store(id)?;
+            Inner::check_staged_stop(id, &recovery)?;
             let live = inner.live.remove(id).ok_or_else(|| anyhow!("task {id} is not running here"))?;
-            (live, inner.grace)
+            (live, inner.grace, recovery)
         };
         // Not under the lock: a stop can take the whole grace period.
-        let outcome = live.instance.stop(grace);
+        let outcome = live.instance.stop_outcome(grace);
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
-        match outcome {
-            Ok(reason) => inner.record(&mut task, Event::Stopped { clean: true, reason }),
+        let result = match outcome {
+            Ok(outcome) => inner.record(&mut task, Event::Stopped { clean: outcome.clean, reason: outcome.reason }),
             Err(e) => {
                 let failure = Failure::ShutdownUnconfirmed(format!("{e:#}"));
                 inner.live.insert(id.into(), live);
                 inner.record(&mut task, Event::Failed { failure })?;
                 Err(e)
             }
-        }
+        };
+        drop(recovery);
+        result
     }
 
     /// Stop the task if it runs, remove what it owns, and record it as
     /// destroyed. Destroying a destroyed task does nothing.
     pub fn destroy(&self, id: &str) -> Result<()> {
+        self.lock().ensure_no_staged_stop(id)?;
         if self.lock().live.contains_key(id) {
             if self.task(id)?.state == State::Running {
                 self.stop(id)?;
             } else {
-                let (mut live, grace) = {
+                let (mut live, grace, recovery) = {
                     let mut inner = self.lock();
-                    (inner.live.remove(id).context("missing failed task holder")?, inner.grace)
+                    let recovery = inner.recovery_store(id)?;
+                    Inner::check_staged_stop(id, &recovery)?;
+                    (inner.live.remove(id).context("missing failed task holder")?, inner.grace, recovery)
                 };
                 if let Err(error) = live.instance.stop(grace) {
                     self.lock().live.insert(id.into(), live);
                     return Err(error);
                 }
+                drop(recovery);
             }
         }
         let mut inner = self.lock();
         let mut task = inner.store.load(id)?;
+        let recovery = inner.recovery_store(id)?;
+        Inner::check_staged_stop(id, &recovery)?;
         inner.backends.of(&task)?;
         match &task.state {
             State::Destroyed => return Ok(()),
@@ -476,7 +555,9 @@ impl Runtime {
         let backend = inner.backends.of(&task)?;
         backend.reconcile(&task)?;
         backend.destroy(&task)?;
-        inner.record(&mut task, Event::Destroyed)
+        let result = inner.record(&mut task, Event::Destroyed);
+        drop(recovery);
+        result
     }
 
     /// Remove a stopped worker's registered checkout and keep its branch.
@@ -493,6 +574,8 @@ impl Runtime {
             bail!("Stop the worker before removing its worktree.");
         }
         let Some(_lock) = inner.store.lock(id)? else { bail!("The worker has not exited yet.") };
+        let recovery = inner.recovery_store(id)?;
+        Inner::check_staged_stop(id, &recovery)?;
         workspace.check_removal(&task)?;
         inner.backends.of(&task)?.reconcile(&task)?;
         if !workspace.removal_pending() {
@@ -553,7 +636,34 @@ impl Runtime {
 }
 
 impl Inner {
-    fn launch(&mut self, mut task: Task, me: Weak<Mutex<Inner>>) -> Result<()> {
+    fn recovery_store(&self, id: &str) -> Result<crate::recovery::Store> {
+        crate::recovery::Store::open(&self.store.data().join("tasks").join(id))
+    }
+
+    fn ensure_no_staged_stop(&self, id: &str) -> Result<()> {
+        let recovery = self.recovery_store(id)?;
+        Self::check_staged_stop(id, &recovery)
+    }
+
+    fn check_staged_stop(id: &str, recovery: &crate::recovery::Store) -> Result<()> {
+        if recovery.staged_stop().is_some_and(|stop| {
+            matches!(stop.phase, crate::recovery::StopPhase::Prepared | crate::recovery::StopPhase::Stopping)
+        }) {
+            bail!("task {id} has a stop transaction awaiting reconciliation");
+        }
+        Ok(())
+    }
+
+    fn ensure_no_recovery(&self, id: &str) -> Result<()> {
+        let recovery = self.recovery_store(id)?;
+        Self::check_staged_stop(id, &recovery)?;
+        if recovery.items().iter().any(|item| !crate::recovery::resolved(&item.delivery)) {
+            bail!("task {id} has an interrupted decision that must be resolved first");
+        }
+        Ok(())
+    }
+
+    fn launch(&mut self, mut task: Task, me: Weak<Mutex<Inner>>, recovery_delivery: bool) -> Result<()> {
         if let Some(plan) = &task.integration {
             if plan.phase != crate::integration::Phase::Ready {
                 bail!("integration input checkout has not been prepared");
@@ -569,15 +679,23 @@ impl Inner {
         self.backends.of(&task)?;
         let lock =
             self.store.lock(&task.id)?.with_context(|| format!("task {} is held by another process", task.id))?;
+        // Keep the recovery transaction lock until the launch is recorded, so
+        // a staged stop cannot appear while this run identity is replaced.
+        let recovery = crate::recovery::Store::open(&self.store.data().join("tasks").join(&task.id))?;
+        Self::check_staged_stop(&task.id, &recovery)?;
+        if !recovery_delivery && recovery.items().iter().any(|item| !crate::recovery::resolved(&item.delivery)) {
+            bail!("task {} has an interrupted decision that must be resolved first", task.id);
+        }
         if task.workspace.is_some()
             && let Err(error) = self.prepare_workspace(&mut task)
         {
             self.record(&mut task, Event::Failed { failure: Failure::StartFailed(format!("{error:#}")) })?;
             return Err(error);
         }
+        self.store.begin_run(&task.id, &lock)?;
         let generation = Arc::new(());
         let exited = exit_notice(task.id.clone(), me, generation.clone());
-        match self.backends.of(&task)?.start(&task, lock, exited) {
+        let result = match self.backends.of(&task)?.start(&task, lock, exited) {
             Ok(instance) => {
                 self.record(&mut task, Event::Started { pid: instance.pid(), holder: instance.holder() })?;
                 self.live.insert(task.id.clone(), Live { instance, generation });
@@ -587,7 +705,9 @@ impl Inner {
                 self.record(&mut task, Event::Failed { failure: Failure::StartFailed(format!("{e:#}")) })?;
                 Err(e)
             }
-        }
+        };
+        drop(recovery);
+        result
     }
 
     fn prepare_workspace(&mut self, task: &mut Task) -> Result<()> {
@@ -656,6 +776,143 @@ mod tests {
             model: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn launch_rechecks_recovery_under_the_store_lock() {
+        use crate::recovery::{OptionItem, Question, Store as RecoveryStore};
+
+        let dir = scratch("launch-rechecks-recovery");
+        let runtime = Runtime::open(&dir, Local).unwrap();
+        let mut request = spec(&dir);
+        request.argv = vec!["cat".into()];
+        let id = runtime.create(request).unwrap();
+        runtime.start(&id).unwrap();
+        runtime.stop(&id).unwrap();
+        let original_run = crate::record::Store::open(&dir).unwrap().run_identity(&id).unwrap();
+
+        // Model a question being captured after the earlier guard passed.
+        runtime.lock().ensure_no_recovery(&id).unwrap();
+        RecoveryStore::open(&dir.join("tasks").join(&id))
+            .unwrap()
+            .capture(
+                "question",
+                Question::Agent {
+                    title: "Read a file?".into(),
+                    options: vec![OptionItem { id: "yes".into(), name: "Allow".into(), kind: "allow_once".into() }],
+                },
+            )
+            .unwrap();
+        {
+            let mut inner = runtime.lock();
+            let task = inner.store.load(&id).unwrap();
+            let error = inner.launch(task, Arc::downgrade(&runtime.inner), false).unwrap_err();
+            assert!(error.to_string().contains("interrupted decision"), "{error:#}");
+        }
+        assert!(matches!(runtime.task(&id).unwrap().state, State::Stopped { .. }));
+        assert_eq!(crate::record::Store::open(&dir).unwrap().run_identity(&id).unwrap(), original_run);
+
+        // The same pending item must not prevent the dedicated delivery path.
+        {
+            let mut inner = runtime.lock();
+            let task = inner.store.load(&id).unwrap();
+            inner.launch(task, Arc::downgrade(&runtime.inner), true).unwrap();
+        }
+        assert_eq!(runtime.task(&id).unwrap().state, State::Running);
+        runtime.stop(&id).unwrap();
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attach_waits_for_a_transient_recovery_reader() {
+        let dir = scratch("attach-recovery-reader");
+        let runtime = Runtime::open(&dir, Local).unwrap();
+        let mut request = spec(&dir);
+        request.argv = vec!["cat".into()];
+        let id = runtime.create(request).unwrap();
+        runtime.start(&id).unwrap();
+        let held = crate::recovery::Store::open(&dir.join("tasks").join(&id)).unwrap();
+        let (sent, result) = std::sync::mpsc::channel();
+        let task = id.clone();
+        let other = runtime.clone();
+        let thread = std::thread::spawn(move || {
+            let _ = sent.send(other.attach(&task));
+        });
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(held);
+        let stream = result.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        thread.join().unwrap();
+        runtime.stop(&id).unwrap();
+        drop(stream);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attach_does_not_block_a_stop_holding_the_recovery_lock() {
+        use crate::backend::{Backend, Exited, Instance};
+        use crate::record::RecordLock;
+        use std::sync::mpsc;
+
+        struct Gated {
+            entered: mpsc::Sender<()>,
+            release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+        struct Running {
+            entered: mpsc::Sender<()>,
+            release: Arc<Mutex<mpsc::Receiver<()>>>,
+            _lock: RecordLock,
+        }
+        impl Backend for Gated {
+            fn name(&self) -> &'static str {
+                "gated"
+            }
+            fn start(&mut self, _: &Task, lock: RecordLock, _: Exited) -> Result<Box<dyn Instance>> {
+                Ok(Box::new(Running { entered: self.entered.clone(), release: self.release.clone(), _lock: lock }))
+            }
+            fn destroy(&mut self, _: &Task) -> Result<()> {
+                Ok(())
+            }
+        }
+        impl Instance for Running {
+            fn pid(&self) -> Option<u32> {
+                None
+            }
+            fn attach(&mut self) -> Result<Stream> {
+                bail!("no stream")
+            }
+            fn stop(&mut self, _: Duration) -> Result<String> {
+                self.entered.send(())?;
+                self.release.lock().unwrap().recv_timeout(Duration::from_secs(2))?;
+                Ok("stopped".into())
+            }
+        }
+
+        let dir = scratch("attach-recovery-stop");
+        let (entered, stopping) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let runtime = Runtime::open(&dir, Gated { entered, release: Arc::new(Mutex::new(gate)) }).unwrap();
+        let id = runtime.create(spec(&dir)).unwrap();
+        runtime.start(&id).unwrap();
+        let stopped_runtime = runtime.clone();
+        let stopped_id = id.clone();
+        let stop = std::thread::spawn(move || stopped_runtime.stop(&stopped_id));
+        stopping.recv_timeout(Duration::from_secs(2)).unwrap();
+        let attached_runtime = runtime.clone();
+        let attached_id = id.clone();
+        let (sent, attached) = mpsc::channel();
+        let attach = std::thread::spawn(move || {
+            let _ = sent.send(attached_runtime.attach(&attached_id));
+        });
+        assert!(matches!(attached.recv_timeout(Duration::from_millis(50)), Err(mpsc::RecvTimeoutError::Timeout)));
+        release.send(()).unwrap();
+        stop.join().unwrap().unwrap();
+        assert!(attached.recv_timeout(Duration::from_secs(2)).unwrap().is_err(), "the task is now stopped");
+        attach.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

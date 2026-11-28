@@ -250,6 +250,36 @@ fn construct_finishes_while_detached_and_reopens_idle() {
     f.assert_no_recovery();
 }
 
+#[test]
+fn construct_stopped_session_resumes_without_recovery_or_repeating_the_turn() {
+    let Some(mut f) = Fixture::construct("real-stop-resume", json!({ "steps": [{ "text": "saved answer" }] })) else {
+        return;
+    };
+    let mut first = f.open();
+    first.prompt("save this turn");
+    first.idle();
+    assert_eq!(first.text(), "saved answer");
+    let id = f.id.clone().unwrap();
+    let session = first.sid.clone();
+    let record = f.daemon.task(&id).unwrap();
+    let sibling = first.task.sibling(&record);
+    first.detach();
+    f.daemon.stop(&id).unwrap();
+    let State::Stopped { clean: true, reason } = f.daemon.task(&id).unwrap().state else {
+        panic!("the task did not stop cleanly");
+    };
+    assert!(!reason.contains(", after "), "the stop exhausted its grace period: {reason}");
+
+    let (client, rx) = sibling.open().unwrap().expect("a stopped task resumes");
+    let mut next = support::Attached::new(sibling, client, rx);
+    next.until(|a| !a.sid.is_empty());
+    assert_eq!(next.sid, session);
+    assert_eq!(next.text(), "saved answer");
+    next.assert_user_once();
+    assert_eq!(f.model_calls(), 1);
+    f.assert_no_recovery();
+}
+
 #[expect(clippy::unwrap_used, reason = "raw protocol test setup and observations must succeed")]
 fn raw_retired_reply_is_ignored(mut f: Fixture) {
     use deck_acp::rpc;

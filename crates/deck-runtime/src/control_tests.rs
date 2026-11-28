@@ -34,11 +34,11 @@ fn only_its_own_workers_may_be_driven_and_never_a_coordinator() {
 }
 
 #[test]
-fn a_stopped_task_is_not_promptable() {
+fn a_stopped_task_is_promptable_but_a_destroyed_task_is_not() {
     let mut worker = task("w", "git:a", TaskKind::Task, Some("c"));
     assert!(promptable(&worker).is_ok());
     worker.state = State::Stopped { clean: true, reason: "stop".into() };
-    assert_eq!(promptable(&worker).unwrap_err().code, Code::Refused);
+    assert!(promptable(&worker).is_ok());
     worker.state = State::Destroyed;
     assert_eq!(promptable(&worker).unwrap_err().code, Code::Refused);
 }

@@ -134,11 +134,29 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        self._holders.stop();
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.data);
         let _ = std::fs::remove_dir_all(&self.paths.directory);
     }
+}
+
+#[test]
+fn fixture_stops_live_tasks_before_removing_their_data() {
+    let (daemon, client) = Daemon::new("fixture-cleanup");
+    let task = client.create(daemon.spec(&["cat"])).unwrap();
+    let started = client.start(&task.id).unwrap();
+    let holder = started.holder.unwrap().pid;
+    let agent = started.pid.unwrap();
+    let data = daemon.data.clone();
+    assert!(running(holder));
+    assert!(running(agent));
+    drop(client);
+    drop(daemon);
+    assert!(!running(holder));
+    assert!(!running(agent));
+    assert!(!data.exists());
 }
 
 fn eventually(mut check: impl FnMut() -> bool) {
@@ -260,6 +278,65 @@ fn idle_exit_waits_for_control_clients_and_idle_subscriptions() {
     drop(notices);
     assert!(daemon.wait_exit().success(), "dropping an idle subscription permits shutdown");
     assert!(!daemon.paths.control().exists(), "idle exit removes the socket");
+}
+
+#[test]
+fn idle_grace_starts_when_the_last_client_disconnects() {
+    let (mut daemon, client) = Daemon::new("idle-grace");
+    std::thread::sleep(IDLE * 2);
+    let disconnected = Instant::now();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    assert!(disconnected.elapsed() >= IDLE, "the full idle grace follows the last disconnect");
+}
+
+#[test]
+fn last_holder_exit_allows_daemon_to_exit_without_another_client() {
+    let (mut daemon, client) = Daemon::new("last-holder-idle");
+    let run = client.run(daemon.spec(&["sleep", "60"])).unwrap();
+    let holder = run.task.holder.unwrap();
+    drop(client);
+    // SAFETY: this fixture owns the holder it just launched.
+    assert_eq!(unsafe { libc::kill(holder.pid as i32, libc::SIGKILL) }, 0);
+    assert!(daemon.wait_exit().success());
+    let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
+    assert!(matches!(store.load(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }));
+}
+
+#[test]
+fn holder_exit_is_recorded_without_a_client_request() {
+    let (daemon, client) = Daemon::new("holder-exit-notice");
+    let run = client.run(daemon.spec(&["sleep", "60"])).unwrap();
+    let holder = run.task.holder.unwrap();
+    let store = deck_runtime::record::Store::open(&daemon.data).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    // SAFETY: this fixture owns the holder it just launched.
+    assert_eq!(unsafe { libc::kill(holder.pid as i32, libc::SIGKILL) }, 0);
+    loop {
+        if matches!(store.load(&run.task.id).unwrap().state, State::Stopped { clean: false, .. }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "holder exit was not recorded promptly");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn local_stop_delivers_sigterm_before_the_helper_cleans_up() {
+    let (daemon, client) = Daemon::new("local-term");
+    let ready = daemon.data.join("ready");
+    let stopped = daemon.data.join("stopped");
+    let script = "trap 'echo term > \"$1\"; exit 0' TERM; echo ready > \"$2\"; while :; do sleep 0.1; done";
+    let run = client
+        .run(daemon.spec(&["sh", "-c", script, "sh", stopped.to_str().unwrap(), ready.to_str().unwrap()]))
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "agent did not install its signal handler");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    client.stop(&run.task.id).unwrap();
+    assert_eq!(std::fs::read_to_string(stopped).unwrap().trim(), "term");
 }
 
 #[test]
@@ -2110,4 +2187,284 @@ fn a_refused_session_is_a_failed_start_and_a_resume_uses_optchat_again() {
     client.stop(&run.task.id).unwrap();
     drop(client);
     assert!(daemon.wait_exit().success());
+}
+
+#[test]
+fn interrupted_answer_is_durable_delivered_once_and_busy_is_retained() {
+    use deck_runtime::recovery::{Answer, Delivery, OptionItem, Question, Store};
+    let (mut daemon, client) = Daemon::new("recovery-answer");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let log = daemon.data.join("fake-prompts.jsonl");
+    let task = client
+        .run(daemon.spec(&[
+            "env",
+            "DECK_FAKE_NAMES=reverse",
+            "DECK_FAKE_DELAY_MS=1",
+            &format!("DECK_FAKE_PROMPT_LOG={}", log.display()),
+            fake.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .task;
+    client.stop(&task.id).unwrap();
+    let mut recovery = Store::open(&daemon.data.join("tasks").join(&task.id)).unwrap();
+    recovery
+        .capture(
+            "question-one",
+            Question::Agent {
+                title: "Run the tests?".into(),
+                options: vec![
+                    OptionItem { id: "yes".into(), name: "Allow once".into(), kind: "allow_once".into() },
+                    OptionItem { id: "no".into(), name: "Reject".into(), kind: "reject_once".into() },
+                ],
+            },
+        )
+        .unwrap();
+    let approval: deck_runtime::approvals::Approval = serde_json::from_value(serde_json::json!({
+        "id": "approval-one", "task": task.id, "project": "project-one", "gateway": "web",
+        "operation": "connect", "destination": "example.com:443", "created_ms": 1,
+        "expires_ms": 2, "policy": 1, "state": "pending"
+    }))
+    .unwrap();
+    recovery.capture("boundary-one", Question::Boundary { approval: Box::new(approval) }).unwrap();
+    drop(recovery);
+    assert!(client.resume(&task.id).unwrap_err().to_string().contains("interrupted decision"));
+    assert!(client.prompt(&task.id, "continue", None).unwrap_err().to_string().contains("interrupted decision"));
+    assert!(matches!(client.task(&task.id).unwrap().state, State::Stopped { .. }));
+
+    let gate = Arc::new(Barrier::new(3));
+    let threads: Vec<_> = ["yes", "no"]
+        .into_iter()
+        .map(|choice| {
+            let client = DaemonClient::connect(&daemon.data).unwrap();
+            let task = task.id.clone();
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                client.answer_recovery(&task, "question-one", Answer::Agent { option_id: choice.into() }).unwrap()
+            })
+        })
+        .collect();
+    gate.wait();
+    let answers: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+    assert!(answers.iter().any(|item| matches!(item.delivery, Delivery::Delivered { .. })));
+    let stored = client.recovery_items(&task.id).unwrap();
+    let item = stored.iter().find(|item| item.id == "question-one").unwrap();
+    let Delivery::Delivered { answer: Answer::Agent { option_id }, key } = &item.delivery else {
+        panic!("answer was not delivered: {:?}", item.delivery);
+    };
+    assert!(matches!(option_id.as_str(), "yes" | "no"));
+    let expected = if option_id == "yes" { "Allow once" } else { "Reject" };
+    let prompts = std::fs::read_to_string(&log).unwrap();
+    let prompts: Vec<serde_json::Value> = prompts.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(prompts.len(), 1, "concurrent answers must not send two prompts");
+    assert_eq!(prompts[0]["key"], *key);
+    let text = prompts[0]["text"].as_str().unwrap();
+    assert!(text.contains("Run the tests?") && text.contains(expected));
+    assert!(text.contains("grants no tool permission or external access"));
+
+    eventually(|| client.task(&task.id).unwrap().turn.is_some_and(|turn| turn.state == deck_runtime::Phase::Waiting));
+    let held = client
+        .answer_recovery(
+            &task.id,
+            "boundary-one",
+            Answer::Boundary { decision: deck_runtime::approvals::Decision::Once },
+        )
+        .unwrap();
+    assert!(matches!(held.delivery, Delivery::Answered { .. }), "busy preserves the answer without sending");
+    assert!(client.grants(&task.id).unwrap().is_empty(), "a contextual answer creates no grant");
+    assert!(client.prompt(&task.id, "continue", None).unwrap_err().to_string().contains("interrupted decision"));
+    client.shutdown().unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+    let client = daemon.restart();
+    let restored = client.recovery_items(&task.id).unwrap();
+    assert_eq!(restored.iter().find(|item| item.id == "question-one").unwrap(), item);
+    assert!(matches!(
+        restored.iter().find(|item| item.id == "boundary-one").unwrap().delivery,
+        Delivery::Answered { .. }
+    ));
+    let repeated = client.answer_recovery(&task.id, "question-one", Answer::Agent { option_id: "yes".into() }).unwrap();
+    assert_eq!(&repeated, item, "an already delivered answer is not changed or resent");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn recovery_refuses_to_send_a_keyed_answer_to_a_legacy_agent() {
+    use deck_runtime::recovery::{Answer, Delivery, OptionItem, Question, Store};
+    let (daemon, client) = Daemon::new("recovery-legacy");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let log = daemon.data.join("fake-prompts.jsonl");
+    let task = client
+        .run(daemon.spec(&[
+            "env",
+            "DECK_FAKE_NAMES=legacy",
+            &format!("DECK_FAKE_PROMPT_LOG={}", log.display()),
+            fake.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .task;
+    client.stop(&task.id).unwrap();
+    let mut recovery = Store::open(&daemon.data.join("tasks").join(&task.id)).unwrap();
+    recovery
+        .capture(
+            "question-legacy",
+            Question::Agent {
+                title: "Run tests?".into(),
+                options: vec![OptionItem { id: "yes".into(), name: "Allow".into(), kind: "allow_once".into() }],
+            },
+        )
+        .unwrap();
+    drop(recovery);
+    let item = client.answer_recovery(&task.id, "question-legacy", Answer::Agent { option_id: "yes".into() }).unwrap();
+    assert!(matches!(item.delivery, Delivery::Uncertain { .. }));
+    assert!(!log.exists(), "the holder must not send a prompt without idempotency support");
+    let repeated = client.answer_recovery(&task.id, "question-legacy", Answer::AgentCancelled).unwrap();
+    assert_eq!(repeated, item, "an uncertain delivery cannot be blindly retried");
+    assert!(!log.exists());
+    assert!(client.prompt(&task.id, "continue", None).is_err(), "uncertain delivery blocks a normal prompt");
+    let reviewed = client.review_recovery(&task.id, "question-legacy").unwrap();
+    assert!(matches!(reviewed.delivery, Delivery::Reviewed { .. }));
+    client.prompt(&task.id, "continue", None).unwrap();
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn leftover_idle_policy_does_not_stop_a_waiting_task() {
+    let (mut daemon, client) = Daemon::new("idle-disabled");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let task = client.create(daemon.spec(&[fake.to_str().unwrap()])).unwrap();
+    std::fs::write(
+        daemon.data.join("tasks").join(&task.id).join("idle.json"),
+        r#"{"policy":{"idle_seconds":1,"waiting_seconds":1},"keep":false}"#,
+    )
+    .unwrap();
+    client.start(&task.id).unwrap();
+    client.prompt(&task.id, "run a command", None).unwrap();
+    eventually(|| client.task(&task.id).unwrap().turn.is_some_and(|turn| turn.state == deck_runtime::Phase::Waiting));
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(client.task(&task.id).unwrap().state, State::Running);
+    assert!(client.recovery_items(&task.id).unwrap().is_empty());
+    let holder = client.task(&task.id).unwrap().holder.unwrap().pid;
+    drop(client);
+    daemon.child.kill().unwrap();
+    daemon.child.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(running(holder), "a missing daemon must not stop the holder");
+    let client = daemon.restart();
+    assert_eq!(client.task(&task.id).unwrap().state, State::Running);
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn recovery_retry_after_lost_reply_uses_the_original_key_once() {
+    use deck_runtime::recovery::{Answer, Delivery, OptionItem, Question, Store};
+    let (mut daemon, client) = Daemon::new("recovery-lost-reply");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let log = daemon.data.join("fake-prompts.jsonl");
+    let journal = daemon.data.join("journal");
+    let task = client
+        .run(daemon.spec(&[
+            "env",
+            "DECK_FAKE_NAMES=reverse",
+            &format!("DECK_FAKE_PROMPT_LOG={}", log.display()),
+            &format!("DECK_FAKE_STATE={}", journal.display()),
+            fake.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .task;
+    client.stop(&task.id).unwrap();
+    let dir = daemon.data.join("tasks").join(&task.id);
+    let mut recovery = Store::open(&dir).unwrap();
+    recovery
+        .capture(
+            "question",
+            Question::Agent {
+                title: "Run the command?".into(),
+                options: vec![OptionItem { id: "yes".into(), name: "Allow".into(), kind: "allow_once".into() }],
+            },
+        )
+        .unwrap();
+    drop(recovery);
+    let answered = client.answer_recovery(&task.id, "question", Answer::Agent { option_id: "yes".into() }).unwrap();
+    let Delivery::Delivered { key, .. } = &answered.delivery else { panic!("expected delivered answer") };
+    let key = key.clone();
+    let session = client.task(&task.id).unwrap().session_id.unwrap();
+    client.stop(&task.id).unwrap();
+    client.shutdown().unwrap();
+    drop(client);
+    assert!(daemon.wait_exit().success());
+
+    // Recreate the write-ahead state of a daemon lost after the agent had
+    // accepted the prompt but before the daemon saved the holder's reply.
+    let path = dir.join("interrupted-decisions.json");
+    let mut saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    saved[0]["delivery"]["state"] = serde_json::json!("sending");
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let client = daemon.restart();
+    let retried = client.retry_recovery(&task.id, "question").unwrap();
+    assert!(matches!(&retried.delivery, Delivery::Delivered { key: retried, .. } if retried == &key));
+    let log: Vec<serde_json::Value> =
+        std::fs::read_to_string(&log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["key"], key);
+    assert_eq!(log[1]["key"], key);
+    assert_eq!(log[0]["text"], log[1]["text"]);
+    let journal = std::fs::read_to_string(journal.join(format!("{session}.jsonl"))).unwrap();
+    let begins = journal
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|entry| entry["event"] == "begin")
+        .count();
+    assert_eq!(begins, 1, "the agent must not run the answer twice");
+    client.stop(&task.id).unwrap();
+}
+
+#[test]
+fn retry_and_review_cannot_race_a_delivery_in_progress() {
+    use deck_runtime::recovery::{Answer, Delivery, OptionItem, Question, Store};
+    let (daemon, client) = Daemon::new("recovery-inflight");
+    let fake = deck_runtime::daemon_client::sibling_binary("deck-fake-agent").unwrap();
+    let log = daemon.data.join("fake-prompts.jsonl");
+    let task = client
+        .run(daemon.spec(&[
+            "env",
+            "DECK_FAKE_NAMES=reverse",
+            &format!("DECK_FAKE_PROMPT_LOG={}", log.display()),
+            "sh",
+            "-c",
+            "sleep 2; exec \"$@\"",
+            "sh",
+            fake.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .task;
+    client.stop(&task.id).unwrap();
+    let mut recovery = Store::open(&daemon.data.join("tasks").join(&task.id)).unwrap();
+    recovery
+        .capture(
+            "question",
+            Question::Agent {
+                title: "Run tests?".into(),
+                options: vec![OptionItem { id: "yes".into(), name: "Allow".into(), kind: "allow_once".into() }],
+            },
+        )
+        .unwrap();
+    drop(recovery);
+    let sender = DaemonClient::connect(&daemon.data).unwrap();
+    let id = task.id.clone();
+    let answer = std::thread::spawn(move || {
+        sender.answer_recovery(&id, "question", Answer::Agent { option_id: "yes".into() }).unwrap()
+    });
+    eventually(|| {
+        client.recovery_items(&task.id).unwrap().iter().any(|item| matches!(item.delivery, Delivery::Sending { .. }))
+    });
+    let attempted = client.retry_recovery(&task.id, "question").unwrap();
+    assert!(matches!(attempted.delivery, Delivery::Sending { .. }));
+    assert!(client.review_recovery(&task.id, "question").is_err());
+    let delivered = answer.join().unwrap();
+    assert!(matches!(delivered.delivery, Delivery::Delivered { .. }));
+    assert_eq!(std::fs::read_to_string(log).unwrap().lines().count(), 1);
+    client.stop(&task.id).unwrap();
 }

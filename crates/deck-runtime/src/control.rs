@@ -261,10 +261,10 @@ pub fn may_drive(caller: &str, task: &Task) -> Result<(), Refusal> {
 /// Whether a target's lifecycle lets it be prompted at all.
 pub fn promptable(task: &Task) -> Result<(), Refusal> {
     match task.state {
-        State::Created | State::Running => Ok(()),
+        State::Created | State::Running | State::Stopped { .. } => Ok(()),
         _ => Err(Refusal::new(
             Code::Refused,
-            format!("task {} is {}; this surface does not resume tasks", task.id, summary::state_name(&task.state)),
+            format!("task {} is {} and cannot be prompted", task.id, summary::state_name(&task.state)),
         )),
     }
 }
@@ -330,13 +330,7 @@ pub fn admit_create(
         }
     };
     let live = workers.iter().filter(|(state, _)| matches!(state, State::Created | State::Running)).count();
-    if live >= policy.max_concurrent as usize {
-        let cap = policy.max_concurrent;
-        let mut refusal =
-            Refusal::new(Code::Cap, format!("this coordinator already has {live} live workers (cap {cap})"));
-        refusal.cap = Some((Cap::Concurrent, cap));
-        return Err(refusal);
-    }
+    admit_concurrent(policy, live)?;
     let recent = workers.iter().filter(|(_, created)| now_ms.saturating_sub(*created) < HOUR_MS).count();
     if recent >= policy.creates_per_hour as usize {
         let cap = policy.creates_per_hour;
@@ -345,6 +339,28 @@ pub fn admit_create(
         refusal.cap = Some((Cap::Rate, cap));
         return Err(refusal);
     }
+    admit_checkout(in_place)?;
+    Ok(budget)
+}
+
+/// A resume consumes a concurrent slot, but does not create a new worker.
+pub fn admit_resume(policy: &Policy, live: usize, in_place: Option<usize>) -> Result<(), Refusal> {
+    admit_concurrent(policy, live)?;
+    admit_checkout(in_place)
+}
+
+fn admit_concurrent(policy: &Policy, live: usize) -> Result<(), Refusal> {
+    if live >= policy.max_concurrent as usize {
+        let cap = policy.max_concurrent;
+        let mut refusal =
+            Refusal::new(Code::Cap, format!("this coordinator already has {live} live workers (cap {cap})"));
+        refusal.cap = Some((Cap::Concurrent, cap));
+        return Err(refusal);
+    }
+    Ok(())
+}
+
+fn admit_checkout(in_place: Option<usize>) -> Result<(), Refusal> {
     // Workers that run in the project's own checkout would edit, test and
     // commit over each other (deck#200). No Limits field raises this, so the
     // refusal carries no cap for the window's notice.
@@ -355,7 +371,7 @@ pub fn admit_create(
              so one runs at a time (a VM backend gives each its own copy)",
         ));
     }
-    Ok(budget)
+    Ok(())
 }
 
 /// A project id shortened for a message, as the contract's example does.

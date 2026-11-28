@@ -26,7 +26,7 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
     let empty_project = !has_task && deck.is_launched();
     let project_view = deck.showing_project();
     let (status, color): (&str, Hsla) = match &s.status {
-        _ if s.ask.is_some() => ("Needs you", Tokens::amber()),
+        _ if s.ask.is_some() || deck.interrupted().is_some() => ("Needs you", Tokens::amber()),
         Status::Connecting => ("Connecting", Tokens::text_dim().into()),
         Status::Ready => ("Ready", Tokens::lime()),
         Status::Waiting => ("Waiting", Tokens::amber()),
@@ -127,8 +127,15 @@ pub fn main(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> impl 
                 .gap(px(space::STACK))
                 .p(px(space::PAD))
                 .pt(px(space::DETAIL))
-                .children(deck.boundary().pending().map(|_| boundary(deck, cx)))
-                .children(s.ask.as_ref().map(|_| ask(deck, window, cx)))
+                .children(deck.interrupted().map(|_| interrupted(deck, cx)))
+                .children(
+                    (deck.interrupted().is_none())
+                        .then(|| deck.boundary().pending().map(|_| boundary(deck, cx)))
+                        .flatten(),
+                )
+                .children(
+                    (deck.interrupted().is_none()).then(|| s.ask.as_ref().map(|_| ask(deck, window, cx))).flatten(),
+                )
                 // Access takes the keyboard, so the field it would block is not shown.
                 .children(
                     (!deck.access.is_open()
@@ -367,6 +374,86 @@ fn ask(deck: &Deck, window: &gpui::Window, cx: &mut Context<Deck>) -> AnyElement
         .opacity(deck.arrival().opacity())
         .relative()
         .children(deck.arrival().flash().map(|center| band_border(center, [radius::BUBBLE; 4], Tokens::ask_peak(), 1.)))
+        .into_any_element()
+}
+
+fn interrupted(deck: &Deck, cx: &mut Context<Deck>) -> AnyElement {
+    use deck_runtime::recovery::{Delivery, Question};
+    let Some(item) = deck.interrupted() else { return div().into_any_element() };
+    let (title, names, note): (String, Vec<&str>, &str) = match &item.question {
+        Question::Agent { title, options } => (
+            title.clone(),
+            options.iter().map(|option| option.name.as_str()).collect(),
+            "The original operation was interrupted. Answering resumes the task and tells the agent your choice. A new permission may be required.",
+        ),
+        Question::Boundary { approval } => (
+            approval.destination.clone(),
+            vec!["Allow once", "Allow 5 minutes", "Allow for task", "Allow for project", "Deny"],
+            "Your choice is sent to the agent as context. It does not grant access; a new authorization may be required.",
+        ),
+    };
+    let pending = matches!(item.delivery, Delivery::Pending) && !deck.interrupted_busy();
+    let buttons = names.iter().enumerate().filter(|_| pending).map(|(i, name)| {
+        option(("interrupted-option", i), name, i, Weight::Other)
+            .on_click(cx.listener(move |this, _, _, cx| this.choose_interrupted(Some(i), cx)))
+    });
+    let status = if deck.interrupted_busy() {
+        Some("Saving your answer and resuming…")
+    } else {
+        match item.delivery {
+            Delivery::Pending => None,
+            Delivery::Answered { .. } => Some("Answer saved; delivery is pending."),
+            Delivery::Sending { .. } => Some("Sending your answer to the agent…"),
+            Delivery::Uncertain { .. } => {
+                Some("The answer may have reached the agent. Retry with the saved key or mark it reviewed to resume.")
+            }
+            Delivery::Reviewed { .. } => Some("Reviewed without delivery confirmation."),
+            Delivery::Delivered { .. } => None,
+        }
+    };
+    div()
+        .debug_selector(|| "interrupted-card".into())
+        .flex()
+        .flex_col()
+        .gap(px(space::SECTION))
+        .p(px(space::PAD))
+        .rounded(px(radius::BUBBLE))
+        .border_1()
+        .border_color(tint(Tokens::amber(), 0.5))
+        .bg(Tokens::well())
+        .child(div().font_weight(FontWeight::SEMIBOLD).child("Interrupted decision"))
+        .child(div().font_family(MONO).text_size(size::scaled(size::LABEL)).child(title))
+        .child(div().text_size(size::scaled(size::LABEL)).text_color(Tokens::text_dim()).child(note))
+        .children(super::recovery::answer_label(item).map(|answer| div().child(format!("Saved answer: {answer}"))))
+        .children(status.map(|status| div().debug_selector(|| "interrupted-status".into()).child(status)))
+        .children(deck.interrupted_error().map(|error| {
+            div().debug_selector(|| "interrupted-error".into()).text_color(Tokens::red()).child(error.to_owned())
+        }))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(space::LINE))
+                .children(buttons)
+                .children(
+                    (matches!(
+                        item.delivery,
+                        Delivery::Answered { .. } | Delivery::Sending { .. } | Delivery::Uncertain { .. }
+                    ) && !deck.interrupted_busy())
+                    .then(|| {
+                        option(("interrupted-retry", 0_usize), "Retry delivery", 0, Weight::Other)
+                            .on_click(cx.listener(move |this, _, _, cx| this.retry_interrupted(cx)))
+                    }),
+                )
+                .children(
+                    (matches!(item.delivery, Delivery::Sending { .. } | Delivery::Uncertain { .. })
+                        && !deck.interrupted_busy())
+                    .then(|| {
+                        option(("interrupted-review", 1_usize), "Mark reviewed", 1, Weight::Other)
+                            .on_click(cx.listener(move |this, _, _, cx| this.review_interrupted(cx)))
+                    }),
+                ),
+        )
         .into_any_element()
 }
 

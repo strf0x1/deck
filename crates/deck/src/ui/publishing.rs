@@ -84,6 +84,7 @@ impl Deck {
         // The column lists the selected project's tasks only (ADR 0010 §9),
         // settled ones folding below the rest.
         self.tasks = tasks;
+        self.load_recoveries(cx);
         // A refresh read before this window's title write landed still says
         // `None`; keep the title the row already shows (ADR 0010 §9).
         let titled = &self.titled;
